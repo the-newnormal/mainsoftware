@@ -644,7 +644,7 @@ function rightsBlocks(org: string, contact: DpoContact): Block[] {
     ),
     list(channels),
     paragraph(
-      "If you're not satisfied with the answer, you can complain to the Personal Data Protection Commission (PDPC).",
+      line`If something has gone wrong, ${org} wants to hear about it and to put it right. If you're unhappy with how it's handled, or would rather not raise it with ${org}, you can contact the Personal Data Protection Commission (PDPC), Singapore's data protection regulator.`,
     ),
   ]
 }
