@@ -18,6 +18,8 @@ The break-glass re-clear restores Twilio Verify's clearance when no DPO can sign
 
 ## Before you start
 
+If there is no current DPO (the only one has left or lost the role), the re-clear refuses: "The person named as the DPO must be at the organisation and hold the DPO role." The Owners follow branch B until C0.16's grant makes a new DPO.
+
 1. The person on call asks each DPO whether they are still signed in to Hearth on any device (the re-clear checks this itself, and refuses while one is). If one is and can use that session, that DPO opens Transfers, enters the PIN and chooses "Clear for use" on Twilio Verify. Stop here.
 2. If a DPO has a live session they can't use (their PIN is locked, or they lost the phone), the re-clear refuses until that session ends. What ends it now (see [Before C0.16's console](README.md#before-c016s-console-what-exists)):
    - on a device the DPO still holds, Sign out in the avatar menu;
@@ -53,8 +55,8 @@ Until the bootstrap PR lands there is no recovery mode and no production (C0.11,
 
 ## Check it worked
 
-- The recovery mode prints the new clearance and the send state for `twilio`. `cleared` means everyone gets codes again. `unstated` appears only if the DPO decided a stated fact changed: then codes go to the DPO alone until a new version is published ([A stated Twilio fact changed](twilio-fact-changed.md)).
-- A member signs in on their own phone and gets a code.
+- The recovery mode prints the new clearance and the send state for `twilio`. `cleared` means everyone gets codes again. `unstated` appears only if the DPO decided a stated fact changed: then codes go to the DPO alone until a new version is published ([A stated Twilio fact changed](twilio-fact-changed.md)). `no_notice` appears before production's first version (v0): codes then go to the DPO alone, as they did before the withdrawal.
+- Once a version is published, a member signs in on their own phone and gets a code. Before v0, the DPO signs in and gets a code instead.
 - Once the DPO signs in, Twilio Verify's card on Transfers says it was cleared again by the emergency re-clear.
 
 ## Afterwards

@@ -807,8 +807,11 @@ const reclear = (dpo: string): Step => ({
                set_config('hearth.break_glass', 'twilio_reclear', true);
         ${bootstrapTwilio(dpo, 'Concurrency check: Twilio withdrawn and no DPO signed in')}`,
 })
-// A DPO's sign-in issuing its session, as sign-in.ts finish() does: the person FOR SHARE first,
-// then (with check) the transfer gate, then the session on their device.
+// A DPO's sign-in step, standing in for the lock each one takes first: the person FOR SHARE
+// (sign-in.ts stillHere), then (with check) the transfer gate, as requestCode's delivery asks it
+// before a code goes, then the session on their device, as setPin() and verifyPinStep() issue it (a
+// DPO holds a PIN role, so finish() issues none). With check it asks transfer_cleared(), which
+// gives a DPO the same answer as transfer_send_state() before v0.
 const dpoSignIn = (dpo: string, device: string, session: string, check = false): Step => ({
   as: 'app',
   org: BREAK_GLASS_ORG,

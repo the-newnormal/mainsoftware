@@ -20,7 +20,7 @@ Anyone suspects that personal data in or around Hearth was lost, disclosed, chan
 
 ## Before you start
 
-- The DPO writes down when they first became aware of it. Both clocks run from facts you record: 30 days to assess it from becoming aware, and 3 calendar days to notify from deciding that it is notifiable.
+- The DPO writes down when they first became aware of it. Both clocks run from facts you record: from becoming aware, the DPO has 30 days to assess it; from deciding that it is notifiable, the DPO notifies the PDPC as soon as practicable, and at the latest within 3 calendar days.
 - The DPO opens an entry in their breach register, kept outside Hearth until PDPA-11's record arrives (C6.1).
 
 ## Steps
@@ -31,8 +31,8 @@ Anyone suspects that personal data in or around Hearth was lost, disclosed, chan
    - rotates a leaked secret in Secrets Manager;
    - preserves the logs.
 2. The DPO assesses it, as soon as practicable and within 30 days of becoming aware: what data, whose (counts, never a list in a chat), how it happened, whether it continues, and the likely harm. The sources are the CloudWatch logs; the audit log, through `read_audit_events()` once the organisation chooses its audit-log readers (C0.16), or else a production read under the break-glass role; and the transfer register.
-3. The DPO decides whether it is notifiable (significant harm to the people affected is likely, or it affects 500 people or more), and records why and when.
-4. If it is notifiable, the DPO notifies the PDPC within 3 calendar days of that decision, through its online form on www.pdpc.gov.sg.
+3. The DPO decides whether it is notifiable (significant harm to the people affected is likely, or it affects 500 people or more; a breach whose access stayed inside the organisation, such as an employee opening what they shouldn't, is deemed not notifiable, PDPA s26B(4), though it is still recorded and handled), and records why and when.
+4. If it is notifiable, the DPO notifies the PDPC as soon as practicable, and at the latest within 3 calendar days of that decision, through its online form on www.pdpc.gov.sg.
 5. Where significant harm is likely, the DPO tells the people affected as soon as practicable, by a channel outside Hearth if Hearth is affected, unless an exception in the PDPA applies.
 6. The person on call fixes the cause through a pull request.
 7. The DPO records every step with its time and who took it.

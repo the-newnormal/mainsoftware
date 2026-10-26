@@ -16,7 +16,7 @@ Foreseeable causes: Twilio confirms a change to its retention, its countries or 
 
 ## Before you start
 
-- Nothing is locked: open sessions keep working, PIN re-authentication works, and the DPO still gets a sign-in code. Only new sign-ins by everyone else wait.
+- Nothing is locked: open sessions keep working, PIN re-authentication works, and the DPO still gets a sign-in code. Only new sign-ins and texted re-authentication codes for everyone else wait.
 - Only the DPO can publish. If the DPO is away, new sign-ins wait until they are back.
 
 ## Steps

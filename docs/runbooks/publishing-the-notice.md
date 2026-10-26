@@ -13,7 +13,7 @@
 
 ## Before you start
 
-- For production's v0: the first-Owner bootstrap has run; production and its break-glass role exist (C0.11, C0.12); the push services are cleared on Transfers (before C0.15); and the owner has decided whether v0 waits for C0.9 PR 3b (TECH-SPEC T22 item 48).
+- For production's v0: the first-Owner bootstrap has run; production and its break-glass role exist (C0.11, C0.12); the push services are cleared on Transfers (before C0.15); and C0.9 PR 3b has merged: production's v0 waits for it, so everyone acknowledges the rights section's form and reply targets once (C0.9 PD-84, confirmed by the owner on 24 Oct 2026; TECH-SPEC T22 item 48).
 - Have your contact details ready: a role title and a shared mailbox or business line, never your own name or mobile number, so they still work if someone else takes on the role.
 - Everyone, you included, acknowledges each new version before using Hearth again, and people using Hearth now are taken to it within half a minute. Choose a quiet time.
 
@@ -28,14 +28,14 @@
 7. The DPO reads the preview, "Your rights" above all, since it is how people reach you.
 8. The DPO chooses Publish, confirms, and enters the PIN when asked.
 9. The DPO acknowledges the new version on the privacy notice screen, where Hearth takes you once it is published.
-10. For v0 only, the DPO publishes the same contact details outside Hearth the same day: on the organisation's website, and in ACRA's BizFile+ (PDPA-13).
+10. For v0 only, the DPO publishes the same contact details outside Hearth the same day, on the organisation's website (PDPA-13). As the Personal Data Protection Commission (PDPC) encourages, the DPO also registers the organisation's DPO the same day, through the online DPO form on the PDPC's website. ACRA's BizFile+ has taken no DPO registrations since 1 December 2024.
 
 ### Changing your contact details
 
 1. The DPO records the new details on Contact. The page then says they aren't in the published notice yet.
 2. The DPO publishes, as steps 5 to 9 say. The notice screen tells everyone that the contact details have changed.
 3. The DPO keeps the old mailbox or number answered until the Notice tab's count shows that everyone has acknowledged the new version.
-4. The DPO updates the contact details published outside Hearth the same day.
+4. The DPO updates the contact details published outside Hearth, and the organisation's DPO registration through the PDPC's online DPO form, the same day.
 
 ### Recording an acknowledgement made outside Hearth
 

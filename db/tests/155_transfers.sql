@@ -803,7 +803,7 @@ select pg_temp.check(not exists (select 1 from public.transfer_clearances
 -- lowered under a longer one (whose timer Postgres keeps running, which is why the re-clear always
 -- restarts it); the set-up (org 3's twilio, cleared for the first time) never sets them. Each in a
 -- savepoint. (That the timer then ends the transaction 30 s after the re-clear, whatever ran
--- before, is Postgres's: switched off and on again, it starts afresh. BGR-05 in
+-- before, is Postgres's: switched off and on again, it starts afresh. BGR-06 in
 -- apps/server/scripts/check-concurrency.ts shows it on a connection whose session set a longer one.)
 do $$
 declare
