@@ -571,6 +571,17 @@ const describedBy = (markup: string, control: Map<string, string> | undefined) =
       return decoded(markup.slice(start, markup.indexOf('</', start)).replace(/<[^>]+>/g, ''))
     })
 
+// How deep forms nest in the markup: 1 when none sits inside another.
+function formDepth(markup: string): number {
+  let depth = 0
+  let deepest = 0
+  for (const match of markup.matchAll(/<(\/?)form\b/g)) {
+    depth += match[1] === '/' ? -1 : 1
+    deepest = Math.max(deepest, depth)
+  }
+  return deepest
+}
+
 describe('C0.9 PD-70 OD-19: the contact page and recording an acknowledgement (dpo/)', () => {
   it('DPP-05 PDPA-13 OD-10 PD-70: /dpo/contact is the shell’s page titled Contact details under the four links (Contact current, the Notice link badged), saying what the contact is for; with none recorded it says publishing waits for it and offers Record contact details', async () => {
     const markup = await appAt('/dpo/contact', REGISTERS, undefined, { contact: contactAdminForClient() })
@@ -925,9 +936,20 @@ describe('C0.9 PR 3b: the requests to the DPO (dpo/)', () => {
     expect(textsOf(markup, 'h2')).toEqual(['Open requests (2)', 'Closed requests'])
     const all = buttons(markup)
     expect(all[0]?.name.includes('Log a request') || all.some(button => button.name === 'Log a request')).toBe(true)
-    const cards = [
-      ...markup.matchAll(/<button type="button" class="flex min-h-11 w-full flex-col[^"]*">(.*?)<\/button>/gs),
-    ].map(match => readable(match[1] ?? ''))
+    const cardMatches = [
+      ...markup.matchAll(
+        /<button type="button" id="([^"]*)" class="flex min-h-11 w-full flex-col[^"]*">(.*?)<\/button>/gs,
+      ),
+    ]
+    const cards = cardMatches.map(match => readable(match[2] ?? ''))
+    // Each card is found by its case's id once its sheet closes, and the open requests' heading takes
+    // focus when the card can't (a step closed the case and its card moved out of sight; 4.5).
+    expect(cardMatches.map(match => match[1])).toEqual([
+      `case-${CASE_IDS.copy}`,
+      `case-${CASE_IDS.complaint}`,
+      `case-${CASE_IDS.closed}`,
+    ])
+    expect(markup).toMatch(/<h2 id="[^"]*" tabindex="-1" class="[^"]*">Open requests \(2\)<\/h2>/)
     expect(cards[0]).toEqual([
       'Copy of their data',
       'In progress',
@@ -1231,6 +1253,71 @@ describe('C0.9 PR 3b: the requests to the DPO (dpo/)', () => {
     expect(readable(cut)).toContain(CASE_COPY.people.cut)
     expect(ALIKE_IDS).toHaveLength(2)
     expect(readable(markup).filter(text => aiCopyIn(text) !== undefined)).toEqual([])
+  })
+
+  it('RQW-09 PD-30 PD-89: a read of the people refused for the PIN shows the PIN step above the intake form, never inside it, since a form inside a form never sends its submit', () => {
+    const refused = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client => {
+      // A failed read stays failed as the dialog mounts (no retry on mount), as it shows once the
+      // browser's first fetch has failed.
+      client.setQueryDefaults(casePeopleQuery.queryKey, { retryOnMount: false })
+      client
+        .getQueryCache()
+        .build(client, { queryKey: casePeopleQuery.queryKey })
+        .setState({
+          status: 'error',
+          error: new ApiFailure(403, 'reauth_required', 'Enter your PIN.', { method: 'pin' }),
+          fetchStatus: 'idle',
+        })
+    })
+    expect(
+      tags(refused, 'input')
+        .find(input => input.get('name') === 'pin')
+        ?.get('autoComplete'),
+    ).toBe('current-password')
+    // The PIN step's form and the intake form, side by side.
+    expect(tags(refused, 'form')).toHaveLength(2)
+    expect(formDepth(refused)).toBe(1)
+    expect(refused.indexOf('name="pin"')).toBeLessThan(refused.indexOf('name="kind"'))
+  })
+
+  it('RQW-09 PD-89 PPL-01 PPL-13: the lines about the people list (two who read the same, a cut list, rows that couldn’t be read) describe the person field, and a leaver’s line describes How to reach them, so each is heard on the control it is about', () => {
+    const plain = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, casePeopleForClient({ people: [] })),
+    )
+    expect(controlOf(plain, CASE_COPY.fields.person)).toBeUndefined()
+    const listed = casePeopleForClient({ more: true })
+    const cut = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, listed),
+    )
+    expect(describedBy(cut, controlOf(cut, CASE_COPY.fields.person))).toEqual([
+      CASE_COPY.people.same,
+      CASE_COPY.people.cut,
+    ])
+    const incomplete = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, {
+        more: false,
+        people: { rows: listed.people.rows.slice(0, 2), complete: false },
+      }),
+    )
+    expect(describedBy(incomplete, controlOf(incomplete, CASE_COPY.fields.person))).toEqual([
+      CASE_COPY.people.incomplete,
+    ])
+    const whole = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, {
+        more: false,
+        people: { rows: listed.people.rows.slice(0, 2), complete: true },
+      }),
+    )
+    expect(controlOf(whole, CASE_COPY.fields.person)?.has('aria-describedby')).toBe(false)
+    // Nothing describes How to reach them until a leaver is picked; then their line does.
+    expect(tags(whole, 'fieldset').filter(fieldset => fieldset.has('aria-describedby'))).toEqual([])
+    const leaver = aloneWith(
+      <LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} initial={{ person: LEAVER_ID }} />,
+      client => client.setQueryData(casePeopleQuery.queryKey, casePeopleForClient()),
+    )
+    const described = tags(leaver, 'fieldset').filter(fieldset => fieldset.has('aria-describedby'))
+    expect(described).toHaveLength(1)
+    expect(describedBy(leaver, described[0])).toEqual([CASE_COPY.fields.reachLeaver])
   })
 
   it('CTW-06 CTW-07 OD-08 PD-94: /dpo/contact shows the reply targets below the contact with their pill and Change reply targets; the dialog has two 16 px numeric fields with their ranges as hints, Save held while nothing changed, and the out-of-date warning once a version is published', async () => {

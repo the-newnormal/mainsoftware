@@ -52,7 +52,7 @@ How a due day is counted:
 - Business days are weekdays in the organisation's time zone. Public holidays count as business days, so a due day errs early, never late (C0.9 OD-09).
 - A copy or a correction counts calendar days, weekends and public holidays included.
 
-The queue shows each request's due day, and it never moves later than what was promised when the request arrived: a shorter target applies to open requests at once, and a longer one only to requests received after the notice that states it is published.
+The queue shows each request's due day, and it never moves later than the targets stated when the request arrived: a shorter target applies to open requests at once, and a longer one only to requests received after the notice that states it is published. A request that arrived before any notice stated targets (one logged as received before v0) follows the targets on Contact as soon as they are recorded, sooner or later, never past 10 business days or 30 days.
 
 ## Records: the queue
 

@@ -160,10 +160,12 @@ $$;
 revoke execute on function public.case_add_business_days(date, integer) from public;
 
 -- A request's due day (C0.9 OD-08, PD-92), from raw values only (CLAUDE.md, Database):
---   the target, per unit, is the shorter of the one stated when the request was received (null:
---   none was stated, such as before v0 or under c09.2) and the current one, so changing a target can
---   bring an open request's day forward but never push it past what the requester was told; with
---   no settings at all, OD-08's 10 and 30, the columns' defaults;
+--   the target, per unit, is the shorter of the one stated when the request was received and the
+--   current one, so for a request whose receipt stated targets, changing a target can bring its day
+--   forward but never push it past what the requester was told. A request whose receipt stated none
+--   (null: logged as received before v0, or sent under c09.1, c09.2 or a stand-in) follows the
+--   current target both ways, a longer one included, never past OD-08's 10 and 30, the ranges'
+--   upper ends; with no settings at all, those figures, the columns' defaults;
 --   the day is received_on plus the target, in calendar days for a copy or a correction and in
 --   business days for the rest, under the kind it came as and under its current kind, whichever is
 --   earlier, so a reclassification never moves a promise later (PD-90); and the current kind's day
@@ -238,7 +240,8 @@ revoke execute on function public.cases_check_dpo(uuid, uuid) from public;
 --     reference      what people quote (PD-104): the database's, unique in the org; audit rows,
 --                    events, logs, paths and foreign keys use id, never this
 --     client_key     one per form or dialog opening, unique per writer, so a resend after a lost
---                    answer returns the first case (PD-96)
+--                    answer returns the first case, and only one sent the same way: a send never
+--                    returns a log, nor a log a send (PD-96)
 --     kind           the kind it came as; a step may reclassify it (case_kind_now())
 --     came_by        the form in Hearth, or how it reached the DPO
 --     received_on    the day it reached the organisation, in the org's zone: the clock runs from it
@@ -526,7 +529,10 @@ revoke execute on function public.case_replied_in_time(uuid, uuid) from public;
 --   1. the requester, still at the organisation, FOR SHARE, so a deactivation in progress makes this
 --      wait and then refuse (42501), and one that starts later waits for it;
 --   2. a send already recorded from the same sheet (the same client_key) records nothing and returns
---      that case (changed false), so a resend after a lost answer never makes two (PD-96);
+--      that case (changed false), so a resend after a lost answer never makes two (PD-96). A key
+--      returns only the sender's own request sent in Hearth: one the same person logged as the DPO
+--      under that key (a former DPO replaying their old dialog's key) is refused (HF006) and never
+--      returned, so the form never hands anyone a request about someone else (OD-14, OD-15);
 --   3. the kind, and what they want, trimmed of JavaScript's whitespace with CRLF read as LF (empty
 --      reads as none, which only a copy of their data may be): at most 4,000 characters of plain
 --      text, with no bidirectional-formatting character (HF006). Their words are theirs, never held
@@ -586,6 +592,9 @@ begin
   select * into prior from public.cases c
   where c.org_id = org and c.logged_by = actor and c.client_key = submit_case.client_key;
   if found then
+    if prior.came_by <> 'hearth' or prior.requester_person_id is distinct from actor then
+      raise exception 'Send it from the form again.' using errcode = 'HF006';
+    end if;
     return query select prior.id, prior.reference, prior.received_on, public.case_due(org, prior.id), false;
     return;
   end if;
@@ -614,11 +623,15 @@ begin
     returning cases.id, cases.reference into new_id, new_ref;
     exit when new_id is not null;
     -- Nothing inserted: a send from the same sheet committed meanwhile (this insert waited on its
-    -- client_key entry, then skipped), which this returns; or the reference drawn clashed, so the
-    -- loop draws again.
+    -- client_key entry, then skipped), which this returns; or a log by the same person under that
+    -- key, which is refused as above rather than drawn again ten times; or the reference drawn
+    -- clashed, so the loop draws again.
     select * into prior from public.cases c
     where c.org_id = org and c.logged_by = actor and c.client_key = submit_case.client_key;
     if found then
+      if prior.came_by <> 'hearth' or prior.requester_person_id is distinct from actor then
+        raise exception 'Send it from the form again.' using errcode = 'HF006';
+      end if;
       return query select prior.id, prior.reference, prior.received_on, public.case_due(org, prior.id), false;
       return;
     end if;
@@ -639,6 +652,8 @@ revoke execute on function public.submit_case(text, text, uuid, text, uuid, inet
 -- order:
 --   1. the DPO, re-checked (cases_check_dpo(): the person, then their dpo role, FOR SHARE);
 --   2. a log already recorded from the same dialog (client_key) returns that case (changed false);
+--      a key that holds the DPO's own request sent in Hearth is refused (HF006), never returned as
+--      if it were a log;
 --   3. the requester: a person (never the DPO themselves, 42501: they send their own from Settings;
 --      not the org's, 22023), current or former (PDPA-05 works for deactivated accounts), read FOR
 --      SHARE after the DPO's rows (an admin action on someone else), because someone who has left
@@ -709,6 +724,9 @@ begin
   select * into prior from public.cases c
   where c.org_id = org and c.logged_by = actor and c.client_key = log_case.client_key;
   if found then
+    if prior.came_by = 'hearth' then
+      raise exception 'Send it from the form again.' using errcode = 'HF006';
+    end if;
     return query select prior.id, prior.reference, public.case_due(org, prior.id), false;
     return;
   end if;
@@ -799,10 +817,14 @@ begin
     on conflict do nothing
     returning cases.id, cases.reference into new_id, new_ref;
     exit when new_id is not null;
-    -- As in submit_case(): a log from the same dialog committed meanwhile, or a clashing reference.
+    -- As in submit_case(): a log from the same dialog committed meanwhile, the DPO's own send
+    -- under that key (refused as above), or a clashing reference.
     select * into prior from public.cases c
     where c.org_id = org and c.logged_by = actor and c.client_key = log_case.client_key;
     if found then
+      if prior.came_by = 'hearth' then
+        raise exception 'Send it from the form again.' using errcode = 'HF006';
+      end if;
       return query select prior.id, prior.reference, public.case_due(org, prior.id), false;
       return;
     end if;

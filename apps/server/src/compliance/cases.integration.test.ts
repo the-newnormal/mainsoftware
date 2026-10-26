@@ -1027,13 +1027,17 @@ describe('C0.9 PR 3b requests to the DPO (PDPA-04, PDPA-13, T22 items 50 to 62)'
     expect(await countOf(dpoClient)).toBe(1)
     await stepped(dpoClient, overdue.id, { step: 'closed', onDay: today, outcome: 'answered' })
     expect(await countOf(dpoClient)).toBe(0)
-    // Nearly due: received so that its day is the first on or after today.
-    let received = today
-    for (let back = 0; back < 30; back++) {
-      if (addBusinessDays(shift(today, -back), 10) >= today) received = shift(today, -back)
-    }
-    const nearly = await log(received)
-    expect(nearly.dueOn >= today && nearly.dueOn <= addBusinessDays(today, 2)).toBe(true)
+    // Nearly due: a copy received 30 days before the window's last day, so it is due on that day,
+    // strictly after today, and still counts.
+    const edge = addBusinessDays(today, 2)
+    const nearly = await s.logRequest(org, dpo, {
+      kind: 'access',
+      receivedOn: shift(edge, -30),
+      person: member.id,
+      details: 'A fictional request for a copy.',
+    })
+    expect(nearly.dueOn).toBe(edge)
+    expect(nearly.dueOn > today).toBe(true)
     expect(await countOf(dpoClient)).toBe(1)
     expect(await countOf(dpoClient)).toBe(attentionIn(await queue(dpoClient)))
     await stepped(dpoClient, nearly.id, { step: 'replied', onDay: today })

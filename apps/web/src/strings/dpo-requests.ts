@@ -67,6 +67,8 @@ export const REQUESTS_COPY = {
   dueToday: 'Due today',
   overdue: (day: string) => `Overdue since ${day}`,
   repliedOnTime: (day: string) => `Replied ${day}`,
+  // The same, where the answer gives no day of the reply (the sheet's other requests).
+  repliedInTime: 'Replied on time',
   received: (day: string) => `Received ${day}`,
   closedOn: (day: string, outcome: string) => `Closed ${day} · ${outcome}`,
   // Who sent it.

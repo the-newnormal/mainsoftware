@@ -44,7 +44,7 @@
 
 1. The DPO changes them under "Reply targets" on Contact, with the PIN. The card then says they aren't in the published notice yet.
 2. The DPO publishes, as steps 5 to 9 say. The notice screen tells everyone that the reply targets have changed.
-3. A shorter target applies to open requests at once. A longer one applies only to requests received after the new version is published: no request's due day moves later than what it was promised.
+3. A shorter target applies to open requests at once. A longer one applies only to requests received after the new version is published: no request's due day moves later than the targets it was told. A request received before any version stated targets follows the targets on Contact either way, never past 10 business days or 30 days.
 
 ### Recording an acknowledgement made outside Hearth
 

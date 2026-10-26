@@ -183,6 +183,26 @@ describe('C0.9 PR 3b: the case sheet and the log dialog (dpo/case-model.ts)', ()
     })
   })
 
+  it('PD-112 PPL-07: another open request replied to on time reads “Replied on time” past its due day, never “Overdue since”; one with no reply on time still reads as overdue', () => {
+    const other = {
+      id: CASE_IDS.copy,
+      reference: 'BC2DFG3H',
+      kind: 'access',
+      cameBy: 'email',
+      receivedOn: '2026-10-01',
+      state: 'in_progress',
+      dueOn: '2026-10-31',
+      repliedInTime: true,
+      closedOn: null,
+      outcome: null,
+    } as const
+    const answer = caseForClient({ others: [other, { ...other, id: CASE_IDS.closed, repliedInTime: false }] })
+    expect(answer.today > '2026-10-31').toBe(true)
+    const [onTime, late] = answer.others.rows.map(row => otherLine(row as never, answer.today))
+    expect(onTime?.days).toBe('Received Thu 1 Oct 2026 · Replied on time')
+    expect(late?.days).toBe('Received Thu 1 Oct 2026 · Overdue since Sat 31 Oct 2026')
+  })
+
   it('PD-90 PD-91 PD-112: the facts (how it came, received, logged for one the DPO logged, the due line, identity, more time, an open review, the closure) and the steps oldest first, then the closure', () => {
     const answer = caseForClient()
     expect(caseFacts(answer)).toEqual([

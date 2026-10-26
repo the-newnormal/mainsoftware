@@ -11,8 +11,12 @@
 // field: "Checked who they are" is a step on the new request's sheet, with the day it was checked
 // (PPL-14). Save is held back with its reason (logEditor); the dialog's key, made as it opens, makes a
 // resend after a lost answer return the first case. Once logged, the dialog closes, the queue and
-// the session's count are read again, and the new request's sheet opens with its reference. The
-// queue loads this module lazily, when the dialog first opens.
+// the session's count are read again, and the new request's sheet opens with its reference. A
+// refused read of the people (the PIN step) shows above the form, never in it, since a form inside
+// a form never sends its submit. The lines about the list (two who read the same, a cut list, rows
+// that couldn't be read) describe the person field, and the leaver's line describes How to reach
+// them, so each is heard on the control it is about. The queue loads this module lazily, when the
+// dialog first opens.
 import {
   CASE_KINDS,
   CASE_NAME_MAX,
@@ -49,6 +53,8 @@ export interface LogRequestProps {
   today: string
   onClose(): void
   onLogged(id: string, reference: CaseReference): void
+  // What the form starts with, over the empty one: for the markup test (dpo/dpo.markup.test.tsx).
+  initial?: Partial<LogForm>
 }
 
 // One intake, as the register writes send theirs: its effects live on the mutation, so the queue and
@@ -86,10 +92,10 @@ function useLog(onLogged: (logged: LoggedRequest) => void) {
   }
 }
 
-export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
+export function LogRequest({ today, onClose, onLogged, initial }: LogRequestProps) {
   const people = useQuery(casePeopleQuery)
   const peopleRefusal = people.error === null ? undefined : refusalOfError(people.error)
-  const [form, setForm] = useState<LogForm>(() => emptyLog(today))
+  const [form, setForm] = useState<LogForm>(() => ({ ...emptyLog(today), ...initial }))
   // The dialog's client key, made as it opens and kept while it stays open (PD-89).
   const [key] = useState(() => crypto.randomUUID())
   const options = useMemo(
@@ -99,6 +105,10 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
   const editor = logEditor(form, people.data, options, today, key)
   const log = useLog(logged => onLogged(logged.case, logged.reference))
   const formId = useId()
+  const sameId = useId()
+  const cutId = useId()
+  const incompleteId = useId()
+  const leaverId = useId()
   const set = (change: Partial<LogForm>) => setForm(before => ({ ...before, ...change }))
   const held = log.pending
     ? CASE_COPY.logging
@@ -106,6 +116,17 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
       ? (editor.problems[0] ?? DPO.fixFirst)
       : undefined
   const member = form.who === 'member'
+  // The lines under the person field that describe it, while each shows.
+  const personNotes =
+    people.data === undefined || options === undefined
+      ? undefined
+      : [
+          options.same ? sameId : undefined,
+          people.data.more ? cutId : undefined,
+          people.data.people.complete ? undefined : incompleteId,
+        ]
+          .filter(Boolean)
+          .join(' ') || undefined
   const channelOptions: { value: RequesterChannel | ''; label: string }[] = [
     ...(member && !editor.leaver ? [{ value: '' as const, label: CASE_COPY.fields.noChannel }] : []),
     ...(['email', 'phone', 'post'] as const).map(value => ({ value, label: CHANNEL_LABELS[value] })),
@@ -126,6 +147,11 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
     >
       <div className="flex flex-col gap-4">
         <WriteRefusal writer={log} />
+        {/* Outside the form: the PIN step it may show is a form of its own, and a form inside a
+            form never sends its submit. */}
+        {member && peopleRefusal !== undefined && (
+          <ReadRefusal refusal={peopleRefusal} retry={() => void people.refetch()} />
+        )}
         <form
           id={formId}
           method="post"
@@ -179,9 +205,6 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
           </div>
           {member ? (
             <>
-              {peopleRefusal !== undefined && (
-                <ReadRefusal refusal={peopleRefusal} retry={() => void people.refetch()} />
-              )}
               {people.isPending && (
                 <p role="status" className="text-muted">
                   {CASE_COPY.people.loading}
@@ -198,16 +221,23 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
                       value={form.person}
                       options={options.options}
                       onChange={event => set({ person: event.currentTarget.value })}
+                      aria-describedby={personNotes}
                     />
                   )}
                   {options.same && (
                     <Note tone="warn">
-                      <p>{CASE_COPY.people.same}</p>
+                      <p id={sameId}>{CASE_COPY.people.same}</p>
                     </Note>
                   )}
-                  {people.data.more && <p className="text-small text-muted">{CASE_COPY.people.cut}</p>}
+                  {people.data.more && (
+                    <p id={cutId} className="text-small text-muted">
+                      {CASE_COPY.people.cut}
+                    </p>
+                  )}
                   {!people.data.people.complete && (
-                    <p className="text-small text-muted">{CASE_COPY.people.incomplete}</p>
+                    <p id={incompleteId} className="text-small text-muted">
+                      {CASE_COPY.people.incomplete}
+                    </p>
                   )}
                 </>
               )}
@@ -225,9 +255,14 @@ export function LogRequest({ today, onClose, onLogged }: LogRequestProps) {
             <p aria-hidden className="font-medium">
               {member && !editor.leaver ? CASE_COPY.fields.reachOptional : CASE_COPY.fields.channel}
             </p>
-            {editor.leaver && <p className="text-small text-muted">{CASE_COPY.fields.reachLeaver}</p>}
+            {editor.leaver && (
+              <p id={leaverId} className="text-small text-muted">
+                {CASE_COPY.fields.reachLeaver}
+              </p>
+            )}
             <Segmented
               label={member && !editor.leaver ? CASE_COPY.fields.reachOptional : CASE_COPY.fields.channel}
+              describedBy={editor.leaver ? leaverId : undefined}
               value={form.channel}
               options={channelOptions}
               onChange={channel => set({ channel, ...(channel === '' ? { contact: '' } : {}) })}

@@ -6,7 +6,7 @@
 import { MyRequestsResponseForClient, type NoticeForClient } from '@hearth/shared'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory } from '@tanstack/react-router'
-import type { ReactNode } from 'react'
+import { createRef, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { ApiFailure } from '@/api/http.ts'
@@ -24,7 +24,7 @@ import { aiCopyIn } from '@/strings/ai-copy.ts'
 import { SETTINGS } from '@/strings/notice.ts'
 import { REQUEST_KINDS, REQUESTS } from '@/strings/requests.ts'
 import { ContactSection } from './PrivacySettings.tsx'
-import { RequestSheetDialog } from './RequestsSection.tsx'
+import { DiscardQuestion, RequestSheetDialog } from './RequestsSection.tsx'
 import { openSheet, sentSheet, withText } from './requests-model.ts'
 import { SETTINGS_SECTIONS } from './sections.ts'
 
@@ -542,5 +542,15 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
     expect(confirmation).not.toContain('<textarea')
     // Nothing claims the DPO was told.
     expect(readable(confirmation).filter(line => /\b(?:told|alerted|notified)\b/.test(line))).toEqual([])
+  })
+
+  it('RQW-03 X6 R8: the discard question is a group named by the question, which takes focus (tabindex -1) so a screen reader reads it first, with Keep writing before Discard', () => {
+    const markup = alone(<DiscardQuestion question={createRef()} onKeep={() => {}} onDiscard={() => {}} />)
+    const group = markup.match(/<fieldset aria-labelledby="([^"]+)"/)
+    const question = markup.match(/<p id="([^"]+)" tabindex="-1"[^>]*>(.*?)<\/p>/)
+    expect(group?.[1]).toBeDefined()
+    expect(question?.[1]).toBe(group?.[1])
+    expect(decoded(question?.[2] ?? '')).toBe(REQUESTS.discard)
+    expect(buttonsOf(markup).map(button => button.name)).toEqual([REQUESTS.discardNo, REQUESTS.discardYes])
   })
 })

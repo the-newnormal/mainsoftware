@@ -473,7 +473,7 @@ const myRequests = (sent: boolean) =>
     open: sent ? 3 : 2,
   })
 
-test('NTE-02 OD-07 OD-12 OD-15 PD-96 PD-97 PD-112: Settings › Privacy reads the contact, then Questions and requests, then Your requests, then the notice; the six kinds are 44 px rows at 390 and 320; A complaint opens a sheet with the published target and a 16 px box, Send held until something is written; a send whose answer is cut off keeps the words and says sending again won’t send twice; the confirmation gives the due day and the reference and stays until Done, which focuses the new row; Your requests shows a reply and a request past its target day with what to do; axe at 320, 390 and 1440 px in both schemes', async ({
+test('NTE-02 OD-07 OD-12 OD-15 PD-96 PD-97 PD-112: Settings › Privacy reads the contact, then Questions and requests, then Your requests, then the notice; the six kinds are 44 px rows at 390 and 320; A complaint opens a sheet with the published target and a 16 px box, Send held until something is written; closing with words written asks first, with focus on the question, and Keep writing puts focus back in the box with the words kept; a send whose answer is cut off keeps the words and says sending again won’t send twice; the confirmation gives the due day and the reference and stays until Done, which focuses the new row; Your requests shows a reply and a request past its target day with what to do; axe at 320, 390 and 1440 px in both schemes', async ({
   open,
   guard,
 }, testInfo) => {
@@ -578,6 +578,16 @@ test('NTE-02 OD-07 OD-12 OD-15 PD-96 PD-97 PD-112: Settings › Privacy reads th
   await box.fill('The delivery rota was shared with the wrong group.')
   await expect(send).not.toHaveAttribute('aria-disabled')
   await checked('the request sheet', [SIZES.w320, SIZES.w390])
+
+  // Closing with words written asks first: Escape puts focus on the question, so a screen reader
+  // reads it before its answers, and Keep writing puts focus back in the box, the words kept (X6).
+  await box.click()
+  await box.press('Escape')
+  await expect(sheet.getByRole('group', { name: REQUESTS.discard })).toBeVisible()
+  await expect(sheet.getByText(REQUESTS.discard, { exact: true })).toBeFocused()
+  await sheet.getByRole('button', { name: REQUESTS.discardNo, exact: true }).click()
+  await expect(box).toBeFocused()
+  await expect(box).toHaveValue('The delivery rota was shared with the wrong group.')
 
   // The answer is cut off: the words stay, and the sheet says sending again won't send it twice.
   await send.click()

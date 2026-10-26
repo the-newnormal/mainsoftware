@@ -78,6 +78,11 @@ export interface QueueCard {
   readonly state: string
 }
 
+// The element id of a case's card, by which focus finds it again once its sheet has closed: a step
+// that closes the case moves the card to the closed list, so the button that opened the sheet has
+// gone (RequestsScreen.tsx).
+export const queueCardId = (id: string): string => `case-${id}`
+
 export function queueCard(row: QueueRowForClient, today: string): QueueCard {
   const requester = requesterLine(row.requester)
   return {

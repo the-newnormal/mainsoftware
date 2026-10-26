@@ -5,7 +5,8 @@
 // Each radio covers its segment, so the segment is the 44 px target and gets the focus ring. It is
 // finance's large segmented control (T21 item 6): a hairline-edged surface track, its segments
 // inset, the chosen one ink with surface text (surface on fg, TEXT_PAIRS) and a check mark, so it
-// is never shown by colour alone.
+// is never shown by colour alone. describedBy names a line elsewhere that says more about the
+// choice (the log dialog's line for a leaver), heard as the group is entered.
 import { Check } from 'lucide-react'
 import { useId } from 'react'
 import { cx } from './cx.ts'
@@ -15,12 +16,14 @@ export interface SegmentedProps<T extends string> {
   value: T
   options: readonly { value: T; label: string }[]
   onChange(value: T): void
+  // The id of a line that describes the group, while it shows.
+  describedBy?: string
 }
 
-export function Segmented<T extends string>({ label, value, options, onChange }: SegmentedProps<T>) {
+export function Segmented<T extends string>({ label, value, options, onChange, describedBy }: SegmentedProps<T>) {
   const name = useId()
   return (
-    <fieldset className="m-0 min-w-0 border-0 p-0">
+    <fieldset aria-describedby={describedBy} className="m-0 min-w-0 border-0 p-0">
       <legend className="sr-only">{label}</legend>
       <div className="inline-flex max-w-full flex-wrap gap-2 rounded-2xl border border-line bg-surface p-1.5">
         {options.map(option => {

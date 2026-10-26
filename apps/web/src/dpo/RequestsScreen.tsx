@@ -3,8 +3,11 @@
 // reference, requester, how it came, the day received, the due line in words (with an icon when
 // overdue, never colour alone) and its state; the most recently closed under a disclosure; and "Log
 // a request" for one that came another way. A card opens the case sheet (dpo/CaseSheet.tsx) held in
-// this page's state, never the URL (T21 item 5, RO-04), and closing it returns focus to the card;
-// the sheet and the log dialog (dpo/LogRequest.tsx) load behind their own lazy imports when opened.
+// this page's state, never the URL (T21 item 5, RO-04), and closing it returns focus to the card
+// (the dialog gives it back to the button that opened it; when that button has gone, because a step
+// closed the case and its card moved to the closed list, focus goes to the card where it now is if
+// it shows, else to the open requests' heading, never <body>, 4.5); the sheet and the log dialog
+// (dpo/LogRequest.tsx) load behind their own lazy imports when opened.
 //
 // The server decides who may read it (can(): the DPO alone, freshly re-authenticated, OD-14, PD-30);
 // the page says what it answered, as the registers do (ReadRefusal): the PIN step, a new sign-in, or
@@ -17,8 +20,9 @@ import type { CaseReference, RequestQueueForClient } from '@hearth/shared'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, CircleAlert, Plus } from 'lucide-react'
-import { lazy, Suspense, useId, useState, useSyncExternalStore } from 'react'
+import { lazy, type RefObject, Suspense, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { useRuntime } from '@/app/runtime-context.ts'
+import { afterCommit } from '@/lib/focus.ts'
 import { REQUESTS_COPY } from '@/strings/dpo-requests.ts'
 import { Button, buttonClass } from '@/ui/Button.tsx'
 import { cx } from '@/ui/cx.ts'
@@ -28,7 +32,7 @@ import { requestQueueQuery } from './case-queries.ts'
 import { failureOf, refusalOfError } from './model.ts'
 import { Note, Pill } from './parts.tsx'
 import { ReadRefusal, RegisterLinks } from './RegisterPage.tsx'
-import { type QueueCard as Card, queueReadable, queueView } from './requests-model.ts'
+import { type QueueCard as Card, queueCardId, queueReadable, queueView } from './requests-model.ts'
 
 const CaseSheet = lazy(() => import('./CaseSheet.tsx').then(module => ({ default: module.CaseSheet })))
 const LogRequest = lazy(() => import('./LogRequest.tsx').then(module => ({ default: module.LogRequest })))
@@ -80,6 +84,28 @@ function Queue() {
   const refusal = error === null || noticeRequired ? undefined : refusalOfError(error)
   const [opened, setOpened] = useState<Opened | undefined>()
   const [logging, setLogging] = useState(false)
+  const openHeading = useRef<HTMLHeadingElement>(null)
+  // The case whose sheet is open, kept once it closes: when the dialog couldn't give focus back
+  // (the button that opened it has gone), focus goes to that case's card if it shows, else to the
+  // open requests' heading. A dialog that gave focus back (a card still in place, Log a request)
+  // keeps it.
+  const shown = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (opened !== undefined) {
+      shown.current = opened.id
+      return
+    }
+    const id = shown.current
+    if (id === undefined) return
+    shown.current = undefined
+    afterCommit(() => {
+      const now = document.activeElement
+      if (now !== null && now !== document.body) return
+      const card = document.getElementById(queueCardId(id))
+      const next = card !== null && card.getClientRects().length > 0 ? card : openHeading.current
+      next?.focus({ preventScroll: true })
+    })
+  }, [opened])
   if (noticeRequired) return <NoticeFirst />
   return (
     <>
@@ -91,7 +117,12 @@ function Queue() {
         </p>
       )}
       {query.data !== undefined && refusal?.kind !== 'forbidden' && (
-        <QueueContent answer={query.data} onOpen={id => setOpened({ id })} onLog={() => setLogging(true)} />
+        <QueueContent
+          answer={query.data}
+          onOpen={id => setOpened({ id })}
+          onLog={() => setLogging(true)}
+          openHeading={openHeading}
+        />
       )}
       {logging && query.data !== undefined && (
         <Suspense fallback={null}>
@@ -125,10 +156,13 @@ export function QueueContent({
   answer,
   onOpen,
   onLog,
+  openHeading,
 }: {
   answer: RequestQueueForClient
   onOpen(id: string): void
   onLog(): void
+  // The open requests' heading, where focus goes when a closed sheet's card can't take it.
+  openHeading?: RefObject<HTMLHeadingElement | null>
 }) {
   const view = queueView(answer)
   const [showClosed, setShowClosed] = useState(false)
@@ -141,7 +175,7 @@ export function QueueContent({
         {REQUESTS_COPY.log}
       </Button>
       <section aria-labelledby={openId} className="flex flex-col gap-3">
-        <h2 id={openId} className="font-display text-xl font-semibold">
+        <h2 ref={openHeading} id={openId} tabIndex={-1} className="font-display text-xl font-semibold">
           {view.openTitle}
         </h2>
         {view.empty && <p className="text-muted">{REQUESTS_COPY.empty}</p>}
@@ -195,14 +229,15 @@ export function QueueContent({
   )
 }
 
-// A card: the whole of it is one button that opens the case's sheet. Its lines are spans (a button
-// holds phrasing content only), each on its own line; the reference never breaks across its hyphen
-// and is spelled out for a screen reader. The page's find-in-page finds a reference a requester
-// quotes (search waits for C6.1, PD-98).
+// A card: the whole of it is one button that opens the case's sheet, found by its case's id once the
+// sheet closes. Its lines are spans (a button holds phrasing content only), each on its own line;
+// the reference never breaks across its hyphen and is spelled out for a screen reader. The page's
+// find-in-page finds a reference a requester quotes (search waits for C6.1, PD-98).
 function QueueCardButton({ card, onOpen }: { card: Card; onOpen(id: string): void }) {
   return (
     <button
       type="button"
+      id={queueCardId(card.id)}
       onClick={() => onOpen(card.id)}
       className="flex min-h-11 w-full flex-col gap-1 rounded-2xl border border-line bg-surface p-4 text-left hover:bg-bg focus-visible:bg-bg"
     >

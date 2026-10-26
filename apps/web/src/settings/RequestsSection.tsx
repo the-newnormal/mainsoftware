@@ -8,7 +8,10 @@
 //   answer that never arrived records nothing new; once it lands, the sheet's content becomes the
 //   confirmation (the due day, the reference to quote), which stays until Done, and focus then goes
 //   to the new row. Closing with something written asks before discarding it: nothing is kept
-//   anywhere (WS-01). With 10 open requests (OD-25) the rows are replaced by a line saying so.
+//   anywhere (WS-01). The question takes focus as it replaces the box (and the footer's Cancel), so
+//   a screen reader reads it first; Keep writing, or Close or Escape while it is asked, puts focus
+//   back in the box, with the words kept (X6). With 10 open requests (OD-25) the rows are replaced
+//   by a line saying so.
 // - "Your requests": the requests where you are the requester, sent here or logged for you by the
 //   DPO, with their kind, state, reference, how they came, the days received and due, the day the
 //   DPO last replied, and, once one is late with no reply on time, what to do. Never your words, the
@@ -19,7 +22,7 @@
 import type { ReplyTargets } from '@hearth/shared'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, CircleAlert } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { type RefObject, useEffect, useId, useRef, useState } from 'react'
 import type { ApiFailure } from '@/api/http.ts'
 import { ownRequestsQuery, sendRequest, useSession } from '@/api/queries.ts'
 import { focusAfter } from '@/lib/focus.ts'
@@ -196,6 +199,10 @@ export function RequestSheetDialog({
   const [confirming, setConfirming] = useState(false)
   const formId = useId()
   const done = useRef<HTMLButtonElement>(null)
+  // The box, and the discard question that replaces it: each takes focus as it comes back or
+  // appears, since the control that had focus (the box, or Cancel) has gone.
+  const box = useRef<HTMLTextAreaElement>(null)
+  const question = useRef<HTMLParagraphElement>(null)
   // The latest sheet, for the send's callbacks, which land after the render that started them.
   const latest = useRef(sheet)
   latest.current = sheet
@@ -231,10 +238,20 @@ export function RequestSheetDialog({
     })
   }
 
+  const keepWriting = () => {
+    setConfirming(false)
+    focusAfter(() => box.current)
+  }
+
   const close = (forced?: boolean) => {
     if (sheet.phase === 'sent' && sheet.sent !== undefined) return onDone(sheet.sent.case)
     if (forced === true || !needsDiscard(sheet)) return onDiscard()
-    if (sheet.phase === 'editing') setConfirming(true)
+    // Asked already: Close or Escape answers the question as Keep writing, never as Discard.
+    if (confirming) return keepWriting()
+    if (sheet.phase === 'editing') {
+      setConfirming(true)
+      focusAfter(() => question.current)
+    }
   }
 
   const sent = sheet.phase === 'sent' ? sheet.sent : undefined
@@ -272,15 +289,7 @@ export function RequestSheetDialog({
           {view.target !== undefined && <p className="font-medium">{view.target}</p>}
           <p>{REQUESTS.reply}</p>
           {confirming ? (
-            <div className="flex flex-col gap-3 rounded-xl border border-line bg-accent-soft px-4 py-3">
-              <p className="font-medium">{REQUESTS.discard}</p>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => setConfirming(false)}>{REQUESTS.discardNo}</Button>
-                <Button variant="danger" onClick={onDiscard}>
-                  {REQUESTS.discardYes}
-                </Button>
-              </div>
-            </div>
+            <DiscardQuestion question={question} onKeep={keepWriting} onDiscard={onDiscard} />
           ) : (
             <form
               id={formId}
@@ -293,6 +302,7 @@ export function RequestSheetDialog({
               className="flex flex-col gap-4"
             >
               <TextArea
+                ref={box}
                 label={view.label}
                 hint={REQUESTS.hint}
                 name="details"
@@ -314,5 +324,36 @@ export function RequestSheetDialog({
         </div>
       )}
     </Dialog>
+  )
+}
+
+// The question asked before discarding what was written: a group (a fieldset outside any form) named
+// by the question, which takes focus (tabIndex -1) so a screen reader reads it before the two
+// answers. Exported for its markup test (settings/settings.markup.test.tsx).
+export function DiscardQuestion({
+  question,
+  onKeep,
+  onDiscard,
+}: {
+  question: RefObject<HTMLParagraphElement | null>
+  onKeep(): void
+  onDiscard(): void
+}) {
+  const questionId = useId()
+  return (
+    <fieldset
+      aria-labelledby={questionId}
+      className="m-0 flex min-w-0 flex-col gap-3 rounded-xl border border-line bg-accent-soft px-4 py-3"
+    >
+      <p ref={question} id={questionId} tabIndex={-1} className="font-medium">
+        {REQUESTS.discard}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={onKeep}>{REQUESTS.discardNo}</Button>
+        <Button variant="danger" onClick={onDiscard}>
+          {REQUESTS.discardYes}
+        </Button>
+      </div>
+    </fieldset>
   )
 }

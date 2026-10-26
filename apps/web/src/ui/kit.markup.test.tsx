@@ -229,6 +229,18 @@ describe('T21: the kit’s markup', () => {
     )
     one(markup, 'fieldset')
     expect(markup).toMatch(/<legend class="sr-only">Show<\/legend>/)
+    // A line elsewhere describes the group only when one is named (the log dialog's leaver line).
+    expect(markup).not.toContain('aria-describedby')
+    const described = html(
+      <Segmented
+        label="Show"
+        value="mine"
+        options={[{ value: 'mine', label: 'Mine' }]}
+        onChange={() => {}}
+        describedBy="show-note"
+      />,
+    )
+    expect(described).toMatch(/<fieldset aria-describedby="show-note"/)
     const radios = tags(markup, 'input')
     expect(radios.map(radio => radio.get('type'))).toEqual(['radio', 'radio'])
     expect(new Set(radios.map(radio => radio.get('name'))).size).toBe(1)

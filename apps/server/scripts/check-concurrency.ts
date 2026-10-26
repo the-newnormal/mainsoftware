@@ -52,7 +52,8 @@
 //
 // C0.9 PR 3b (0012, TECH-SPEC T22 items 50 to 62) adds requests to the DPO, in an org of their own
 // (REQUEST_FIXTURE), after NTR-13: a request sent in Hearth against its requester's deactivation,
-// each order (RQR-01); two sends with one client key, the first committed and rolled back (RQR-02);
+// each order (RQR-01); two sends with one client key, the first committed and rolled back, and a
+// log and a send by the DPO with one key, each order (RQR-02);
 // two logs whose references are forced equal, the first committed and rolled back (RQR-03); a log,
 // a step and a queue read by a DPO being deactivated or losing the role, each order (RQR-04); two
 // steps, and two closures, from one revision (RQR-05); a log naming a member against the member's
@@ -289,8 +290,9 @@ const BREAK_GLASS_FIXTURE = `
   select set_config('app.org_id', '', true), set_config('app.user_id', '', true);
 `
 // C0.9 PR 3b (0012): the requests' org, as the owner. Its Hearth principal q(a0); the DPO q(61), who
-// logs, steps and reads; members q(62) to q(67), each with an account and a device q(e2) to q(e7):
-// q(62) sends with one key twice (RQR-02), q(64) and q(65) are deactivated against a send (RQR-01),
+// logs, steps and reads, and in RQR-02 sends with a key a log of theirs holds; members q(62) to
+// q(67), each with an account and a device q(e2) to q(e7): q(62) sends with one key twice (RQR-02),
+// q(64) and q(65) are deactivated against a send (RQR-01),
 // q(63), q(66) and q(67) against a log (RQR-06); DPOs q(71) to q(79), deactivated or losing the role
 // in RQR-04; and q(69), who holds dpo and leadership, both on the org's audit log readers (D45), and
 // loses dpo in RQR-08. The DPO's contact is recorded (version 1).
@@ -2536,8 +2538,11 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
   [
     // C0.9 PD-96: the second insert waits on the first's client_key entry; once the first commits
     // it skips, re-reads and returns that case, and once it rolls back it records its own. Never
-    // 23505, and one case and one audit row each time.
-    'RQR-02 PDPA-04 C0.9 PD-96: of two sends with one client key the second waits, then returns the first case (changed false), or records its own when the first rolled back; never 23505',
+    // 23505, and one case and one audit row each time. A key returns only a case sent the same way
+    // (OD-14, OD-15): the DPO's send waiting on a log of theirs under its key, and their log waiting
+    // on a send of theirs, re-read the other's case and are refused (HF006) rather than returning it
+    // or drawing ten more references (40001).
+    'RQR-02 PDPA-04 C0.9 PD-96 OD-14 OD-15: of two sends with one client key the second waits, then returns the first case (changed false), or records its own when the first rolled back; never 23505; a send and a log with one key refuse the second (HF006)',
     async watcher => {
       const first = await race(watcher, sendCase('62', q('b3')), sendCase('62', q('b3'), false))
       expect(first.waited, 'the second send did not wait for the first')
@@ -2554,6 +2559,20 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
         [REQUEST_ORG, q('b3'), q('b4')],
       )
       expect(written === 't:1,f:1', `the sends wrote ${written ?? 'nothing'}, not one case and one audit row each`)
+      await refused(logCase(q('bf')), sendCase('61', q('bf')), 'Send it from the form again.')(watcher)
+      await refused(sendCase('61', q('c1')), logCase(q('c1')), 'Send it from the form again.')(watcher)
+      const crossed = await scalar(
+        watcher,
+        `select string_agg(format('%s:%s', c.came_by, (select count(*) from public.audit_events a
+                                                        where a.target_type = 'case' and a.target_id = c.id::text)),
+                           ',' order by c.client_key) as v
+         from public.cases c where c.org_id = $1 and c.client_key in ($2, $3)`,
+        [REQUEST_ORG, q('bf'), q('c1')],
+      )
+      expect(
+        crossed === 'email:1,hearth:1',
+        `the crossed keys wrote ${crossed ?? 'nothing'}, not the first case of each`,
+      )
     },
   ],
   [

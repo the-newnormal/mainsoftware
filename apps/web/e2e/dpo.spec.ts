@@ -834,6 +834,25 @@ const QUEUE = RequestQueueResponse.parse({
   closedMore: false,
 })
 
+// The queue once DPP-E9 closes Rachel's withdrawal: her card moves to the closed list, which shows
+// only once its disclosure is opened.
+const QUEUE_CLOSED = RequestQueueResponse.parse({
+  ...QUEUE,
+  open: QUEUE.open.filter(row => row.id !== WITHDRAWAL_ID),
+  openTotal: 1,
+  closed: [
+    {
+      ...QUEUE.open.find(row => row.id === WITHDRAWAL_ID),
+      dueOn: null,
+      revision: 2,
+      state: 'closed',
+      closedOn: CASE_DAY,
+      outcome: 'answered',
+    },
+    ...QUEUE.closed,
+  ],
+})
+
 // Rachel's withdrawal on its sheet, before and after the step DPP-E9 records.
 const withdrawalCase = (revision: number) =>
   CaseResponse.parse({
@@ -995,7 +1014,7 @@ async function trackFits(page: Page): Promise<string[]> {
   )
 }
 
-test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a count of 2, the avatar button and Data protection say so in words and Data protection opens the queue, whose Requests link says it too; before the notice is acknowledged it opens the processing register and the queue reads nothing; the cards come soonest due first with their references; a withdrawal’s sheet opens without changing the URL, with its reply to copy; a step refused for the PIN is sent once more after it; closing the sheet returns focus to its card; the queue and the sheet pass axe at 320, 390 and 1440 px in both schemes, with no AI copy, 44 px targets, 16 px inputs and nothing sideways, and the five links fit at 320 × 568 and 768 × 480', async ({
+test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a count of 2, the avatar button and Data protection say so in words and Data protection opens the queue, whose Requests link says it too; before the notice is acknowledged it opens the processing register and the queue reads nothing; the cards come soonest due first with their references; a withdrawal’s sheet opens without changing the URL, with its reply to copy; a step refused for the PIN is sent once more after it; closing the sheet returns focus to its card, or, once a step closed the request and its card moved out of sight, to the open requests’ heading, never the page’s body; the queue and the sheet pass axe at 320, 390 and 1440 px in both schemes, with no AI copy, 44 px targets, 16 px inputs and nothing sideways, and the five links fit at 320 × 568 and 768 × 480', async ({
   open,
   guard,
 }, testInfo) => {
@@ -1016,8 +1035,10 @@ test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a c
   await sessionCount(page)
   let stepped = 0
   const steps: AddCaseStepJSON[] = []
+  // Once the third step (the closure) lands, the queue answers with the withdrawal closed.
+  let closed = false
   await page.route('**/api/admin/requests', route =>
-    route.request().method() === 'GET' ? route.fulfill(json(QUEUE)) : route.fallback(),
+    route.request().method() === 'GET' ? route.fulfill(json(closed ? QUEUE_CLOSED : QUEUE)) : route.fallback(),
   )
   await page.route(`**/api/admin/requests/${WITHDRAWAL_ID}`, route => route.fulfill(json(withdrawalCase(stepped))))
   await page.route('**/api/admin/requests/step', route => {
@@ -1029,8 +1050,9 @@ test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a c
         body: JSON.stringify({ error: 'reauth_required', message: REAUTH_METHOD_MESSAGES.pin.required, method: 'pin' }),
       })
     }
-    stepped = 1
-    return route.fulfill(json({ revision: 1 }))
+    stepped = steps.length - 1
+    if (steps.length === 3) closed = true
+    return route.fulfill(json({ revision: stepped }))
   })
   // What NFR-02 and decision 8 ask of the page or sheet as it stands, at each size and scheme.
   const checked = async (what: string, sizes = CHECK_SIZES) => {
@@ -1129,6 +1151,22 @@ test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a c
   await expect(sheet).toBeHidden()
   await expect(card).toBeFocused()
 
+  // Closing the request moves its card to the closed list, out of sight under its disclosure, so the
+  // button that opened the sheet has gone: Done then puts focus on the open requests' heading, never
+  // the page's body (4.5).
+  await card.click()
+  await expect(sheet).toBeVisible()
+  await sheet.getByLabel('What happened', { exact: true }).selectOption('closed')
+  await sheet.getByLabel('Outcome', { exact: true }).selectOption('answered')
+  await sheet.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.locator(`#case-${WITHDRAWAL_ID}`)).toBeHidden()
+  expect(steps).toHaveLength(3)
+  expect(steps[2]).toMatchObject({ case: WITHDRAWAL_ID, seen: 1, step: 'closed', outcome: 'answered' })
+  await sheet.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect(sheet).toBeHidden()
+  await expect(page.getByRole('heading', { level: 2, name: 'Open requests (1)', exact: true })).toBeFocused()
+  expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false)
+
   // Before the notice is acknowledged (v0 unpublished, the DPO's setup), Data protection opens the
   // processing register, and the Requests link's page says what opens the requests, sending nothing
   // to the queue (PPL-02).
@@ -1162,10 +1200,12 @@ test('DPP-E9 OD-14 OD-22 OD-24 PD-98 PD-99 PD-105 PPL-02 PPL-05 PPL-12: with a c
   expect(asked).toEqual([])
 })
 
-test('DPP-E10 OD-08 OD-16 PD-89 PD-94 PPL-01 PPL-13 PPL-14: Log a request lists the people, a leaver’s How to reach them holding Log it back until a channel is given, two who read the same held back with the line saying what to do; someone without a Hearth account with an ID-shaped name is held back, then a made-up name and address are logged and the new request’s sheet opens with its reference; on the contact page, reply targets of 4 business days are held back and 7 are saved; the dialogs pass axe at 320 and 390 px in both schemes, with 44 px targets, 16 px inputs and nothing sideways', async ({
+test('DPP-E10 OD-08 OD-16 PD-30 PD-89 PD-94 PPL-01 PPL-13 PPL-14: Log a request’s read of the people, refused for the PIN, shows the PIN step outside the form, whose Enter confirms it, and the people are read again; Log a request lists the people, a leaver’s How to reach them holding Log it back until a channel is given, two who read the same held back with the line saying what to do; someone without a Hearth account with an ID-shaped name is held back, then a made-up name and address are logged and the new request’s sheet opens with its reference; on the contact page, reply targets of 4 business days are held back and 7 are saved; the dialogs pass axe at 320 and 390 px in both schemes, with 44 px targets, 16 px inputs and nothing sideways', async ({
   open,
+  guard,
 }, testInfo) => {
   test.setTimeout(200_000)
+  guard.expectResponses([{ path: '/api/admin/requests/people', status: 403 }])
   const page = await open({ ...SIZES.w390, signedIn: ASHTON })
   const logged: LogRequestJSON[] = []
   await page.route('**/api/admin/requests', route =>
@@ -1173,7 +1213,25 @@ test('DPP-E10 OD-08 OD-16 PD-89 PD-94 PPL-01 PPL-13 PPL-14: Log a request lists 
       ? route.fulfill(json({ ...QUEUE, open: [], openTotal: 0, closed: [], closedMore: false }))
       : route.fallback(),
   )
-  await page.route('**/api/admin/requests/people', route => route.fulfill(json(CASE_PEOPLE)))
+  // The first read of the people is refused as the api refuses a PIN-rule session past its 5 minutes,
+  // so the dialog shows the PIN step; the next is the list.
+  let peopleRead = 0
+  await page.route('**/api/admin/requests/people', route => {
+    peopleRead += 1
+    return route.fulfill(
+      peopleRead === 1
+        ? {
+            status: 403,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              error: 'reauth_required',
+              message: REAUTH_METHOD_MESSAGES.pin.required,
+              method: 'pin',
+            }),
+          }
+        : json(CASE_PEOPLE),
+    )
+  })
   await page.route('**/api/admin/requests/log', route => {
     logged.push(route.request().postDataJSON() as LogRequestJSON)
     return route.fulfill(
@@ -1205,6 +1263,18 @@ test('DPP-E10 OD-08 OD-16 PD-89 PD-94 PPL-01 PPL-13 PPL-14: Log a request lists 
   await expect(dialog).toBeVisible()
   const field = (label: string) => dialog.getByLabel(label, { exact: true })
   const logIt = dialog.getByRole('button', { name: 'Log it', exact: true })
+  // The PIN step sits outside the intake form, since a form inside a form never sends its submit:
+  // Enter confirms the PIN for real, and the people are read again.
+  const pin = dialog.getByLabel('Your PIN', { exact: true })
+  await expect(pin).toBeVisible()
+  expect(await dialog.locator('form form').count()).toBe(0)
+  const confirmed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/reauth/pin')
+  await pin.fill(E2E_PIN)
+  await pin.press('Enter')
+  expect((await confirmed).status()).toBe(200)
+  await expect(field('Who')).toBeVisible()
+  await expect(pin).toHaveCount(0)
+  expect(peopleRead).toBe(2)
   await field('What it’s about').selectOption('complaint')
   await field('How it came').selectOption('email')
   await field('What they want').fill('They say the delivery notes showed their home address.')

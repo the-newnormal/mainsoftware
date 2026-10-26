@@ -7,17 +7,19 @@
 --   RQD-02 the tables' checks and triggers, whoever writes (PD-88, PD-90, PD-102, DB-04);
 --   RQD-03 submit_case() for every persona, its rules, the stated settings version and its audit row
 --          (OD-07, OD-13, OD-15, PD-93, PD-96, PD-100);
---   RQD-04 a resend from the same sheet records nothing, and a key is the writer's own (PD-96);
+--   RQD-04 a resend from the same sheet records nothing, a key is the writer's own, and it returns
+--          only a case sent the same way (PD-96, OD-14, OD-15);
 --   RQD-05 at most 10 open requests per requester (PD-96, OD-25);
 --   RQD-06 log_case(): the DPO alone, its rules, leavers with a channel, and the settings version in
 --          force at the start of the day received (OD-16, PD-89, PD-93, PPL-01, PPL-14);
---   RQD-07 add_case_step(): the DPO alone, the revision, each step's rules and the closure (PD-90,
---          PD-91, PPL-04, PPL-14, DB-03);
+--   RQD-07 add_case_step(): the DPO alone, the revision, each step's rules and the closure, by kind,
+--          and one audit row each (PD-90, PD-91, PD-100, PPL-04, PPL-14, DB-03);
 --   RQD-08 the reads: the DPO's queue, a case and its steps, the requester's tracking as every
---          persona, and the requester's other requests (OD-14, OD-15, PD-97, PD-98, PD-103, PD-112,
---          PPL-07, DB-07);
+--          persona, and the requester's other requests, each in its order (OD-14, OD-15, PD-97,
+--          PD-98, PD-103, PD-112, PPL-07, DB-07);
 --   RQD-09 business days and due days on a table of samples (OD-08, OD-09, PD-92, PD-93, PPL-08);
---   RQD-10 case_attention(), the indicator's count (OD-22, PD-99, PD-112);
+--   RQD-10 case_attention(), the indicator's count, at both edges of its window, for every persona
+--          (OD-22, PD-99, PD-112);
 --   RQD-11 the reply targets' checks and defaults (OD-08, PD-94; 165's DCD-11 too);
 --   RQD-12 processing_restrictions.case_id's foreign key (T22 item 20);
 --   RQD-13 across orgs (ACC-11);
@@ -99,7 +101,7 @@ create function pg_temp.bad_step(changes jsonb, rule text) returns void language
                                      pg_temp.step_json(changes)), '23514', '%"' || rule || '"%')
 $$;
 -- A small org with requests of its own (as the superuser): Hearth, an Owner (a1), the DPO (a5), a
--- Team Admin (a7) and a Member (a8), and the DPO's contact (e6, settings version 1, OD-08's
+-- person with no role (a7) and a Member (a8), and the DPO's contact (e6, settings version 1, OD-08's
 -- targets). The orgs trigger gives it its registers.
 create function pg_temp.request_org(o text) returns void language plpgsql as $$
 declare
@@ -262,6 +264,11 @@ from (values
   ('stated none, current 7', 'withdrawal', 'withdrawal', '2026-11-02', null, null, null, null, 7, 21, '2026-11-11'),
   ('14 calendar days stated', 'correction', 'correction', '2026-11-02', null, null, 10, 14, 10, 30, '2026-11-16'),
   ('30 calendar days', 'access', 'access', '2026-11-02', null, null, 10, 30, 10, 30, '2026-12-02'),
+  -- In calendar days too, a shorter current target applies to a copy whatever was stated, and to one
+  -- received when none was.
+  ('stated 30, current 14', 'access', 'access', '2026-11-02', null, null, 10, 30, 10, 14, '2026-11-16'),
+  ('stated 21, current 14', 'access', 'access', '2026-11-02', null, null, 10, 21, 10, 14, '2026-11-16'),
+  ('stated none, current 14', 'correction', 'correction', '2026-11-02', null, null, null, null, 10, 14, '2026-11-16'),
   ('a question reclassified as a copy keeps the question''s day', 'question', 'access', '2026-11-02', '2026-11-04', null,
    null, null, null, null, '2026-11-16'),
   ('a copy reclassified as a question on its third day takes the question''s day', 'access', 'question', '2026-11-02',
@@ -568,6 +575,43 @@ select pg_temp.check(
   (select stated_settings_version is null from public.cases where id = current_setting('test.c092')::uuid)
   and (select stated_settings_version = 1 from public.cases where id = current_setting('test.c093')::uuid),
   'the stated settings version is not none under c09.2 and 1 under c09.3 (RQD-03, PD-93)');
+-- RQD-09 (OD-26; PD-92, PD-93): case_due() on a copy whose receipt stated targets, in org 2, in a
+-- savepoint. The DPO sets 7 business days and 21 days (settings version 2), a c09.3 version linking
+-- it is published (as the owner leaves one), and a8 asks for a copy: it states version 2 and is due
+-- 21 days on, its stated calendar target and never its business one. The DPO then sets 10 and 14
+-- (version 3): it is due 14 days on, the shorter current target. Then 10 and 30 (version 4): it is
+-- due 21 days on again, never later than it was told.
+savepoint rqd_09;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.check(t.version = 2 and t.changed, format('the DPO''s targets answered %s (RQD-09)', t))
+from public.set_reply_targets(1, 7, 21, 'req-case', 'd0000000-0000-4000-8000-0000000000d3', '192.0.2.60') t;
+reset role;
+insert into public.notice_versions (org_id, version, body, published_by, generator, dpo_settings_version)
+values (pg_temp.id('2', '00'), 3, 'Privacy notice', pg_temp.id('2', 'a5'), 'c09.3', 2);
+select pg_temp.act_as('2', 'a8');
+select set_config('test.stated_copy', s.id::text, true) from pg_temp.send('access', null) s;
+reset role;
+select pg_temp.check(c.stated_settings_version = 2 and public.case_due(c.org_id, c.id) = c.received_on + 21,
+                     format('a copy sent under targets of 7 and 21 states %s and is due %s, not version 2 and %s (RQD-09)',
+                            c.stated_settings_version, public.case_due(c.org_id, c.id), c.received_on + 21))
+from public.cases c where c.id = current_setting('test.stated_copy')::uuid;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.check(t.version = 3 and t.changed, format('the DPO''s targets answered %s (RQD-09)', t))
+from public.set_reply_targets(2, 10, 14, 'req-case', 'd0000000-0000-4000-8000-0000000000d3', '192.0.2.60') t;
+reset role;
+select pg_temp.check(public.case_due(c.org_id, c.id) = c.received_on + 14,
+                     format('a copy stated 21 days is due %s under a current 14, not %s (RQD-09, PD-92)',
+                            public.case_due(c.org_id, c.id), c.received_on + 14))
+from public.cases c where c.id = current_setting('test.stated_copy')::uuid;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.check(t.version = 4 and t.changed, format('the DPO''s targets answered %s (RQD-09)', t))
+from public.set_reply_targets(3, 10, 30, 'req-case', 'd0000000-0000-4000-8000-0000000000d3', '192.0.2.60') t;
+reset role;
+select pg_temp.check(public.case_due(c.org_id, c.id) = c.received_on + 21,
+                     format('a copy stated 21 days is due %s under a current 30, not %s (RQD-09, PD-92)',
+                            public.case_due(c.org_id, c.id), c.received_on + 21))
+from public.cases c where c.id = current_setting('test.stated_copy')::uuid;
+rollback to savepoint rqd_09;
 
 -- RQD-04 (PD-96): a resend from the same sheet (the same client key) returns the same case and
 -- reference with changed false and writes nothing; another member's identical key records their own
@@ -605,6 +649,29 @@ begin
                         'the DPO''s log with a member''s key did not record (RQD-04)');
 end
 $$;
+-- A key returns only a case sent the same way (PD-96, OD-14, OD-15), in a savepoint. The DPO (a5)
+-- logs a complaint for a8 under one key and sends a request of their own under another. log_case()
+-- given the key of their own send is refused (HF006), never answering it as a log; and once a5 has
+-- lost the dpo role, the form given their old dialog's key is refused the same way, returning no
+-- case about a8. Each writes nothing.
+savepoint rqd_04;
+select pg_temp.act_as('1', 'a5');
+select pg_temp.check(l.changed, 'the DPO''s log did not record (RQD-04)')
+from pg_temp.log('complaint', 'email', pg_temp.today('1'), pg_temp.id('1', 'a8'), null, null, null, 'Wrote about the noticeboard.',
+                 'f0000000-0000-4000-8000-0000000000a1') l;
+select pg_temp.check(s.changed, 'the DPO''s own request did not record (RQD-04)')
+from pg_temp.send('question', 'How long is my own rota kept?', 'f0000000-0000-4000-8000-0000000000a2') s;
+reset role;
+select pg_temp.refused('1', 'a5', format($f$select * from pg_temp.log('question', 'email', %L, %L, null, null, null, 'Asks.',
+                                            'f0000000-0000-4000-8000-0000000000a2')$f$, pg_temp.today('1'), pg_temp.id('1', 'a8')),
+                       'HF006', 'Send it from the form again.');
+update public.role_assignments set revoked_at = now(), revoked_by = pg_temp.id('1', 'a1')
+where org_id = pg_temp.id('1', '00') and person_id = pg_temp.id('1', 'a5') and role = 'dpo' and revoked_at is null;
+select pg_temp.refused('1', 'a5', $$select * from pg_temp.send('question', 'Anything.', 'f0000000-0000-4000-8000-0000000000a1')$$,
+                       'HF006', 'Send it from the form again.');
+select pg_temp.refused('1', 'a5', $$select * from pg_temp.send('access', null, 'f0000000-0000-4000-8000-0000000000a1')$$,
+                       'HF006', 'Send it from the form again.');
+rollback to savepoint rqd_04;
 
 -- RQD-05 (PD-96, OD-25): at most 10 open requests per requester. In org 5, a7 sends 8; a case the
 -- DPO logged for a7 and closed doesn't count, and one the DPO logged for a7 that is open does (the
@@ -830,19 +897,21 @@ select pg_temp.check((select stated_settings_version = 2 from public.cases where
 -- RQD-07 (PD-90, PD-91, PPL-04, PPL-14, DB-03; every persona): add_case_step(). In org 1 the DPO logs
 -- the cases it works on: q, a question for a7 received 2 days ago; a, a copy for someone without an
 -- account received 30 days ago (due today); late, a copy received 31 days ago (due yesterday); rq,
--- a question to be reclassified as a copy; and full, a question that will hold 100 steps.
+-- a question to be reclassified as a copy; full, a question that will hold 100 steps; corr, a
+-- correction for a7 received 2 days ago; and obj, an objection for a6 received yesterday.
 do $$
 declare
   d date := pg_temp.today('1');
   k text;
 begin
   perform pg_temp.act_as('1', 'a5');
-  for k in select unnest(array['q', 'a', 'late', 'rq', 'full']) loop
+  for k in select unnest(array['q', 'a', 'late', 'rq', 'full', 'corr', 'obj']) loop
     perform set_config('test.case_' || k, (
       select l.id::text from pg_temp.log(
-        case when k in ('a', 'late') then 'access' else 'question' end, 'email',
-        case k when 'q' then d - 2 when 'a' then d - 30 when 'late' then d - 31 else d - 1 end,
-        case when k in ('q', 'rq', 'full') then pg_temp.id('1', 'a7') end,
+        case when k in ('a', 'late') then 'access' when k = 'corr' then 'correction' when k = 'obj' then 'objection'
+             else 'question' end, 'email',
+        case k when 'q' then d - 2 when 'corr' then d - 2 when 'a' then d - 30 when 'late' then d - 31 else d - 1 end,
+        case when k in ('q', 'rq', 'full', 'corr') then pg_temp.id('1', 'a7') when k = 'obj' then pg_temp.id('1', 'a6') end,
         case when k in ('a', 'late') then 'Sam Example' end,
         case when k in ('a', 'late') then 'email' end,
         case when k in ('a', 'late') then 'sam@requester.example' end,
@@ -920,6 +989,21 @@ begin
   perform pg_temp.check(array_agg(format('%s:%s', s.number, s.step) order by s.number) = '{1:acknowledged,2:replied,3:note}',
                         format('the steps are %s', array_agg(format('%s:%s', s.number, s.step) order by s.number)))
   from public.case_steps s where s.case_id = q;
+  -- One audit row per step and one for the closure, in order after the log's, each by the DPO with
+  -- the request, the device and the address, naming the case by its target and the step's or the
+  -- outcome's code alone (PD-100, ADM-06).
+  perform pg_temp.check(array_agg(format('%s %s', a.action, a.details) order by a.id)
+                          = array['case.logged {}', 'case.step_added {"step": "acknowledged"}',
+                                  'case.step_added {"step": "replied"}', 'case.closed {"outcome": "answered"}',
+                                  'case.step_added {"step": "note"}']
+                        -- Compared with is not distinct from, so a null in any row fails it (bool_and skips nulls).
+                        and bool_and(a.org_id = pg_temp.id('1', '00') and a.actor_id is not distinct from pg_temp.id('1', 'a5')
+                                     and a.target_type = 'case' and a.case_id is null and a.reason is null
+                                     and a.request_id is not distinct from 'req-case'
+                                     and a.device_id is not distinct from 'd0000000-0000-4000-8000-0000000000d3'::uuid
+                                     and a.ip is not distinct from '192.0.2.60'::inet),
+                        format('q''s audit rows are %s (RQD-07, PD-100)', array_agg(format('%s %s', a.action, a.details) order by a.id)))
+  from public.audit_events a where a.target_id = q::text;
 end
 $$;
 -- A closed case takes only a note or a PDPC review of a refused copy.
@@ -932,8 +1016,9 @@ from (values
 ) as x (args, message);
 -- A copy (case a, due today): closing as answered needs an identity step first (PD-91); one dated
 -- before the day received or after today is refused, one dated on the day received records
--- (PPL-14); more time needs a date after the current due day and at most 90 days after receipt,
--- and records when told on the due day (PPL-04); then refused, with why, and its PDPC review.
+-- (PPL-14); more time needs a date after the current due day and at most 90 days after receipt (the
+-- 91st day refused, the 90th recorded), and records when told on the due day (PPL-04); then
+-- refused, with why, and its PDPC review.
 select pg_temp.refused('1', 'a5', format('select pg_temp.step(%L, %s)', current_setting('test.case_a'), x.args), 'HF006', x.message)
 from (values
   (format('0, %L, %L, null, null, null, %L', 'closed', pg_temp.today('1'), 'answered'),
@@ -956,9 +1041,10 @@ begin
   perform pg_temp.act_as('1', 'a5');
   perform pg_temp.check(pg_temp.step(a, 0, 'identity_checked', d - 30, 'Matched against HR records by video call') = 1,
                         'an identity step on the day received did not record (RQD-07, PPL-14)');
-  perform pg_temp.check(pg_temp.step(a, 1, 'extended', d, null, d + 10) = 2, 'more time told on the due day did not record (PPL-04)');
+  perform pg_temp.check(pg_temp.step(a, 1, 'extended', d, null, d - 30 + 90) = 2,
+                        'more time to 90 days after receipt, told on the due day, did not record (PPL-04)');
   perform set_config('role', 'none', true);
-  perform pg_temp.check(public.case_due(pg_temp.id('1', '00'), a) = d + 10, 'more time did not move the due day (RQD-07)');
+  perform pg_temp.check(public.case_due(pg_temp.id('1', '00'), a) = d - 30 + 90, 'more time did not move the due day (RQD-07)');
 end
 $$;
 select pg_temp.refused('1', 'a5', format('select pg_temp.step(%L, 2, %s)', current_setting('test.case_a'), x.args), 'HF006', x.message)
@@ -986,6 +1072,36 @@ begin
                         'the refusal was not stored with its kind and why (RQD-07, PDPA-09)');
 end
 $$;
+-- A correction (case corr) is held as a copy is: closing it as answered needs an identity step
+-- first (PD-91: nothing is changed on a session alone), and it may have more time. An objection
+-- (case obj) may be refused with why, but a PDPC review is only for a refused copy (s22A), so a
+-- refused objection takes none.
+select pg_temp.refused('1', 'a5', format($f$select pg_temp.step(%L, 0, 'closed', %L, null, null, null, 'answered')$f$,
+                                         current_setting('test.case_corr'), pg_temp.today('1')),
+                       'HF006', 'Record how you checked who they are before you close it as answered.');
+do $$
+declare
+  corr uuid := current_setting('test.case_corr')::uuid;
+  obj uuid := current_setting('test.case_obj')::uuid;
+  d date := pg_temp.today('1');
+begin
+  perform pg_temp.act_as('1', 'a5');
+  perform pg_temp.check(pg_temp.step(corr, 0, 'extended', d, null, d - 2 + 60) = 1, 'more time on a correction did not record (RQD-07)');
+  perform pg_temp.check(pg_temp.step(corr, 1, 'identity_checked', d, 'Matched against HR records by video call') = 2,
+                        'an identity step on a correction did not record (RQD-07)');
+  perform pg_temp.check(pg_temp.step(corr, 2, 'closed', d, null, null, null, 'answered') = 3,
+                        'a correction with an identity step did not close as answered (RQD-07, PD-91)');
+  perform pg_temp.check(pg_temp.step(obj, 0, 'closed', d, 'The rota must show who is on site.', null, null, 'refused') = 1,
+                        'an objection refused with why did not close (RQD-07)');
+  perform set_config('role', 'none', true);
+  perform pg_temp.check((select closed_kind = 'correction' and outcome = 'answered' from public.cases where id = corr)
+                        and (select closed_kind = 'objection' and outcome = 'refused' from public.cases where id = obj),
+                        'the correction or the objection was not closed with its kind and outcome (RQD-07)');
+end
+$$;
+select pg_temp.refused('1', 'a5', format($f$select pg_temp.step(%L, 1, 'review_started', %L)$f$, current_setting('test.case_obj'),
+                                         pg_temp.today('1')),
+                       'HF006', 'Record a PDPC review only on a refused request for a copy of data.');
 -- More time recorded after the due day is refused (PPL-04): case late was due yesterday. The DPO
 -- records a late notice as a note instead, so the case stays late.
 select pg_temp.refused('1', 'a5', format($f$select pg_temp.step(%L, 0, 'extended', %L, null, %L)$f$, current_setting('test.case_late'),
@@ -1041,9 +1157,10 @@ from public.audit_events a where a.action like 'case.%';
 
 -- RQD-08 (OD-14, OD-15; PD-97, PD-98, PD-103, PD-112, PPL-07, DB-07): the reads. First more cases in
 -- org 1, as the DPO logs them: one for each of a1, a2, a3, a4 and aa; a8's closed as logged in
--- error; a7's whose words name a8 (a8 never sees it); and three copies for a2 whose replies test
+-- error; a7's whose words name a8 (a8 never sees it); three copies for a2 whose replies test
 -- replied_in_time: on its due day (true), after it (false), and on time but followed by more time
--- (false again).
+-- (false again); and a2's question received today and closed, newer than every open one of theirs,
+-- so their tracking's order shows open before closed.
 do $$
 declare
   d date := pg_temp.today('1');
@@ -1067,6 +1184,8 @@ begin
   perform set_config('test.more_after', c::text, true);
   perform pg_temp.step(c, 0, 'replied', d, 'Sent part of it.');
   perform pg_temp.step(c, 1, 'extended', d, null, d + 10);
+  select l.id into c from pg_temp.log('question', 'phone', d, pg_temp.id('1', 'a2'), null, null, null, 'Rang again, and was answered.') l;
+  perform pg_temp.step(c, 0, 'closed', d, null, null, null, 'answered');
   perform set_config('role', 'none', true);
 end
 $$;
@@ -1175,23 +1294,33 @@ select pg_temp.check(current_setting('test.left_on') = (select (deactivated_at a
                                                          from public.people where id = pg_temp.id('1', 'a9')),
                      'a leaver''s day of leaving is not shown in the org''s zone (RQD-08)');
 -- Their other requests: for a8's e8, every other case of a8's in any state (closed as logged in
--- error included) and nobody else's; none for someone without an account.
+-- error included) and nobody else's, open first by due day, then closed, newest received; none for
+-- someone without an account.
 select pg_temp.act_as('1', 'a5');
-select set_config('test.others', coalesce((select array_agg(o.id order by o.id)::text from public.read_case_others(pg_temp.id('1', 'e8'), 51) o), '{}'), true);
+select set_config('test.others', coalesce((select array_agg(o.id order by o.n)::text
+                                           from public.read_case_others(pg_temp.id('1', 'e8'), 51) with ordinality
+                                                as o (id, reference, kind, came_by, received_on, state, due_on, replied_in_time,
+                                                      closed_on, outcome, n)), '{}'), true);
 select pg_temp.check(not exists (select 1 from public.read_case_others(pg_temp.id('1', 'ea'), 51)),
                      'someone without an account has other requests (RQD-08, PPL-07)');
 reset role;
-select pg_temp.check(current_setting('test.others') = (select array_agg(c.id order by c.id)::text from public.cases c
+select pg_temp.check(current_setting('test.others') = (select array_agg(c.id order by c.closed_at is not null,
+                                                                       case when c.closed_at is null then public.case_due(c.org_id, c.id) end,
+                                                                       c.received_on desc, c.id)::text
+                                                        from public.cases c
                                                         where c.org_id = pg_temp.id('1', '00') and c.requester_person_id = pg_temp.id('1', 'a8')
                                                           and c.id <> pg_temp.id('1', 'e8'))
-                     and exists (select 1 from public.cases c where c.id = any (current_setting('test.others')::uuid[])
-                                   and c.outcome = 'logged_in_error'),
-                     format('a8''s other requests are %s (RQD-08, PPL-07)', current_setting('test.others')));
+                     and (select c.outcome = 'logged_in_error' from public.cases c
+                          where c.id = (current_setting('test.others')::uuid[])[cardinality(current_setting('test.others')::uuid[])])
+                     and cardinality(current_setting('test.others')::uuid[]) > 1,
+                     format('a8''s other requests are %s, not open first and then closed (RQD-08, PPL-07)', current_setting('test.others')));
 -- The requester's tracking, as each person of org 1, in a read-only transaction (a savepoint): each
 -- sees exactly the cases where they are the requester, a case the DPO logged for them included, one
 -- closed as logged in error and one whose words name them but whose requester is someone else never;
 -- the Owner, the Admin, the Compliance Officer and the DPO see only their own (DB-07, OD-15); the
--- agent, the assistant and Hearth see none; no org or user set is 42501.
+-- agent, the assistant and Hearth see none; no org or user set is 42501. Each list is in its order:
+-- open first, soonest due, then closed, newest received (PD-97), which a2's shows, with open cases
+-- due on different days and a closed one received after them.
 savepoint rqd_08;
 set local transaction_read_only = on;
 do $$
@@ -1199,16 +1328,38 @@ declare
   who text;
   got text;
   expected text;
+  ordered boolean;
 begin
   foreach who in array array['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8', 'aa', 'ab', 'ac', 'a0'] loop
     perform pg_temp.act_as('1', who);
-    select coalesce(array_agg(r.id order by r.id)::text, '{}') into got from public.read_own_cases(51) r;
+    select coalesce(array_agg(r.id order by r.n)::text, '{}') into got
+    from public.read_own_cases(51) with ordinality as r (id, reference, kind, came_by, received_on, state, due_on, replied_on,
+                                                         replied_in_time, closed_on, open_total, n);
+    select coalesce(bool_and(x.ok), true) into ordered
+    from (select case when r.state = 'closed' then true
+                      when lag(r.state) over w = 'closed' then false
+                      else r.due_on >= coalesce(lag(r.due_on) over w, r.due_on) end as ok
+          from public.read_own_cases(51) with ordinality as r (id, reference, kind, came_by, received_on, state, due_on, replied_on,
+                                                               replied_in_time, closed_on, open_total, n)
+          window w as (order by r.n)) x;
     perform set_config('role', 'none', true);
-    select coalesce(array_agg(c.id order by c.id)::text, '{}') into expected from public.cases c
+    select coalesce(array_agg(c.id order by c.closed_at is not null, case when c.closed_at is null then public.case_due(c.org_id, c.id) end,
+                                            c.received_on desc, c.id)::text, '{}') into expected
+    from public.cases c
     where c.org_id = pg_temp.id('1', '00') and c.requester_person_id = pg_temp.id('1', who) and c.outcome is distinct from 'logged_in_error';
-    perform pg_temp.check(got = expected, format('%s''s tracking is %s, not %s (RQD-08, OD-15)', who, got, expected));
+    perform pg_temp.check(got = expected, format('%s''s tracking is %s, not %s (RQD-08, OD-15, PD-97)', who, got, expected));
+    perform pg_temp.check(ordered, format('%s''s tracking does not list open requests first, soonest due (RQD-08, PD-97)', who));
     perform pg_temp.check(who not in ('ab', 'ac', 'a0') or got = '{}', format('%s sees requests', who));
   end loop;
+  -- a2's list can tell the order apart: open cases due on at least two days, and a closed one
+  -- received after one of them.
+  perform pg_temp.check((select count(distinct public.case_due(c.org_id, c.id)) filter (where c.closed_at is null) >= 2
+                                and bool_or(c.closed_at is not null and c.outcome <> 'logged_in_error'
+                                            and c.received_on > (select min(o.received_on) from public.cases o
+                                                                 where o.org_id = c.org_id and o.requester_person_id = c.requester_person_id
+                                                                   and o.closed_at is null))
+                         from public.cases c where c.org_id = pg_temp.id('1', '00') and c.requester_person_id = pg_temp.id('1', 'a2')),
+                        'a2''s requests can''t show the tracking''s order (RQD-08)');
   perform set_config('app.org_id', pg_temp.id('1', '00')::text, true);
   perform set_config('app.user_id', '', true);
   perform set_config('role', 'hearth_app', true);
@@ -1252,12 +1403,17 @@ rollback to savepoint rqd_08;
 -- In org 4: A, a8's request with no step (counts); B, a copy received today (due in 30 days, no);
 -- C, a copy received 31 days ago (overdue, counts); D, one received 30 days ago (due today,
 -- counts); F, overdue but replied to before its due day (no); G, overdue and replied to after it
--- (counts until closed); H, overdue and closed (no); I, a8's request with a step (no); and J, a case
--- the DPO logged with no step, due in 30 days (no: one the DPO logged has been seen).
+-- (counts until closed); H, overdue and closed (no); I, a8's request with a step (no); J, a case
+-- the DPO logged with no step, due in 30 days (no: one the DPO logged has been seen); and the
+-- window's edges, worked out from today so they hold on any day of the week: K, a copy due on the
+-- window's last day, 2 business days on (counts: on a Thursday, the Monday after), and L, one due
+-- the day after it (no).
 select pg_temp.request_org('4');
 do $$
 declare
   d date := pg_temp.today('4');
+  -- The window's last day, worked out as the superuser (hearth_app runs no helper).
+  edge date := public.case_add_business_days(pg_temp.today('4'), 2);
   c uuid;
 begin
   perform pg_temp.act_as('4', 'a8');
@@ -1277,7 +1433,13 @@ begin
   perform pg_temp.step(c, 0, 'identity_checked', d - 40, 'Matched against HR records');
   perform pg_temp.step(c, 1, 'closed', d - 1, null, null, null, 'answered');
   perform pg_temp.log('question', 'email', d, pg_temp.id('4', 'a7'), null, null, null, 'J: logged, no step.');
+  perform pg_temp.log('access', 'email', edge - 30, pg_temp.id('4', 'a7'), null, null, null, 'K: due on the window''s last day.');
+  perform pg_temp.log('access', 'email', edge - 29, pg_temp.id('4', 'a7'), null, null, null, 'L: due the day after the window.');
   perform set_config('role', 'none', true);
+  perform pg_temp.check((select array_agg(public.case_due(c.org_id, c.id) order by c.details)
+                         from public.cases c where c.org_id = pg_temp.id('4', '00') and c.details like any (array['K:%', 'L:%']))
+                        = array[edge, edge + 1] and edge > d,
+                        'K and L are not due on the window''s last day and the day after it (RQD-10)');
 end
 $$;
 savepoint rqd_10;
@@ -1290,19 +1452,25 @@ begin
   perform pg_temp.act_as('4', 'a5');
   got := public.case_attention();
   perform set_config('role', 'none', true);
-  perform pg_temp.check(got = 4, format('the DPO''s count is %s, not 4 (A, C, D and G) (RQD-10)', got));
+  perform pg_temp.check(got = 5, format('the DPO''s count is %s, not 5 (A, C, D, G and K) (RQD-10)', got));
+  -- Org 4's Owner, its person with no role, its Member and Hearth; then every persona of org 1 but
+  -- its DPO, who gets a count there too.
   foreach who in array array['a1', 'a7', 'a8', 'a0'] loop
     perform pg_temp.act_as('4', who);
     got := public.case_attention();
     perform set_config('role', 'none', true);
     perform pg_temp.check(got is null, format('%s got a count (RQD-10)', who));
   end loop;
-  foreach who in array array['a1', 'a6', 'a8', 'a9', 'aa', 'ab'] loop
+  foreach who in array array['a1', 'a2', 'a3', 'a4', 'a6', 'a7', 'a8', 'a9', 'aa', 'ab', 'ac', 'a0'] loop
     perform pg_temp.act_as('1', who);
     got := public.case_attention();
     perform set_config('role', 'none', true);
     perform pg_temp.check(got is null, format('org 1''s %s got a count (RQD-10)', who));
   end loop;
+  perform pg_temp.act_as('1', 'a5');
+  got := public.case_attention();
+  perform set_config('role', 'none', true);
+  perform pg_temp.check(got is not null, 'org 1''s DPO got no count (RQD-10)');
   perform set_config('app.org_id', pg_temp.id('4', '00')::text, true);
   perform set_config('app.user_id', '', true);
   perform set_config('role', 'hearth_app', true);

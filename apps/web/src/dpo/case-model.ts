@@ -181,7 +181,9 @@ export function stepLines(kase: CaseDetailForClient, steps: readonly CaseStepFor
   return lines
 }
 
-// Another request from the same person (PPL-07), as a button in the sheet.
+// Another request from the same person (PPL-07), as a button in the sheet. Its answer gives no day
+// of a reply, so an open one replied to on time says so without one: the clock stopped there and it
+// is never shown as late afterwards (PD-112).
 export interface OtherLine {
   readonly id: string
   readonly kind: string
@@ -192,7 +194,12 @@ export interface OtherLine {
 }
 
 export function otherLine(row: OtherCaseForClient, today: string): OtherLine {
-  const due = row.closedOn === null ? dueWords({ ...row, repliedOn: null }, today) : undefined
+  const due =
+    row.closedOn !== null
+      ? undefined
+      : row.repliedInTime
+        ? { text: REQUESTS_COPY.repliedInTime, overdue: false }
+        : dueWords({ ...row, repliedOn: null }, today)
   return {
     id: row.id,
     kind: CASE_KIND_LABELS[row.kind],
