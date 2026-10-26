@@ -346,7 +346,8 @@ export interface RecordEditor {
   readonly version: string
   readonly options: RecordOptions['options']
   readonly same: boolean
-  // What holds the record back, worded, in RECORD_PROBLEMS' order.
+  // What holds the record back, worded: a person nothing tells apart from another first, then
+  // RECORD_PROBLEMS' order.
   readonly problems: readonly string[]
   // The record to send, with the name the toast gives, once nothing holds it back.
   readonly recording: { readonly body: RecordAcknowledgementJSON; readonly name: string } | undefined
@@ -370,13 +371,18 @@ export function recordEditor(people: NoticePeopleForClient, form: RecordForm): R
     { from: people.latest.publishedOn, to: people.today },
   )
   const person = people.people.find(each => each.id === form.person)
+  // Someone whose line another person's matches can't be told apart, so the DPO can't know which of
+  // the two a record lets in (PD-76): it is held back, and they acknowledge in Hearth instead.
+  const chosen = options.find(option => option.value !== '' && option.value === form.person)
+  const alike = chosen !== undefined && options.filter(option => option.label === chosen.label).length > 1
+  const problems = recordLines(codes, version)
   return {
     version,
     options,
     same,
-    problems: recordLines(codes, version),
+    problems: alike ? [RECORD.alike, ...problems] : problems,
     recording:
-      codes.length > 0 || person === undefined
+      codes.length > 0 || alike || person === undefined
         ? undefined
         : {
             body: {

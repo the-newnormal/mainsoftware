@@ -552,6 +552,30 @@ describe('C0.9 OD-19: recording an acknowledgement made outside Hearth (dpo/noti
     expect(RecordAcknowledgementBody.parse(ready.recording?.body)).toEqual(ready.recording?.body)
   })
 
+  it('NTW-12 PD-76: someone nothing tells apart from another can’t be recorded, since the DPO can’t know which of the two it lets in; anyone else in the list still can', () => {
+    const twins = ['b0000000-0000-4000-8000-000000000101', 'b0000000-0000-4000-8000-000000000102'] as const
+    const people = noticePeopleForClient({
+      people: [
+        ...PEOPLE,
+        ...twins.map(id => ({ id, name: 'Siti Rahim', department: 'Finance', manager: null, addedOn: '2026-10-01' })),
+      ],
+    })
+    const form = { acknowledgedOn: TODAY, note: 'Signed a printed copy' }
+    for (const person of twins) {
+      const editor = recordEditor(people, { ...form, person })
+      expect(editor.same).toBe(true)
+      expect(editor.problems).toEqual([RECORD.alike])
+      expect(editor.recording).toBeUndefined()
+    }
+    // Chosen with something else missing, it still comes first.
+    expect(recordEditor(people, { ...form, person: twins[0], note: '' }).problems).toEqual([
+      RECORD.alike,
+      'Say how they acknowledged it.',
+    ])
+    const rachel = PEOPLE[4]?.id ?? ''
+    expect(recordEditor(people, { ...form, person: rachel }).recording?.body.person).toBe(rachel)
+  })
+
   it('NTW-12 PD-76: the toast says what was recorded, or that they had already acknowledged; a refusal says a newer version was published (Reload), what to check, that only someone else still at the organisation can be recorded for, or asks for the PIN', () => {
     expect(recordedText({ changed: true }, 'Rachel Goh', '0')).toBe('Recorded: Rachel Goh acknowledged version 0.')
     expect(recordedText({ changed: false }, 'Rachel Goh', '0')).toBe(

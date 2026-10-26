@@ -27,7 +27,10 @@ export const RECORD = {
   withManager: (label: string, manager: string) => `${label}, reports to ${manager}`,
   withAdded: (label: string, day: string) => `${label}, added ${day}`,
   sameDetails:
-    'Two people here have the same name, department and manager, and were added on the same day. Check with them which is which before you record.',
+    'Two people here have the same name, department and manager, and were added on the same day, so nothing here tells them apart. Neither can be recorded: they’ll acknowledge it when they next use Hearth.',
+  // What holds the record back when the person chosen is one of those two.
+  alike:
+    'This person can’t be told apart from someone else here, so it can’t be recorded. They’ll acknowledge it when they next use Hearth.',
   // NOTICE_PEOPLE_MAX (NTW-12 holds the figure to it).
   more: 'Only the first 2,000 people, by name, are listed.',
   day: 'When they acknowledged it',
