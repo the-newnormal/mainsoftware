@@ -3,8 +3,10 @@
 // requests ("Your requests"). British English, short and active (CLAUDE.md, Conventions); never
 // "ask" in any form and never an AI word (decision 8, strings/ai-copy.ts, ST-02). Nothing here says
 // the DPO was told or alerted (OD-22), promises a reply by a day it doesn't know, or suggests an
-// unsent request is kept: it lives in the sheet's state only (WS-01). Only Settings › Privacy's lazy
-// chunk loads this file. The DPO and the owner may reword any of it in the PR.
+// unsent request is saved: it lives in the page's memory only, in the sheet's state, or in the
+// section's as a draft once the browser closes the sheet with no decision (WS-01), and a reload drops
+// it. Only Settings › Privacy's lazy chunk loads this file. The DPO and the owner may reword any of it
+// in the PR.
 import type { CaseKind, MyState, RequestProblem } from '@hearth/shared'
 
 // The kind of a request as the form offers it, in OD-07's order, and the line under each sheet's

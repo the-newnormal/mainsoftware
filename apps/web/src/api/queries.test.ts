@@ -2,7 +2,15 @@ import type { FlagKey } from '@hearth/shared'
 import { environmentManager, focusManager, QueryObserver } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createQueryClient } from '@/session/query-client.ts'
-import { flagOn, flagsQuery, noticeQuery, ownRequestsQuery, sendRequest, sessionQuery } from './queries.ts'
+import {
+  flagOn,
+  flagsQuery,
+  noticeQuery,
+  ownRequestsQuery,
+  sendRequest,
+  sendRequestMoves,
+  sessionQuery,
+} from './queries.ts'
 
 // Whether Query took this test run for a server (no window) before a case changed it.
 const queryOnServer = environmentManager.isServer()
@@ -259,6 +267,36 @@ describe('T21: the api answers as Query options (api/queries.ts)', () => {
       ['/api/requests/send', 'POST'],
     ])
     expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ kind: 'access', details: null, key })
+  })
+
+  it('WEB-07 PD-99: a send moves your own requests, and the session too when its answer carries the DPO’s count (a number, 0 included), so the DPO’s badge counts their own request; anyone else’s session isn’t read again', async () => {
+    expect(sendRequestMoves({ requests: 2 })).toEqual([['requests', 'mine'], ['session']])
+    expect(sendRequestMoves({ requests: 0 })).toEqual([ownRequestsQuery.queryKey, sessionQuery.queryKey])
+    expect(sendRequestMoves({ requests: null })).toEqual([ownRequestsQuery.queryKey])
+    expect(sendRequestMoves({})).toEqual([ownRequestsQuery.queryKey])
+
+    // Through a client, as the sheet's send does: the DPO's session is read again, with the new count.
+    let count = 0
+    const seen: string[] = []
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL) => {
+      seen.push(String(url))
+      return String(url) === '/api/session'
+        ? json(200, { ...WEI_LING, timeZone: 'Asia/Singapore', requests: count })
+        : json(200, { today: '2026-11-12', requests: [], more: false, open: 1 })
+    })
+    const client = createQueryClient(() => {})
+    const session = new QueryObserver(client, sessionQuery)
+    const mine = new QueryObserver(client, ownRequestsQuery)
+    const stop = [session.subscribe(() => {}), mine.subscribe(() => {})]
+    await vi.waitFor(() => expect(client.getQueryData(ownRequestsQuery.queryKey)).toBeDefined())
+    await vi.waitFor(() => expect(client.getQueryData(sessionQuery.queryKey)?.requests).toBe(0))
+    count = 1
+    seen.length = 0
+    const moved = sendRequestMoves(client.getQueryData(sessionQuery.queryKey) ?? {})
+    await Promise.all(moved.map(queryKey => client.invalidateQueries({ queryKey })))
+    expect(client.getQueryData(sessionQuery.queryKey)?.requests).toBe(1)
+    expect(seen.sort()).toEqual(['/api/requests', '/api/session'])
+    for (const unsubscribe of stop) unsubscribe()
   })
 
   it('PD-99 P6: the session answer’s count reads as given, and as none when missing or unreadable', async () => {

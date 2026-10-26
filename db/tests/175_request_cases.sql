@@ -9,7 +9,8 @@
 --          (OD-07, OD-13, OD-15, PD-93, PD-96, PD-100);
 --   RQD-04 a resend from the same sheet records nothing, a key is the writer's own, and it returns
 --          only a case sent the same way (PD-96, OD-14, OD-15);
---   RQD-05 at most 10 open requests per requester (PD-96, OD-25);
+--   RQD-05 at most 10 open requests per requester, and a resend at the cap returns its case
+--          (PD-96, OD-25);
 --   RQD-06 log_case(): the DPO alone, its rules, leavers with a channel, and the settings version in
 --          force at the start of the day received (OD-16, PD-89, PD-93, PPL-01, PPL-14);
 --   RQD-07 add_case_step(): the DPO alone, the revision, each step's rules and the closure, by kind,
@@ -675,14 +676,18 @@ rollback to savepoint rqd_04;
 
 -- RQD-05 (PD-96, OD-25): at most 10 open requests per requester. In org 5, a7 sends 8; a case the
 -- DPO logged for a7 and closed doesn't count, and one the DPO logged for a7 that is open does (the
--- 9th); a8's and another org's don't count; the 10th records and the 11th is refused (HF006),
--- writing nothing; once the DPO closes one, the next records.
+-- 9th); a8's and another org's don't count; the 10th records; a resend of it with its own client
+-- key (a lost answer) returns the same case and reference, changed false, writing nothing, since a
+-- resend is read before the cap; a new 11th is refused (HF006), writing nothing; once the DPO
+-- closes one, the next records.
 select pg_temp.request_org('5');
 do $$
 declare
   d date := pg_temp.today('5');
   i integer;
   got record;
+  again record;
+  tenth uuid := gen_random_uuid();
   closed uuid;
   before text;
 begin
@@ -702,9 +707,18 @@ begin
   perform pg_temp.log('complaint', 'letter', d, pg_temp.id('5', 'a7'), null, null, null, 'Wrote about the noticeboard.');
   perform set_config('role', 'none', true);
   perform pg_temp.act_as('5', 'a7');
-  select * into got from pg_temp.send('question', 'The tenth.');
+  select * into got from pg_temp.send('question', 'The tenth.', tenth);
   perform set_config('role', 'none', true);
   perform pg_temp.check(got.changed, 'the 10th open request was refused (RQD-05)');
+  before := pg_temp.written();
+  perform pg_temp.act_as('5', 'a7');
+  select * into again from pg_temp.send('question', 'The tenth.', tenth);
+  perform set_config('role', 'none', true);
+  perform pg_temp.check(again.id = got.id and again.reference = got.reference and again.received_on = got.received_on
+                        and again.due_on = got.due_on and not again.changed,
+                        format('a resend of the 10th open request did not return it unchanged: %s (RQD-05)', again));
+  perform pg_temp.check(pg_temp.written() = before,
+                        format('a resend of the 10th open request wrote something: %s (RQD-05)', pg_temp.written()));
   perform pg_temp.refused('5', 'a7', $f$select * from pg_temp.send('question', 'The eleventh.')$f$, 'HF006',
     'You have 10 open requests. You can send another once one is closed, or contact the Data Protection Officer directly.');
   perform pg_temp.act_as('5', 'a5');

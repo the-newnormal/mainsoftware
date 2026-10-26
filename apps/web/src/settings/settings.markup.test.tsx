@@ -25,7 +25,18 @@ import { SETTINGS } from '@/strings/notice.ts'
 import { REQUEST_KINDS, REQUESTS } from '@/strings/requests.ts'
 import { ContactSection } from './PrivacySettings.tsx'
 import { DiscardQuestion, RequestSheetDialog } from './RequestsSection.tsx'
-import { openSheet, sentSheet, withText } from './requests-model.ts'
+import {
+  draftsAfter,
+  failedSheet,
+  NO_DRAFTS,
+  openSheet,
+  type RequestSheet,
+  sendBodyOf,
+  sendingSheet,
+  sentSheet,
+  sheetFor,
+  withText,
+} from './requests-model.ts'
 import { SETTINGS_SECTIONS } from './sections.ts'
 
 // Marcus, from the Tembusu seed (db/seed/tembusu.sql), who has acknowledged its notice.
@@ -442,6 +453,7 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
         open={2}
         onDone={() => {}}
         onDiscard={() => {}}
+        onSetAside={() => {}}
       />,
     )
     expect(textsOf(markup, 'h2')).toEqual([REQUEST_KINDS.complaint])
@@ -474,6 +486,7 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
           open={2}
           onDone={() => {}}
           onDiscard={() => {}}
+          onSetAside={() => {}}
         />,
       )
       expect(readable(bare).filter(line => line.includes('aims to reply'))).toEqual([])
@@ -487,6 +500,7 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
         open={2}
         onDone={() => {}}
         onDiscard={() => {}}
+        onSetAside={() => {}}
       />,
     )
     expect(readable(copy)).toEqual(
@@ -512,6 +526,7 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
         open={2}
         onDone={() => {}}
         onDiscard={() => {}}
+        onSetAside={() => {}}
       />,
     )
     expect(buttonsOf(markup).find(button => button.name === REQUESTS.send)?.held).toBe(false)
@@ -530,6 +545,7 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
         open={2}
         onDone={() => {}}
         onDiscard={() => {}}
+        onSetAside={() => {}}
       />,
     )
     expect(textsOf(confirmation, 'p')).toEqual([
@@ -542,6 +558,50 @@ describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Pr
     expect(confirmation).not.toContain('<textarea')
     // Nothing claims the DPO was told.
     expect(readable(confirmation).filter(line => /\b(?:told|alerted|notified)\b/.test(line))).toEqual([])
+  })
+
+  it('RQW-03 PD-96 WS-01 lost words: a sheet the browser closed with no decision (Chrome’s second Escape) reopens from its kind’s row with the words, the same key and why the last send didn’t land, in the box, never the discard question; another kind opens empty; after Discard or Done it opens empty', () => {
+    const written = withText(
+      openSheet('complaint', 'd0000000-0000-4000-8000-000000000004'),
+      'The rota went to the wrong group.',
+    )
+    const failed = failedSheet(sendingSheet(written), { status: 0, code: 'network', serverMessage: '' }, 2)
+    const drafts = draftsAfter(NO_DRAFTS, failed, 'forced')
+    const render = (sheet: RequestSheet) =>
+      alone(
+        <RequestSheetDialog
+          sheet={sheet}
+          onChange={() => {}}
+          targets={PUBLISHED_TARGETS}
+          open={2}
+          onDone={() => {}}
+          onDiscard={() => {}}
+          onSetAside={() => {}}
+        />,
+      )
+    // The row's next opening, with a new key made: the draft comes back, with its own key.
+    const reopened = sheetFor(drafts, 'complaint', 'd0000000-0000-4000-8000-000000000005')
+    expect(sendBodyOf(reopened)).toEqual({
+      kind: 'complaint',
+      details: 'The rota went to the wrong group.',
+      key: 'd0000000-0000-4000-8000-000000000004',
+    })
+    const markup = render(reopened)
+    expect(decoded(markup.match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1] ?? '')).toBe(
+      'The rota went to the wrong group.',
+    )
+    expect(readable(markup)).toContain(REQUESTS.failed)
+    expect(markup).not.toContain(REQUESTS.discard)
+    expect(buttonsOf(markup).find(button => button.name === REQUESTS.send)?.held).toBe(false)
+    // Another kind opens empty, and the complaint's draft stays.
+    const question = render(sheetFor(drafts, 'question', 'd0000000-0000-4000-8000-000000000006'))
+    expect(question.match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1]).toBe('')
+    // Discard or Done clears it: the row opens a new, empty sheet with the new key.
+    for (const how of ['discarded', 'done'] as const) {
+      const after = sheetFor(draftsAfter(drafts, reopened, how), 'complaint', 'd0000000-0000-4000-8000-000000000007')
+      expect(after).toEqual(openSheet('complaint', 'd0000000-0000-4000-8000-000000000007'))
+      expect(render(after).match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1]).toBe('')
+    }
   })
 
   it('RQW-03 X6 R8: the discard question is a group named by the question, which takes focus (tabindex -1) so a screen reader reads it first, with Keep writing before Discard', () => {

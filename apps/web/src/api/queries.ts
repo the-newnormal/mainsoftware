@@ -139,3 +139,15 @@ export async function sendRequest(body: SendRequestJSON): Promise<SendRequestRes
   if (answer === undefined) throw new Error('the send answered nothing')
   return answer
 }
+
+// What a send moves (WEB-07): your own requests, and, when the sender's session answer carries the
+// DPO's count of requests needing attention (PD-99: a number, never null), the session too, since a
+// request the DPO sends is one of the cases it counts, and the count badges the avatar button and
+// the Requests link. Anyone else's answer counts nothing, so their session isn't read again for it.
+export function sendRequestMoves(session: {
+  readonly requests?: number | null
+}): readonly (typeof ownRequestsQuery.queryKey | typeof sessionQuery.queryKey)[] {
+  return typeof session.requests === 'number'
+    ? [ownRequestsQuery.queryKey, sessionQuery.queryKey]
+    : [ownRequestsQuery.queryKey]
+}

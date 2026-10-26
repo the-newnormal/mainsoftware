@@ -353,7 +353,9 @@ export function AddStep({ answer, initial }: { answer: CaseForClient; initial?: 
             { value: '', label: CASE_COPY.choose },
             ...editor.offered.map(value => ({ value, label: STEP_NAMES[value] })),
           ]}
-          hint={step === 'replied' ? CASE_COPY.repliedHint : undefined}
+          hint={
+            step === 'replied' ? CASE_COPY.repliedHint : step === 'review_ended' ? CASE_COPY.reviewEndedHint : undefined
+          }
           onChange={event => set({ step: event.currentTarget.value as StepInput | '' })}
         />
         {step !== '' && (

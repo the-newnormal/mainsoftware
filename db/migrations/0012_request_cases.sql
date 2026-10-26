@@ -171,7 +171,8 @@ revoke execute on function public.case_add_business_days(date, integer) from pub
 --   earlier, so a reclassification never moves a promise later (PD-90); and the current kind's day
 --   is never before the next business day after the latest reclassification, so a request
 --   reclassified to a kind with a shorter target is never due before it was reclassified (PPL-08);
---   a more-time date (s21's written notice) replaces it while the current kind is a copy or a
+--   a more-time date (the written notice of more time, under regulation 5 of the PDP Regulations
+--   2021 for a request under s21 or s22) replaces it while the current kind is a copy or a
 --   correction.
 -- Pure, so RQD-09 pins it on a table of samples.
 create function public.case_due_on(
@@ -372,11 +373,13 @@ create index cases_requester on public.cases (org_id, requester_person_id, recei
 -- never an ID number: OD-16); replied (the reply the request waits for, whose day the requester
 -- sees in tracking and which ends the clock when on time, PD-112; a holding message is a note);
 -- more time (a copy or a correction only, with the new date, its day the day the requester was told
--- in writing, on or before the due day: s21's written notice, PPL-04); reclassified (its kind now:
--- PD-90); a note; and, after a refused copy, the requester's PDPC review starting and ending, so the
--- hold that keeps their data (s22A, PDPA-09) can be read. Numbered from 1 per case, only appended,
--- never changed. Notes are the DPO's own working notes, which the DPO alone reads; never content
--- read under Rule 9 (OD-06).
+-- in writing, on or before the due day: the PDP Regulations 2021's regulation 5, for a request under
+-- s21 or s22, PPL-04); reclassified (its kind now: PD-90); a note; and, after a refused copy, the
+-- requester's PDPC review starting and ending, so the hold that keeps their data (s22A and
+-- regulation 8: at least 30 days after the refusal and, after an application for a review, until
+-- the review, any reconsideration and any appeal have ended; PDPA-09) can be read. Numbered from 1
+-- per case, only appended, never changed. Notes are the DPO's own working notes, which the DPO
+-- alone reads; never content read under Rule 9 (OD-06).
 create table public.case_steps (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null references public.orgs (id),
@@ -537,8 +540,11 @@ revoke execute on function public.case_replied_in_time(uuid, uuid) from public;
 --      reads as none, which only a copy of their data may be): at most 4,000 characters of plain
 --      text, with no bidirectional-formatting character (HF006). Their words are theirs, never held
 --      to AI_COPY or the NRIC rule (PD-102);
---   4. at most 10 of their requests open (HF006), read plainly: a bound on how many one person can
---      keep open, not an exact limit, so two sent at the same moment may both pass (PD-96, OD-25);
+--   4. at most 10 of their requests open (HF006), counted plainly with no lock: a bound on how many
+--      one person can keep open, not an exact limit. Sends at the same moment each count before the
+--      others commit, so every one of them may pass: a burst can leave 9 open plus as many as the
+--      api runs at once, at most its pool's 10 transactions per api process (pool.ts), so 19 with
+--      one process and 10 more for each further one (PD-96, OD-25);
 --   5. the day received, today in the org's zone, and the settings version the latest published
 --      version linked, when its generator states targets (PD-93: none before v0, under c09.1 or
 --      c09.2, or under a stand-in); the notice and orgs are read plainly, so the submit takes no
@@ -864,8 +870,9 @@ revoke execute on function public.log_case(text, text, date, uuid, text, text, t
 --        identity_checked needs its note, one line; reclassified needs a kind other than the kind
 --        now; extended only for a copy or a correction, to a day after the current due day and at
 --        most 90 days after the day received, its day the day the requester was told in writing,
---        on or before the current due day (s21: told within the time; a later notice is a note, so
---        a late case never turns on time, PPL-04);
+--        on or before the current due day (regulation 5 of the PDP Regulations 2021, for a request
+--        under s21 or s22: told within the time; a later notice is a note, so a late case never
+--        turns on time, PPL-04);
 --      note: open or closed, with its note;
 --      review_started: a case closed as refused with closed_kind 'access', with no review open;
 --        review_ended: one open;
@@ -1622,10 +1629,11 @@ $$;
 -- C0.9 OD-08, PD-94: the DPO's reply targets, in the settings version the notice prints: business
 -- days for withdrawals, objections, questions and complaints (5 to 10, default 10: PDPA-04's target
 -- and the PDPC's reasonable notice for a withdrawal), and calendar days for copies and corrections
--- (14 to 30, default 30: s21's and PDPA-07's 30 days). The ranges are packages/shared's
--- REPLY_TARGETS (CLAUDE.md, AI and LLM features: every setting's allowed range lives in code), which
--- RQD-11 and DCS-07 hold equal to these checks; OD-26 confirmed them. A constant default adds the
--- columns without rewriting a row and fires no trigger: every version recorded before 0012 reads
+-- (14 to 30, default 30: the 30 days regulation 5 of the PDP Regulations 2021 sets for a request
+-- under s21 or s22, PDPA-05 and PDPA-07). The ranges are packages/shared's REPLY_TARGETS (CLAUDE.md,
+-- AI and LLM features: every setting's allowed range lives in code), which RQD-11 and DCS-07 hold
+-- equal to these checks; OD-26 confirmed them. A constant default adds the columns without
+-- rewriting a row and fires no trigger: every version recorded before 0012 reads
 -- OD-08's figures, which the runbooks' working targets already were (T22 item 46). A version a
 -- generator before c09.3 printed never stated them, which notice_states_targets() and the notice's
 -- code decide by the generator, never by these values (PD-93, PD-95).

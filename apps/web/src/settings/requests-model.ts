@@ -125,9 +125,58 @@ export const failedSheet = (
   failure: sendFailureText(failure, open),
 })
 
-// Closing a sheet with something written asks once before it is discarded: nothing is kept
-// anywhere (WS-01). A sheet whose request landed closes at once.
+// Closing a sheet with something written asks once before it is discarded: nothing is kept in
+// browser storage (WS-01). A sheet whose request landed closes at once.
 export const needsDiscard = (sheet: RequestSheet): boolean => sheet.phase !== 'sent' && sheet.text.trim() !== ''
+
+// --- Drafts (the words a forced close would lose) ------------------------------------------------
+
+// The sheets the browser closed with no discard decision, by kind: a close the page can't refuse
+// (Chrome's second Escape without a click between, under its close-watcher rule, or Android's back
+// gesture; ui/Dialog.tsx's forced close). Settings › Privacy's requests section holds them in its
+// own state, in memory only (WS-01: never browser storage), so reopening the kind's row shows the
+// words again, with the same key, so a send the close cut off still records at most one request
+// (PD-96). A reload, leaving Settings or a new sign-in drops them, as it drops an open sheet.
+export type Drafts = Readonly<Partial<Record<CaseKind, RequestSheet>>>
+
+export const NO_DRAFTS: Drafts = {}
+
+// The sheet a kind's row opens: its kept draft, else a new one with the key made as it opens.
+export const sheetFor = (drafts: Drafts, kind: CaseKind, key: string): RequestSheet =>
+  drafts[kind] ?? openSheet(kind, key)
+
+// What Close, Escape or the browser's own close does to a sheet (RequestsSection.tsx's close()):
+//   done          its request landed: as Done
+//   set_aside     the browser closed it already (forced), with no decision: the section keeps it
+//   discard       nothing written: it goes, with nothing to decide
+//   keep_writing  the discard question is asked already: answered as Keep writing, never Discard
+//   confirm       words written: the discard question
+//   nothing       a send in flight: it stays open until the answer
+export type CloseAction = 'done' | 'set_aside' | 'discard' | 'keep_writing' | 'confirm' | 'nothing'
+
+export function closeAction(sheet: RequestSheet, forced: boolean, confirming: boolean): CloseAction {
+  if (sheet.phase === 'sent' && sheet.sent !== undefined) return 'done'
+  if (forced) return 'set_aside'
+  if (!needsDiscard(sheet)) return 'discard'
+  if (confirming) return 'keep_writing'
+  return sheet.phase === 'editing' ? 'confirm' : 'nothing'
+}
+
+// How a sheet closed: done, after Done on its confirmation (the send was confirmed); discarded,
+// after Discard, or a close with nothing written (nothing to decide about); forced, by the browser
+// with no decision.
+export type SheetClose = 'done' | 'discarded' | 'forced'
+
+// The drafts once a sheet has closed. Done or a discard clears the kind's draft. A forced close
+// keeps the sheet when it holds words, or a send whose answer it never saw (a copy of their data may
+// send nothing, and its key is what makes sending again safe), back in editing: a send in flight
+// can't land in a sheet that has gone, so the next Send, with the same key, finds out.
+export function draftsAfter(drafts: Drafts, sheet: RequestSheet, close: SheetClose): Drafts {
+  const unconfirmed = sheet.phase === 'sending' || sheet.failure !== undefined
+  const keep = close === 'forced' && sheet.phase !== 'sent' && (sheet.text.trim() !== '' || unconfirmed)
+  const kept: RequestSheet | undefined = keep ? { ...sheet, phase: 'editing' } : undefined
+  return { ...drafts, [sheet.kind]: kept }
+}
 
 // The count shows from 3,600 characters, counted as Postgres counts them (code points).
 export const COUNT_FROM = 3600

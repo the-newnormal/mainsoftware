@@ -8,9 +8,12 @@ import { REQUEST_KINDS, REQUEST_PROBLEMS, REQUESTS } from '@/strings/requests.ts
 import {
   atCap,
   COUNT_FROM,
+  closeAction,
   confirmationLines,
+  draftsAfter,
   failedSheet,
   mineView,
+  NO_DRAFTS,
   needsDiscard,
   openSheet,
   REQUEST_ROWS,
@@ -19,6 +22,7 @@ import {
   sendFailureText,
   sendingSheet,
   sentSheet,
+  sheetFor,
   sheetView,
   targetLine,
   withText,
@@ -139,6 +143,78 @@ describe('C0.9 PR 3b: the requests form and your requests (settings/requests-mod
     expect(sendFailureText({ status: 400, code: 'case_invalid', serverMessage: '' }, 3)).toBe(REQUESTS.other)
     expect(sendFailureText({ status: 400, code: 'invalid_request', serverMessage: '' }, 3)).toBe(REQUESTS.other)
     expect(sendFailureText({ status: 403, code: 'forbidden', serverMessage: 'Not yours.' }, 3)).toBe('Not yours.')
+  })
+
+  it('RQW-03 X6: what Close, Escape or the browser’s own close does: a landed request closes as Done; a forced close sets the sheet aside, whatever its phase or the question; nothing written goes; with words written the question, and once it is asked Keep writing, never Discard; a send in flight stays open', () => {
+    const empty = openSheet('complaint', KEY)
+    const written = withText(empty, 'The rota was shared with another team.')
+    const sending = sendingSheet(written)
+    const landed = sentSheet(written, {
+      case: 'c0000000-0000-4000-8000-000000000009',
+      reference: 'K7QMX3TD' as never,
+      dueOn: '2026-11-10',
+      changed: true,
+    })
+    expect(closeAction(landed, false, false)).toBe('done')
+    expect(closeAction(landed, true, false)).toBe('done')
+    for (const sheet of [empty, written, sending]) {
+      for (const confirming of [false, true]) {
+        expect(closeAction(sheet, true, confirming), `${sheet.phase} ${String(confirming)}`).toBe('set_aside')
+      }
+    }
+    expect(closeAction(empty, false, false)).toBe('discard')
+    expect(closeAction(withText(empty, '  \n '), false, false)).toBe('discard')
+    expect(closeAction(written, false, false)).toBe('confirm')
+    expect(closeAction(written, false, true)).toBe('keep_writing')
+    expect(closeAction(sending, false, false)).toBe('nothing')
+  })
+
+  it('RQW-03 PD-96 WS-01 lost words: a forced close keeps the sheet as its kind’s draft (words, or a send it never saw answered), back in editing with its key and why the last send failed; a forced close with nothing to keep, Done or a discard clears the kind’s draft; other kinds’ drafts stay; the row opens the draft, else a new sheet with the new key', () => {
+    const written = withText(openSheet('complaint', KEY), 'The rota was shared with another team.')
+    const other = 'd0000000-0000-4000-8000-000000000002'
+    expect(NO_DRAFTS).toEqual({})
+    expect(sheetFor(NO_DRAFTS, 'complaint', other)).toEqual(openSheet('complaint', other))
+
+    // Words written: kept as they were.
+    const kept = draftsAfter(NO_DRAFTS, written, 'forced')
+    expect(kept.complaint).toEqual(written)
+    expect(sheetFor(kept, 'complaint', other)).toEqual(written)
+    expect(sheetFor(kept, 'question', other)).toEqual(openSheet('question', other))
+
+    // A send cut off by the close: back in editing, the same key, so the next Send records it once.
+    const inFlight = draftsAfter(NO_DRAFTS, sendingSheet(written), 'forced')
+    expect(inFlight.complaint).toMatchObject({ phase: 'editing', key: KEY, text: written.text, failure: undefined })
+    expect(sheetView(sheetFor(inFlight, 'complaint', other), 'M', TARGETS).held).toBeUndefined()
+    // A failed send keeps why, and a copy of their data with nothing written keeps its key too.
+    const lost = { status: 0, code: 'network', serverMessage: '' }
+    const failed = failedSheet(sendingSheet(written), lost, 1)
+    expect(draftsAfter(NO_DRAFTS, failed, 'forced').complaint).toEqual(failed)
+    const bareCopy = failedSheet(sendingSheet(openSheet('access', KEY)), lost, 1)
+    expect(draftsAfter(NO_DRAFTS, bareCopy, 'forced').access).toMatchObject({ key: KEY, failure: REQUESTS.failed })
+    expect(draftsAfter(NO_DRAFTS, sendingSheet(openSheet('access', KEY)), 'forced').access?.phase).toBe('editing')
+
+    // Nothing to keep: a forced close of an empty or blank sheet, or of a landed one, keeps nothing.
+    expect(draftsAfter(kept, openSheet('complaint', other), 'forced').complaint).toBeUndefined()
+    expect(draftsAfter(kept, withText(openSheet('complaint', other), ' \n'), 'forced').complaint).toBeUndefined()
+    const landed = sentSheet(written, {
+      case: 'c0000000-0000-4000-8000-000000000009',
+      reference: 'K7QMX3TD' as never,
+      dueOn: '2026-11-10',
+      changed: true,
+    })
+    expect(draftsAfter(kept, landed, 'forced').complaint).toBeUndefined()
+
+    // Done (a confirmed send) or a discard clears the kind's draft, and only that kind's.
+    const two = draftsAfter(kept, withText(openSheet('question', other), 'Who reads my messages?'), 'forced')
+    expect(Object.keys(two).sort()).toEqual(['complaint', 'question'])
+    for (const how of ['done', 'discarded'] as const) {
+      const after = draftsAfter(two, written, how)
+      expect(after.complaint, how).toBeUndefined()
+      expect(after.question?.text, how).toBe('Who reads my messages?')
+      expect(sheetFor(after, 'complaint', other), how).toEqual(openSheet('complaint', other))
+    }
+    // Each step makes a new object, so React's state sees the change.
+    expect(draftsAfter(NO_DRAFTS, written, 'forced')).not.toBe(NO_DRAFTS)
   })
 
   it('RQW-04 OD-22: the confirmation says it was sent (or was sent already), the due day, the reference to quote and where to follow it; never that the DPO was told', () => {

@@ -126,4 +126,21 @@ describe('C0.9 PD-27 PD-31: the DPO pages’ copy', () => {
       expect(line).not.toMatch(/\bbut you\b/)
     }
   })
+
+  it('WEB-08 DOCS-06 PD-98: the queue’s and the case sheet’s lines claim only what Hearth does: notes aren’t “only you”, no line blames a link (a case opens in a sheet, never from a URL), and the PDPC review line says what Hearth records, never that the law allows a review of a refused copy alone', () => {
+    const lines = [...stringsIn(CASE_TABLES, 'dpo-case'), ...stringsIn(REQUESTS_TABLES, 'dpo-requests')].map(
+      entry => entry.text,
+    )
+    expect(lines.filter(line => /\bonly you\b/i.test(line))).toEqual([])
+    expect(lines.filter(line => /\b(link|url|address bar)\b/i.test(line))).toEqual([])
+    expect(lines.filter(line => /another organisation/i.test(line))).toEqual([])
+    expect(CASE_TABLES.CASE_COPY.noteHint).toBe(
+      'Your own working notes, for the Data Protection Officer only. Never paste messages, files or anything else you read in Hearth.',
+    )
+    expect(CASE_TABLES.CASE_COPY.missing).toBe('Hearth can’t find this request. Reload the requests and try again.')
+    expect(CASE_TABLES.STEP_PROBLEM_COPY.review_not_refused_copy).toBe(
+      'Hearth records a PDPC review only for a refused copy, whose data must be kept meanwhile. Add a note for a review of anything else.',
+    )
+    expect(lines.filter(line => /\bPDPC review is only\b/i.test(line))).toEqual([])
+  })
 })

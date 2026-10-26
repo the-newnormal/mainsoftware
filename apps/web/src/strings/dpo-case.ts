@@ -74,7 +74,10 @@ export const STEP_PROBLEM_COPY = {
   not_extendable: 'More time is only for a copy of their data or a correction.',
   extension_range: 'Pick a date after the current due day, at most 90 days after it was received.',
   extension_told_late: 'Record more time only on or before the current due day. If you told them later, add a note.',
-  review_not_refused_copy: 'A PDPC review is only for a copy of their data that was refused.',
+  // What Hearth records, not the law: the PDPC may review a refused correction too (PDPA s48H), but
+  // Hearth tracks a review only where it holds data back from deletion (DOCS-06).
+  review_not_refused_copy:
+    'Hearth records a PDPC review only for a refused copy, whose data must be kept meanwhile. Add a note for a review of anything else.',
   review_open: 'A PDPC review is already open on this request.',
   review_none: 'There’s no open PDPC review to end.',
   refusal_kind: 'Only a copy, a correction or an objection can be refused.',
@@ -138,13 +141,15 @@ export const CASE_COPY = {
   step: 'What happened',
   stepMissing: 'Choose what happened.',
   repliedHint: 'The reply their request is waiting for. A holding message is a note.',
+  // The refusal's hold ends with this step (access-request.md step 7; PDPA s22A, regulation 8).
+  reviewEndedHint: 'Record it only once the review, any reconsideration and any appeal have all ended.',
   day: 'The day it happened',
   dayHint: 'From the day it was received to today.',
   identityDay: 'The day you checked',
   note: 'Note',
   noteOptional: 'Note (optional)',
   noteHint:
-    'Your own working notes. Only you see them. Never paste messages, files or anything else you read in Hearth.',
+    'Your own working notes, for the Data Protection Officer only. Never paste messages, files or anything else you read in Hearth.',
   identityLabel: 'How you checked who they are',
   identityHint:
     'For example: against HR records, or by video call. Never an ID number or a copy of an ID document, and never an old Hearth number or PIN.',
@@ -166,7 +171,9 @@ export const CASE_COPY = {
   reload: 'Reload',
   // 400 case_invalid with nothing found here.
   invalid: 'This can’t be saved as it is. Reload the request and try again.',
-  missing: 'This request isn’t there. It may be another organisation’s, or the link is wrong.',
+  // 404 not_found. A case opens in a sheet, never from a URL (PD-98), and is never deleted, so this
+  // names no cause (WEB-08).
+  missing: 'Hearth can’t find this request. Reload the requests and try again.',
   forbidden: 'This page is for the Data Protection Officer.',
   done: 'Done',
   logged: (ref: string) => `Logged as ${ref}. Give them this reference when you reply.`,

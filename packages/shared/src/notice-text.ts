@@ -672,7 +672,8 @@ function withdrawBlocks(active: readonly NoticePurpose[]): Block[] {
 // from 14, so both always read as plural; "counting Monday to Friday" is exact under OD-09, which
 // counts public holidays as business days, and "calendar days" is said outright, so nobody reads
 // the second figure as business days. The targets paragraph says "aims", since a target isn't a
-// guarantee, and its second sentence is s21's written notice of more time. Nothing says the DPO is
+// guarantee, and its second sentence is the written notice of more time (regulation 5 of the PDP
+// Regulations 2021, for a request under s21 or s22). Nothing says the DPO is
 // alerted (OD-22). Objection is named among the requests the targets cover, never as a right in
 // the first sentence: the PDPA grants no general right to object.
 function rightsBlocks(org: string, contact: DpoContact, targets: ReplyTargets): Block[] {

@@ -1148,7 +1148,7 @@ describe('C0.9 PR 3b: the requests to the DPO (dpo/)', () => {
     expect(loading).toMatch(/<p role="status"[^>]*>Loading the request…<\/p>/)
   })
 
-  it('RQW-08 PD-91 PD-112 PPL-04 PPL-14: Add a step shows the fields the chosen step takes: the day it was checked and how for an identity check (one line, its hint), the day told and the new date for more time, the outcome and why for a refusal, the logged-in-error line; Save held with its reason', () => {
+  it('RQW-08 PD-91 PD-112 PPL-04 PPL-14: Add a step shows the fields the chosen step takes: the day it was checked and how for an identity check (one line, its hint), the day told and the new date for more time, the outcome and why for a refusal, the logged-in-error line, the replied and review-ended hints (DOCS-01); Save held with its reason', () => {
     const copy = caseForClient({
       case: {
         id: CASE_IDS.copy,
@@ -1199,6 +1199,10 @@ describe('C0.9 PR 3b: the requests to the DPO (dpo/)', () => {
     const replied = aloneWith(<AddStep answer={copy} initial={{ step: 'replied' }} />, () => {})
     expect(readable(replied)).toContain(CASE_COPY.repliedHint)
     expect(buttons(replied).find(button => button.name === 'Save')?.held).toBe(false)
+    // The refusal's hold ends with this step, so its hint says when to record it (access-request.md step 7).
+    const ended = aloneWith(<AddStep answer={copy} initial={{ step: 'review_ended' }} />, () => {})
+    expect(readable(ended)).toContain(CASE_COPY.reviewEndedHint)
+    expect(readable(replied)).not.toContain(CASE_COPY.reviewEndedHint)
     for (const markup of [identity, extended, refuse, error, replied]) {
       for (const control of [...tags(markup, 'textarea'), ...tags(markup, 'select'), ...tags(markup, 'input')]) {
         expect(control.get('class')).toMatch(/\btext-base\b/)

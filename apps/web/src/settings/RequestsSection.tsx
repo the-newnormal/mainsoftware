@@ -7,11 +7,14 @@
 //   data) and who it is sent as. The sheet makes a client key as it opens, so sending again after an
 //   answer that never arrived records nothing new; once it lands, the sheet's content becomes the
 //   confirmation (the due day, the reference to quote), which stays until Done, and focus then goes
-//   to the new row. Closing with something written asks before discarding it: nothing is kept
-//   anywhere (WS-01). The question takes focus as it replaces the box (and the footer's Cancel), so
-//   a screen reader reads it first; Keep writing, or Close or Escape while it is asked, puts focus
-//   back in the box, with the words kept (X6). With 10 open requests (OD-25) the rows are replaced
-//   by a line saying so.
+//   to the new row. Closing with something written asks before discarding it. The question takes
+//   focus as it replaces the box (and the footer's Cancel), so a screen reader reads it first; Keep
+//   writing, or Close or Escape while it is asked, puts focus back in the box, with the words kept
+//   (X6). A close the browser forces with no decision (Chrome's second Escape, Android's back) keeps
+//   the sheet as a draft in this section's state, in memory only (WS-01: never browser storage), so
+//   the kind's row reopens it with the words and the same key; Discard or Done clears it
+//   (requests-model.ts draftsAfter). With 10 open requests (OD-25) the rows are replaced by a line
+//   saying so.
 // - "Your requests": the requests where you are the requester, sent here or logged for you by the
 //   DPO, with their kind, state, reference, how they came, the days received and due, the day the
 //   DPO last replied, and, once one is late with no reply on time, what to do. Never your words, the
@@ -24,7 +27,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, CircleAlert } from 'lucide-react'
 import { type RefObject, useEffect, useId, useRef, useState } from 'react'
 import type { ApiFailure } from '@/api/http.ts'
-import { ownRequestsQuery, sendRequest, useSession } from '@/api/queries.ts'
+import { ownRequestsQuery, sendRequest, sendRequestMoves, useSession } from '@/api/queries.ts'
 import { focusAfter } from '@/lib/focus.ts'
 import { REQUESTS } from '@/strings/requests.ts'
 import { announce } from '@/ui/announce.ts'
@@ -34,18 +37,22 @@ import { Spelled } from '@/ui/Spelled.tsx'
 import { TextArea } from '@/ui/TextArea.tsx'
 import {
   atCap,
+  closeAction,
   confirmationLines,
+  type Drafts,
+  draftsAfter,
   failedSheet,
   mineView,
-  needsDiscard,
-  openSheet,
+  NO_DRAFTS,
   REQUEST_ROWS,
   type RequestRow,
   type RequestSheet,
   requestRowId,
+  type SheetClose,
   sendBodyOf,
   sendingSheet,
   sentSheet,
+  sheetFor,
   sheetView,
   withText,
 } from './requests-model.ts'
@@ -64,6 +71,12 @@ function failureOf(error: unknown): { status: number; code: string; serverMessag
 export function RequestsSection({ targets }: { targets: ReplyTargets | null | undefined }) {
   const query = useQuery(ownRequestsQuery)
   const [sheet, setSheet] = useState<RequestSheet | undefined>()
+  // The sheets the browser closed with no discard decision, by kind (in memory only, WS-01).
+  const [drafts, setDrafts] = useState<Drafts>(NO_DRAFTS)
+  const closeSheet = (closed: RequestSheet, how: SheetClose) => {
+    setDrafts(now => draftsAfter(now, closed, how))
+    setSheet(undefined)
+  }
   const formId = useId()
   const mineId = useId()
   const mineHeading = useRef<HTMLHeadingElement>(null)
@@ -93,7 +106,7 @@ export function RequestsSection({ targets }: { targets: ReplyTargets | null | un
               <li key={row.kind}>
                 <button
                   type="button"
-                  onClick={() => setSheet(openSheet(row.kind, crypto.randomUUID()))}
+                  onClick={() => setSheet(sheetFor(drafts, row.kind, crypto.randomUUID()))}
                   className="flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-bg focus-visible:bg-bg"
                 >
                   <span className="min-w-0 flex-1 break-words">{row.label}</span>
@@ -137,9 +150,10 @@ export function RequestsSection({ targets }: { targets: ReplyTargets | null | un
           open={answer?.open ?? null}
           onDone={caseId => {
             focusCase.current = caseId
-            setSheet(undefined)
+            closeSheet(sheet, 'done')
           }}
-          onDiscard={() => setSheet(undefined)}
+          onDiscard={() => closeSheet(sheet, 'discarded')}
+          onSetAside={() => closeSheet(sheet, 'forced')}
         />
       )}
     </>
@@ -179,6 +193,8 @@ export function MyRequest({ row }: { row: RequestRow }) {
 
 // The sheet a kind's row opens. Exported for its markup test (settings/settings.markup.test.tsx).
 // open: how many of your requests are open, as "Your requests" read it (null when unknown).
+// onDone: Done on the confirmation; onDiscard: Discard, or a close with nothing written;
+// onSetAside: the browser closed it with no decision, so the section keeps it as a draft.
 export function RequestSheetDialog({
   sheet,
   onChange,
@@ -186,6 +202,7 @@ export function RequestSheetDialog({
   open,
   onDone,
   onDiscard,
+  onSetAside,
 }: {
   sheet: RequestSheet
   onChange(next: RequestSheet): void
@@ -193,6 +210,7 @@ export function RequestSheetDialog({
   open: number | null
   onDone(caseId: string): void
   onDiscard(): void
+  onSetAside(): void
 }) {
   const queryClient = useQueryClient()
   const person = useSession()
@@ -208,11 +226,12 @@ export function RequestSheetDialog({
   latest.current = sheet
   // Offline, a send fails at once (rather than waiting for the network), so the sheet says it
   // couldn't confirm it and keeps the text. The list is read again before the confirmation shows,
-  // so the new row is there for Done to focus.
+  // so the new row is there for Done to focus, and, for the DPO, the session too, whose count of
+  // requests needing attention now holds this one (sendRequestMoves, WEB-07).
   const send = useMutation({
     mutationFn: sendRequest,
     networkMode: 'always',
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ownRequestsQuery.queryKey }),
+    onSuccess: () => Promise.all(sendRequestMoves(person).map(queryKey => queryClient.invalidateQueries({ queryKey }))),
   })
   const view = sheetView(sheet, person.name, targets)
   useEffect(() => {
@@ -243,14 +262,26 @@ export function RequestSheetDialog({
     focusAfter(() => box.current)
   }
 
+  // Close, Escape, or the browser's own close (forced), as closeAction decides: a close the page
+  // can't refuse (Chrome's second Escape) sets the sheet aside, so the section keeps the words; once
+  // the question is asked, Close or Escape answers it as Keep writing, never as Discard.
   const close = (forced?: boolean) => {
-    if (sheet.phase === 'sent' && sheet.sent !== undefined) return onDone(sheet.sent.case)
-    if (forced === true || !needsDiscard(sheet)) return onDiscard()
-    // Asked already: Close or Escape answers the question as Keep writing, never as Discard.
-    if (confirming) return keepWriting()
-    if (sheet.phase === 'editing') {
-      setConfirming(true)
-      focusAfter(() => question.current)
+    switch (closeAction(sheet, forced === true, confirming)) {
+      case 'done':
+        if (sheet.sent !== undefined) onDone(sheet.sent.case)
+        return
+      case 'set_aside':
+        return onSetAside()
+      case 'discard':
+        return onDiscard()
+      case 'keep_writing':
+        return keepWriting()
+      case 'confirm':
+        setConfirming(true)
+        focusAfter(() => question.current)
+        return
+      case 'nothing':
+        return
     }
   }
 

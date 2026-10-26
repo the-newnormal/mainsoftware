@@ -28,8 +28,9 @@ export type CaseKind = (typeof CASE_KINDS)[number]
 // The kinds whose target counts calendar days (OD-08): a copy and a correction. The rest count
 // business days.
 export const CALENDAR_KINDS = ['access', 'correction'] as const satisfies readonly CaseKind[]
-// The kinds the DPO may record more time for: s21's written notice, which PDPA-07 extends to a
-// correction.
+// The kinds the DPO may record more time for: a copy and a correction. Regulation 5 of the PDP
+// Regulations 2021 has the requester of either (under s21 or s22) told in writing, within the 30
+// days, when the reply will come.
 export const EXTENDABLE_KINDS = CALENDAR_KINDS
 // The kinds closed as answered only once a step records how the requester's identity was checked
 // (PD-91): nothing is released or changed on a session alone.
@@ -58,7 +59,7 @@ export type RequesterChannel = (typeof REQUESTER_CHANNELS)[number]
 //   replied           the reply the request waits for, which ends the clock when on time (PD-112);
 //                     a holding message is a note
 //   extended          more time, for a copy or a correction, told in writing on or before the due
-//                     day (s21, PPL-04)
+//                     day (regulation 5 of the PDP Regulations 2021, for s21 and s22; PPL-04)
 //   reclassified      the kind it is now (PD-90)
 //   note              the DPO's own working note, open or closed
 //   review_started    the requester applied to the PDPC to review a refused copy (s22A, PDPA-09)
@@ -401,8 +402,9 @@ export function logProblems(
 //   not_extendable           more time for anything but a copy or a correction
 //   extension_range          more time to a day not after the current due day (or the day told),
 //                            or more than 90 days after the day received
-//   extension_told_late      more time told after the current due day (s21; PPL-04): a later notice
-//                            is a note, so a late request never turns on time
+//   extension_told_late      more time told after the current due day (the PDP Regulations 2021's
+//                            regulation 5; PPL-04): a later notice is a note, so a late request
+//                            never turns on time
 //   review_not_refused_copy  a PDPC review started on anything but a copy closed as refused
 //   review_open              a PDPC review started while one is open
 //   review_none              a PDPC review ended with none open
