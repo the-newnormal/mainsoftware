@@ -7,6 +7,9 @@
 // PR.
 import type { RecordProblemCode } from '@hearth/shared'
 
+// The note's label, which the problems about the note quote, so each names the field it means.
+const HOW = 'How they acknowledged it'
+
 // Recording an acknowledgement made outside Hearth, from the Notice tab (C0.9 OD-19, PD-75, PD-76):
 // for the latest version, for someone else still at the organisation, with the day and how. The
 // people are picked by name and department, then their manager and the day they were added where
@@ -29,7 +32,7 @@ export const RECORD = {
   more: 'Only the first 2,000 people, by name, are listed.',
   day: 'When they acknowledged it',
   dayHint: (from: string, to: string) => `From ${from} to ${to}.`,
-  how: 'How they acknowledged it',
+  how: HOW,
   howHint: 'For example: signed a printed copy at induction.',
   beforeRecording: 'Before you can record',
   record: 'Record',
@@ -49,8 +52,9 @@ export const RECORD = {
     day_missing: 'Give the day they acknowledged it.',
     day_out_of_range: (version: string) => `Give a day from the day version ${version} was published to today.`,
     note_missing: 'Say how they acknowledged it.',
-    note_long: 'Keep it to 500 characters.',
-    note_not_one_line: 'Keep it on one line.',
-    ai_copy: 'This uses wording Hearth keeps off its screens. Reword it.',
+    note_long: `Keep “${HOW}” to 500 characters.`,
+    note_not_one_line: `Keep “${HOW}” on one line.`,
+    // recordProblems checks only the note for it.
+    ai_copy: `“${HOW}” uses wording Hearth keeps off its screens. Reword it.`,
   } satisfies Record<RecordProblemCode, string | ((version: string) => string)>,
 } as const

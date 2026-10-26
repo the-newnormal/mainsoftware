@@ -11,7 +11,8 @@
 // picks the person, the day (from the version's publication day to today, in the org's zone) and
 // how; what still holds the record back is listed (recordEditor), and Record posts it. The server
 // decides again: 409 notice_changed (a newer version, with Reload), 400 notice_invalid, 403
-// forbidden (yourself, or someone who has left), or the PIN step, then the same record once more.
+// forbidden (yourself, someone who has left, or you no longer hold the DPO role), or the PIN step,
+// then the same record once more.
 // Once it lands the toast says whether it recorded anything (the person may have acknowledged
 // already), the dialog closes, focus returns to the button, and the count is read again. The
 // Notice tab imports this module, so it loads in the tab's chunk.

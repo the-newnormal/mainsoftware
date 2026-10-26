@@ -495,7 +495,7 @@ describe('C0.9 OD-19: recording an acknowledgement made outside Hearth (dpo/noti
     expect(RECORD.more).toContain(NOTICE_PEOPLE_MAX.toLocaleString('en-GB'))
   })
 
-  it('NTW-12 OD-19 PD-75: the record is held back until someone is chosen, a day from the version’s publication to today and a note of how on one line; then it posts the person, the version read, the day and the note, trimmed', () => {
+  it('NTW-12 OD-19 PD-75: the record is held back until someone is chosen, a day from the version’s publication to today and a note of how; then it posts the person, the version read, the day and the note, on one line and trimmed', () => {
     const people = noticePeopleForClient()
     const empty = recordEditor(people, EMPTY_RECORD)
     expect(empty.version).toBe('0')
@@ -518,12 +518,23 @@ describe('C0.9 OD-19: recording an acknowledgement made outside Hearth (dpo/noti
       )
     }
     expect(recordEditor(people, { person: rachel, acknowledgedOn: TODAY, note: 'x'.repeat(501) }).problems).toEqual([
-      'Keep it to 500 characters.',
+      'Keep “How they acknowledged it” to 500 characters.',
     ])
-    expect(recordEditor(people, { person: rachel, acknowledgedOn: TODAY, note: 'one\ntwo' }).problems).toEqual([
-      'Keep it on one line.',
-    ])
+    // The note goes as one line (flatText(), as the contact's role title does): a tab pasted into it,
+    // or a line break, is a space, never a "not one line" problem the DPO can't see.
+    for (const [note, sent] of [
+      ['Signed\tat induction', 'Signed at induction'],
+      ['one\ntwo', 'one two'],
+    ] as const) {
+      const editor = recordEditor(people, { person: rachel, acknowledgedOn: TODAY, note })
+      expect(editor.problems, note).toEqual([])
+      expect(editor.recording?.body.note, note).toBe(sent)
+    }
     expect(recordLines([...RECORD_PROBLEMS], '3')).toHaveLength(RECORD_PROBLEMS.length)
+    // Each problem with the note names it by its label.
+    for (const line of recordLines(['note_long', 'note_not_one_line', 'ai_copy'], '3')) {
+      expect(line).toContain(`“${RECORD.how}”`)
+    }
     const ready = recordEditor(people, {
       person: rachel,
       acknowledgedOn: '2026-10-21',

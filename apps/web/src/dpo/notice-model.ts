@@ -20,6 +20,7 @@
 //   OD-19, PD-75, PD-76): the people to pick from, told apart where two would read the same, what
 //   holds a record back, and what a refused one says.
 import {
+  flatText,
   NOTICE_PROVIDER_NAMES,
   type NoticeAdminForClient,
   type NoticeChangesForClient,
@@ -353,15 +354,18 @@ export interface RecordEditor {
 
 // The form against the people's answer: what it lists, what holds it back (the days from the
 // version's publication to today, both in the org's zone), and the body Record posts: the person,
-// the version the list was read for, the day and the note, trimmed (the DPO comes from the session).
+// the version the list was read for, the day and the note (the DPO comes from the session). The note
+// is checked and sent as one line, trimmed (flatText(), as the contact's role title is, so a pasted
+// tab is a space, never a "not one line" problem the DPO can't see).
 export function recordEditor(people: NoticePeopleForClient, form: RecordForm): RecordEditor {
   const version = String(people.latest.version)
   const { options, same } = recordOptions(people.people)
+  const note = flatText(form.note)
   const codes = recordProblems(
     {
       person: form.person === '' ? null : form.person,
       acknowledgedOn: form.acknowledgedOn === '' ? null : form.acknowledgedOn,
-      note: form.note,
+      note,
     },
     { from: people.latest.publishedOn, to: people.today },
   )
@@ -379,7 +383,7 @@ export function recordEditor(people: NoticePeopleForClient, form: RecordForm): R
               person: person.id,
               notice: people.latest.notice,
               acknowledgedOn: form.acknowledgedOn,
-              note: form.note.trim(),
+              note,
             },
             name: person.name,
           },
@@ -392,9 +396,10 @@ export const recordedText = (result: { readonly changed: boolean }, name: string
   result.changed ? RECORD.recorded(name, version) : RECORD.already(name, version)
 
 // A refused record, in the dialog: 409 notice_changed (a newer version was published) offers Reload;
-// 400 notice_invalid says to check the day and the note; 403 forbidden that only someone else still
-// at the organisation can be recorded for; the rest as the register pages read them (the PIN step,
-// a new sign-in, or the server's words).
+// 400 notice_invalid says to check the day and the note; 403 forbidden (yourself, someone who has
+// left, or you no longer hold the DPO role) that only someone else still at the organisation can be
+// recorded for; the rest as the register pages read them (the PIN step, a new sign-in, or the
+// server's words).
 export function recordRefusalOf(error: unknown, version: string): Refusal {
   const failure = failureOf(error)
   if (failure.code === 'notice_changed') return { kind: 'changed', text: RECORD.newer }
