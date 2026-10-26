@@ -51,6 +51,12 @@ export const MESSAGES = {
   notice_required: 'Read the privacy notice and acknowledge it to carry on.',
   notice_changed: 'The notice changed while you were reading it. Read the current version.',
   notice_invalid: "The notice can't be published as it is. The page lists what it needs.",
+  // Requests to the DPO (C0.9 PR 3b): a step recorded on a request that moved since the sheet read
+  // it (HF005, 409), and a request, intake or step a rule refuses (HF006, 400). Every page words its
+  // own problems first (packages/shared cases.ts), so these are the fallbacks for a refusal the
+  // page didn't foresee.
+  case_changed: 'This request changed since you opened it. Reload it and try again.',
+  case_invalid: "This can't be sent as it is. The form says what it needs.",
   // Read at sign-in too, where nothing the person sees has changed (T21 item 13).
   try_again: 'Something else happened at the same moment. Try again.',
   internal: 'Something went wrong on our side. Try again.',

@@ -190,6 +190,7 @@ describe('C0.9 PD-46: /notice (notice/NoticeScreen.tsx)', () => {
           purposes: { added: ['backups'], changed: ['accounts'], removed: [] },
           providers: { added: [], changed: ['twilio'], removed: ['livekit'] },
           contact: 'same',
+          targets: 'same',
           wording: true,
         },
       }),
@@ -211,6 +212,7 @@ describe('C0.9 PD-46: /notice (notice/NoticeScreen.tsx)', () => {
         purposes: { added: [], changed: [], removed: [] },
         providers: { added: [], changed: [], removed: [] },
         contact: 'same',
+        targets: 'same',
         wording: false,
       }),
     ).toBeUndefined()
@@ -222,7 +224,7 @@ describe('C0.9 PD-46: /notice (notice/NoticeScreen.tsx)', () => {
       ['changed', 'The Data Protection Officer’s contact details have changed.'],
       ['added', 'The notice now gives the Data Protection Officer’s contact details.'],
     ] as const) {
-      const changes = { since: 2, purposes: none, providers: none, contact, wording: false }
+      const changes = { since: 2, purposes: none, providers: none, contact, targets: 'same' as const, wording: false }
       expect(changeLines(changes)?.contact).toBe(contact)
       const markup = await noticeAt(answer('required', { changes }))
       expect(textsOf(markup, 'h2')[0]).toBe('What’s changed since version 2')
@@ -237,6 +239,7 @@ describe('C0.9 PD-46: /notice (notice/NoticeScreen.tsx)', () => {
           purposes: { added: ['backups'], changed: [], removed: [] },
           providers: none,
           contact: 'changed',
+          targets: 'changed',
           wording: true,
         },
       }),
@@ -245,7 +248,35 @@ describe('C0.9 PD-46: /notice (notice/NoticeScreen.tsx)', () => {
     const at = (text: string) => callout.indexOf(text)
     expect(at('Backups')).toBeLessThan(at('The Data Protection Officer’s contact details have changed.'))
     expect(at('The Data Protection Officer’s contact details have changed.')).toBeLessThan(
+      at('The Data Protection Officer’s reply targets have changed.'),
+    )
+    expect(at('The Data Protection Officer’s reply targets have changed.')).toBeLessThan(
       at('The notice’s wording has changed.'),
+    )
+  })
+
+  it('NTW-14 OD-08 PD-95: the reply targets given for the first time, or changed, are a line of their own, and alone are enough to show the callout; a c09.2 to c09.3 publish says the targets were added and the wording changed', async () => {
+    const none = { added: [], changed: [], removed: [] }
+    for (const [targets, line] of [
+      ['changed', 'The Data Protection Officer’s reply targets have changed.'],
+      ['added', 'This version gives the Data Protection Officer’s reply targets.'],
+    ] as const) {
+      const changes = { since: 2, purposes: none, providers: none, contact: 'same' as const, targets, wording: false }
+      expect(changeLines(changes)?.targets).toBe(targets)
+      const markup = await noticeAt(answer('required', { changes }))
+      expect(textsOf(markup, 'h2')[0]).toBe('What’s changed since version 2')
+      expect(textsOf(markup, 'p')).toContain(line)
+    }
+    const upgrade = await noticeAt(
+      answer('required', {
+        changes: { since: 2, purposes: none, providers: none, contact: 'same', targets: 'added', wording: true },
+      }),
+    )
+    expect(textsOf(upgrade, 'p')).toEqual(
+      expect.arrayContaining([
+        'This version gives the Data Protection Officer’s reply targets.',
+        'The notice’s wording has changed.',
+      ]),
     )
   })
 

@@ -8,20 +8,27 @@
 // plainly in the same transaction (compliance/notice-standing.ts): the shell starts the gateway only
 // once it is acknowledged, and otherwise sends the person to /notice, whose own answer decides.
 // capabilities.registers stays decide()'s, which no notice gates, so "Data protection" still shows
-// while the DPO is on /notice (T22 item 28).
+// while the DPO is on /notice (T22 item 28). requests (C0.9 PR 3b, OD-22, PD-99) is the DPO's count
+// of requests needing attention (new, due within 2 business days, or overdue), from
+// case_attention() in the same transaction, which takes no lock: only for someone can() would let
+// read the queue once re-authenticated and the notice would let through now (so not before v0, nor
+// while they owe an acknowledgement), and null for everyone else without running the statement. A
+// number, never a name, a kind or a reference, so the shell badges the avatar button and "Data
+// protection" the moment the DPO opens Hearth; nothing pushes it.
 //
 // The acting session is re-read and can() asked about session.read_own in a read-only
 // transaction. Unlike GET /api/flags, the request counts as use of the session, so its last-use
 // time is written after the response (sessions.ts touch, at most once a minute per process): the
 // shell asks at boot, which a person does. That write is exempt from the outbox
 // (outbox/coverage.ts, last_seen_at), and the read itself writes nothing.
-import type { World } from '@hearth/access'
+import { noticeAdmits, type World } from '@hearth/access'
 import type { SessionJSON } from '@hearth/shared'
 import { sql } from 'kysely'
 import { consider, decide } from '#src/access/world.ts'
 import type { Api } from '#src/api.ts'
 import { ApiError } from '#src/auth/errors.ts'
 import { inSession, type SessionIds } from '#src/auth/sessions.ts'
+import { caseAttention } from '#src/compliance/cases.ts'
 import { noticeStanding } from '#src/compliance/notice-standing.ts'
 import type { InOrg } from '#src/db/database.ts'
 import type { Answer, ReqInfo } from '#src/http.ts'
@@ -59,7 +66,17 @@ export async function readSession(api: Api, session: SessionIds, info: ReqInfo):
         where p.org_id = ${session.orgId} and p.id = ${session.userId}`.execute(trx)
       const row = rows[0]
       if (row === undefined) return undefined
-      return { ...row, registers, notice: await noticeStanding(trx, session.orgId, session.userId) }
+      const standing = await noticeStanding(trx, session.orgId, session.userId)
+      // The DPO's count of requests needing attention (C0.9 OD-22, PD-99): only for someone can()
+      // would let read the queue once re-authenticated and the notice would let through now (so not
+      // before v0, nor while they owe an acknowledgement), from case_attention(), which takes no
+      // lock. A number, never a name; null for everyone else, without running the statement.
+      const requests =
+        decide(world, session.userId, { action: 'case.read' }, true) === 'allowed' &&
+        noticeAdmits(world, session.userId, 'case.read', standing)
+          ? await caseAttention(trx)
+          : null
+      return { ...row, registers, notice: standing, requests }
     },
     { readOnly: true },
   )
@@ -72,6 +89,7 @@ export async function readSession(api: Api, session: SessionIds, info: ReqInfo):
     timeZone: found.time_zone,
     capabilities: { registers: found.registers },
     notice: found.notice,
+    requests: found.requests,
   }
   return { body }
 }

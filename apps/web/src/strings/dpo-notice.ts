@@ -54,6 +54,9 @@ export const NOTICE_TAB = {
     contactSubject: 'Your contact details',
     contact: 'Your contact details change.',
     contactAdded: 'The notice gives your contact details for the first time.',
+    // The DPO's reply targets (C0.9 OD-08, PD-95): first given, or changed.
+    targetsAdded: 'The reply targets are new to the notice.',
+    targets: 'The reply targets changed.',
     publish: (version: string) => `Publish version ${version}`,
     publishing: 'Publishing…',
     // Publish held for this reason when the draft is the published notice again.

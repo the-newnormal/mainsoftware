@@ -15,6 +15,9 @@
 // - The element that opened it is read in the effect, as showModal() runs, not while rendering,
 //   once per opening, and gets focus back on close unless focus has already gone somewhere on
 //   purpose (DRV-48).
+// - presentation 'full' (C0.9 PR 3b, the DPO's case sheet): the whole screen on phones, and a wide
+//   dialog from md: up, for a record read and worked on at length. focusTitle puts focus on its
+//   title as it opens, so a screen reader starts from what it is.
 import { X } from 'lucide-react'
 import { type ReactNode, type RefObject, type SyntheticEvent, useEffect, useId, useRef, useState } from 'react'
 import { IconButton } from './Button.tsx'
@@ -25,20 +28,28 @@ import { UI } from './strings.ts'
 
 export interface DialogProps {
   open: boolean
-  onClose(): void
+  // forced: the browser closed it already (a close request the page can't stop), so the caller's
+  // state must follow now; otherwise a close the caller may still hold back (Close, Escape), as a
+  // sheet holding unsent words does to confirm a discard.
+  onClose(forced?: boolean): void
   title: string
-  presentation?: 'sheet' | 'centred'
+  presentation?: 'sheet' | 'centred' | 'full'
   footer?: ReactNode
   // What takes focus when it opens; else the browser's choice, the first focusable element. It is
   // read as it opens, so a new ref object on each render doesn't move focus.
   initialFocus?: RefObject<HTMLElement | null>
+  // Focus goes to the title as it opens (when no initialFocus is given).
+  focusTitle?: boolean
   children: ReactNode
 }
 
 const PRESENTATION = {
   // Below sm: a sheet on the bottom edge, padded above the home indicator; from sm: centred.
-  sheet: 'mb-0 mt-auto w-full max-w-none rounded-t-3xl pb-safe sm:m-auto sm:max-w-lg sm:rounded-3xl sm:pb-0',
-  centred: 'm-auto w-[calc(100%-2rem)] max-w-lg rounded-3xl',
+  sheet:
+    'max-h-[88dvh] mb-0 mt-auto w-full max-w-none rounded-t-3xl pb-safe sm:m-auto sm:max-w-lg sm:rounded-3xl sm:pb-0',
+  centred: 'max-h-[88dvh] m-auto w-[calc(100%-2rem)] max-w-lg rounded-3xl',
+  // Below md: the whole screen, padded above the home indicator; from md: a wide dialog, centred.
+  full: 'm-0 h-dvh max-h-dvh w-full max-w-none pb-safe md:m-auto md:h-auto md:max-h-[88dvh] md:w-[calc(100%-4rem)] md:max-w-3xl md:rounded-3xl md:pb-0',
 } as const
 
 // What has focus, or null for nothing or <body>.
@@ -47,12 +58,22 @@ const focusedElement = () => {
   return now instanceof HTMLElement && now !== document.body ? now : null
 }
 
-export function Dialog({ open, onClose, title, presentation = 'sheet', footer, initialFocus, children }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  presentation = 'sheet',
+  footer,
+  initialFocus,
+  focusTitle = false,
+  children,
+}: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
+  const titleRef = useRef<HTMLHeadingElement>(null)
   const titleId = useId()
   // The latest props, for the event handlers and the effect, which runs only when `open` changes.
-  const latest = useRef({ open, onClose, initialFocus })
-  latest.current = { open, onClose, initialFocus }
+  const latest = useRef({ open, onClose, initialFocus, focusTitle })
+  latest.current = { open, onClose, initialFocus, focusTitle }
   const [model] = useState(() => createDialogModel(focusedElement))
 
   useEffect(() => {
@@ -63,7 +84,8 @@ export function Dialog({ open, onClose, title, presentation = 'sheet', footer, i
     }
     const hide = model.show(dialog)
     const unlock = lockScroll()
-    latest.current.initialFocus?.current?.focus()
+    const first = latest.current.initialFocus?.current ?? (latest.current.focusTitle ? titleRef.current : null)
+    first?.focus()
     return () => {
       unlock()
       hide()
@@ -79,7 +101,7 @@ export function Dialog({ open, onClose, title, presentation = 'sheet', footer, i
   }
 
   const onNativeClose = (event: SyntheticEvent<HTMLDialogElement>) => {
-    if (latest.current.open && model.closedByBrowser(event.currentTarget)) latest.current.onClose()
+    if (latest.current.open && model.closedByBrowser(event.currentTarget)) latest.current.onClose(true)
   }
 
   return (
@@ -92,12 +114,17 @@ export function Dialog({ open, onClose, title, presentation = 'sheet', footer, i
         // The backdrop veils the page in its own ground colour. Browsers before Safari 17.4 and
         // Chrome 122 don't let ::backdrop read the tokens, and show the page unveiled; the dialog is
         // just as modal.
-        'anim-in max-h-[88dvh] flex-col bg-surface p-0 text-fg shadow-card open:flex backdrop:bg-bg/75',
+        'anim-in flex-col bg-surface p-0 text-fg shadow-card open:flex backdrop:bg-bg/75',
         PRESENTATION[presentation],
       )}
     >
       <div className="flex items-center gap-2 border-b border-line py-2 pl-5 pr-2">
-        <h2 id={titleId} className="min-w-0 flex-1 break-words font-display text-xl leading-tight font-semibold">
+        <h2
+          ref={titleRef}
+          id={titleId}
+          tabIndex={focusTitle ? -1 : undefined}
+          className="min-w-0 flex-1 break-words font-display text-xl leading-tight font-semibold"
+        >
           {title}
         </h2>
         <IconButton label={UI.close} icon={<X size={20} />} onClick={() => latest.current.onClose()} />

@@ -23,8 +23,9 @@ import { E2E_ORIGIN } from './env.ts'
 
 type Recorded = Pick<SetPurposeJSON, 'basis' | 'basisReference' | 'retention'>
 
-// What each purpose a new org starts active with is recorded as (C0.9 PD-06): the pinned two, and
-// security_audit and backups (which DPP-E2 may have recorded already, the same way).
+// What each purpose a new org starts active with is recorded as (C0.9 PD-06): the pinned two,
+// security_audit and backups (which DPP-E2 may have recorded already, the same way), and from C0.9
+// PR 3b request_handling (OD-17), on another exception or legal requirement. All made up.
 const ENTRIES: Partial<Record<PurposeKey, Recorded>> = {
   accounts: { basis: 'employment', basisReference: null, retention: 'While you work here, then 30 days' },
   service_operation: {
@@ -38,6 +39,11 @@ const ENTRIES: Partial<Record<PurposeKey, Recorded>> = {
     retention: '13 months',
   },
   backups: { basis: 'legitimate_interests', basisReference: 'Assessment 2, in the DPO’s file', retention: '35 days' },
+  request_handling: {
+    basis: 'other_exception',
+    basisReference: 'PDPA sections 12, 21 and 22, in the DPO’s file',
+    retention: '2 years after the request is closed',
+  },
 }
 const OTHERWISE: Recorded = { basis: 'employment', basisReference: null, retention: '30 days' }
 
@@ -52,13 +58,18 @@ const dpoContext = (statePath: string) =>
   })
 
 // The contact SE-05 records, and the notice it publishes then prints under "Your rights" (C0.9
-// PD-74): a role and a shared mailbox, as the contact page advises (OD-10).
+// PD-74): a role and a shared mailbox, as the contact page advises (OD-10). The reply targets kept
+// with it are OD-08's, which a first contact starts with (C0.9 PD-94), and version 1 states them
+// (generator c09.3).
 export const E2E_CONTACT = {
   title: 'Data Protection Officer',
   email: 'dpo@tembusu.example',
   phone: null,
   postal: null,
 } as const
+
+// The reply targets version 1 states (C0.9 OD-08, PD-94): a first contact's.
+export const E2E_TARGETS = { businessDays: 10, calendarDays: 30 } as const
 
 // Records E2E_CONTACT as the DPO whose storage state is at statePath, while no contact is recorded;
 // answers whether it recorded it.

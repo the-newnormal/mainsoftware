@@ -36,6 +36,14 @@
 // The api's routes are collected as Fastify adds them (routes), for the notice suite's sweep of
 // every route (NTI-01).
 //
+// From C0.9 PR 3b (PDPA-04, PDPA-13; OD-06 to OD-17): sendRequest() sends a request to the DPO
+// through its route as a signed-in client, with a fresh client key unless given; logRequest() logs
+// one through log_case(), the superuser acting as the org's DPO, for fixtures of any day received
+// (a year back at most), whose writes the sweep skips; and addAuditReader() adds a role to the
+// org's audit-log readers as the superuser, since nothing writes them before C0.16. publishNotice()
+// already records a basis and a retention for request_handling, active from the start like every
+// such purpose, and a contact recorded through HARNESS_CONTACT carries OD-08's reply targets.
+//
 // startWorker() runs a worker instance (worker/index.ts) on its own
 // two pools as hearth_worker and its own Valkey subscriber, with the production kinds and consumers,
 // the test's own, and the production schedules only when a test asks for them (so the 03:17 and
@@ -489,6 +497,30 @@ export interface Stack {
   recordContact(org: Org, dpo: Person, contact?: DpoContact): Promise<number>
   // Every route the stack's api app added while it got ready, every /api route among them (NTI-01).
   routes: readonly { method: string; url: string }[]
+  // Sends a request to the DPO as the signed-in client, through POST /api/requests/send (C0.9 PR
+  // 3b), with a fresh client key unless given. Answers the reply.
+  sendRequest(client: Client, body: { kind: string; details: string | null; key?: string }): Promise<Reply>
+  // Logs a request through log_case() as the org's DPO, the superuser acting as them, for fixtures of
+  // any day received (log_case() takes a year back at most), with a fresh client key: for a person of
+  // the org (person, with an optional channel and address) or someone without an account (name,
+  // channel, contact). Answers the case's id, reference and due day.
+  logRequest(
+    org: Org,
+    dpo: Person,
+    body: {
+      kind: string
+      cameBy?: string
+      receivedOn: string
+      person?: string | null
+      name?: string | null
+      channel?: string | null
+      contact?: string | null
+      details: string
+    },
+  ): Promise<{ id: string; reference: string; dueOn: string }>
+  // Adds a role to the org's audit-log readers as the superuser: nothing writes the list before
+  // C0.16 (D45).
+  addAuditReader(org: Org, role: Exclude<PersonRole, 'team_admin'>): Promise<void>
   // A role row inserted (or revoked) as the superuser and nothing else: no session is ended, so it
   // models a grant that skipped C0.16's rule of ending the grantee's sessions first (D46 I3).
   // Answers the person as signIn() should now treat them.
@@ -1397,6 +1429,52 @@ export async function startStack(
       return recorded.version
     }
 
+    async function sendRequest(
+      browser: Client,
+      body: { kind: string; details: string | null; key?: string },
+    ): Promise<Reply> {
+      return browser.post('/api/requests/send', {
+        kind: body.kind,
+        details: body.details,
+        key: body.key ?? randomUUID(),
+      })
+    }
+
+    async function logRequest(
+      inOrg: Org,
+      dpo: Person,
+      body: Parameters<Stack['logRequest']>[2],
+    ): Promise<{ id: string; reference: string; dueOn: string }> {
+      const [logged] = await actingAs(inOrg, dpo.id, () =>
+        query<{ id: string; reference: string; due_on: string }>(
+          `select id, reference, due_on::text as due_on
+           from public.log_case($1, $2, $3::date, $4::uuid, $5, $6, $7, $8, $9::uuid, $10, null, null)`,
+          [
+            body.kind,
+            body.cameBy ?? 'email',
+            body.receivedOn,
+            body.person ?? null,
+            body.name ?? null,
+            body.channel ?? null,
+            body.contact ?? null,
+            body.details,
+            randomUUID(),
+            randomUUID(),
+          ],
+        ),
+      )
+      if (logged === undefined) throw new Error('log_case() returned no row')
+      return { id: logged.id, reference: logged.reference, dueOn: logged.due_on }
+    }
+
+    async function addAuditReader(inOrg: Org, role: Exclude<PersonRole, 'team_admin'>): Promise<void> {
+      await query('insert into audit_log_readers (org_id, role, created_by) values ($1, $2, $3)', [
+        inOrg.id,
+        role,
+        inOrg.system,
+      ])
+    }
+
     // Whether the person holds a PIN role now, read from their unrevoked role rows.
     async function holdsPinRoleNow(person: Person): Promise<boolean> {
       const rows = await query<{ role: PersonRole }>(
@@ -1664,6 +1742,9 @@ export async function startStack(
       acknowledge,
       publishNotice,
       recordContact,
+      sendRequest,
+      logRequest,
+      addAuditReader,
       routes,
       grantRole,
       revokeRole,

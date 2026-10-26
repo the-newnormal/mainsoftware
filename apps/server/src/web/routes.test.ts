@@ -69,6 +69,8 @@ interface Script {
   // The person's standing with the notice, as its read finds it (C0.9 PD-46); unset, the scripted
   // pool's own default, acknowledged.
   standing?: 'acknowledged' | 'required' | 'unpublished'
+  // What case_attention() answers (C0.9 PD-99): the DPO's count of requests needing attention.
+  attention?: number | null
 }
 
 // A signed-in request's statements, answered: the pre-org lookup, the acting session's re-read,
@@ -98,6 +100,7 @@ function signedIn(script: Script = {}) {
     if (script.standing !== undefined && text.startsWith('select x.person,')) {
       return [{ person: PERSON, standing: script.standing }]
     }
+    if (text.startsWith('select public.case_attention()')) return [{ count: script.attention ?? null }]
     return []
   })
 }
@@ -412,6 +415,8 @@ describe('C0.8 T21 item 10 GET /api/session', () => {
       timeZone: 'Asia/Kuala_Lumpur',
       capabilities: { registers: false },
       notice: 'acknowledged',
+      // Not the DPO: no count (C0.9 PD-99).
+      requests: null,
     })
     expect(SessionResponse.safeParse(response.json()).success).toBe(true)
     // The fallbacks are the read's own: the profile first, then the roster's name and the org's
@@ -477,6 +482,45 @@ describe('C0.8 T21 item 10 GET /api/session', () => {
     const flagsApp = setup({ db: flagsPool.db, flags: staticFlags(REGISTRY) })
     expect((await flagsApp.get('/api/flags', COOKIE)).statusCode).toBe(200)
     expect(flagsPool.texts().some(text => text.startsWith('select x.person,'))).toBe(false)
+  })
+
+  it('C0.9 OD-22 PD-99 RQI-10: requests is the DPO’s count from case_attention(), in the answer’s read-only transaction, once the notice would let them read the queue; null without running it for anyone else, and for a DPO before v0 or owing an acknowledgement', async () => {
+    const found = { name: 'Ashton', time_zone: 'Asia/Singapore' }
+    const dpo = [{ role: 'dpo', team_id: null }]
+    for (const [roles, standing, requests] of [
+      [dpo, 'acknowledged', 3],
+      [[{ role: 'owner', team_id: null }, ...dpo], 'acknowledged', 3],
+      // case.read isn't a setup use (PD-98), nor free of the gate (OD-13).
+      [dpo, 'unpublished', null],
+      [dpo, 'required', null],
+      // Never an Owner, Admin or Compliance Officer as such (OD-14).
+      [[{ role: 'owner', team_id: null }], 'acknowledged', null],
+      [[{ role: 'admin', team_id: null }], 'acknowledged', null],
+      [[{ role: 'compliance_officer', team_id: null }], 'acknowledged', null],
+      [[], 'acknowledged', null],
+    ] as const) {
+      const pool = signedIn({ roles: [...roles], found, standing, attention: 3 })
+      const { get } = setup({ db: pool.db })
+      const response = await get('/api/session', COOKIE)
+      const label = `${JSON.stringify(roles)} ${standing}`
+      expect(response.statusCode, label).toBe(200)
+      expect(response.json().requests, label).toBe(requests)
+      expect(SessionResponse.parse(response.json()).requests, label).toBe(requests)
+      const texts = pool.texts()
+      const asked = texts.findIndex(text => text.startsWith('select public.case_attention()'))
+      expect(asked > -1, label).toBe(requests !== null)
+      if (asked > -1) {
+        // In the answer's own read-only transaction, after the standing, with no lock.
+        const begun = texts.lastIndexOf('start transaction isolation level read committed read only', asked)
+        expect(begun).toBeGreaterThan(-1)
+        expect(texts.slice(begun, asked)).not.toContain('commit')
+        expect(texts.slice(begun, asked).some(text => text.startsWith('select x.person,'))).toBe(true)
+        expect(texts[asked]).not.toMatch(/\bfor (share|update|no key update|key share)\b/)
+      }
+    }
+    // A DPO whom case_attention() no longer counts (they lost the role at that instant) reads null.
+    const gone = signedIn({ roles: dpo, found, standing: 'acknowledged', attention: null })
+    expect((await setup({ db: gone.db }).get('/api/session', COOKIE)).json().requests).toBeNull()
   })
 
   it('T21 item 10: a person the read can’t find reads as signed out, without clearing the cookie', async () => {

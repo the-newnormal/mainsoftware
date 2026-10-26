@@ -40,6 +40,52 @@ export interface AuditLogReaders {
   removed_by: string | null
 }
 
+export interface CaseSteps {
+  id: Generated<string>
+  org_id: string
+  case_id: string
+  number: number
+  step:
+    | 'acknowledged'
+    | 'identity_checked'
+    | 'replied'
+    | 'extended'
+    | 'reclassified'
+    | 'note'
+    | 'review_started'
+    | 'review_ended'
+  on_day: Timestamp
+  note: string | null
+  extended_to: Timestamp | null
+  kind: string | null
+  recorded_at: Generated<Timestamp>
+  recorded_by: string
+}
+
+export interface Cases {
+  id: Generated<string>
+  org_id: string
+  reference: Generated<string>
+  client_key: string
+  kind: 'question' | 'complaint' | 'access' | 'correction' | 'withdrawal' | 'objection'
+  came_by: 'hearth' | 'email' | 'letter' | 'phone' | 'in_person' | 'other'
+  received_on: Timestamp
+  logged_at: Generated<Timestamp>
+  logged_by: string
+  requester_person_id: string | null
+  requester_name: string | null
+  requester_channel: 'email' | 'phone' | 'post' | null
+  requester_contact: string | null
+  details: string | null
+  stated_settings_version: number | null
+  closed_on: Timestamp | null
+  closed_kind: 'question' | 'complaint' | 'access' | 'correction' | 'withdrawal' | 'objection' | null
+  outcome: 'answered' | 'refused' | 'withdrawn' | 'duplicate' | 'not_a_request' | 'logged_in_error' | null
+  closed_note: string | null
+  closed_at: Timestamp | null
+  closed_by: string | null
+}
+
 export interface DataAccessEvents {
   id: Generated<string>
   org_id: string
@@ -89,6 +135,8 @@ export interface DpoSettings {
   contact_postal: string | null
   recorded_at: Generated<Timestamp>
   recorded_by: string
+  target_business_days: Generated<number>
+  target_calendar_days: Generated<number>
 }
 
 export interface FeatureFlags {
@@ -202,6 +250,8 @@ export interface OutboxEvents {
     | 'flag.changed'
     | 'register.purpose_changed'
     | 'register.transfer_changed'
+    | 'case.opened'
+    | 'case.changed'
     | 'person.added'
     | 'person.updated'
     | 'person.phone_changed'
@@ -500,6 +550,8 @@ export interface WorkingHours {
 export interface DB {
   audit_events: AuditEvents
   audit_log_readers: AuditLogReaders
+  case_steps: CaseSteps
+  cases: Cases
   data_access_events: DataAccessEvents
   departments: Departments
   devices: Devices

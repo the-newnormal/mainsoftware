@@ -22,18 +22,34 @@ import { createQueryClient } from '@/session/query-client.ts'
 import type { SessionRuntime } from '@/session/runtime.ts'
 import { aiCopyIn } from '@/strings/ai-copy.ts'
 import { DPO } from '@/strings/dpo.ts'
+import { CASE_COPY } from '@/strings/dpo-case.ts'
 import { CONTACT } from '@/strings/dpo-contact.ts'
 import { NOTICE_MARKERS, NOTICE_TAB } from '@/strings/dpo-notice.ts'
 import { PURPOSES_COPY } from '@/strings/dpo-purposes.ts'
 import { RECORD } from '@/strings/dpo-record.ts'
+import { REQUESTS_COPY } from '@/strings/dpo-requests.ts'
 import { PROVIDER_CHECKS, TRANSFERS_COPY } from '@/strings/dpo-transfers.ts'
 import { SHELL } from '@/strings/shell.ts'
-import { ContactDialog } from './ContactScreen.tsx'
+import { AddStep, CaseSheet } from './CaseSheet.tsx'
+import { ContactDialog, TargetsDialog } from './ContactScreen.tsx'
+import { casePeopleQuery, caseQuery, requestQueueQuery } from './case-queries.ts'
+import { LogRequest } from './LogRequest.tsx'
 import { PurposeDialog } from './PurposesScreen.tsx'
 import { contactQuery, noticeAdminQuery, noticePeopleQuery, registersQuery } from './queries.ts'
 import { RecordDialog } from './RecordAcknowledgement.tsx'
 import { ReadRefusal } from './RegisterPage.tsx'
+import { NoticeFirst, QueueContent } from './RequestsScreen.tsx'
 import { ClearDialog, TransferDialog, WithdrawDialog } from './TransfersScreen.tsx'
+import {
+  ALIKE_IDS,
+  CASE_IDS,
+  CASE_TODAY,
+  caseForClient,
+  casePeopleForClient,
+  LEAVER_ID,
+  MARCUS_ID,
+  queueForClient,
+} from './testing/cases.ts'
 import {
   COMPLETE_FACTS,
   contactAdminForClient,
@@ -204,14 +220,19 @@ describe('C0.9 PD-26: the DPO pages (dpo/)', () => {
   it('DPP-05 PDPA-01 PD-07 PD-27: /dpo/purposes is the shell’s page titled Processing register, with the links between the registers (Purposes current), a card per non-AI purpose with its status and an Edit named for it, the pinned purposes saying Hearth keeps them, and the two lines under the list', async () => {
     const markup = await appAt('/dpo/purposes')
     expect(textsOf(markup, 'h1')).toEqual(['Processing register'])
-    const registers = tags(markup, 'nav').filter(nav => nav.get('aria-label') === 'Registers')
+    // The track is named for all the DPO's pages, "Data protection", never "Registers" again, since
+    // it holds the requests and the notice too (C0.9 PR 3b, PPL-06).
+    const registers = tags(markup, 'nav').filter(nav => nav.get('aria-label') === 'Data protection')
     expect(registers).toHaveLength(1)
+    expect(tags(markup, 'nav').filter(nav => nav.get('aria-label') === 'Registers')).toEqual([])
     const links = [...markup.matchAll(/<a\b([^>]*)>(.*?)<\/a>/gs)]
       .filter(match => /href="\/dpo\//.test(match[1] ?? ''))
       .map(match => [match[1]?.match(/href="([^"]*)"/)?.[1], match[1]?.match(/aria-current="([^"]*)"/)?.[1]])
-    // The Registers links (C0.9 PD-48 adds the Notice tab's, PR 3a the contact page's), then the
-    // banner's link to the Notice tab: on its first day the org has published no notice.
+    // The Data protection links (C0.9 PD-48 adds the Notice tab's, PR 3a the contact page's, PR 3b the
+    // requests', first), then the banner's link to the Notice tab: on its first day the org has
+    // published no notice.
     expect(links).toEqual([
+      ['/dpo/requests', undefined],
       ['/dpo/purposes', 'page'],
       ['/dpo/transfers', undefined],
       ['/dpo/contact', undefined],
@@ -219,10 +240,11 @@ describe('C0.9 PD-26: the DPO pages (dpo/)', () => {
       ['/dpo/notice', undefined],
     ])
     const cards = textsOf(markup, 'h2')
-    expect(cards).toHaveLength(13)
+    // 14 from C0.9 PR 3b: request_handling (OD-17).
+    expect(cards).toHaveLength(14)
     expect(cards[0]).toBe('Accounts and sign-in: the roster, phone numbers and one-time codes, devices, profiles')
     expect(cards).not.toContain('Transcribing sessions')
-    expect(buttons(markup).filter(button => button.name.startsWith('Edit '))).toHaveLength(13)
+    expect(buttons(markup).filter(button => button.name.startsWith('Edit '))).toHaveLength(14)
     expect(buttons(markup).map(button => button.name)).toContain('Edit Security audit and monitoring')
     expect(markup.split(PURPOSES_COPY.pinned).length - 1).toBe(2)
     expect(readable(markup)).toEqual(
@@ -368,9 +390,9 @@ describe('C0.9 PD-26: the DPO pages (dpo/)', () => {
   })
 })
 
-// The Registers links' targets, with which is current.
+// The Data protection links' targets, with which is current.
 const registerLinks = (markup: string) => {
-  const start = markup.indexOf('<nav aria-label="Registers"')
+  const start = markup.indexOf('<nav aria-label="Data protection"')
   const nav = markup.slice(start, markup.indexOf('</nav>', start))
   return [...nav.matchAll(/<a\b([^>]*)>(.*?)<\/a>/gs)].map(match => ({
     href: match[1]?.match(/href="([^"]*)"/)?.[1],
@@ -385,11 +407,12 @@ const registerLinks = (markup: string) => {
 }
 
 describe('C0.9 PD-48 B-12: the Notice tab and the register pages’ notice markers (dpo/)', () => {
-  it('NTW-09 PD-48 PDPA-03: /dpo/notice is the shell’s page titled Publish the notice (not /notice’s title) under the Registers links (Notice current): the published version with its status and a count of acknowledgements, what the next version changes and warns of, Publish acting, the words under h3s as text, and the versions published', async () => {
+  it('NTW-09 PD-48 PDPA-03: /dpo/notice is the shell’s page titled Publish the notice (not /notice’s title) under the Data protection links (Notice current): the published version with its status and a count of acknowledgements, what the next version changes and warns of, Publish acting, the words under h3s as text, and the versions published', async () => {
     const markup = await appAt('/dpo/notice', REGISTERS, noticeAdminForClient())
     expect(textsOf(markup, 'h1')).toEqual(['Publish the notice'])
     expect(SHELL.dpo.notice).not.toBe(SHELL.notice)
     expect(registerLinks(markup)).toEqual([
+      { href: '/dpo/requests', current: undefined, text: 'Requests' },
       { href: '/dpo/purposes', current: undefined, text: 'Purposes' },
       { href: '/dpo/transfers', current: undefined, text: 'Transfers' },
       { href: '/dpo/contact', current: undefined, text: 'Contact' },
@@ -463,10 +486,11 @@ describe('C0.9 PD-48 B-12: the Notice tab and the register pages’ notice marke
     expect(readable(markup).filter(line => aiCopyIn(line) !== undefined)).toEqual([])
   })
 
-  it('NTW-09 T21 item 5: before the answer, the Notice tab says it is loading, in a status, under the Registers links', async () => {
+  it('NTW-09 T21 item 5: before the answer, the Notice tab says it is loading, in a status, under the Data protection links', async () => {
     const markup = await appAt('/dpo/notice', null)
     expect(markup).toMatch(/<p role="status"[^>]*>Loading the notice…<\/p>/)
     expect(registerLinks(markup).map(link => link.href)).toEqual([
+      '/dpo/requests',
       '/dpo/purposes',
       '/dpo/transfers',
       '/dpo/contact',
@@ -504,9 +528,10 @@ describe('C0.9 PD-48 B-12: the Notice tab and the register pages’ notice marke
         NOTICE_MARKERS.pinnedStale,
       ]),
     )
-    // security_audit is active, not pinned and not notified; backups is notified.
-    expect(purposes.split(NOTICE_MARKERS.waitingForNotice).length - 1).toBe(1)
-    expect(textsOf(purposes, 'h2')).toHaveLength(13)
+    // security_audit and, from C0.9 PR 3b, request_handling are active, not pinned and not notified;
+    // backups is notified.
+    expect(purposes.split(NOTICE_MARKERS.waitingForNotice).length - 1).toBe(2)
+    expect(textsOf(purposes, 'h2')).toHaveLength(14)
 
     const transfers = await appAt('/dpo/transfers', registers)
     expect(registerLinks(transfers).at(-1)?.text).toBe('Notice Out of date')
@@ -551,6 +576,7 @@ describe('C0.9 PD-70 OD-19: the contact page and recording an acknowledgement (d
     const markup = await appAt('/dpo/contact', REGISTERS, undefined, { contact: contactAdminForClient() })
     expect(textsOf(markup, 'h1')).toEqual(['Contact details'])
     expect(registerLinks(markup)).toEqual([
+      { href: '/dpo/requests', current: undefined, text: 'Requests' },
       { href: '/dpo/purposes', current: undefined, text: 'Purposes' },
       { href: '/dpo/transfers', current: undefined, text: 'Transfers' },
       { href: '/dpo/contact', current: 'page', text: 'Contact' },
@@ -563,8 +589,13 @@ describe('C0.9 PD-70 OD-19: the contact page and recording an acknowledgement (d
         .filter(link => link.get('href')?.startsWith('/dpo/'))
         .every(link => /min-h-11 min-w-11/.test(link.get('class') ?? '')),
     ).toBe(true)
-    expect(textsOf(markup, 'h2')).toEqual([CONTACT.none.title])
-    expect(readable(markup)).toEqual(expect.arrayContaining([CONTACT.intro, CONTACT.none.body]))
+    // The reply targets' card below it says to record the contact first, and offers no change (C0.9
+    // PR 3b, PD-94).
+    expect(textsOf(markup, 'h2')).toEqual([CONTACT.none.title, CONTACT.targets.title])
+    expect(readable(markup)).toEqual(
+      expect.arrayContaining([CONTACT.intro, CONTACT.none.body, CONTACT.targets.firstContact]),
+    )
+    expect(buttons(markup).map(button => button.name)).not.toContain(CONTACT.targets.edit)
     expect(buttons(markup).find(button => button.name === CONTACT.none.record)).toMatchObject({ held: false })
     expect(readable(markup).filter(text => aiCopyIn(text) !== undefined)).toEqual([])
 
@@ -584,8 +615,10 @@ describe('C0.9 PD-70 OD-19: the contact page and recording an acknowledgement (d
         contact: contactRow(),
         stated,
       })
-      const markup = await appAt('/dpo/contact', REGISTERS, undefined, { contact: answer })
-      expect(textsOf(markup, 'h2'), stated).toEqual(['Data Protection Officer'])
+      const page = await appAt('/dpo/contact', REGISTERS, undefined, { contact: answer })
+      expect(textsOf(page, 'h2'), stated).toEqual(['Data Protection Officer', CONTACT.targets.title])
+      // The contact's card, up to the reply targets' (C0.9 PR 3b).
+      const markup = page.slice(0, page.indexOf(CONTACT.targets.title))
       const text = readable(markup)
       expect(text, stated).toEqual(
         expect.arrayContaining([
@@ -765,3 +798,475 @@ describe('C0.9 PD-70 OD-19: the contact page and recording an acknowledgement (d
     expect(describedBy(cut, controlOf(cut, RECORD.person))).toEqual([RECORD.more])
   })
 })
+
+// The DPO's queue at /dpo/requests (C0.9 PR 3b), in the app over a router: Ashton's session with its
+// count of requests needing attention, his standing with the notice, and the queue's answer (or its
+// refusal) in his Query cache. Every fetch is recorded, so a case where nothing may be read proves it.
+interface QueueCase {
+  readonly standing?: 'acknowledged' | 'unpublished' | 'required'
+  readonly requests?: number | null
+  readonly queue?: ReturnType<typeof queueForClient>
+  readonly queueFailed?: ApiFailure
+}
+
+async function queueAt(path: string, options: QueueCase = {}): Promise<{ markup: string; fetched: string[] }> {
+  const session = runtime(REGISTERS)
+  const person = { ...ASHTON, notice: options.standing ?? ASHTON.notice, requests: options.requests ?? null }
+  session.queryClient.setQueryData(['session'], person)
+  const noop = () => {}
+  const withStanding = {
+    ...session,
+    info: person,
+    notice: createNoticeStore({
+      initial: options.standing ?? 'acknowledged',
+      live: { start: noop, resume: noop },
+      refetchAll: noop,
+      resetNotice: noop,
+      fetchNotice: noop,
+      refreshNotice: noop,
+      post: noop,
+    }),
+  } as SessionRuntime
+  if (options.queue !== undefined) withStanding.queryClient.setQueryData(requestQueueQuery.queryKey, options.queue)
+  if (options.queueFailed !== undefined) {
+    withStanding.queryClient.setQueryDefaults(requestQueueQuery.queryKey, { retryOnMount: false })
+    withStanding.queryClient
+      .getQueryCache()
+      .build(withStanding.queryClient, { queryKey: requestQueueQuery.queryKey })
+      .setState({ status: 'error', error: options.queueFailed, fetchStatus: 'idle' })
+  }
+  const fetched: string[] = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    fetched.push(String(url))
+    throw new TypeError('no network in markup tests')
+  }) as typeof fetch
+  try {
+    const router = createAppRouter(
+      { runtime: withStanding, storage: undefined },
+      createMemoryHistory({ initialEntries: [path] }),
+    )
+    await router.load()
+    const markup = renderToStaticMarkup(<App router={router} runtime={withStanding} />).replace(
+      /<script\b.*?<\/script>/gs,
+      '',
+    )
+    return { markup, fetched }
+  } finally {
+    globalThis.fetch = realFetch
+  }
+}
+
+// A piece of the queue rendered on its own, with these answers in the cache.
+function aloneWith(node: ReactNode, seed: (client: SessionRuntime['queryClient']) => void): string {
+  const session = runtime(REGISTERS)
+  seed(session.queryClient)
+  const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory({ initialEntries: ['/'] }) })
+  return renderToStaticMarkup(
+    <QueryClientProvider client={session.queryClient}>
+      <RuntimeContext value={session}>
+        <RouterContextProvider router={router}>{node}</RouterContextProvider>
+      </RuntimeContext>
+    </QueryClientProvider>,
+  )
+}
+
+// The Requests link's accessible name and badge, and the track's links.
+const requestsLink = (markup: string) => {
+  const start = markup.indexOf('<nav aria-label="Data protection"')
+  const nav = markup.slice(start, markup.indexOf('</nav>', start))
+  return nav.match(/<a\b[^>]*href="\/dpo\/requests"[^>]*>.*?<\/a>/s)?.[0] ?? ''
+}
+
+describe('C0.9 PR 3b: the requests to the DPO (dpo/)', () => {
+  it('DPP-05 PD-98 PD-99 PPL-06 PPL-12: every DPO page’s track is "Data protection" with Requests first; with a count, the Requests link carries it as a pill hidden from assistive technology and says it in words in its name; with none, or 0, nothing', async () => {
+    for (const path of ['/dpo/purposes', '/dpo/contact']) {
+      const { markup } = await queueAt(path, { requests: 2 })
+      const link = requestsLink(markup)
+      expect(link, path).toMatch(/aria-label="Requests, 2 need attention"/)
+      expect(link, path).toMatch(/<span aria-hidden="true" class="inline-flex h-5 min-w-5[^"]*">2<\/span>/)
+      expect(registerLinks(markup)[0], path).toMatchObject({ href: '/dpo/requests', text: 'Requests 2' })
+    }
+    for (const requests of [0, null]) {
+      const { markup } = await queueAt('/dpo/purposes', { requests })
+      const link = requestsLink(markup)
+      expect(link, String(requests)).not.toMatch(/aria-label=/)
+      expect(registerLinks(markup)[0]?.text, String(requests)).toBe('Requests')
+    }
+    const many = await queueAt('/dpo/purposes', { requests: 140 })
+    expect(registerLinks(many.markup)[0]?.text).toBe('Requests 99+')
+  })
+
+  it('RQW-11 PPL-02: before the notice is published (or while an acknowledgement is owed) /dpo/requests says the requests open once it is, with links to the processing register, the contact details and the Notice tab, and reads nothing', async () => {
+    for (const standing of ['unpublished'] as const) {
+      const { markup, fetched } = await queueAt('/dpo/requests', { standing })
+      expect(textsOf(markup, 'h1')).toEqual(['Requests'])
+      expect(readable(markup)).toContain(REQUESTS_COPY.noticeFirst)
+      // The note's links, after the track's.
+      const links = [...markup.matchAll(/<a\b([^>]*)>(.*?)<\/a>/gs)]
+        .map(match => [match[1]?.match(/href="([^"]*)"/)?.[1], decoded(match[2] ?? '')] as const)
+        .filter(([, text]) => text.startsWith('Open'))
+      expect(links).toEqual([
+        ['/dpo/purposes', REQUESTS_COPY.toPurposes],
+        ['/dpo/contact', REQUESTS_COPY.toContact],
+        ['/dpo/notice', REQUESTS_COPY.toNotice],
+      ])
+      expect(markup).not.toContain(REQUESTS_COPY.loading)
+      expect(fetched.filter(url => url.startsWith('/api/admin/requests'))).toEqual([])
+    }
+    const note = aloneWith(<NoticeFirst />, () => {})
+    expect(readable(note)).toContain(REQUESTS_COPY.noticeFirst)
+  })
+
+  it('DPP-05 PD-98 PD-112: /dpo/requests is titled Requests (Requests current): Log a request, the open cards soonest due first with the total in the heading, each a whole-card button with its kind, reference spelled out, requester, how it came, received and due words (an icon beside overdue), and the closed ones under a disclosure', async () => {
+    const { markup } = await queueAt('/dpo/requests', { queue: queueForClient() })
+    expect(textsOf(markup, 'h1')).toEqual(['Requests'])
+    expect(registerLinks(markup)[0]).toMatchObject({ href: '/dpo/requests', current: 'page' })
+    expect(textsOf(markup, 'h2')).toEqual(['Open requests (2)', 'Closed requests'])
+    const all = buttons(markup)
+    expect(all[0]?.name.includes('Log a request') || all.some(button => button.name === 'Log a request')).toBe(true)
+    const cards = [
+      ...markup.matchAll(/<button type="button" class="flex min-h-11 w-full flex-col[^"]*">(.*?)<\/button>/gs),
+    ].map(match => readable(match[1] ?? ''))
+    expect(cards[0]).toEqual([
+      'Copy of their data',
+      'In progress',
+      'BC2D-FG3H',
+      'Reference B C 2 D, F G 3 H',
+      '· By email',
+      'Lee Example · No Hearth account',
+      'Received Thu 1 Oct 2026',
+      'Overdue since Sat 31 Oct 2026',
+    ])
+    expect(cards[1]).toEqual([
+      'Complaint',
+      'New',
+      'K7QM-X3TD',
+      'Reference K 7 Q M, X 3 T D',
+      '· Sent in Hearth',
+      'Marcus Ong, Operations',
+      'Received Thu 29 Oct 2026',
+      'Due Sat 14 Nov 2026',
+    ])
+    // The closed list sits under its disclosure, hidden until opened.
+    expect(markup).toMatch(/aria-expanded="false"[^>]*>.*?Show closed requests/s)
+    expect(markup).toMatch(/<div id="[^"]*" hidden="" class="flex flex-col gap-3">/)
+    expect(readable(markup)).toEqual(expect.arrayContaining(['Closed Fri 9 Oct 2026 · Answered', ' · Has left'.trim()]))
+    expect(readable(markup).filter(text => aiCopyIn(text) !== undefined)).toEqual([])
+  })
+
+  it('RQW-07 PD-98: never “No open requests.” when the list couldn’t be read; the cut and empty states; a refused read: the PIN step, forbidden (no links), notice_required as the note', async () => {
+    const empty = aloneWith(
+      <QueueContent
+        answer={queueForClient({ open: [], openTotal: 0, closed: [], closedMore: false })}
+        onOpen={() => {}}
+        onLog={() => {}}
+      />,
+      () => {},
+    )
+    expect(readable(empty)).toEqual(expect.arrayContaining([REQUESTS_COPY.empty, REQUESTS_COPY.emptyClosed]))
+    const unreadable = aloneWith(
+      <QueueContent
+        answer={{ ...queueForClient(), open: { rows: [], complete: false }, openTotal: null }}
+        onOpen={() => {}}
+        onLog={() => {}}
+      />,
+      () => {},
+    )
+    expect(readable(unreadable)).toContain(REQUESTS_COPY.incomplete)
+    expect(readable(unreadable)).not.toContain(REQUESTS_COPY.empty)
+    const pin = await queueAt('/dpo/requests', {
+      queueFailed: new ApiFailure(403, 'reauth_required', 'Enter your PIN.', { method: 'pin' }),
+    })
+    expect(
+      tags(pin.markup, 'input')
+        .find(input => input.get('name') === 'pin')
+        ?.get('autoComplete'),
+    ).toBe('current-password')
+    const forbidden = await queueAt('/dpo/requests', { queueFailed: new ApiFailure(403, 'forbidden', 'No') })
+    expect(textsOf(forbidden.markup, 'h2')).toEqual(['This page is for the Data Protection Officer.'])
+    expect(forbidden.markup).not.toContain('<nav aria-label="Data protection"')
+    const notice = await queueAt('/dpo/requests', {
+      queueFailed: new ApiFailure(403, 'notice_required', MESSAGES.notice_required),
+    })
+    expect(readable(notice.markup)).toContain(REQUESTS_COPY.noticeFirst)
+  })
+
+  it('PD-98 PPL-01 PPL-07 Rule 8: the case sheet is a whole-screen dialog with the kind and reference as its title (focused as it opens): who sent it with their manager, the person id for a break-glass citation, the facts, what they wrote as quoted text in its own direction, the steps, their other requests as buttons, and Add a step with only the steps the case allows', () => {
+    const markup = aloneWith(<CaseSheet id={CASE_IDS.complaint} onClose={() => {}} onOpen={() => {}} />, client =>
+      client.setQueryData(caseQuery(CASE_IDS.complaint).queryKey, caseForClient()),
+    )
+    expect(textsOf(markup, 'h2')).toEqual(['Complaint · K7QM-X3TD'])
+    expect(markup).toMatch(/<h2 id="[^"]*" tabindex="-1"/)
+    expect(tags(markup, 'dialog')[0]?.get('class')).toMatch(/\bh-dvh\b.*\bmd:max-w-3xl\b/)
+    const text = readable(markup)
+    expect(text).toEqual(
+      expect.arrayContaining([
+        'New',
+        'From',
+        'Marcus Ong, Operations',
+        'Reports to Priya Nair',
+        CASE_COPY.requester.personId,
+        MARCUS_ID,
+        'Sent in Hearth',
+        'Thu 29 Oct 2026',
+        'Due Sat 14 Nov 2026',
+        'Not checked yet',
+        'What they wrote',
+        'No steps yet.',
+        'Their other requests',
+        'Add a step',
+      ]),
+    )
+    // What they wrote: quoted text in its own direction, never markup or a link.
+    expect(markup).toMatch(
+      /<blockquote dir="auto" class="whitespace-pre-wrap[^"]*">The shift rota with my home address was posted in the wrong group.\nPlease take it down.<\/blockquote>/,
+    )
+    expect(markup).not.toMatch(/<a\b/)
+    // The person id, copyable.
+    expect(markup).toMatch(new RegExp(`select-all">${MARCUS_ID}</dd>`))
+    // Their other request opens in this sheet.
+    expect(buttons(markup).map(button => button.name)).toEqual(
+      expect.arrayContaining([
+        'Question · ClosedMNP4-QRS5Reference M N P 4, Q R S 5 · Received Mon 5 Oct 2026 · Closed Fri 9 Oct 2026 · Answered',
+      ]),
+    )
+    expect(optionsOf(markup, 'step')).toEqual([
+      'Choose',
+      'Told them it was received',
+      'Checked who they are',
+      'Replied',
+      'Changed the kind',
+      'Note',
+      'Close the request',
+    ])
+    expect(buttons(markup).find(button => button.name === 'Save')).toMatchObject({ held: true, type: 'submit' })
+    expect(text.filter(line => aiCopyIn(line) !== undefined)).toEqual([])
+  })
+
+  it('PPL-01 PD-105: a leaver’s case shows the channel the case records as plain text in its own direction; someone without an account their name and channel; a withdrawal its reply to copy; a just-logged request its reference until the sheet closes', () => {
+    const leaver = aloneWith(<CaseSheet id={CASE_IDS.complaint} onClose={() => {}} onOpen={() => {}} />, client =>
+      client.setQueryData(
+        caseQuery(CASE_IDS.complaint).queryKey,
+        caseForClient({
+          case: {
+            kind: 'withdrawal',
+            receivedKind: 'withdrawal',
+            cameBy: 'email',
+            loggedBy: 'Ashton Teo',
+            requester: {
+              type: 'person',
+              person: LEAVER_ID,
+              name: 'Siti Aminah',
+              department: 'Commercial',
+              manager: null,
+              leftOn: '2026-11-02',
+              channel: 'email',
+              contact: 'siti@mail.example',
+            },
+          },
+          others: [],
+          reply: 'Your reference: K7QM-X3TD\n\nThank you for writing to withdraw your consent.',
+        }),
+      ),
+    )
+    const text = readable(leaver)
+    expect(textsOf(leaver, 'h2')).toEqual(['Withdrawal · K7QM-X3TD'])
+    expect(text).toEqual(
+      expect.arrayContaining([
+        'Has left on Mon 2 Nov 2026',
+        CASE_COPY.requester.reach,
+        'Email',
+        'siti@mail.example',
+        'Your summary',
+        'No other requests from them.',
+        CASE_COPY.reply,
+        'Copy',
+      ]),
+    )
+    expect(leaver).toMatch(/<span dir="auto" class="select-all whitespace-pre-line">siti@mail.example<\/span>/)
+    expect(leaver).not.toMatch(/href="mailto:/)
+    expect(leaver).toMatch(/<div dir="auto" class="whitespace-pre-wrap[^"]*">Your reference: K7QM-X3TD\n\nThank you/)
+    const outside = aloneWith(
+      <CaseSheet id={CASE_IDS.copy} logged={'BC2DFG3H' as never} onClose={() => {}} onOpen={() => {}} />,
+      client =>
+        client.setQueryData(
+          caseQuery(CASE_IDS.copy).queryKey,
+          caseForClient({
+            case: {
+              id: CASE_IDS.copy,
+              reference: 'BC2DFG3H',
+              kind: 'access',
+              receivedKind: 'access',
+              cameBy: 'letter',
+              requester: {
+                type: 'outside',
+                name: 'Lee Example',
+                channel: 'post',
+                contact: '1 Example Road\nSingapore 000000',
+              },
+            },
+            others: [],
+          }),
+        ),
+    )
+    expect(readable(outside)).toEqual(
+      expect.arrayContaining([
+        'Logged as BC2D-FG3H. Give them this reference when you reply.',
+        'Lee Example',
+        'No Hearth account',
+        'Post',
+      ]),
+    )
+    expect(readable(outside)).not.toContain('Their other requests')
+    expect(readable(outside)).not.toContain(CASE_COPY.requester.personId)
+    // Loading, and a case that isn't there.
+    const loading = aloneWith(<CaseSheet id={CASE_IDS.closed} onClose={() => {}} onOpen={() => {}} />, () => {})
+    expect(textsOf(loading, 'h2')).toEqual([CASE_COPY.sheetLoading])
+    expect(loading).toMatch(/<p role="status"[^>]*>Loading the request…<\/p>/)
+  })
+
+  it('RQW-08 PD-91 PD-112 PPL-04 PPL-14: Add a step shows the fields the chosen step takes: the day it was checked and how for an identity check (one line, its hint), the day told and the new date for more time, the outcome and why for a refusal, the logged-in-error line; Save held with its reason', () => {
+    const copy = caseForClient({
+      case: {
+        id: CASE_IDS.copy,
+        reference: 'BC2DFG3H',
+        kind: 'access',
+        receivedKind: 'access',
+        cameBy: 'email',
+        loggedBy: 'Ashton Teo',
+        receivedOn: '2026-10-01',
+        loggedOn: '2026-10-01',
+        dueOn: '2026-10-31',
+        revision: 1,
+        state: 'in_progress',
+      },
+      others: [],
+    })
+    const identity = aloneWith(<AddStep answer={copy} initial={{ step: 'identity_checked' }} />, () => {})
+    expect(textsOf(identity, 'label')).toEqual(['What happened', CASE_COPY.identityDay, CASE_COPY.identityLabel])
+    expect(readable(identity)).toEqual(expect.arrayContaining([CASE_COPY.identityHint, CASE_COPY.beforeSaving]))
+    const extended = aloneWith(
+      <AddStep answer={copy} initial={{ step: 'extended', onDay: '2026-11-02', extendedTo: '2026-11-20' }} />,
+      () => {},
+    )
+    expect(textsOf(extended, 'label')).toEqual([
+      'What happened',
+      CASE_COPY.toldOn,
+      CASE_COPY.extendedToField,
+      CASE_COPY.noteOptional,
+    ])
+    expect(readable(extended)).toEqual(expect.arrayContaining([CASE_COPY.toldOnHint, STEP_LATE]))
+    expect(buttons(extended).find(button => button.name === 'Save')?.held).toBe(true)
+    const refuse = aloneWith(<AddStep answer={copy} initial={{ step: 'closed', outcome: 'refused' }} />, () => {})
+    expect(textsOf(refuse, 'label')).toEqual(['What happened', CASE_COPY.outcome, CASE_COPY.day, CASE_COPY.why])
+    expect(optionsOf(refuse, 'outcome')).toEqual([
+      'Choose',
+      'Answered',
+      'Refused',
+      'Withdrawn by them',
+      'A duplicate',
+      'Not a request',
+      'Logged in error',
+    ])
+    const error = aloneWith(
+      <AddStep answer={copy} initial={{ step: 'closed', outcome: 'logged_in_error' }} />,
+      () => {},
+    )
+    expect(readable(error)).toContain(CASE_COPY.loggedInError)
+    const replied = aloneWith(<AddStep answer={copy} initial={{ step: 'replied' }} />, () => {})
+    expect(readable(replied)).toContain(CASE_COPY.repliedHint)
+    expect(buttons(replied).find(button => button.name === 'Save')?.held).toBe(false)
+    for (const markup of [identity, extended, refuse, error, replied]) {
+      for (const control of [...tags(markup, 'textarea'), ...tags(markup, 'select'), ...tags(markup, 'input')]) {
+        expect(control.get('class')).toMatch(/\btext-base\b/)
+      }
+    }
+  })
+
+  it('RQW-09 OD-16 PD-89 PPL-01 PPL-13 PPL-14: Log a request asks what it is about, how it came, the day received (a year back to today), who sent it (someone at the organisation from the list, or someone without an account), how to reach them and the summary; no identity field; two who read the same can’t be picked, with the line saying what to do; the people’s states', () => {
+    const markup = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, casePeopleForClient()),
+    )
+    expect(textsOf(markup, 'h2')).toEqual(['Log a request'])
+    expect(
+      textsOf(markup, 'label').filter(
+        label => !['Someone at the organisation', 'Someone without a Hearth account'].includes(label),
+      ),
+    ).toEqual(
+      expect.arrayContaining(['What it’s about', 'How it came', 'When it was received', 'Who', 'What they want']),
+    )
+    const received = controlOf(markup, 'When it was received')
+    expect(received?.get('min')).toBe('2025-11-12')
+    expect(received?.get('max')).toBe(CASE_TODAY)
+    expect(received?.get('value')).toBe(CASE_TODAY)
+    expect(optionsOf(markup, 'came-by')).toEqual([
+      'Choose',
+      'By email',
+      'By letter',
+      'By phone',
+      'In person',
+      'Another way',
+    ])
+    expect(optionsOf(markup, 'person')).toEqual(
+      expect.arrayContaining(['Siti Aminah (Commercial), left on Mon 2 Nov 2026']),
+    )
+    expect(readable(markup)).toEqual(
+      expect.arrayContaining([CASE_COPY.people.same, CASE_COPY.fields.identityAfter, 'Not given']),
+    )
+    expect(textsOf(markup, 'label')).not.toEqual(expect.arrayContaining([CASE_COPY.identityLabel]))
+    expect(buttons(markup).find(button => button.name === 'Log it')).toMatchObject({ held: true, type: 'submit' })
+    const details = tags(markup, 'textarea').find(control => control.get('name') === 'details')
+    expect(details?.get('dir')).toBe('auto')
+    // The people's states.
+    const loading = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, () => {})
+    expect(loading).toMatch(/<p role="status"[^>]*>Loading the people at the organisation…<\/p>/)
+    const nobody = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, casePeopleForClient({ people: [] })),
+    )
+    expect(readable(nobody)).toContain(CASE_COPY.people.empty)
+    const cut = aloneWith(<LogRequest today={CASE_TODAY} onClose={() => {}} onLogged={() => {}} />, client =>
+      client.setQueryData(casePeopleQuery.queryKey, casePeopleForClient({ more: true })),
+    )
+    expect(readable(cut)).toContain(CASE_COPY.people.cut)
+    expect(ALIKE_IDS).toHaveLength(2)
+    expect(readable(markup).filter(text => aiCopyIn(text) !== undefined)).toEqual([])
+  })
+
+  it('CTW-06 CTW-07 OD-08 PD-94: /dpo/contact shows the reply targets below the contact with their pill and Change reply targets; the dialog has two 16 px numeric fields with their ranges as hints, Save held while nothing changed, and the out-of-date warning once a version is published', async () => {
+    const answer = contactAdminForClient({
+      notice: 'up_to_date',
+      contact: contactRow(),
+      stated: 'stated',
+      targetsStated: 'not_stated',
+    })
+    const markup = await appAt('/dpo/contact', REGISTERS, undefined, { contact: answer })
+    const card = markup.slice(markup.indexOf(CONTACT.targets.title))
+    expect(readable(card)).toEqual(
+      expect.arrayContaining([
+        'Questions, complaints, withdrawals and objections: 10 business days',
+        'Copies of data and corrections: 30 calendar days',
+        CONTACT.stated.no,
+        CONTACT.targets.notStated,
+        CONTACT.targets.edit,
+      ]),
+    )
+    const dialog = alone(<TargetsDialog answer={answer} onClose={() => {}} />)
+    expect(textsOf(dialog, 'h2')).toEqual([CONTACT.targets.dialogTitle])
+    const business = controlOf(dialog, CONTACT.targets.businessField)
+    const calendar = controlOf(dialog, CONTACT.targets.calendarField)
+    expect([business, calendar].map(control => [control?.get('inputMode'), control?.get('value')])).toEqual([
+      ['numeric', '10'],
+      ['numeric', '30'],
+    ])
+    for (const control of [business, calendar]) expect(control?.get('class')).toMatch(/\btext-base\b/)
+    expect(describedBy(dialog, business)).toEqual([CONTACT.targets.businessHint])
+    expect(describedBy(dialog, calendar)).toEqual([CONTACT.targets.calendarHint])
+    expect(buttons(dialog).find(button => button.name === 'Save')).toMatchObject({ held: true })
+    expect(dialog).toContain(CONTACT.targets.unchanged)
+    expect(readable(dialog)).toContain(CONTACT.dialog.staleWarning)
+  })
+})
+
+// More time told after the due day, as the sheet words it (PPL-04).
+const STEP_LATE = 'Record more time only on or before the current due day. If you told them later, add a note.'

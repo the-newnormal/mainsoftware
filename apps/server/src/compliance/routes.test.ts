@@ -6,6 +6,7 @@ import {
   RegistersResponse,
   SetContactBody,
   SetPurposeBody,
+  SetTargetsBody,
   TransferWriteResponse,
   WithdrawTransferBody,
 } from '@hearth/shared'
@@ -25,6 +26,7 @@ import {
   recordTransfer,
   setContact,
   setPurpose,
+  setTargets,
   withdrawTransfer,
 } from '#src/compliance/routes.ts'
 import { AfterResponse, parse, type ReqInfo } from '#src/http.ts'
@@ -70,6 +72,9 @@ const contactRow = {
   postal: null,
   recorded_on: '2026-10-20',
   recorded_by: 'Ashton Tan',
+  // The reply targets it holds (C0.9 PR 3b): OD-08's.
+  business_days: 10,
+  calendar_days: 30,
 }
 
 // The org: an Owner who isn't the DPO, and the DPO, on a PIN-rule session re-authenticated in the
@@ -800,5 +805,89 @@ describe('NTS-06 C0.9 OD-10 PD-63 PD-64 PD-65 PD-71 PD-72 POST /api/admin/notice
       (e: unknown) => e,
     )
     expect(error).not.toBeInstanceOf(ApiError)
+  })
+})
+
+describe('NTS-06 C0.9 PR 3b OD-08 PD-94 PD-72 POST /api/admin/notice/targets/set', () => {
+  const targetsBody = (input: Record<string, unknown> = {}) =>
+    parse(SetTargetsBody, { seen: 1, businessDays: 7, calendarDays: 21, ...input })
+
+  it('records the next settings version through set_reply_targets(), the session’s device and never the body’s, and appends nothing (PD-72)', async () => {
+    for (const changed of [true, false]) {
+      const pool = org({ call: [{ version: 2, changed }] })
+      const c = context(pool)
+      const { body } = await setTargets(c.api, targetsBody(), session(), c.info)
+      expect(ContactWriteResponse.parse(body)).toEqual({ version: 2, changed })
+      const call = callOf(pool, 'set_reply_targets')
+      expect(call?.text).toBe(
+        'select version, changed from public.set_reply_targets($1::integer, $2::integer, $3::integer, $4, $5::uuid, $6::inet)',
+      )
+      expect(call?.values).toEqual([1, 7, 21, c.info.requestId, DEVICE, c.info.ip])
+      expect(appended(pool.statements)).toEqual([])
+      // can() first, re-reading the acting session FOR SHARE.
+      const texts = pool.texts()
+      const acting = texts.findIndex(text => text.includes('from people p join devices d'))
+      expect(texts[acting]).toMatch(/for share of p, d, s/)
+      expect(acting).toBeLessThan(texts.findIndex(text => text.includes('from public.set_reply_targets(')))
+      expect(texts.at(-1)).toBe('commit')
+    }
+  })
+
+  it('refuses someone who isn’t the DPO and a stale PIN through can(), before anything is read or called', async () => {
+    for (const [who, fresh, code] of [
+      [OWNER, true, 'forbidden'],
+      [DPO, false, 'reauth_required'],
+    ] as const) {
+      const pool = org({ fresh, call: [{ version: 2, changed: true }] })
+      const c = context(pool)
+      expect(await refusal(setTargets(c.api, targetsBody(), session(who), c.info)), who).toMatchObject({
+        status: 403,
+        code,
+      })
+      expect(pool.texts().some(text => /dpo_settings|set_reply_targets/.test(text))).toBe(false)
+    }
+  })
+
+  it('answers 400 register_invalid for a figure targetsProblems() finds out of range, after can() and before the database is asked', async () => {
+    for (const input of [
+      { businessDays: 4 },
+      { businessDays: 11 },
+      { calendarDays: 13 },
+      { calendarDays: 31 },
+      { businessDays: 0, calendarDays: 0 },
+    ]) {
+      const pool = org({ call: [{ version: 2, changed: true }] })
+      const c = context(pool)
+      expect(
+        await refusal(setTargets(c.api, targetsBody(input), session(), c.info)),
+        JSON.stringify(input),
+      ).toMatchObject({ status: 400, code: 'register_invalid' })
+      expect(pool.texts().some(text => text.startsWith('select "person_id", "role"'))).toBe(true)
+      expect(callOf(pool, 'set_reply_targets')).toBeUndefined()
+      expect(pool.texts().at(-1)).toBe('rollback')
+    }
+    // A figure that isn't a whole number is a bad body, never a problem the page words.
+    expect(SetTargetsBody.safeParse({ seen: 1, businessDays: 7.5, calendarDays: 21 }).success).toBe(false)
+    expect(SetTargetsBody.safeParse({ seen: 1, businessDays: '7', calendarDays: 21 }).success).toBe(false)
+  })
+
+  it('answers the function’s refusals: HF005 409 register_changed, HF006 (no contact yet, a figure out of range) and the table’s checks 400 register_invalid, 42501 403', async () => {
+    for (const [sqlstate, status, code, constraint] of [
+      ['HF005', 409, 'register_changed', undefined],
+      ['HF006', 400, 'register_invalid', undefined],
+      ['23514', 400, 'register_invalid', 'dpo_settings_target_business_days'],
+      ['42501', 403, 'forbidden', undefined],
+    ] as const) {
+      const pool = org({ call: pgError(sqlstate, constraint) })
+      const c = context(pool)
+      expect(await refusal(setTargets(c.api, targetsBody(), session(), c.info)), sqlstate).toMatchObject({
+        status,
+        code,
+      })
+      expect(appended(pool.statements)).toEqual([])
+      expect(pool.texts().at(-1)).toBe('rollback')
+    }
+    // Every code these routes answer is still one of the registers' (no new one for the targets).
+    expect([...REGISTER_ERRORS]).toEqual(['register_changed', 'register_invalid'])
   })
 })

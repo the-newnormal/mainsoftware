@@ -17,6 +17,11 @@
 // - GET /api/admin/notice/people, the record dialog's list (C0.9 OD-19, PD-76), read only while the
 //   dialog is open; and POST /api/admin/notice/acknowledgements/record, which answers as the
 //   person's own acknowledgement does (whether it recorded anything).
+// - POST /api/admin/notice/targets/set, the reply targets' save on the contact page (C0.9 OD-08,
+//   PD-94), which sends the settings version the page read and answers as the contact's save does.
+//   It moves what a contact save moves.
+// The requests to the DPO (C0.9 PR 3b) have their own module, dpo/case-queries.ts, which only the
+// queue's chunks load, so the chunk every DPO page shares doesn't carry their schemas.
 // - POST /api/auth/reauth/pin, the inline PIN step's (C0.16's sheet replaces it). The PIN is never
 //   the mutation's variables, which the document's MutationCache keeps after the step settles
 //   (pinStepOptions).
@@ -38,6 +43,7 @@ import {
   RegisterWriteResponseForClient,
   type SetContactJSON,
   type SetPurposeJSON,
+  type SetTargetsJSON,
   type WithdrawTransferJSON,
 } from '@hearth/shared'
 import { queryOptions } from '@tanstack/react-query'
@@ -103,6 +109,18 @@ export async function saveContact(body: SetContactJSON): Promise<{ version: numb
 // What a contact save moves: the contact itself, the registers' notice marker and the Notice tab's
 // draft (its problems, its changes and its words).
 export const CONTACT_SAVE_MOVES = [contactQuery.queryKey, registersQuery.queryKey, noticeAdminQuery.queryKey] as const
+
+// The DPO's reply targets (C0.9 OD-08, PD-94), kept with the contact: the settings version the page
+// read and both figures. No outbox event, as the contact's save (PD-72).
+export async function setTargets(body: SetTargetsJSON): Promise<{ version: number; changed: boolean }> {
+  const answer = await apiPost('/api/admin/notice/targets/set', body, ContactWriteResponseForClient)
+  if (answer === undefined) throw new Error('the targets save answered nothing')
+  return { version: answer.version, changed: answer.changed }
+}
+
+// What a targets save moves: what a contact save does, since the targets are kept with the contact
+// (the contact answer, the registers' notice marker for the Notice link's badge, and the draft).
+export const TARGETS_SAVE_MOVES = CONTACT_SAVE_MOVES
 
 // The people the DPO may record an acknowledgement for (C0.9 OD-19, PD-76), for the dialog alone.
 export const noticePeopleQuery = queryOptions({

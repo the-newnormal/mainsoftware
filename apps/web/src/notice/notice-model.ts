@@ -9,7 +9,8 @@
 //                 open yet
 //   acknowledged  the current version is acknowledged: when, and Continue (a visit after the fact)
 //   required      the current version to read and acknowledge, with what changed since the last
-//                 version the person acknowledged (the DPO's contact included, C0.9 OD-11)
+//                 version the person acknowledged (the DPO's contact included, C0.9 OD-11, and
+//                 from C0.9 PR 3b the DPO's reply targets, PD-95)
 import { NOTICE_PROVIDER_NAMES, type NoticeChangesForClient, type NoticeForClient, PURPOSES } from '@hearth/shared'
 
 export interface CurrentNotice {
@@ -21,14 +22,16 @@ export interface CurrentNotice {
 
 // What changed, worded: the purposes' register wording and the providers' names, each group in
 // the registries' order, purposes first; whether the notice now gives the DPO's contact for the
-// first time or gives another one (C0.9 PD-67), on a line of its own; and whether the wording
-// changed.
+// first time or gives another one (C0.9 PD-67), on a line of its own; the same for the DPO's reply
+// targets (C0.9 PD-95: a c09.2 to c09.3 publish gives them for the first time, and says its wording
+// changed too); and whether the wording changed.
 export interface ChangeLines {
   readonly since: number
   readonly added: readonly string[]
   readonly changed: readonly string[]
   readonly removed: readonly string[]
   readonly contact: 'added' | 'changed' | undefined
+  readonly targets: 'added' | 'changed' | undefined
   readonly wording: boolean
 }
 
@@ -57,10 +60,11 @@ export function changeLines(changes: NoticeChangesForClient | null): ChangeLines
     changed: lines('changed'),
     removed: lines('removed'),
     contact: changes.contact === 'same' ? undefined : changes.contact,
+    targets: changes.targets === 'same' ? undefined : changes.targets,
     wording: changes.wording,
   }
   const listed = result.added.length + result.changed.length + result.removed.length > 0
-  return listed || result.contact !== undefined || result.wording ? result : undefined
+  return listed || result.contact !== undefined || result.targets !== undefined || result.wording ? result : undefined
 }
 
 export function currentOf(answer: NoticeForClient): CurrentNotice | undefined {

@@ -1,5 +1,5 @@
 -- T18, CLAUDE.md Database: the worker's roles (0007, 0008; 0009 lets hearth_queue read the registers,
--- and 0010 the notice's versions and links, T22 item 9; 0011 gives them nothing). The worker logs
+-- and 0010 the notice's versions and links, T22 item 9; 0011 and 0012 give them nothing). The worker logs
 -- in as hearth_worker, which holds nothing itself and takes one job role per transaction; each job
 -- role gets only the grants its jobs need. This pins every privilege each job role can use on every
 -- table, column, sequence and function, however it got it, as 030 does hearth_app's, so any new
@@ -109,6 +109,63 @@ begin
   end loop;
 end
 $$;
+
+-- C0.9 PR 3b (0012; OD-06, OD-14, RQD-01): no job role, nor hearth_worker, holds anything on a
+-- request (cases, case_steps) or runs any of 0012's functions: no job reads a case before C0.14,
+-- whose alert job gets its own narrow definer. hearth_queue's column grant on
+-- processing_restrictions still leaves out case_id (the list above pins it), and it still reads
+-- nothing of dpo_settings, whose reply targets 0012 adds (the block above).
+do $$
+declare
+  r text;
+  t text;
+  p text;
+begin
+  foreach r in array array['hearth_queue', 'hearth_job_offboarding', 'hearth_job_partitions', 'hearth_job_purge',
+                           'hearth_job_revocation', 'hearth_worker'] loop
+    foreach t in array array['cases', 'case_steps'] loop
+      foreach p in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] loop
+        perform pg_temp.check(not has_table_privilege(r, format('public.%I', t), p)
+                              and (p not in ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                                   or not has_any_column_privilege(r, format('public.%I', t), p)),
+                              format('%s holds %s on %s', r, p, t));
+      end loop;
+    end loop;
+    foreach p in array array[
+      'public.submit_case(text,text,uuid,text,uuid,inet)', 'public.read_own_cases(integer)',
+      'public.log_case(text,text,date,uuid,text,text,text,text,uuid,text,uuid,inet)',
+      'public.add_case_step(uuid,integer,text,date,text,date,text,text,text,uuid,inet)',
+      'public.read_cases(boolean,integer)', 'public.read_case(uuid)', 'public.read_case_steps(uuid)',
+      'public.read_case_others(uuid,integer)', 'public.case_attention()',
+      'public.set_reply_targets(integer,integer,integer,text,uuid,inet)',
+      'public.new_case_reference()', 'public.notice_states_targets(text)', 'public.case_add_business_days(date,integer)',
+      'public.case_due_on(text,text,date,date,date,integer,integer,integer,integer)', 'public.case_kind_now(uuid,uuid)',
+      'public.case_due(uuid,uuid)', 'public.case_replied_in_time(uuid,uuid)', 'public.cases_check_dpo(uuid,uuid)',
+      'public.cases_fixed()', 'public.case_steps_unchanged()'] loop
+      perform pg_temp.check(not has_function_privilege(r, p, 'EXECUTE'), format('%s can run %s', r, p));
+    end loop;
+    perform pg_temp.check(not has_column_privilege(r, 'public.processing_restrictions', 'case_id', 'SELECT'),
+                          format('%s reads which case a restriction came from', r));
+  end loop;
+end
+$$;
+
+-- C0.9 DB-02, OD-27: who may read an outbox event's actor. A request sent from the form appends
+-- case.opened with its requester as the actor (the outbox's own rule, 0007), kept 14 days, which
+-- OD-14 keeps from everyone but the DPO. Exactly the offboarding and revocation roles still can,
+-- through their table-wide outbox grants (0007, 0008), and neither consumer reads it from PR 3b
+-- (readBatch(), PD-111); never hearth_queue, hearth_app or hearth_worker itself. OD-27 (accepted)
+-- has the first migration after PR 3b's worker is deployed revoke the column from both, and that
+-- migration empties this set. The owner, superusers, Postgres's own roles and anyone who can act
+-- as the owner aside.
+select pg_temp.check(
+  coalesce((select array_agg(r.rolname::text order by r.rolname)
+            from pg_roles r
+            where not r.rolsuper and r.rolname <> 'hearth_owner' and r.rolname not like 'pg\_%'
+              and not pg_has_role(r.oid, 'hearth_owner', 'USAGE') and not pg_has_role(r.oid, 'hearth_owner', 'SET')
+              and has_column_privilege(r.oid, 'public.outbox_events', 'actor_id', 'SELECT')), '{}')
+  = array['hearth_job_offboarding', 'hearth_job_revocation'],
+  'the roles that may read an outbox event''s actor are not exactly the offboarding and revocation roles');
 
 select pg_temp.expect_privileges('hearth_job_offboarding', array[
   -- The offboarding consumer: read the outbox, start and move its own checkpoint, read the floors.

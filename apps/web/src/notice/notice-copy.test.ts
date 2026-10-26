@@ -6,7 +6,8 @@
 // (free_text_ai_copy); here it is plain wording, so only the generator's own words are tested. From
 // C0.9 PR 3a (c09.2) that includes "Your rights" with every channel of the DPO's contact and the
 // withdraw section's branches, deemed consent by conduct among the bases stated (OD-18, PD-73,
-// PD-74).
+// PD-74), and from C0.9 PR 3b (c09.3) the form named in "Your rights", the DPO's reply targets at
+// both ends of their range and the targets-change lines (PD-95).
 import {
   BASES,
   type DpoContact,
@@ -20,6 +21,7 @@ import {
   type NoticePurpose,
   PURPOSES,
   type PurposeKey,
+  type ReplyTargets,
   TRAINING,
 } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
@@ -39,11 +41,14 @@ const FULL: DpoContact = {
   phone: '+65 8000 0198',
   postal: '1 Example Road\nSingapore 000000',
 }
-const CONTACTS: readonly (DpoContact & { version: number })[] = [
-  { ...FULL, version: 1 },
-  { ...FULL, phone: null, postal: null, version: 2 },
-  { ...FULL, email: null, postal: null, version: 3 },
-  { ...FULL, email: null, phone: null, version: 4 },
+// The reply targets kept with each, at each end of their range (C0.9 PD-94).
+const LOW = { businessDays: 5, calendarDays: 14 }
+const HIGH = { businessDays: 10, calendarDays: 30 }
+const CONTACTS: readonly (DpoContact & { version: number; targets: ReplyTargets })[] = [
+  { ...FULL, version: 1, targets: HIGH },
+  { ...FULL, phone: null, postal: null, version: 2, targets: LOW },
+  { ...FULL, email: null, postal: null, version: 3, targets: HIGH },
+  { ...FULL, email: null, phone: null, version: 4, targets: LOW },
 ]
 const contactAt = (index: number) => CONTACTS[index % CONTACTS.length] ?? null
 
@@ -123,7 +128,7 @@ function inputs(): NoticeInput[] {
 }
 
 describe('C0.9 PD-53: the notice holds no AI copy', () => {
-  it('NTW-10 decision 8 PD-62 PD-73 PD-74: no line of any body the generator can write matches AI_COPY (each channel of the contact and both branches of the withdraw section included), and each one parses into blocks /notice renders', () => {
+  it('NTW-10 decision 8 PD-62 PD-73 PD-74 PD-95: no line of any body the generator can write matches AI_COPY (each channel of the contact, both branches of the withdraw section, the form and the reply targets included), and each one parses into blocks /notice renders', () => {
     const bodies = inputs().map(generateNotice)
     expect(bodies.length).toBeGreaterThan(STATED.length * 2)
     for (const body of bodies) {
@@ -144,6 +149,19 @@ describe('C0.9 PD-53: the notice holds no AI copy', () => {
     }
     expect(bodies.some(body => body.includes('so they all continue if you withdraw it.'))).toBe(true)
     expect(bodies.some(body => body.includes('These purposes rest on your deemed consent'))).toBe(true)
+    // c09.3's (C0.9 PD-95): the form in Settings › Privacy, and both targets at each end of the range.
+    expect(bodies.every(body => body.includes('use the form in Settings › Privacy in Hearth'))).toBe(true)
+    for (const figures of [
+      'within 5 business days',
+      'within 14 calendar days',
+      'within 10 business days',
+      'within 30 calendar days',
+    ]) {
+      expect(
+        bodies.some(body => body.includes(figures)),
+        figures,
+      ).toBe(true)
+    }
   })
 
   it('NTW-10 decision 8: every label the changes callout can name, and every line of /notice’s and Settings’ copy, holds none', () => {
@@ -152,9 +170,12 @@ describe('C0.9 PD-53: the notice holds no AI copy', () => {
       purposes: { added: [...NON_AI_PURPOSE_KEYS], changed: [], removed: [] },
       providers: { added: [], changed: [...NON_AI_PROVIDERS], removed: [] },
       contact: 'changed',
+      targets: 'changed',
       wording: true,
     })
     const labels = [...(lines?.added ?? []), ...(lines?.changed ?? [])]
+    // The targets' line (C0.9 PD-95) shows too.
+    expect(lines?.targets).toBe('changed')
     expect(labels).toHaveLength(NON_AI_PURPOSE_KEYS.length + NON_AI_PROVIDERS.length)
     for (const key of NON_AI_PURPOSE_KEYS) expect(labels).toContain(PURPOSES[key].register)
     for (const name of Object.values(NOTICE_PROVIDER_NAMES)) expect(labels).toContain(name)

@@ -129,11 +129,12 @@ describe('NTA-02 C0.9 PD-43 PD-44: what is open before acknowledging, exactly', 
     expect(NOTICE_FREE.has('passkeys.remove_own')).toBe(false)
   })
 
-  it('NTA-02 OD-01 PD-44 C0.9 OD-10: the setup uses are the registers, the notice’s admin routes, recording the DPO’s contact and re-authentication, and can() allows each only to a DPO', () => {
+  it('NTA-02 OD-01 PD-44 C0.9 OD-10 OD-08 PD-94: the setup uses are the registers, the notice’s admin routes, recording the DPO’s contact and reply targets, and re-authentication, and can() allows each only to a DPO', () => {
     expect([...NOTICE_SETUP].sort()).toEqual([
       'notice.contact.set',
       'notice.publish',
       'notice.read',
+      'notice.targets.set',
       'reauth',
       'register.purpose.set',
       'register.read',
@@ -146,6 +147,7 @@ describe('NTA-02 C0.9 PD-43 PD-44: what is open before acknowledging, exactly', 
       { action: 'notice.read' },
       { action: 'notice.publish' },
       { action: 'notice.contact.set' },
+      { action: 'notice.targets.set' },
     ]
     expect(requests.map(r => r.action).sort()).toEqual([...NOTICE_SETUP].filter(use => use !== 'reauth').sort())
     const everyone = world.facts.people.map(p => p.id)
@@ -171,6 +173,30 @@ describe('NTA-02 C0.9 PD-43 PD-44: what is open before acknowledging, exactly', 
       expect(noticeAdmits(world, DPO, use, 'unpublished'), use).toBe(false)
       expect(noticeAdmits(world, DPO, use, 'required'), use).toBe(false)
       expect(noticeAdmits(world, DPO, use, 'acknowledged'), use).toBe(true)
+    }
+  })
+
+  it('NTA-02 C0.9 OD-13 OD-14 PD-98: requests to the DPO are in neither set, so the form, your requests and the DPO’s queue open only once the latest version is acknowledged, the DPO included', () => {
+    // NOTICE_FREE is unchanged by PR 3b (the first test above pins it): sending a request and
+    // reading your own are requests about your own account with no re-authentication, but unlike the
+    // free ones they wait for the notice (OD-13).
+    const own = ['case.send_own', 'case.list_own'] as const
+    const dpo = ['case.read', 'case.log', 'case.step'] as const
+    for (const use of own) expect(SELF_ACTIONS.has(use), use).toBe(true)
+    for (const use of dpo) expect(ADMIN_ACTIONS.has(use), use).toBe(true)
+    for (const use of [...own, ...dpo]) {
+      expect(NOTICE_FREE.has(use) || NOTICE_SETUP.has(use), use).toBe(false)
+      for (const person of [DPO, ...OTHERS]) {
+        expect(noticeAdmits(world, person, use, 'unpublished'), `${person} ${use}`).toBe(false)
+        expect(noticeAdmits(world, person, use, 'required'), `${person} ${use}`).toBe(false)
+        expect(noticeAdmits(world, person, use, 'acknowledged'), `${person} ${use}`).toBe(true)
+      }
+    }
+    // Anyone active may send one and read their own once the gate lets them through: can() needs no
+    // re-authentication for either (PD-96), so only the notice stands in the way.
+    for (const use of own) {
+      expect(can(world, human(P.marcus), { action: use }), use).toBe(true)
+      expect(can(world, human(DPO), { action: use }), use).toBe(true)
     }
   })
 })

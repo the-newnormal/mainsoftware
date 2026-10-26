@@ -3,7 +3,9 @@
 // any notice is published, a purpose or provider changed where a case needs it, read with the web
 // app's lenient schema; GET /api/admin/notice's for the Notice tab (C0.9 PD-48); and from C0.9 PR 3a
 // GET /api/admin/notice/contact's for the contact page (PD-70) and GET /api/admin/notice/people's
-// for the record dialog (PD-76). Every fact is made up, and every address is on a reserved domain.
+// for the record dialog (PD-76), and from C0.9 PR 3b the reply targets kept with the contact (PD-94)
+// and the request-handling purpose active from the start (OD-17). Every fact is made up, and every
+// address is on a reserved domain.
 import {
   type ContactAdminForClient,
   type ContactAdminJSON,
@@ -34,10 +36,11 @@ import {
 export const TODAY = '2026-10-22'
 
 // Hearth's version 1 of a purpose, as a new org starts (C0.9 PD-06): the pinned two and
-// security_audit and backups active, every other planned, nothing recorded.
+// security_audit, backups and, from C0.9 PR 3b, request_handling active, every other planned,
+// nothing recorded.
 export function purposeRow(purpose: PurposeKey, change: Partial<PurposeRowJSON> = {}): PurposeRowJSON {
   const pinned = purpose === 'accounts' || purpose === 'service_operation'
-  const active = pinned || purpose === 'security_audit' || purpose === 'backups'
+  const active = pinned || purpose === 'security_audit' || purpose === 'backups' || purpose === 'request_handling'
   return {
     purpose,
     version: 1,
@@ -171,6 +174,7 @@ export function noticeAdminAnswer(change: Partial<NoticeAdminJSON> = {}): Notice
         purposes: { added: ['backups'], changed: ['accounts'], removed: [] },
         providers: { added: [], changed: [], removed: ['aws'] },
         contact: 'same',
+        targets: 'same',
         wording: false,
       },
       upToDate: false,
@@ -211,9 +215,23 @@ export function contactRow(change: Partial<ContactRowJSON> = {}): ContactRowJSON
   }
 }
 
-// The answer: none published and no contact, unless a case says otherwise.
+// The DPO's reply targets: OD-08's figures, which every settings version starts with (C0.9 PD-94).
+export const TARGETS = { businessDays: 10, calendarDays: 30 } as const
+
+// The answer: none published and no contact, unless a case says otherwise. The targets come with a
+// contact (they are kept with it), and the published notice states them as it states the contact,
+// unless a case says otherwise.
 export function contactAdminAnswer(change: Partial<ContactAdminJSON> = {}): ContactAdminJSON {
-  return ContactAdminResponse.parse({ notice: 'none', contact: null, stated: 'unpublished', ...change })
+  const contact = change.contact ?? null
+  const stated = change.stated ?? 'unpublished'
+  return ContactAdminResponse.parse({
+    notice: 'none',
+    contact: null,
+    stated: 'unpublished',
+    targets: contact === null ? null : TARGETS,
+    targetsStated: contact === null && stated !== 'unpublished' ? 'not_printed' : stated,
+    ...change,
+  })
 }
 
 // The same, as the page reads it.

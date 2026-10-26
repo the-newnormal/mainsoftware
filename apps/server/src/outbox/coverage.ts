@@ -40,8 +40,12 @@ const QUEUE = "the queue's and scheduler's own machinery: jobs, schedules and th
 const CHECKPOINT = "the outbox's own machinery: a consumer's position, moved with its effects"
 const LAST_SEEN = 'bookkeeping, at most once a minute, which no one makes and nothing acts on (T14 item 6)'
 const CHECK = 'a check or a lock: it refuses or waits, and writes nothing'
-const DPO_CONTACT =
-  "the DPO's business contact: its versions are its history, and nothing acts on a change until the next published version, which notice.published covers"
+// The DPO's settings (C0.9 PR 3a's contact, and from PR 3b the reply targets): both writers of
+// dpo_settings.
+const DPO_SETTINGS =
+  "the DPO's settings, their contact and reply targets: its versions are its history, and nothing acts on a change until the next published version, which notice.published covers"
+// Requests to the DPO (C0.9 PR 3b, OD-06, OD-14, OD-15): the reads write nothing.
+const CASE_READ = 'a read of requests to the DPO, for the DPO or the requester (OD-14, OD-15), which writes nothing'
 const STAMP = 'stamps the row being written with the database clock; that write is covered by its own entry'
 
 const deactivation: Coverage = { events: ['person.deactivated'] }
@@ -114,7 +118,9 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
 
   // The privacy notice: hearth_app writes neither table itself from 0010; publish_notice(),
   // acknowledge_notice() and, from 0011, record_notice_acknowledgement() below are their only
-  // writers (C0.9 PD-42, OD-19). Nor the DPO's contact: set_dpo_contact() is its only writer.
+  // writers (C0.9 PD-42, OD-19). Nor the DPO's settings: set_dpo_contact() and, from 0012,
+  // set_reply_targets() are their only writers. Nor requests to the DPO: no role holds a grant on
+  // cases or case_steps, and the case functions below are their only writers (C0.9 OD-06).
 
   // Accounts and PINs. W3 and W4: setting a PIN at a PIN-role holder's first sign-in, or a code-only
   // sign-in making the account beside its signin.started (D46); W16: an admin's reset.
@@ -280,22 +286,59 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
     events: ['notice.acknowledged'],
     writes: ['notice_acknowledgments:INSERT'],
   },
-  // The DPO's business contact (C0.9 OD-10, PD-63, PD-72): its only writer. Its versions are its
-  // history and its audit row the record of who changed it; nothing acts on a change until the next
-  // published version, which notice.published covers.
+  // The DPO's settings (C0.9 OD-08, OD-10, PD-63, PD-72, PD-94): the contact's writer, which from
+  // 0012 copies the reply targets, and the targets' writer, which copies the contact. Its versions
+  // are its history and each writer's audit row the record of who changed it; nothing acts on a
+  // change until the next published version, which notice.published covers.
   'set_dpo_contact(integer, text, text, text, text, text, uuid, inet)': {
-    exempt: DPO_CONTACT,
+    exempt: DPO_SETTINGS,
     writes: ['dpo_settings:INSERT'],
   },
+  'set_reply_targets(integer, integer, integer, text, uuid, inet)': {
+    exempt: DPO_SETTINGS,
+    writes: ['dpo_settings:INSERT'],
+  },
+  // Requests to the DPO (C0.9 PR 3b; OD-06, OD-14, PD-101; TECH-SPEC T22 item 59): the case
+  // functions are the only writers of cases and case_steps, and the api appends each writer's event
+  // in the same transaction, naming the case's row: case.opened for a request sent in Hearth or
+  // logged by the DPO, case.changed for a step or the closure. Their audit rows are covered by
+  // hearth_app's audit grant, as for set_feature_flag(). The reads and the indicator's count write
+  // nothing.
+  'submit_case(text, text, uuid, text, uuid, inet)': { events: ['case.opened'], writes: ['cases:INSERT'] },
+  'log_case(text, text, date, uuid, text, text, text, text, uuid, text, uuid, inet)': {
+    events: ['case.opened'],
+    writes: ['cases:INSERT'],
+  },
+  'add_case_step(uuid, integer, text, date, text, date, text, text, text, uuid, inet)': {
+    events: ['case.changed'],
+    writes: [
+      'case_steps:INSERT',
+      'cases.closed_on:UPDATE',
+      'cases.closed_kind:UPDATE',
+      'cases.outcome:UPDATE',
+      'cases.closed_note:UPDATE',
+      'cases.closed_at:UPDATE',
+      'cases.closed_by:UPDATE',
+    ],
+  },
+  'read_own_cases(integer)': { exempt: CASE_READ, writes: [] },
+  'read_cases(boolean, integer)': { exempt: CASE_READ, writes: [] },
+  'read_case(uuid)': { exempt: CASE_READ, writes: [] },
+  'read_case_steps(uuid)': { exempt: CASE_READ, writes: [] },
+  'read_case_others(uuid, integer)': { exempt: CASE_READ, writes: [] },
+  'case_attention()': { exempt: 'a read: how many open requests need the DPO, and nothing written', writes: [] },
   // Whether the latest version states each open clearance, for the registers' copy (B-06): a read.
   'notice_provider_states()': {
     exempt: 'a read: whether the latest notice states each open clearance, and nothing written',
     writes: [],
   },
   // A published version never changes, and a stand-in never follows a generated one (PD-33); nor
-  // does a recorded contact version (PD-63).
+  // does a recorded contact version (PD-63); nor what a request received, nor a step on it (PD-88,
+  // PD-91).
   'notice_unchanged()': { exempt: CHECK, writes: [] },
   'dpo_settings_unchanged()': { exempt: CHECK, writes: [] },
+  'cases_fixed()': { exempt: CHECK, writes: [] },
+  'case_steps_unchanged()': { exempt: CHECK, writes: [] },
   'notice_versions_generated()': { exempt: CHECK, writes: [] },
   'orgs_add_registers()': {
     exempt: 'gives a new org its register entries; it runs only when the owner makes an org, never at run time',
@@ -423,15 +466,18 @@ export const MATCH: Readonly<Record<string, string>> = {
   processing_register: 'id',
   transfer_register: 'id',
   transfer_clearances: 'entry_id',
+  // A request's events name its case (C0.9 PD-101): its row, and each step's case.
+  cases: 'id',
+  case_steps: 'case_id',
 }
 
 // The integration suite that must append each emitted type at least once (testing/writes.ts): each
 // suite has its own database and module state, so a union across files can't be taken, and each
 // checks its own share instead. The passkey events belong to the dormant passkey suite, the only one
 // that switches passkeys on (D46). The register events belong to the registers suite (C0.9 PD-22),
-// and the notice's to the notice suite (C0.9 PD-50).
+// the notice's to the notice suite (C0.9 PD-50), and the requests' to the cases suite (C0.9 PD-101).
 export const EMITTED_BY: Readonly<
-  Record<EmittedEventType, 'sign-in' | 'passkeys' | 'flags' | 'outbox' | 'jobs' | 'registers' | 'notice'>
+  Record<EmittedEventType, 'sign-in' | 'passkeys' | 'flags' | 'outbox' | 'jobs' | 'registers' | 'notice' | 'cases'>
 > = {
   'signin.started': 'sign-in',
   'signin.ended': 'sign-in',
@@ -446,6 +492,8 @@ export const EMITTED_BY: Readonly<
   'register.transfer_changed': 'registers',
   'notice.published': 'notice',
   'notice.acknowledged': 'notice',
+  'case.opened': 'cases',
+  'case.changed': 'cases',
 }
 
 export type WriteOp = 'INSERT' | 'UPDATE' | 'DELETE'

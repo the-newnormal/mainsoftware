@@ -2,7 +2,7 @@ import type { FlagKey } from '@hearth/shared'
 import { environmentManager, focusManager, QueryObserver } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createQueryClient } from '@/session/query-client.ts'
-import { flagOn, flagsQuery, noticeQuery, sessionQuery } from './queries.ts'
+import { flagOn, flagsQuery, noticeQuery, ownRequestsQuery, sendRequest, sessionQuery } from './queries.ts'
 
 // Whether Query took this test run for a server (no window) before a case changed it.
 const queryOnServer = environmentManager.isServer()
@@ -171,5 +171,108 @@ describe('T21: the api answers as Query options (api/queries.ts)', () => {
     })
     expect(read.contact).toBeUndefined()
     expect(seen).toEqual(['/api/notice'])
+  })
+
+  it('PD-95 P6: the notice’s reply targets read leniently: figures it can read as given, unreadable ones as undefined (no target line), and none printed as null', async () => {
+    const answer = {
+      person: WEI_LING.personId,
+      standing: 'acknowledged',
+      current: { id: 'e1', version: 2, publishedAt: '2026-10-23T01:00:00.000Z', body: '## About this notice' },
+      contact: null,
+      changes: null,
+      mine: [],
+    }
+    for (const [targets, read] of [
+      [
+        { businessDays: 7, calendarDays: 21, later: 1 },
+        { businessDays: 7, calendarDays: 21 },
+      ],
+      [{ businessDays: 'seven', calendarDays: 21 }, undefined],
+      [null, null],
+    ] as const) {
+      vi.stubGlobal('fetch', async () => json(200, { ...answer, targets }))
+      const client = createQueryClient(() => {})
+      expect((await client.fetchQuery(noticeQuery)).targets, JSON.stringify(targets)).toEqual(read)
+    }
+  })
+
+  it('RQW-05 OD-15 PD-97: ownRequestsQuery reads GET /api/requests leniently, is never fresh, and isn’t read again on focus, on reconnect or by a poll; sendRequest posts the kind, the words and the sheet’s key to /api/requests/send and reads the case, its reference and the due day', async () => {
+    expect(ownRequestsQuery.queryKey).toEqual(['requests', 'mine'])
+    expect(ownRequestsQuery).toMatchObject({ staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false })
+    expect('refetchInterval' in ownRequestsQuery).toBe(false)
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    const answers = [
+      json(200, {
+        today: '2026-11-12',
+        requests: [
+          {
+            id: 'c0000000-0000-4000-8000-000000000001',
+            reference: 'k7qm-x3td',
+            kind: 'complaint',
+            cameBy: 'hearth',
+            receivedOn: '2026-10-27',
+            state: 'received',
+            dueOn: '2026-11-10',
+            repliedOn: null,
+            repliedInTime: false,
+            closedOn: null,
+            later: true,
+          },
+          { id: 'not a request' },
+        ],
+        more: 'unreadable',
+        open: 'unreadable',
+      }),
+      json(200, {
+        case: 'c0000000-0000-4000-8000-000000000002',
+        reference: 'BC2DFG3H',
+        receivedOn: '2026-11-12',
+        dueOn: '2026-11-26',
+        changed: true,
+      }),
+    ]
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init })
+      const next = answers.shift()
+      if (next === undefined) throw new TypeError('Failed to fetch')
+      return next
+    })
+    const client = createQueryClient(() => {})
+    const read = await client.fetchQuery(ownRequestsQuery)
+    // A row it can't read is left out and the list marked incomplete; more reads true and the open
+    // count null when unreadable; a reference in any case reads as stored.
+    expect(read.requests.complete).toBe(false)
+    expect(read.requests.rows.map(row => row.reference)).toEqual(['K7QMX3TD'])
+    expect(read.requests.rows[0]).not.toHaveProperty('later')
+    expect(read.more).toBe(true)
+    expect(read.open).toBeNull()
+    const key = 'd0000000-0000-4000-8000-000000000001'
+    expect(await sendRequest({ kind: 'access', details: null, key })).toEqual({
+      case: 'c0000000-0000-4000-8000-000000000002',
+      reference: 'BC2DFG3H',
+      receivedOn: '2026-11-12',
+      dueOn: '2026-11-26',
+      changed: true,
+    })
+    expect(calls.map(call => [call.url, call.init?.method])).toEqual([
+      ['/api/requests', 'GET'],
+      ['/api/requests/send', 'POST'],
+    ])
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ kind: 'access', details: null, key })
+  })
+
+  it('PD-99 P6: the session answer’s count reads as given, and as none when missing or unreadable', async () => {
+    for (const [requests, read] of [
+      [2, 2],
+      [null, null],
+      ['two', null],
+      [-1, null],
+    ] as const) {
+      vi.stubGlobal('fetch', async () => json(200, { ...WEI_LING, timeZone: 'Asia/Singapore', requests }))
+      const client = createQueryClient(() => {})
+      expect((await client.fetchQuery(sessionQuery)).requests, JSON.stringify(requests)).toBe(read)
+    }
+    vi.stubGlobal('fetch', async () => json(200, { ...WEI_LING, timeZone: 'Asia/Singapore' }))
+    expect((await createQueryClient(() => {}).fetchQuery(sessionQuery)).requests).toBeUndefined()
   })
 })

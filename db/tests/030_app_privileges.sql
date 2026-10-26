@@ -9,7 +9,8 @@
 -- on jobs, schedules, a fence or the clean-up; from 0009, writing a register row itself, any grant
 -- on processing_restrictions, or running the bootstrap's clearance; from 0010, adding a notice
 -- version, a link or an acknowledgement itself, or running notice_facts(); from 0011, writing a
--- contact version itself, or running dpo_settings_unchanged()) fails. Nothing may be granted to
+-- contact version itself, or running dpo_settings_unchanged(); from 0012, any privilege on cases or
+-- case_steps, or running a case helper or trigger function) fails. Nothing may be granted to
 -- PUBLIC at all, and hearth_app can create no schema object or temporary table. 032 pins the
 -- worker's roles the same way.
 \ir fixtures/two_orgs.sql
@@ -114,7 +115,26 @@ declare
     'function set_dpo_contact(integer,text,text,text,text,text,uuid,inet): EXECUTE',
     'function record_notice_acknowledgement(uuid,uuid,date,text,text,uuid,inet): EXECUTE',
     'function transfer_send_state(text): EXECUTE',
-    'function notice_provider_states(): EXECUTE'
+    'function notice_provider_states(): EXECUTE',
+    -- Requests to the DPO (0012, C0.9 PR 3b; OD-06, OD-14, OD-15): no grant on cases or case_steps,
+    -- only these checked functions. The requester sends their own (case.send_own) and reads their own
+    -- tracking (case.list_own), PD-96, PD-97.
+    'function submit_case(text,text,uuid,text,uuid,inet): EXECUTE',
+    'function read_own_cases(integer): EXECUTE',
+    -- The DPO logs a request that came another way (case.log, OD-16, PD-89) and records a step or the
+    -- closure (case.step, PD-90, PD-91), each re-checking the DPO in tables.
+    'function log_case(text,text,date,uuid,text,text,text,text,uuid,text,uuid,inet): EXECUTE',
+    'function add_case_step(uuid,integer,text,date,text,date,text,text,text,uuid,inet): EXECUTE',
+    -- The DPO's queue, one case with its steps and the requester's other requests (case.read, PD-98,
+    -- PPL-07).
+    'function read_cases(boolean,integer): EXECUTE',
+    'function read_case(uuid): EXECUTE',
+    'function read_case_steps(uuid): EXECUTE',
+    'function read_case_others(uuid,integer): EXECUTE',
+    -- The indicator's count in GET /api/session, a number or null, taking no lock (OD-22, PD-99).
+    'function case_attention(): EXECUTE',
+    -- The DPO's reply targets, written beside the contact (notice.targets.set, OD-08, PD-94).
+    'function set_reply_targets(integer,integer,integer,text,uuid,inet): EXECUTE'
   ];
 begin
   perform pg_temp.expect_privileges('hearth_app', expected);
@@ -127,6 +147,23 @@ select pg_temp.check(not has_function_privilege('hearth_app', 'public.notice_fac
                      and not has_function_privilege('hearth_app', 'public.notice_check_dpo(uuid,uuid)', 'EXECUTE')
                      and not has_function_privilege('hearth_app', 'public.dpo_settings_unchanged()', 'EXECUTE'),
                      'hearth_app can run notice_facts(), notice_check_dpo() or dpo_settings_unchanged()');
+
+-- C0.9 OD-06, OD-14 (RQD-01): hearth_app holds no privilege on either case table, column by column
+-- too, and runs none of 0012's helpers or trigger functions: only the checked functions above reach
+-- a case.
+select pg_temp.check(not exists (
+  select 1 from unnest(array['cases', 'case_steps']) t
+  cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) p
+  where has_table_privilege('hearth_app', format('public.%I', t), p)
+     or (p in ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+         and has_any_column_privilege('hearth_app', format('public.%I', t), p))),
+  'hearth_app holds a privilege on cases or case_steps');
+select pg_temp.check(not has_function_privilege('hearth_app', f, 'EXECUTE'), format('hearth_app can run %s', f))
+from unnest(array[
+  'public.new_case_reference()', 'public.notice_states_targets(text)', 'public.case_add_business_days(date,integer)',
+  'public.case_due_on(text,text,date,date,date,integer,integer,integer,integer)', 'public.case_kind_now(uuid,uuid)',
+  'public.case_due(uuid,uuid)', 'public.case_replied_in_time(uuid,uuid)', 'public.cases_check_dpo(uuid,uuid)',
+  'public.cases_fixed()', 'public.case_steps_unchanged()']) f;
 
 -- Nothing in the schema is granted to PUBLIC, table or column.
 select pg_temp.check(count(*) = 0, format('granted to PUBLIC: %s', string_agg(what, ', ')))

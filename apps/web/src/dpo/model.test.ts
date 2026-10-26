@@ -54,7 +54,7 @@ describe('C0.9 PD-26: the DPO pages’ model (dpo/model.ts)', () => {
       },
     })
     expect(registers.purposes.map(row => row.purpose)).not.toContain('transcription')
-    expect(registers.purposes).toHaveLength(13)
+    expect(registers.purposes).toHaveLength(14)
     expect(registers.transfers.map(row => row.provider)).toEqual([
       'aws',
       'aws_sms',
@@ -143,7 +143,7 @@ describe('C0.9 PD-26: the DPO pages’ model (dpo/model.ts)', () => {
     expect(registersQuery).toMatchObject({ refetchOnWindowFocus: false, refetchOnReconnect: false })
     answers.push(json(200, { ...registersForClient(), later: 'a field the server adds' }))
     const read = await registersQuery.queryFn?.({ signal: new AbortController().signal } as never)
-    expect(read?.purposes).toHaveLength(13)
+    expect(read?.purposes).toHaveLength(14)
 
     const written = TransferWriteResponse.parse({
       entry: 'c0000000-0000-4000-8000-000000000001',

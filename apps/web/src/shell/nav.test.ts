@@ -1,9 +1,17 @@
-import { SessionResponseForClient } from '@hearth/shared'
+import { type NoticeStanding, SessionResponseForClient } from '@hearth/shared'
 import { describe, expect, it, vi } from 'vitest'
 import { APP_PATHS, NAV_PATHS } from '@/router/paths.ts'
 import type { SessionRuntime } from '@/session/runtime.ts'
 import { aiCopyIn } from '@/strings/ai-copy.ts'
-import { AVATAR_MENU, dpoItem, type MenuSession, menuItemsFor, settingsItem, signOutItem } from './avatar-menu.ts'
+import {
+  AVATAR_MENU,
+  dpoItem,
+  type MenuSession,
+  menuItemsFor,
+  requestsCount,
+  settingsItem,
+  signOutItem,
+} from './avatar-menu.ts'
 import { activeTab, currentOf, MORE_ENTRIES, NAV, RAIL, TABS } from './nav.ts'
 
 // The toast the sign-out item raises when the sign-out fails, without the app's store.
@@ -29,11 +37,12 @@ describe('T21 OD-02: the navigation (shell/nav.ts)', () => {
       if (path !== '/more') expect(rail.has(path), path).toBe(true)
     }
     // The app paths no navigation lists are Settings and the DPO's pages, which the avatar menu
-    // opens (C0.9 PD-47; /dpo/contact from PR 3a, PD-70).
+    // opens (C0.9 PD-47; /dpo/contact from PR 3a, PD-70; /dpo/requests from PR 3b, PD-98).
     const unlisted = APP_PATHS.filter(path => !phone.has(path) && !rail.has(path))
     expect(unlisted).toEqual([
       '/settings',
       '/settings/privacy',
+      '/dpo/requests',
       '/dpo/purposes',
       '/dpo/transfers',
       '/dpo/contact',
@@ -90,7 +99,7 @@ describe('T21 OD-02: the navigation (shell/nav.ts)', () => {
     expect(TABS.map(entry => currentOf(entry, '/xyz', 'phone')).filter(Boolean)).toEqual([])
   })
 
-  it('NV-04 OD-05 C0.9 PD-26 PD-47: AVATAR_MENU is Settings, Data protection, then Sign out; Settings shows to everyone and opens /settings; Data protection shows only when the session’s capabilities allow the registers and opens /dpo/purposes; Sign out asks the runtime to sign out and says so only when that failed', async () => {
+  it('NV-04 OD-05 C0.9 PD-26 PD-47 PD-98 PPL-02: AVATAR_MENU is Settings, Data protection, then Sign out; Settings shows to everyone and opens /settings; Data protection shows only when the session’s capabilities allow the registers and opens /dpo/requests once the notice is acknowledged, /dpo/purposes before; Sign out asks the runtime to sign out and says so only when that failed', async () => {
     expect(AVATAR_MENU.map(item => item.label)).toEqual(['Settings', 'Data protection', 'Sign out'])
     expect(AVATAR_MENU).toEqual([settingsItem, dpoItem, signOutItem])
     expect(dpoItem.shown?.({ capabilities: { registers: true } })).toBe(true)
@@ -98,15 +107,25 @@ describe('T21 OD-02: the navigation (shell/nav.ts)', () => {
     expect(settingsItem.shown).toBeUndefined()
     expect(signOutItem.shown).toBeUndefined()
 
-    const context = (answer: 'ended' | 'failed') => ({
-      runtime: { signOut: vi.fn(async () => answer) } as unknown as SessionRuntime,
+    const context = (answer: 'ended' | 'failed', standing: NoticeStanding = 'acknowledged') => ({
+      runtime: {
+        signOut: vi.fn(async () => answer),
+        notice: { standing: () => standing },
+      } as unknown as SessionRuntime,
       navigate: vi.fn(),
     })
 
+    // Once acknowledged, the queue (the first link, what its badge counts); before v0, the first
+    // setup task, since a case read would move the tab to /notice (PPL-02).
     const opened = context('ended')
     await dpoItem.run(opened)
-    expect(opened.navigate.mock.calls).toEqual([['/dpo/purposes']])
+    expect(opened.navigate.mock.calls).toEqual([['/dpo/requests']])
     expect(opened.runtime.signOut).not.toHaveBeenCalled()
+    for (const standing of ['unpublished', 'required'] as const) {
+      const setup = context('ended', standing)
+      await dpoItem.run(setup)
+      expect(setup.navigate.mock.calls, standing).toEqual([['/dpo/purposes']])
+    }
     const settings = context('ended')
     await settingsItem.run(settings)
     expect(settings.navigate.mock.calls).toEqual([['/settings']])
@@ -138,5 +157,28 @@ describe('T21 OD-02: the navigation (shell/nav.ts)', () => {
       expect(labels(read(capabilities)), JSON.stringify(capabilities)).toEqual(['Settings', 'Sign out'])
     }
     expect(SessionResponseForClient.parse(person).capabilities).toEqual({ registers: false })
+  })
+
+  it('RQW-10 OD-22 PD-99 PPL-05 OD-24: the count of requests needing attention badges only the DPO’s item, named in words; 0, none, or a count that isn’t a whole number shows nothing, and over 99 reads 99+', () => {
+    expect(settingsItem.badge).toBeUndefined()
+    expect(signOutItem.badge).toBeUndefined()
+    expect(dpoItem.badge?.({ capabilities: { registers: true }, requests: 2 })).toEqual({
+      text: '2',
+      label: 'Data protection, 2 requests need attention',
+    })
+    expect(dpoItem.badge?.({ capabilities: { registers: true }, requests: 1 })).toEqual({
+      text: '1',
+      label: 'Data protection, 1 request needs attention',
+    })
+    expect(dpoItem.badge?.({ requests: 140 })?.text).toBe('99+')
+    for (const requests of [0, null, undefined, -1, 1.5]) {
+      expect(dpoItem.badge?.({ capabilities: { registers: true }, requests }), String(requests)).toBeUndefined()
+      expect(requestsCount({ requests }), String(requests)).toBeUndefined()
+    }
+    // The session answer's lenient reading: a missing or unreadable count is none (P6).
+    const person = { personId: 'b0000000-0000-4000-8000-000000000001', name: 'Ashton', timeZone: 'Asia/Singapore' }
+    expect(SessionResponseForClient.parse({ ...person, requests: 3 }).requests).toBe(3)
+    expect(requestsCount(SessionResponseForClient.parse({ ...person, requests: 'many' }))).toBeUndefined()
+    expect(requestsCount(SessionResponseForClient.parse(person))).toBeUndefined()
   })
 })

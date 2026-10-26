@@ -81,8 +81,8 @@ export const isNoticeHeldBasis = (basis: string): boolean => (NOTICE_HELD_BASES 
 // carried out and checked. The notice tells people such a purpose stops for them if they withdraw,
 // so the publish route holds back any other (purpose_conduct_unstoppable). A purpose joins in the
 // PR that writes its row, and the runbooks guard (RB-05) holds each one to its row. Empty in C0:
-// the only unpinned purposes active in C0, security_audit and backups, can't be stopped for one
-// person.
+// the only unpinned purposes active in C0, security_audit, backups and from C0.9 PR 3b
+// request_handling, can't be stopped for one person.
 export const CONDUCT_WITHDRAWABLE: readonly PurposeKey[] = []
 
 // What each basis takes beside it (0009's processing_register_attachment): a reference (where the
@@ -105,12 +105,13 @@ export const OPT_OUT_DAYS_MAX = 365
 // recorded, since version 1 is Hearth's and never the DPO's. First the pinned purposes, which
 // Hearth runs on. Then security_audit and backups, because Hearth already processes for both (the
 // audit log from C0.3, and the backups every database has), so the register must not call either
-// planned. Those two aren't pinned: the purpose gate passes them only once a published notice lists
-// them (PR 2), and publishing refuses while an active purpose lacks a basis or retention. Every
-// other purpose starts planned. processing_register_defaults() starts exactly these active
-// (apps/server/scripts/check-catalogues.ts, check 6). In PURPOSES order.
+// planned, and from C0.9 PR 3b request_handling, since Hearth handles requests from the day the
+// form exists (OD-17). Those three aren't pinned: the purpose gate passes them only once a
+// published notice lists them (PR 2), and publishing refuses while an active purpose lacks a basis
+// or retention. Every other purpose starts planned. processing_register_defaults() starts exactly
+// these active (apps/server/scripts/check-catalogues.ts, check 6). In PURPOSES order.
 export const ACTIVE_FROM_START: readonly PurposeKey[] = PURPOSE_KEYS.filter(
-  key => isPinnedPurpose(key) || key === 'security_audit' || key === 'backups',
+  key => isPinnedPurpose(key) || key === 'security_audit' || key === 'backups' || key === 'request_handling',
 )
 
 // What the DPO pages show and the registers' answer holds until A0 (C0.9 PD-27): the purposes and

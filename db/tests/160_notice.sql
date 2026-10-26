@@ -403,9 +403,10 @@ select pg_temp.expect_error(format($$select * from pg_temp.ack(gen_random_uuid()
 reset role;
 
 -- NTD-05 (PDPA-02, C0.9 PD-37, PD-38, B-05): the rules, each HF008 with a message the page can show,
--- in this order, as org 1's DPO from its stand-in (version 0). The fixture's org 1 has four active
--- purposes with no basis yet (version 1: accounts, backups, security_audit, service_operation) and
--- presence_receipts active on consent (version 2). Registers are arranged as the superuser.
+-- in this order, as org 1's DPO from its stand-in (version 0). The fixture's org 1 has five active
+-- purposes with no basis yet (version 1: accounts, backups, request_handling, security_audit,
+-- service_operation; request_handling from 0012, C0.9 OD-17) and presence_receipts active on consent
+-- (version 2). Registers are arranged as the superuser.
 select pg_temp.act_as('1', 'a5');
 select pg_temp.expect_error($$select * from pg_temp.publish(0)$$, 'HF008',
                             'Record accounts''s legal basis and how long its data is kept before publishing.');
@@ -416,7 +417,7 @@ select pg_temp.expect_error($$select * from pg_temp.publish(null)$$, 'HF007',
                             'A newer version was published since you looked. Check the preview again.');
 reset role;
 select pg_temp.next_version('1', p, '{"basis": "employment", "retention": "Kept for 12 months"}')
-from unnest(array['accounts', 'backups', 'security_audit', 'service_operation']) p;
+from unnest(array['accounts', 'backups', 'request_handling', 'security_audit', 'service_operation']) p;
 -- Consent and deemed consent by notification (s15A) are each refused. Deemed consent by conduct
 -- is stated from 0011 (OD-18, PD-73): on presence_receipts, which needs no switch, it passes the
 -- rule, and with every later rule met the version publishes (rolled back, HT001, so the cases below
@@ -492,7 +493,7 @@ select set_config('test.audit_max', (select coalesce(max(id), 0)::text from publ
 select pg_temp.act_as('1', 'a5');
 select set_config('test.v1', notice::text, true) from pg_temp.publish(0) where version = 1;
 select pg_temp.check(current_setting('test.v1', true) <> '', 'org 1''s first generated version is not version 1');
-select pg_temp.check((s).keys = '{accounts,backups,content_delivery,presence_receipts,security_audit,service_operation}'
+select pg_temp.check((s).keys = '{accounts,backups,content_delivery,presence_receipts,request_handling,security_audit,service_operation}'
                      and (s).clearances = array[pg_temp.id('1', 'e5')], format('org 1''s sources are %s', s))
 from (select pg_temp.sources() s) x;
 select pg_temp.check(
@@ -527,7 +528,8 @@ select set_config('test.v3_0', notice::text, true) from pg_temp.publish(null) wh
 select pg_temp.check(current_setting('test.v3_0', true) <> '', 'org 3''s first version is not version 0');
 select pg_temp.check(
   (select array_agg(format('%s:%s', l.purpose, l.register_version) order by l.purpose) from public.notice_version_purposes l
-   where l.notice_version_id = current_setting('test.v3_0')::uuid) = '{accounts:2,backups:2,security_audit:2,service_operation:2}'
+   where l.notice_version_id = current_setting('test.v3_0')::uuid)
+      = '{accounts:2,backups:2,request_handling:2,security_audit:2,service_operation:2}'
   and (select array_agg(l.clearance_id) from public.notice_version_providers l where l.notice_version_id = current_setting('test.v3_0')::uuid)
       = (pg_temp.sources()).clearances,
   'org 3''s version 0 does not link exactly its sources');

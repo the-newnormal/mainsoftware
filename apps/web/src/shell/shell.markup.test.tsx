@@ -19,7 +19,14 @@ import { documentTitle, SHELL } from '@/strings/shell.ts'
 import { InShell } from './in-shell.ts'
 
 // Marcus, from the Tembusu seed (db/seed/tembusu.sql).
-const MARCUS = {
+const MARCUS: {
+  personId: string
+  name: string
+  timeZone: string
+  capabilities: { registers: boolean }
+  notice: 'acknowledged'
+  requests?: number | null
+} = {
   personId: 'b0000000-0000-4000-8000-000000000003',
   name: 'Marcus Lim',
   timeZone: 'Asia/Singapore',
@@ -201,6 +208,37 @@ describe('T21 D-08: the shell (shell/Shell.tsx) and its screens', () => {
       )
     expect(items(dpo)).toEqual(['Settings', 'Data protection', 'Sign out', 'Settings', 'Data protection', 'Sign out'])
     expect(items(markup)).toEqual(['Settings', 'Sign out', 'Settings', 'Sign out'])
+  })
+
+  it('RQW-10 OD-22 OD-24 PD-99 PPL-05: the DPO’s count of requests needing attention shows on the avatar button, named in its words, and on Data protection in the menu; with none, or 0, both render exactly as without a count (VS-01’s shots are Marcus’s)', async () => {
+    const plain = await appAt('/today', true, ASHTON)
+    const counted = await appAt('/today', true, { ...ASHTON, requests: 2 })
+    const triggers = (markup: string) => tags(markup, 'button').filter(button => button.get('aria-haspopup') === 'menu')
+    expect(triggers(counted).map(button => button.get('aria-label'))).toEqual([
+      'Account, Ashton Teo, 2 requests need attention',
+      'Account, Ashton Teo, 2 requests need attention',
+    ])
+    // The pill on the avatar's corner, hidden from assistive technology: a number, never colour alone.
+    expect(
+      counted.match(
+        /<span class="relative inline-flex">.*?<span aria-hidden="true" class="inline-flex h-5[^"]*">2<\/span><\/span>/s,
+      ),
+    ).not.toBeNull()
+    const items = tags(counted, 'button').filter(button => button.get('role') === 'menuitem')
+    expect(items.map(item => item.get('aria-label'))).toEqual([
+      undefined,
+      'Data protection, 2 requests need attention',
+      undefined,
+      undefined,
+      'Data protection, 2 requests need attention',
+      undefined,
+    ])
+    // 0 or none: byte-equal to no count at all.
+    expect(await appAt('/today', true, { ...ASHTON, requests: 0 })).toBe(plain)
+    expect(await appAt('/today', true, { ...ASHTON, requests: null })).toBe(plain)
+    // Marcus holds no count, whatever an answer says, and his button is as it was.
+    const marcus = await appAt('/today')
+    expect(await appAt('/today', true, { ...MARCUS, requests: 3 })).toBe(marcus)
   })
 
   it('SHM-04 OD-04 decision 8: no searchbox anywhere in the shell, and no AI copy on any screen', async () => {

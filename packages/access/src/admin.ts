@@ -203,6 +203,27 @@ export function adminCan(world: World, actor: Id, request: AdminRequest, context
     // Never a number or who has acknowledged. Not Rule 9: roster facts, no content.
     case 'notice.people.read':
       return world.holds(actor, 'dpo')
+    // C0.9 OD-08, PD-94: the DPO alone records the reply targets, which the notice prints, before v0
+    // too (NOTICE_SETUP); never an Owner, Admin or Compliance Officer as such. Not Rule 9.
+    case 'notice.targets.set':
+      return world.holds(actor, 'dpo')
+    // PDPA-04, PDPA-13 (C0.9 OD-14): the DPO alone reads and works requests, after the same fresh
+    // re-authentication (PD-30); never an Owner, Admin or Compliance Officer as such, counts
+    // included. The case a step names is the database's to check (add_case_step()): the World loads
+    // no cases, so can() decides who and the function decides which.
+    case 'case.read':
+    case 'case.step':
+      return world.holds(actor, 'dpo')
+    // C0.9 OD-16, PD-89: logging one for a person of the organisation, current or former (a leaver's
+    // request is theirs: PDPA-05 works for deactivated accounts, and C0.10's holds read the person;
+    // log_case() asks for a channel to reach a leaver), never yourself, as no admin action acts on
+    // you; or for someone without an account (null). world.person() holds only this org's people, so
+    // another org's id, or one the organisation doesn't hold, is refused.
+    case 'case.log':
+      return (
+        (request.person === null || (request.person !== actor && world.person(request.person) !== undefined)) &&
+        world.holds(actor, 'dpo')
+      )
     default:
       return false
   }

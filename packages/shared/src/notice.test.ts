@@ -1,6 +1,7 @@
 // The privacy notice's vocabulary, what changed between two versions, and the bodies and answers of
-// /api/notice and /api/admin/notice (C0.9 PR 2, TECH-SPEC T22 items 21 to 37), and from C0.9 PR 3a
-// the DPO's contact each version printed and the acknowledgements the DPO records (OD-11, OD-19).
+// /api/notice and /api/admin/notice (C0.9 PR 2, TECH-SPEC T22 items 21 to 37), from C0.9 PR 3a
+// the DPO's contact each version printed and the acknowledgements the DPO records (OD-11, OD-19),
+// and from C0.9 PR 3b the reply targets each version printed (OD-08, PD-95).
 // That the stated facts equal notice_facts()'s keys is checked against the database by check 6
 // (apps/server/scripts/check-catalogues.ts); the words are notice-text.test.ts's.
 import { describe, expect, it } from 'vitest'
@@ -21,6 +22,7 @@ import {
   NOTICE_NOTE_MAX,
   NOTICE_PEOPLE_MAX,
   NOTICE_PROBLEMS,
+  NOTICE_TARGET_CHANGES,
   NOTICE_TRANSFER_FACTS,
   NOTICE_WARNINGS,
   NoticeAdminResponse,
@@ -36,10 +38,12 @@ import {
   PublishBody,
   PublishResponse,
   PublishResponseForClient,
+  printsTargets,
   RECORD_PROBLEMS,
   RecordAcknowledgementBody,
   recordProblems,
   sameNoticeFacts,
+  TARGETLESS_GENERATORS,
 } from './notice.ts'
 import type { TransferFacts } from './registers.ts'
 
@@ -49,8 +53,10 @@ const digest = 'a'.repeat(64)
 const at = '2026-10-23T01:00:00.000Z'
 const SMILE = String.fromCodePoint(0x1f642)
 
-// The DPO's business contact, fictional, on a reserved domain (C0.9 OD-10).
+// The DPO's business contact, fictional, on a reserved domain (C0.9 OD-10), and OD-08's reply
+// targets (C0.9 PR 3b).
 const CONTACT: DpoContact = { title: 'Data Protection Officer', email: 'dpo@notice.example', phone: null, postal: null }
+const TARGETS = { businessDays: 10, calendarDays: 30 }
 
 // Twilio Verify's stated facts, fictional.
 const TWILIO: NoticeFacts = {
@@ -188,6 +194,7 @@ const sources = (change: Partial<NoticeSources> = {}): NoticeSources => ({
     { id: 'c0000000-0000-4000-8000-000000000002', provider: 'twilio', facts: TWILIO },
   ],
   contact: { version: 1, facts: CONTACT },
+  targets: null,
   ...change,
 })
 const NOTHING = { added: [], changed: [], removed: [] }
@@ -198,6 +205,7 @@ describe('NTG-08 C0.9 PD-46 PD-48 PD-67: what changed between two versions', () 
       purposes: NOTHING,
       providers: NOTHING,
       contact: 'same',
+      targets: 'same',
       wording: false,
     })
   })
@@ -294,6 +302,7 @@ const changes = {
   purposes: { added: ['security_audit'], changed: ['accounts'], removed: [] },
   providers: { added: [], changed: ['twilio'], removed: [] },
   contact: 'added',
+  targets: 'added',
   wording: false,
 }
 const inApp = { version: 0, acknowledgedAt: at, method: 'in_app', acknowledgedOn: null, note: null }
@@ -309,6 +318,7 @@ const answer = {
   standing: 'required',
   current,
   contact: CONTACT,
+  targets: TARGETS,
   changes,
   mine: [recorded, inApp],
 }
@@ -356,7 +366,14 @@ describe('C0.9 PD-42 PD-46 B-11: GET /api/notice and POST /api/notice/acknowledg
   })
 
   it('OD-01 PD-44 PD-69: unpublished exactly when no version is published, and then no contact', () => {
-    const unpublished = { ...answer, standing: 'unpublished', current: null, contact: null, changes: null }
+    const unpublished = {
+      ...answer,
+      standing: 'unpublished',
+      current: null,
+      contact: null,
+      targets: null,
+      changes: null,
+    }
     expect(NoticeResponse.safeParse(unpublished).success).toBe(true)
     expect(NoticeResponse.safeParse({ ...unpublished, contact: CONTACT }).success).toBe(false)
     expect(NoticeResponse.safeParse({ ...answer, standing: 'unpublished' }).success).toBe(false)
@@ -388,7 +405,7 @@ describe('C0.9 PD-42 PD-46 B-11: GET /api/notice and POST /api/notice/acknowledg
     expect(read.changes?.contact).toBe('added')
     expect(read.mine).toEqual(answer.mine)
     expect(read.contact).toEqual(CONTACT)
-    expect(Object.keys(read)).toEqual(['person', 'standing', 'current', 'contact', 'changes', 'mine'])
+    expect(Object.keys(read)).toEqual(['person', 'standing', 'current', 'contact', 'targets', 'changes', 'mine'])
     for (const standing of ['acknowledged', 'required', 'unpublished']) {
       expect(NoticeResponseForClient.parse({ ...answer, standing }).standing, standing).toBe(standing)
     }
@@ -676,5 +693,88 @@ describe('C0.9 OD-19 PD-75 PD-76: the acknowledgements the DPO records', () => {
       'note_not_one_line',
       'ai_copy',
     ])
+  })
+})
+
+describe('NTS-08 NTS-09 C0.9 PD-95: what changed in the reply targets', () => {
+  const printing = (targets = TARGETS, change: Partial<NoticeSources> = {}) =>
+    sources({ generator: 'c09.3', body: 'The words with targets', targets, ...change })
+
+  it('NTS-08 PD-95: added after a version that printed none, changed when the figures differ, and the same when they match or neither prints them', () => {
+    expect([...NOTICE_TARGET_CHANGES]).toEqual(['same', 'added', 'changed'])
+    const targetless = sources({ generator: 'c09.2' })
+    const standIn = sources({ generator: null, purposes: [], clearances: [], contact: null, targets: null })
+    for (const before of [targetless, standIn]) expect(noticeChanges(before, printing()).targets).toBe('added')
+    for (const figures of [
+      { businessDays: 7, calendarDays: 30 },
+      { businessDays: 10, calendarDays: 21 },
+    ]) {
+      expect(noticeChanges(printing(), printing(figures)).targets, JSON.stringify(figures)).toBe('changed')
+    }
+    expect(noticeChanges(printing(), printing({ ...TARGETS })).targets).toBe('same')
+    expect(noticeChanges(targetless, sources({ generator: 'c09.2', body: 'Other words' })).targets).toBe('same')
+    // A version that prints none after one that did claims nothing: every generator from c09.3
+    // prints them, so it never happens.
+    expect(noticeChanges(printing(), targetless).targets).toBe('same')
+  })
+
+  it('NTS-09 PD-95: new words that come with new targets are that change, not new wording', () => {
+    const before = printing()
+    const after = printing({ businessDays: 7, calendarDays: 30 }, { body: 'Other words with targets' })
+    expect(noticeChanges(before, after)).toEqual({
+      purposes: NOTHING,
+      providers: NOTHING,
+      contact: 'same',
+      targets: 'changed',
+      wording: false,
+    })
+    // The same targets with other words are new wording; a new generator always is.
+    expect(noticeChanges(before, printing(TARGETS, { body: 'Other words with targets' })).wording).toBe(true)
+    expect(noticeChanges(sources({ generator: 'c09.2' }), printing()).wording).toBe(true)
+  })
+})
+
+describe('NTS-10 C0.9 PD-93 PD-95: the generators that print the targets, and GET /api/notice’s targets', () => {
+  it('NTS-10 PD-93: TARGETLESS_GENERATORS is c09.1 and c09.2, as 0012’s notice_states_targets() names them; a stand-in prints none', () => {
+    expect([...TARGETLESS_GENERATORS]).toEqual(['c09.1', 'c09.2'])
+    expect(printsTargets(null)).toBe(false)
+    for (const generator of TARGETLESS_GENERATORS) expect(printsTargets(generator), generator).toBe(false)
+    for (const generator of ['c09.3', 'c09.4', 'c10.1', 'pr3-1']) expect(printsTargets(generator), generator).toBe(true)
+  })
+
+  it('NTS-10 PD-95: the answer gives the targets the latest version printed, in their range, or null; none while nothing is published', () => {
+    expect(NoticeResponse.parse(answer).targets).toEqual(TARGETS)
+    expect(NoticeResponse.parse({ ...answer, targets: null }).targets).toBeNull()
+    for (const targets of [
+      { businessDays: 4, calendarDays: 30 },
+      { businessDays: 10, calendarDays: 31 },
+      { businessDays: 10.5, calendarDays: 30 },
+      { ...TARGETS, later: 1 },
+      { businessDays: 10 },
+      '10 and 30',
+    ]) {
+      expect(NoticeResponse.safeParse({ ...answer, targets }).success, JSON.stringify(targets)).toBe(false)
+    }
+    const { targets: _targets, ...without } = answer
+    expect(NoticeResponse.safeParse(without).success).toBe(false)
+    const unpublished = { ...answer, standing: 'unpublished', current: null, contact: null, changes: null }
+    expect(NoticeResponse.safeParse({ ...unpublished, targets: null }).success).toBe(true)
+    expect(NoticeResponse.safeParse(unpublished).success).toBe(false)
+    expect(NoticeResponse.safeParse({ ...answer, changes: { ...changes, targets: 'removed' } }).success).toBe(false)
+  })
+
+  it('NTS-10 P6 PD-95: the web app reads targets it can’t read as unreadable, never as none, and a targets marker it can’t read as the same', () => {
+    const read = (change: object) => NoticeResponseForClient.parse({ ...answer, ...change })
+    expect(read({}).targets).toEqual(TARGETS)
+    expect(read({ targets: null }).targets).toBeNull()
+    expect(read({ targets: { ...TARGETS, later: 1 } }).targets).toEqual(TARGETS)
+    for (const targets of [{ businessDays: 0, calendarDays: 30 }, { businessDays: '10', calendarDays: 30 }, 'none']) {
+      expect(read({ targets }).targets, JSON.stringify(targets)).toBeUndefined()
+    }
+    const { targets: _targets, ...older } = answer
+    expect(NoticeResponseForClient.parse(older).targets).toBeUndefined()
+    expect(read({ changes: { ...changes, targets: 'removed' } }).changes?.targets).toBe('same')
+    const { targets: _marker, ...unmarked } = changes
+    expect(read({ changes: unmarked }).changes?.targets).toBe('same')
   })
 })

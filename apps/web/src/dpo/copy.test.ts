@@ -5,16 +5,21 @@
 // The notice's own words are the server's draft, which NTW-10 (notice/notice-copy.test.ts) holds
 // to AI_COPY branch by branch, and the DPO's free text in it publishing refuses (PD-62). From C0.9
 // PR 3a: the contact page's copy (strings/dpo-contact.ts), the record dialog's
-// (strings/dpo-record.ts) and the transfer page's break-glass lines (PD-65, PD-70, PD-76, PD-80).
+// (strings/dpo-record.ts) and the transfer page's break-glass lines (PD-65, PD-70, PD-76, PD-80);
+// from C0.9 PR 3b the queue's, the case sheet's and the log dialog's (strings/dpo-requests.ts,
+// strings/dpo-case.ts), the reply targets' (in strings/dpo-contact.ts) and the codes the queue
+// passes on (case_changed, case_invalid).
 import { MESSAGES, NON_AI_PROVIDERS, NON_AI_PURPOSE_KEYS, PURPOSES, REAUTH_METHOD_MESSAGES } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
 import { aiCopyIn } from '@/strings/ai-copy.ts'
 import { API_COPY } from '@/strings/api.ts'
 import * as DPO_TABLES from '@/strings/dpo.ts'
+import * as CASE_TABLES from '@/strings/dpo-case.ts'
 import * as CONTACT_TABLES from '@/strings/dpo-contact.ts'
 import * as NOTICE_TABLES from '@/strings/dpo-notice.ts'
 import * as PURPOSE_TABLES from '@/strings/dpo-purposes.ts'
 import * as RECORD_TABLES from '@/strings/dpo-record.ts'
+import * as REQUESTS_TABLES from '@/strings/dpo-requests.ts'
 import * as TRANSFER_TABLES from '@/strings/dpo-transfers.ts'
 import { NOTICE } from '@/strings/notice.ts'
 import { SHELL } from '@/strings/shell.ts'
@@ -53,10 +58,14 @@ const PASSED_ON = [
   // The Notice tab's read refused before the DPO has acknowledged the latest version, as the tab
   // moves to /notice; notice_changed and notice_invalid it words itself (dpo/notice-model.ts).
   'notice_required',
+  // The queue's (C0.9 PR 3b): the case sheet and the log dialog word both themselves
+  // (dpo/case-model.ts caseRefusalOf), and these are the fallbacks the shared copy holds.
+  'case_changed',
+  'case_invalid',
 ] as const satisfies readonly (keyof typeof MESSAGES)[]
 
 describe('C0.9 PD-27 PD-31: the DPO pages’ copy', () => {
-  it('DPP-06 decision 8 PD-53 PD-65: no label the pages can render matches AI_COPY: the purposes shown, the provider names, the bases and every problem and warning (strings/dpo*.ts, the Notice tab’s, the notice markers’, the contact page’s and the record dialog’s included), the shared refusals passed on, the re-authentication lines, and the titles and menu entry in strings/shell.ts', () => {
+  it('DPP-06 decision 8 PD-53 PD-65 PD-102: no label the pages can render matches AI_COPY: the purposes shown, the provider names, the bases and every problem and warning (strings/dpo*.ts, the Notice tab’s, the notice markers’, the contact page’s, the record dialog’s, the queue’s, the case sheet’s and the log dialog’s included), the shared refusals passed on, the re-authentication lines, and the titles and menu entries in strings/shell.ts', () => {
     const shown = [
       ...NON_AI_PURPOSE_KEYS.map(key => ({ where: `PURPOSES.${key}.register`, text: PURPOSES[key].register })),
       ...stringsIn(DPO_TABLES, 'strings/dpo.ts'),
@@ -65,18 +74,23 @@ describe('C0.9 PD-27 PD-31: the DPO pages’ copy', () => {
       ...stringsIn(NOTICE_TABLES, 'strings/dpo-notice.ts'),
       ...stringsIn(CONTACT_TABLES, 'strings/dpo-contact.ts'),
       ...stringsIn(RECORD_TABLES, 'strings/dpo-record.ts'),
+      ...stringsIn(REQUESTS_TABLES, 'strings/dpo-requests.ts'),
+      ...stringsIn(CASE_TABLES, 'strings/dpo-case.ts'),
       ...PASSED_ON.map(code => ({ where: `MESSAGES.${code}`, text: MESSAGES[code] })),
       ...stringsIn(REAUTH_METHOD_MESSAGES.pin, 'REAUTH_METHOD_MESSAGES.pin'),
       ...stringsIn(REAUTH_METHOD_MESSAGES.sign_in, 'REAUTH_METHOD_MESSAGES.sign_in'),
       { where: 'API_COPY.network', text: API_COPY.network },
       ...stringsIn(SHELL.dpo, 'SHELL.dpo'),
       { where: 'SHELL.account.dataProtection', text: SHELL.account.dataProtection },
+      ...stringsIn(SHELL.account, 'SHELL.account'),
     ]
     // The tables were read: every non-AI purpose, provider name, basis and problem, and the notice's.
     expect(shown.length).toBeGreaterThan(200)
     expect(shown.filter(entry => entry.where.startsWith('strings/dpo-notice.ts')).length).toBeGreaterThan(50)
     expect(shown.filter(entry => entry.where.startsWith('strings/dpo-record.ts')).length).toBeGreaterThan(30)
-    expect(shown.filter(entry => entry.where.startsWith('strings/dpo-contact.ts')).length).toBeGreaterThan(40)
+    expect(shown.filter(entry => entry.where.startsWith('strings/dpo-contact.ts')).length).toBeGreaterThan(55)
+    expect(shown.filter(entry => entry.where.startsWith('strings/dpo-requests.ts')).length).toBeGreaterThan(40)
+    expect(shown.filter(entry => entry.where.startsWith('strings/dpo-case.ts')).length).toBeGreaterThan(100)
     expect(shown).toContainEqual({
       where: 'strings/dpo-transfers.ts.TRANSFERS_COPY.twilioLastSession',
       text: TRANSFER_TABLES.TRANSFERS_COPY.twilioLastSession,

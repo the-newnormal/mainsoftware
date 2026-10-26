@@ -12,7 +12,7 @@ import { logOffset, readCode } from './support/codes.ts'
 import { E2E_ORIGIN, stateFile } from './support/env.ts'
 import { expect, SESSION_401, test } from './support/fixtures.ts'
 import { E2E_PIN, PERSONAS, typed } from './support/personas.ts'
-import { E2E_CONTACT, recordContactIfNone, recordMissingEntries } from './support/registers-api.ts'
+import { E2E_CONTACT, E2E_TARGETS, recordContactIfNone, recordMissingEntries } from './support/registers-api.ts'
 import { signInWithPinViaApi } from './support/sign-in-api.ts'
 import { SIZES } from './support/viewports.ts'
 
@@ -163,7 +163,7 @@ test.describe('the forced re-acknowledgement', () => {
     await recordMissingEntries(DPO_STATE)
   })
 
-  test('SE-05 PDPA-03 ACC-12 C0.9 PD-39 PD-45 PD-46 PD-55 OD-10 OD-11: the DPO publishes version 1 from the Notice tab at 390 px and lands on /notice; Kelvin’s two tabs both reach /notice within 30 s, where version 1 gives the contact the DPO recorded; the one he acknowledges in goes back to Chats and live, the other leaves /notice within 5 s; and the DPO, acknowledging, is back on the tab, which says the notice is up to date', async ({
+  test('SE-05 PDPA-03 ACC-12 C0.9 PD-39 PD-45 PD-46 PD-55 PD-95 OD-08 OD-10 OD-11: the DPO publishes version 1 from the Notice tab at 390 px and lands on /notice; Kelvin’s two tabs both reach /notice within 30 s, where version 1 gives the contact the DPO recorded, the form and the reply targets; the one he acknowledges in goes back to Chats and live, the other leaves /notice within 5 s; and the DPO, acknowledging, is back on the tab, which says the notice is up to date', async ({
     open,
     guard,
   }) => {
@@ -214,8 +214,17 @@ test.describe('the forced re-acknowledgement', () => {
       expect(other).toHaveURL(NOTICE_URL, { timeout: 30_000 }),
     ])
     await expect(kelvin.getByText(/^Version 1 · published /)).toBeVisible()
-    // What the DPO recorded reaches everyone, under "Your rights" (C0.9 OD-10, OD-11, PD-74).
+    // What the DPO recorded reaches everyone, under "Your rights" (C0.9 OD-10, OD-11, PD-74), with
+    // the form in Settings › Privacy and the reply targets (C0.9 PR 3b, c09.3: PD-95).
     await expect(kelvin.getByText(`Email: ${E2E_CONTACT.email}`, { exact: true })).toBeVisible()
+    await expect(kelvin.getByText(/use the form in Settings › Privacy in Hearth/)).toBeVisible()
+    await expect(
+      kelvin.getByText(
+        new RegExp(
+          `within ${E2E_TARGETS.businessDays} business days, .* within ${E2E_TARGETS.calendarDays} calendar days`,
+        ),
+      ),
+    ).toBeVisible()
 
     // He acknowledges in the first: back to Chats, and live again (a new connection, welcomed).
     const welcomed = kelvinLive()

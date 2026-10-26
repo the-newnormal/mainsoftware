@@ -5,9 +5,12 @@
 // refuses; the links Settings makes from it; and the bodies and answers of
 // /api/admin/notice/contact and of the contact GET /api/notice carries. It is a role title, never a
 // person's name, and at least one way to reach the DPO outside Hearth, so leavers and people with no
-// account can write (OD-10, OD-13). The database stays the one that decides: a rule here that
-// drifts from 0011's lets a refusal through as HF006 (400 register_invalid), never a write. The
-// problems are codes; the page words each (apps/web's strings), never this file.
+// account can write (OD-10, OD-13). From C0.9 PR 3b (OD-08, PD-94) the same settings versions hold
+// the DPO's reply targets, which set_reply_targets() in migration 0012 records and set_dpo_contact()
+// copies, with their range and the body of /api/admin/notice/targets/set. The database stays the
+// one that decides: a rule here that drifts from 0011's or 0012's lets a refusal through as HF006
+// (400 register_invalid), never a write. The problems are codes; the page words each (apps/web's
+// strings), never this file.
 //
 // The server loads this file on Node (T2), and the package compiles with lib ES2024 and no DOM or
 // Node types. It imports neither notice.ts nor notice-text.ts, which import it.
@@ -43,6 +46,61 @@ export interface DpoContact {
   email: string | null
   phone: string | null
   postal: string | null
+}
+
+// --- The reply targets (C0.9 OD-08, OD-09, PD-94) -----------------------------------------------
+
+// The DPO's reply targets: business days for withdrawals, objections, questions and complaints,
+// calendar days for copies and corrections, within the range fixed in code (0012's checks, which
+// RQD-11 and DCS-07 hold equal; OD-26 asks the owner to confirm the bounds). The DPO may promise
+// sooner than OD-08's figures, never later, and never so short that a typo makes every request
+// overdue at once. The defaults are OD-08's, which every settings version recorded before 0012
+// reads (the columns' defaults). Business days are weekdays in the org's time zone, public holidays
+// counted (OD-09), so a due day errs early.
+export const REPLY_TARGETS = {
+  businessDays: { min: 5, max: 10, default: 10 },
+  calendarDays: { min: 14, max: 30, default: 30 },
+} as const
+
+export interface ReplyTargets {
+  businessDays: number
+  calendarDays: number
+}
+
+// The targets as stored, in their range: what a settings version holds and what a c09.3 version of
+// the notice printed.
+export const ReplyTargetsSchema = z.strictObject({
+  businessDays: z.int().min(REPLY_TARGETS.businessDays.min).max(REPLY_TARGETS.businessDays.max),
+  calendarDays: z.int().min(REPLY_TARGETS.calendarDays.min).max(REPLY_TARGETS.calendarDays.max),
+})
+export type ReplyTargetsJSON = z.infer<typeof ReplyTargetsSchema>
+
+// The web app's reading of the targets (P6): fields added later are dropped, and any whole number
+// of days from 1 is shown as the server gave it; the page's own checks (targetsProblems()) hold an
+// edit to the range.
+export const ReplyTargetsForClient = z.object({ businessDays: z.int().min(1), calendarDays: z.int().min(1) })
+
+// Why the targets can't be saved, in the order set_reply_targets() refuses them (HF006, 400
+// register_invalid):
+//   business_days_range  business days outside 5 to 10
+//   calendar_days_range  calendar days outside 14 to 30
+// A contact not yet recorded is refused too (HF006), which the page says before it offers the
+// change, since the targets are kept with the contact.
+export const TARGETS_PROBLEMS = ['business_days_range', 'calendar_days_range'] as const
+export type TargetsProblem = (typeof TARGETS_PROBLEMS)[number]
+
+export function targetsProblems(targets: ReplyTargets): TargetsProblem[] {
+  const within = (value: number, range: { min: number; max: number }) =>
+    Number.isInteger(value) && value >= range.min && value <= range.max
+  const found: TargetsProblem[] = []
+  if (!within(targets.businessDays, REPLY_TARGETS.businessDays)) found.push('business_days_range')
+  if (!within(targets.calendarDays, REPLY_TARGETS.calendarDays)) found.push('calendar_days_range')
+  return found
+}
+
+// Whether two settings versions hold the same targets.
+export function sameTargets(a: ReplyTargets, b: ReplyTargets): boolean {
+  return a.businessDays === b.businessDays && a.calendarDays === b.calendarDays
 }
 
 // --- Text ----------------------------------------------------------------------------------------
@@ -128,6 +186,20 @@ const CONTROL = /\p{Cc}/u
 const EMPTY_LINE = /\n[\t\n\v\f\r \u1680\u2000-\u2006\u2008-\u200a\u2028\u2029\u205f\u3000]*\n/u
 // Postgres's [[:alnum:]] in that ctype, for the addresses people write: a letter or a digit.
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
+
+// Whether a postal address, trimmed, is in the shape 0011's dpo_settings_postal admits: at most 500
+// characters, plain text on lines none of which is empty, with a letter or a digit. From C0.9 PR 3b
+// a requester's postal address is held to it too (0012's cases_requester_contact, which also
+// refuses a bidirectional-formatting character: cases.ts).
+export function postalInShape(postal: string): boolean {
+  return (
+    postal !== '' &&
+    codePoints(postal) <= CONTACT_POSTAL_MAX &&
+    !CONTROL.test(postal.replaceAll('\n', '')) &&
+    !EMPTY_LINE.test(postal) &&
+    LETTER_OR_DIGIT.test(postal)
+  )
+}
 
 // What holds the contact back, in CONTACT_PROBLEMS order, then CONTACT_FIELDS'. It reads the fields
 // as set_dpo_contact() does: trimmed (String.prototype.trim()'s set, which the function's own trim
@@ -220,19 +292,32 @@ export const SetContactBody = z.strictObject({
 })
 export type SetContactJSON = z.input<typeof SetContactBody>
 
-// Its answer: the current settings version, and whether this request recorded it (the same contact
-// again records nothing).
+// POST /api/admin/notice/targets/set (C0.9 PR 3b, PD-94): the settings version the page showed,
+// which exists, since the targets are kept with the contact, and both figures. A whole number of
+// days parses whatever its size within the column's type, so a figure out of range is a problem the
+// page explains (targetsProblems(), 400 register_invalid), not a bad request; anything else is 400
+// invalid_request. The DPO comes from the session, never the body.
+const Figure = z.int().min(-2_147_483_648).max(2_147_483_647)
+export const SetTargetsBody = z.strictObject({ seen: SettingsVersion, businessDays: Figure, calendarDays: Figure })
+export type SetTargetsJSON = z.input<typeof SetTargetsBody>
+
+// The answer of both writers: the current settings version, and whether this request recorded it
+// (the same contact, or the same targets, again records nothing).
 export const ContactWriteResponse = z.strictObject({ version: SettingsVersion, changed: z.boolean() })
 export type ContactWriteJSON = z.infer<typeof ContactWriteResponse>
 export const ContactWriteResponseForClient = z.object({ version: z.int().min(1), changed: z.boolean() })
 
 // Whether the published notice gives the current contact (C0.9 PD-70), which the contact page shows
-// as a pill:
+// as a pill, decided from 0012 by the contact's facts, never the settings version, since a change
+// to the targets alone records a new version with the same contact (PD-95):
 //   unpublished  no version is published yet
 //   stated       the latest version prints this contact
 //   not_printed  the latest version prints none: a stand-in, a c09.1 version, or no contact was
 //                recorded when it was published
 //   not_stated   the latest version prints an earlier contact
+// The reply targets' pill (targetsStated, C0.9 PR 3b) takes the same four states: not_printed for a
+// latest version whose generator prints no targets (a stand-in, c09.1 or c09.2), and not_stated for
+// one that prints other figures.
 export const CONTACT_STATED = ['unpublished', 'stated', 'not_printed', 'not_stated'] as const
 export type ContactStated = (typeof CONTACT_STATED)[number]
 
@@ -265,12 +350,16 @@ const ContactRow = z.strictObject(contactRow).refine(someChannel, SOME_CHANNEL)
 
 // GET /api/admin/notice/contact (C0.9 PD-70), under notice.read: whether the published notice is up
 // to date with the registers (the Notice link's badge), the current contact (null until the DPO
-// records one), and whether the latest version prints it. The server types its answer with this.
+// records one), and whether the latest version prints it. From C0.9 PR 3b (PD-94, PD-95) also the
+// current reply targets, kept with the contact (so null exactly when it is), and whether the latest
+// version prints them. The server types its answer with this.
 export const ContactAdminResponse = z
   .strictObject({
     notice: z.enum(NOTICE_STATUSES),
     contact: ContactRow.nullable(),
     stated: z.enum(CONTACT_STATED),
+    targets: ReplyTargetsSchema.nullable(),
+    targetsStated: z.enum(CONTACT_STATED),
   })
   .refine(answer => (answer.notice === 'none') === (answer.stated === 'unpublished'), {
     message: 'unpublished exactly when no version is published',
@@ -278,19 +367,34 @@ export const ContactAdminResponse = z
   .refine(answer => answer.contact !== null || answer.stated === 'unpublished' || answer.stated === 'not_printed', {
     message: 'a contact stated, or an earlier one, only once one is recorded',
   })
+  .refine(answer => (answer.targets === null) === (answer.contact === null), {
+    message: 'targets exactly when a contact is recorded: they are kept with it (C0.9 PD-94)',
+  })
+  .refine(answer => (answer.notice === 'none') === (answer.targetsStated === 'unpublished'), {
+    message: 'targets unpublished exactly when no version is published',
+  })
+  .refine(
+    answer =>
+      answer.targets !== null || answer.targetsStated === 'unpublished' || answer.targetsStated === 'not_printed',
+    { message: 'targets stated, or earlier ones, only once they are recorded' },
+  )
 export type ContactAdminJSON = z.infer<typeof ContactAdminResponse>
 export type ContactRowJSON = NonNullable<ContactAdminJSON['contact']>
 
 // The web app's reading of the same answer (P6): fields added later are dropped, a notice marker it
 // can't read claims nothing (no out-of-date badge), a name it can't read shows as nobody's, and a
 // stated marker it can't read shows no pill. A contact it can't read fails the read, so the page
-// shows the server's words with Try again, never a false "No contact details yet".
+// shows the server's words with Try again, never a false "No contact details yet". Targets it can't
+// read, or a targets marker, read as null (C0.9 PR 3b): the card shows no figures and no pill, and
+// offers no change it couldn't start from.
 export const ContactAdminResponseForClient = z.object({
   notice: z.enum(NOTICE_STATUSES).catch('up_to_date'),
   contact: z
     .object({ ...contactRow, version: z.int().min(1), recordedBy: PersonName.nullable().catch(null) })
     .nullable(),
   stated: z.enum(CONTACT_STATED).nullable().catch(null),
+  targets: ReplyTargetsForClient.nullable().catch(null),
+  targetsStated: z.enum(CONTACT_STATED).nullable().catch(null),
 })
 export type ContactAdminForClient = z.infer<typeof ContactAdminResponseForClient>
 export type ContactRowForClient = NonNullable<ContactAdminForClient['contact']>

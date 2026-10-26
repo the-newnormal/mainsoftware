@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { isPinnedPurpose, PINNED_PURPOSES } from './flags.ts'
 import { PROVIDERS, PURPOSE_KEYS, PURPOSES } from './purposes.ts'
 import {
+  ACTIVE_FROM_START,
   BASES,
   BASIS_NEEDS,
   type Basis,
@@ -112,16 +113,35 @@ describe('PDPA-01 C0.9 PD-11: the bases', () => {
       expect(PURPOSES[key].needsSwitch, key).toBe(false)
       expect(basesFor(key), key).toContain('deemed_consent_conduct')
     }
-    // Empty in C0: security_audit and backups, the only unpinned purposes active in C0, can't be
-    // stopped for one person. A purpose joins in the PR that writes its row in
+    // Empty in C0: security_audit, backups and request_handling, the only unpinned purposes active
+    // in C0, can't be stopped for one person. A purpose joins in the PR that writes its row in
     // docs/runbooks/withdrawal-by-hand.md (RB-05).
     expect(CONDUCT_WITHDRAWABLE).toEqual([])
   })
 
-  it('C0.9 PD-27: the pages list the 13 purposes and 8 providers outside the AI layer', () => {
-    expect(NON_AI_PURPOSE_KEYS).toHaveLength(13)
+  it('C0.9 PD-27 PR 3b OD-17: the pages list the 14 purposes and 8 providers outside the AI layer', () => {
+    expect(NON_AI_PURPOSE_KEYS).toHaveLength(14)
     for (const key of NON_AI_PURPOSE_KEYS) expect(PURPOSES[key].ai, key).toBe(false)
     expect([...NON_AI_PROVIDERS]).toEqual(PROVIDERS.filter(key => key !== 'openai' && key !== 'bedrock'))
+  })
+
+  it('RGS-20 C0.9 OD-17 PD-87: request_handling is active from the start, unpinned, outside the AI layer, needs no switch, and isn’t one a notice may say stops for one person', () => {
+    expect(PURPOSES.request_handling).toEqual({
+      ai: false,
+      needsSwitch: false,
+      register: 'Handling questions, complaints and requests about personal data',
+    })
+    expect(PURPOSE_KEYS.indexOf('request_handling')).toBe(PURPOSE_KEYS.indexOf('backups') + 1)
+    expect(ACTIVE_FROM_START).toContain('request_handling')
+    expect(isPinnedPurpose('request_handling')).toBe(false)
+    expect(PINNED_PURPOSES).not.toContain('request_handling')
+    expect(CONDUCT_WITHDRAWABLE).not.toContain('request_handling')
+    expect(NON_AI_PURPOSE_KEYS).toContain('request_handling')
+    // Its version 1 is Hearth's, with nothing recorded: the DPO records its basis and retention
+    // before the next publish, on any of the seven bases the register takes (whether a notice can
+    // state one is publishing's rule).
+    expect(purposeProblems('request_handling', purpose({ status: 'active' }))).toEqual([])
+    expect(basesFor('request_handling')).toEqual([...BASES])
   })
 })
 

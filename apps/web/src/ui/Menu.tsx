@@ -10,8 +10,13 @@
 // pilot's floor is iOS 16.4). Contract: no ancestor between a Menu and the viewport may clip it
 // (overflow other than visible) or become its containing block (transform, filter, contain). The
 // rail's layout keeps to this, and the shell's e2e checks every item can be hit at three sizes.
+//
+// An item may carry a badge (C0.9 PD-99: the DPO's count of requests needing attention): a pill after
+// its label, hidden from assistive technology, and an accessible name that says it in words. An item
+// without one renders exactly as before, so no screen that never shows a badge changes.
 import type { LucideIcon } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, type Ref, useEffect, useId, useRef, useState } from 'react'
+import { COUNT_PILL } from './CountBadge.tsx'
 import { cx } from './cx.ts'
 import { CLOSED, type MenuState, menuKey, openAt } from './menu-model.ts'
 
@@ -21,6 +26,8 @@ export interface MenuItem {
   icon?: LucideIcon
   onSelect(): void
   disabledReason?: string
+  // A pill after the label (text) and the item's accessible name with it (label).
+  badge?: { text: string; label: string }
 }
 
 export interface MenuTriggerProps {
@@ -147,6 +154,7 @@ export function Menu({ label, items, placement = 'bottom-end', heading, trigger 
             role="menuitem"
             // Only the active item is in the tab order, so Tab leaves the menu in one step.
             tabIndex={index === state.active ? 0 : -1}
+            aria-label={item.badge?.label}
             aria-disabled={disabled || undefined}
             aria-describedby={disabled ? `${id}reason${index}` : undefined}
             onKeyDown={onItemKeyDown}
@@ -155,6 +163,11 @@ export function Menu({ label, items, placement = 'bottom-end', heading, trigger 
           >
             {Icon && <Icon aria-hidden size={18} className="shrink-0" />}
             <span className="min-w-0 flex-1">{item.label}</span>
+            {item.badge !== undefined && (
+              <span aria-hidden className={cx(COUNT_PILL, 'bg-fg text-surface')}>
+                {item.badge.text}
+              </span>
+            )}
           </button>
         )
       })}

@@ -84,6 +84,59 @@ begin
 end
 $$;
 
+-- RQD-15 (C0.9 OD-14, OD-23; PD-100): a request's rows (target_type 'case') go only to a reader
+-- who also holds dpo, whatever the list lets read. With Admin and Compliance Officer on the list,
+-- a2 and a6 read no row whose target is a case (the fixture's case.submitted and case.logged rows,
+-- and one written here) and still read the others; a5, a DPO on the list, reads them; and a5, once
+-- their dpo role is revoked in this transaction, reads none through another role on the list
+-- (Leadership, given here). Each read still logs itself.
+insert into public.audit_events (org_id, actor_id, action, target_type, target_id, details)
+values ('f1000000-0000-4000-8000-000000000000', 'f1000000-0000-4000-8000-0000000000a5', 'case.step_added', 'case',
+        'f1000000-0000-4000-8000-0000000000e8', '{"step": "note"}');
+do $$
+declare
+  reader text;
+  cases_read bigint;
+  others_read bigint;
+begin
+  foreach reader in array array['a2', 'a6', 'a5'] loop
+    perform pg_temp.act_as('1', reader);
+    select count(*) filter (where target_type = 'case'), count(*) filter (where target_type is distinct from 'case')
+      into cases_read, others_read
+      from public.read_audit_events(now() - interval '1 day', now() + interval '1 day');
+    perform set_config('role', 'none', true);
+    if reader = 'a5' then
+      perform pg_temp.check(cases_read = 3, format('the DPO read %s of the 3 request rows (RQD-15)', cases_read));
+    else
+      perform pg_temp.check(cases_read = 0, format('%s, who is not the DPO, read %s request row(s) (RQD-15, OD-23)', reader, cases_read));
+    end if;
+    perform pg_temp.check(others_read >= 2, format('%s read %s other row(s)', reader, others_read));
+    perform pg_temp.check(exists (
+      select 1 from public.audit_events
+      where org_id = pg_temp.id('1', '00') and actor_id = pg_temp.id('1', reader) and action = 'audit.read'),
+      format('the read by %s was not logged', reader));
+  end loop;
+
+  insert into public.role_assignments (org_id, person_id, role, created_by)
+  values (pg_temp.id('1', '00'), pg_temp.id('1', 'a5'), 'leadership', pg_temp.id('1', 'a1'));
+  update public.role_assignments set revoked_at = now(), revoked_by = pg_temp.id('1', 'a1')
+  where org_id = pg_temp.id('1', '00') and person_id = pg_temp.id('1', 'a5') and role = 'dpo' and revoked_at is null;
+  perform pg_temp.act_as('1', 'a5');
+  select count(*) filter (where target_type = 'case'), count(*) filter (where target_type is distinct from 'case')
+    into cases_read, others_read
+    from public.read_audit_events(now() - interval '1 day', now() + interval '1 day');
+  perform set_config('role', 'none', true);
+  perform pg_temp.check(cases_read = 0, format('a5 read %s request row(s) after losing the dpo role (RQD-15)', cases_read));
+  perform pg_temp.check(others_read >= 2, format('a5 read %s other row(s) as Leadership', others_read));
+
+  -- Back as they were for the cases below: a5 the DPO again, and Leadership taken away.
+  delete from public.role_assignments
+  where org_id = pg_temp.id('1', '00') and person_id = pg_temp.id('1', 'a5') and role = 'leadership';
+  insert into public.role_assignments (org_id, person_id, role, created_by, approved_by, approved_at)
+  values (pg_temp.id('1', '00'), pg_temp.id('1', 'a5'), 'dpo', pg_temp.id('1', 'a1'), pg_temp.id('1', 'a2'), now());
+end
+$$;
+
 -- Everyone else is still refused: a DPO who has left (a9) and a former Admin whose role was
 -- revoked (aa), although DPO and Admin are on the list; Team Admin (a7), a Member (a8) and an
 -- agent (ab); and org 1's Owner (a1), although org 2 lets its Owners read.

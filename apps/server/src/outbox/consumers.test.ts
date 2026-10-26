@@ -32,8 +32,6 @@ function eventRow(id: number, type: string, subjects: string[] = [PERSON], floor
     acl_more: null,
     index_class: null,
     acl_epoch: null,
-    actor_id: SYSTEM,
-    actor_kind: 'system',
     subject_ids: subjects,
     purpose: 'accounts',
     tombstone: false,
@@ -153,6 +151,19 @@ describe('C0.6 T16 one round of an outbox consumer', () => {
       'core.system',
       [3],
     ])
+  })
+
+  it('C0.9 PD-111 DB-02: the batch statement selects no actor, and no row a consumer handles carries one', async () => {
+    // From C0.9 PR 3b a form request's case.opened names its requester as actor: no consumer loads
+    // who wrote an event, whatever its type.
+    const p = pool({ batch: [eventRow(8, 'person.deactivated'), eventRow(9, 'signin.ended')] })
+    const { spec, handled } = consumer()
+    await runner(p, [spec]).run.round(spec, ORG)
+    const batch = p.statements.find(s => s.text.startsWith('with f as'))
+    expect(batch?.text).not.toMatch(/actor/)
+    const rows = handled.flat()
+    expect(rows).toHaveLength(2)
+    for (const row of rows) expect(Object.keys(row)).not.toContain('actor')
   })
 
   it('runs again at once after a full batch', async () => {

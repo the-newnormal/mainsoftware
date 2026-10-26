@@ -51,6 +51,21 @@ export type ApiPath =
   | '/api/admin/notice/contact/set'
   | '/api/admin/notice/people'
   | '/api/admin/notice/acknowledgements/record'
+  // The DPO's reply targets, kept with the contact (C0.9 OD-08, PD-94; /dpo/contact).
+  | '/api/admin/notice/targets/set'
+  // Your own requests to the DPO and sending one (C0.9 OD-07, OD-15, PD-96, PD-97; Settings ›
+  // Privacy).
+  | '/api/requests'
+  | '/api/requests/send'
+  // The DPO's queue, the people a request may be logged for, logging one and recording a step (C0.9
+  // OD-14, OD-16, PD-89 to PD-91, PD-98; /dpo/requests).
+  | '/api/admin/requests'
+  | '/api/admin/requests/people'
+  | '/api/admin/requests/log'
+  | '/api/admin/requests/step'
+  // One case and its steps, by the lower-case uuid the queue answered: built only by caseApiPath()
+  // (dpo/case-queries.ts), never from a reference or anything typed.
+  | `/api/admin/requests/${string}`
 
 // The client's own codes, for failures the server didn't name.
 export type ClientFailureCode = 'network' | 'invalid_response' | 'halted'

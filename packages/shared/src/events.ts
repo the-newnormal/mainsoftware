@@ -1,9 +1,10 @@
 // The outbox catalogue (INF-OUTBOX, TECH-SPEC T16). Every type an outbox event may have is named
 // here, and the list of names equals the outbox_events_type check (migration 0007's, widened by
-// each step that emits a type: 0009's for C0.9; apps/server/scripts/check-catalogues.ts). Emitted
-// types have an ids schema, name the step that emits them, and are the only ones the server's
-// appendOutbox() accepts; reserved types are named for the step after each, which gives them their
-// ids, purposes and snapshot rule and makes them emitted.
+// each step that emits a type: 0009's for C0.9, and 0012's for its PR 3b;
+// apps/server/scripts/check-catalogues.ts). Emitted types have an ids schema, name the step that
+// emits them, and are the only ones the server's appendOutbox() accepts; reserved types are named
+// for the step after each, which gives them their ids, purposes and snapshot rule and makes them
+// emitted.
 //
 // Names are <noun>.<past-tense verb> (person.deactivated), apart from audit codes' imperative
 // person.deactivate. Sign-in sessions are signin.*, never session.*, which C2.4 keeps for recorded
@@ -186,6 +187,27 @@ export const EVENTS = {
     purposes: ['accounts'],
     ids: z.strictObject({ notice: z.uuid(), version: z.int().min(0).max(IDS_NUMBER_MAX) }),
     description: 'A person acknowledged a version of the privacy notice, in the app or as the DPO recorded it',
+  }),
+
+  // Emitted from C0.9 PR 3b (TECH-SPEC T22 item 59, C0.9 PD-101): a request to the DPO reached the
+  // queue, from the form or the DPO's intake, or the DPO recorded a step on one or closed it, through
+  // the case writers, the only ones. They carry request_handling, which no A-stage consumer may take,
+  // no subject and no snapshot: nobody but the DPO may learn who wrote to them, about what (OD-14),
+  // and requests never reach an index. Ids only, never the kind, the reference or anyone's words:
+  // a consumer (C0.14's alert) re-reads the case, and can skip one the DPO logged by via alone.
+  'case.opened': emitted('C0.9', {
+    // The case's row (cases).
+    entity: 'case',
+    purposes: ['request_handling'],
+    ids: z.strictObject({ via: z.enum(['form', 'intake']) }),
+    description: 'A question, complaint or request reached the Data Protection Officer’s queue',
+  }),
+  'case.changed': emitted('C0.9', {
+    // The case's row; revision is the case's revision after the step or the closure.
+    entity: 'case',
+    purposes: ['request_handling'],
+    ids: z.strictObject({ revision: z.int().min(1).max(IDS_NUMBER_MAX) }),
+    description: 'The Data Protection Officer recorded a step on a request, or closed it',
   }),
 
   // Reserved: named in 0007's type list; the step after each gives it the rest.

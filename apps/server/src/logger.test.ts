@@ -45,6 +45,26 @@ describe('C0.2 redacting logs', () => {
     expect(line).toContain(CENSOR)
   })
 
+  it('C0.9 R2 PD-102: replaces a request to the DPO’s words, its requester, an address and a note wherever they sit', () => {
+    const { logger, lines } = capture()
+    logger.info(
+      {
+        body: {
+          details: 'words-marker',
+          requester: { type: 'outside', name: 'name-marker' },
+          note: 'note-marker',
+        },
+        nested: { step: { contact: 'contact-marker' } },
+      },
+      'request',
+    )
+    const line = lines.join('')
+    for (const marker of ['words-marker', 'name-marker', 'note-marker', 'contact-marker']) {
+      expect(line).not.toContain(marker)
+    }
+    expect(line).toContain(CENSOR)
+  })
+
   it("drops a failed Valkey command's arguments, which carry the password when AUTH fails", () => {
     const { logger, lines } = capture()
     const error = Object.assign(new Error('WRONGPASS invalid username-password pair'), {

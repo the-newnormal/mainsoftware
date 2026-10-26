@@ -1,10 +1,18 @@
 // The api's answers as Query options (T21 items 3 and 10, T17 item 11). Every screen reads server
 // data through Query, under one QueryClient per signed-in document (session/query-client.ts), so
 // the cache can't outlive the person (D-01).
-import { type FlagKey, type NoticeForClient, readFlagsAnswer, SessionResponseForClient } from '@hearth/shared'
+import {
+  type FlagKey,
+  type MyRequestsForClient,
+  type NoticeForClient,
+  readFlagsAnswer,
+  type SendRequestJSON,
+  type SendRequestResponseForClientJSON,
+  SessionResponseForClient,
+} from '@hearth/shared'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
-import { apiGet } from '@/api/http.ts'
+import { apiGet, apiPost } from '@/api/http.ts'
 import { useRuntime } from '@/app/runtime-context.ts'
 import type { SessionInfo } from '@/boot/load-session.ts'
 
@@ -101,3 +109,33 @@ export const noticeQuery = queryOptions({
   refetchIntervalInBackground: false,
   refetchOnWindowFocus: true,
 })
+
+// GET /api/requests (C0.9 OD-15, PD-97): your own requests to the Data Protection Officer, open
+// first, with today in the org's zone and how many of yours are open (the form's cap, PD-96), read
+// leniently (MyRequestsResponseForClient). Settings › Privacy reads it when the page opens and
+// again after a send: never on focus, on reconnect or by a poll, since a change shows on the page's
+// next load (no gateway frame in C0.9). A 403 notice_required moves the tab to /notice, as every
+// read does. The schema loads with the first fetch (settings/requests-answer.ts), so the boot's
+// bundle doesn't carry it.
+export const ownRequestsQuery = queryOptions({
+  queryKey: ['requests', 'mine'] as const,
+  queryFn: async ({ signal }): Promise<MyRequestsForClient> => {
+    const { MyRequestsResponseForClient } = await import('@/settings/requests-answer.ts')
+    return apiGet('/api/requests', MyRequestsResponseForClient, { signal })
+  },
+  staleTime: 0,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+})
+
+// POST /api/requests/send (C0.9 OD-07, PD-96): one request, with the client key its sheet made when
+// it opened, so sending it again after an answer that never arrived returns the first case
+// (changed: false) and records nothing new. Answers the case, its reference and the day the reply
+// is due.
+export async function sendRequest(body: SendRequestJSON): Promise<SendRequestResponseForClientJSON> {
+  const { SendRequestResponseForClient } = await import('@/settings/requests-answer.ts')
+  const answer = await apiPost('/api/requests/send', body, SendRequestResponseForClient)
+  // A 2xx is always read with the schema, so an answer is there.
+  if (answer === undefined) throw new Error('the send answered nothing')
+  return answer
+}

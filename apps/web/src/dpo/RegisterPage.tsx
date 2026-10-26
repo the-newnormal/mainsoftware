@@ -1,7 +1,9 @@
 // What both DPO pages share (C0.9 PD-20, PD-25, PD-26, OD-03): the frame, the links between the
-// two registers, the contact details (PD-70) and the Notice tab (PD-48), the registers' answer with
-// each way it can be refused, and the writes. A link's badge is the screen's to pass in (badges,
-// noticeBadge), so this module imports neither the notice markers nor their copy (B-12).
+// requests (C0.9 PR 3b, PD-98), the two registers, the contact details (PD-70) and the Notice tab
+// (PD-48), the registers' answer with each way it can be refused, and the writes. The Notice link's
+// badge is the screen's to pass in (badges, noticeBadge), so this module imports neither the notice
+// markers nor their copy (B-12); the Requests link's count is the session answer's, which every DPO
+// page shows the same (PD-99).
 //
 // The server decides who may read or change the registers (can(): the DPO alone, freshly
 // re-authenticated, PD-20 and PD-30); the page only says what it answered:
@@ -20,8 +22,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Check, ShieldX } from 'lucide-react'
 import { type ReactNode, useRef, useState } from 'react'
+import { useSession } from '@/api/queries.ts'
+import { requestsCount } from '@/shell/avatar-menu.ts'
 import { DPO } from '@/strings/dpo.ts'
 import { Button } from '@/ui/Button.tsx'
+import { CountBadge } from '@/ui/CountBadge.tsx'
 import { cx } from '@/ui/cx.ts'
 import { EmptyState } from '@/ui/EmptyState.tsx'
 import { Page } from '@/ui/Page.tsx'
@@ -33,24 +38,35 @@ import { ReauthPin } from './ReauthPin.tsx'
 import { SignOutNotice } from './SignOutNotice.tsx'
 
 export type RegisterName = 'purposes' | 'transfers'
-// The DPO's pages: the two registers, the contact details (C0.9 PD-70) and the Notice tab.
-export type DpoPageName = RegisterName | 'contact' | 'notice'
+// The DPO's pages: the requests (C0.9 PR 3b), the two registers, the contact details (C0.9 PD-70)
+// and the Notice tab.
+export type DpoPageName = 'requests' | RegisterName | 'contact' | 'notice'
 
-const REGISTER_PATHS = {
+export const REGISTER_PATHS = {
+  requests: '/dpo/requests',
   purposes: '/dpo/purposes',
   transfers: '/dpo/transfers',
   contact: '/dpo/contact',
   notice: '/dpo/notice',
 } as const satisfies Record<DpoPageName, string>
 
-// In this order: the Notice tab last, since publishing is the step after the rest.
-const PAGE_ORDER = ['purposes', 'transfers', 'contact', 'notice'] as const satisfies readonly DpoPageName[]
+// In this order: the requests first, being the DPO's daily work (PD-98); the Notice tab last, since
+// publishing is the step after the rest.
+export const PAGE_ORDER = [
+  'requests',
+  'purposes',
+  'transfers',
+  'contact',
+  'notice',
+] as const satisfies readonly DpoPageName[]
 
 // The DPO's pages as links in a segmented track (finance's large segmented control, as the kit's
 // Segmented draws it): each is a real URL, so Back and Forward move between them (X12), and the
 // current one is marked by aria-current, the ink fill and a check mark, never colour alone. The
 // track wraps, to two rows at 320 px. badges: what a link shows beside its name (the screen's,
-// B-12): today the Notice link's, from C0.9 PR 3b the queue's count too (OD-22).
+// B-12): the Notice link's. The Requests link carries the session answer's count of requests
+// needing attention (C0.9 OD-22, PD-99) on every DPO page, with an accessible name that says it in
+// words, since the pill is hidden from assistive technology (PPL-12); none at 0.
 export function RegisterLinks({
   current,
   badges,
@@ -58,6 +74,7 @@ export function RegisterLinks({
   current: DpoPageName
   badges?: Partial<Record<DpoPageName, ReactNode>>
 }) {
+  const count = requestsCount(useSession())
   return (
     <nav aria-label={DPO.tabs.label}>
       <div className="inline-flex max-w-full flex-wrap gap-2 rounded-2xl border border-line bg-surface p-1.5">
@@ -67,6 +84,7 @@ export function RegisterLinks({
             <Link
               key={name}
               to={REGISTER_PATHS[name]}
+              aria-label={name === 'requests' && count !== undefined ? DPO.tabs.requestsCount(count) : undefined}
               aria-current={here ? 'page' : undefined}
               activeOptions={{ exact: true }}
               activeProps={{}}
@@ -77,6 +95,7 @@ export function RegisterLinks({
             >
               {here && <Check aria-hidden size={16} className="shrink-0" />}
               {DPO.tabs[name]}
+              {name === 'requests' && <CountBadge count={count} tone={here ? 'inverse' : 'ink'} />}
               {badges?.[name]}
             </Link>
           )

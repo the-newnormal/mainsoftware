@@ -36,6 +36,14 @@ const SENSITIVE_KEYS = [
   // Sign-in by code (C0.8): the Twilio Verify API key's secret, as config.auth.twilio and
   // createTwilioVerify's options carry it.
   'apiKeySecret',
+  // Requests to the DPO (C0.9 PR 3b, R2): the body fields that hold what a requester wrote, who an
+  // outside requester is and how to reach them, and the DPO's notes, by their own keys, never a
+  // generic one such as name or code. A backstop: the routes never log a body, and parse() never
+  // echoes one.
+  'details',
+  'requester',
+  'contact',
+  'note',
   // Postgres errors carry the row's values in `detail` (a unique violation names the phone
   // number), and pino copies every property of an error.
   'detail',

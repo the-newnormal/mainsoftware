@@ -1,12 +1,15 @@
-// /settings/privacy (PDPA-02 "always available in Settings", PDPA-03, PDPA-13; C0.9 PD-47, OD-12,
-// PD-69): how to reach the Data Protection Officer, the current privacy notice, whether and when you
-// acknowledged it, and your own acknowledgements, newest first. It ports the demo's Privacy section
-// (demo/src/screens/Settings.tsx), not its look. The contact comes first, as the latest version
-// printed it (so it is what everyone was told), with mailto: and tel: links; C0.9 PR 3b adds the
-// requests form and "Your requests" directly after it. An acknowledgement the DPO recorded shows
-// the day you acknowledged outside Hearth and how (OD-19, PD-75). It reads GET /api/notice without
+// /settings/privacy (PDPA-02 "always available in Settings", PDPA-03, PDPA-04, PDPA-13; C0.9 PD-47,
+// OD-07, OD-12, OD-15, PD-69, PD-96, PD-97): how to reach the Data Protection Officer, questions and
+// requests to them, your own requests, the current privacy notice, whether and when you acknowledged
+// it, and your own acknowledgements, newest first, in that order (NTW-15). It ports the demo's
+// Privacy section (demo/src/screens/Settings.tsx), not its look. The contact comes first, as the
+// latest version printed it (so it is what everyone was told), with mailto: and tel: links; the
+// form and "Your requests" (settings/RequestsSection.tsx, from C0.9 PR 3b) follow it, the form
+// stating the reply targets the same version printed. An acknowledgement the DPO recorded shows the
+// day you acknowledged outside Hearth and how (OD-19, PD-75). It reads GET /api/notice without
 // /notice's poll: this page sends nobody anywhere, and the router's guard already keeps it from
-// anyone who hasn't acknowledged the current version.
+// anyone who hasn't acknowledged the current version. The requests read their own answer, so the
+// two load or fail apart: with the notice unreadable, the form still shows, with no target line.
 
 import { mailtoHref, type NoticeForClient, postalLines, telHref } from '@hearth/shared'
 import { useQuery } from '@tanstack/react-query'
@@ -20,6 +23,7 @@ import { ACK_METHODS, NOTICE, SETTINGS } from '@/strings/notice.ts'
 import { Button } from '@/ui/Button.tsx'
 import { cx } from '@/ui/cx.ts'
 import { Page } from '@/ui/Page.tsx'
+import { RequestsSection } from './RequestsSection.tsx'
 
 export function PrivacySettings() {
   const query = useQuery({ ...noticeQuery, refetchInterval: false })
@@ -45,9 +49,12 @@ export function PrivacyContent({
   const historyId = useId()
   if (answer === undefined)
     return failed ? (
-      <div className="flex flex-col items-start gap-3">
-        <p>{NOTICE.loadFailed}</p>
-        <Button onClick={retry}>{NOTICE.retry}</Button>
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col items-start gap-3">
+          <p>{NOTICE.loadFailed}</p>
+          <Button onClick={retry}>{NOTICE.retry}</Button>
+        </div>
+        <RequestsSection targets={undefined} />
       </div>
     ) : (
       <p role="status" className="text-muted">
@@ -58,6 +65,7 @@ export function PrivacyContent({
   return (
     <div className="flex flex-col gap-6">
       <ContactSection contact={answer.contact} />
+      <RequestsSection targets={answer.targets} />
       <section
         aria-labelledby={noticeId}
         className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4 sm:p-5"

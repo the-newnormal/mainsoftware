@@ -92,7 +92,7 @@ function shellPaths(): string[] {
 }
 
 describe('T21 item 1: the route tree (router/router.tsx)', () => {
-  it('RO-01 X12 OD-02 OD-03 C0.9 PD-26 PD-47 PD-48 PD-70: every NAV path is a route with its title; Settings, its Privacy section and the DPO pages (the contact page included) are routes with theirs and no nav entry; / goes to /chats; APP_PATHS (importing no module but a type, so main.ts may reach it) equals the paths registered in the shell, splat excluded, and NAV_PATHS the NAV entries', async () => {
+  it('RO-01 X12 OD-02 OD-03 C0.9 PD-26 PD-47 PD-48 PD-70 PD-98: every NAV path is a route with its title; Settings, its Privacy section and the DPO pages (the contact page and the requests queue included) are routes with theirs and no nav entry; / goes to /chats; APP_PATHS (importing no module but a type, so main.ts may reach it) equals the paths registered in the shell, splat excluded, and NAV_PATHS the NAV entries', async () => {
     for (const entry of Object.values(NAV)) {
       const router = routerAt(entry.to, signedIn())
       await router.load()
@@ -104,6 +104,7 @@ describe('T21 item 1: the route tree (router/router.tsx)', () => {
     for (const [path, title] of [
       ['/settings', SHELL.settings.title],
       ['/settings/privacy', SHELL.settings.privacy],
+      ['/dpo/requests', SHELL.dpo.requests],
       ['/dpo/purposes', SHELL.dpo.purposes],
       ['/dpo/transfers', SHELL.dpo.transfers],
       ['/dpo/contact', SHELL.dpo.contact],
@@ -127,12 +128,14 @@ describe('T21 item 1: the route tree (router/router.tsx)', () => {
     expect(APP_PATHS.filter(path => !(NAV_PATHS as readonly string[]).includes(path))).toEqual([
       '/settings',
       '/settings/privacy',
+      '/dpo/requests',
       '/dpo/purposes',
       '/dpo/transfers',
       '/dpo/contact',
       '/dpo/notice',
     ])
     expect(SHELL.dpo.contact).toBe('Contact details')
+    expect(SHELL.dpo.requests).toBe('Requests')
   })
 
   it('RO-02 D-02: getScrollRestorationKey is the pathname only; #screen is the scroll container', () => {
@@ -236,6 +239,7 @@ describe('T21 item 1: the route tree (router/router.tsx)', () => {
     const paths = [
       '/chats',
       '/settings/privacy',
+      '/dpo/requests',
       '/dpo/purposes',
       '/dpo/transfers',
       '/dpo/contact',

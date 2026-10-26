@@ -2,7 +2,8 @@
 // PASSKEYS_ON), the admin actions on a person, from C0.6 changing a feature flag, and from C0.8 the
 // web shell's own reads, who is signed in and the client flags evaluated for them (web/routes.ts,
 // T21 item 10), and the browsers' CSP violation reports (web/csp-report.ts, OD-12). From C0.9 PR 2,
-// your privacy notice and your acknowledgement of it (compliance/notice.ts, TECH-SPEC T22 item 26). Every response
+// your privacy notice and your acknowledgement of it (compliance/notice.ts, TECH-SPEC T22 item 26),
+// and from C0.9 PR 3b your requests to the DPO (compliance/cases.ts, T22 items 50 to 62). Every response
 // in the scope carries Cache-Control: no-store, errors and the scope's own 404 included.
 // Every body a route reads is JSON of at most 16 KiB, parsed by a strict zod object (http.ts),
 // except a CSP report's: application/csp-report of at most 8 KiB, read leniently, in a child scope
@@ -23,6 +24,7 @@ import { OTP, PASSKEYS_ON } from '#src/auth/policy.ts'
 import { authRoutes } from '#src/auth/routes.ts'
 import type { SmsProvider } from '#src/auth/sms/provider.ts'
 import { type ValkeyKeys, valkeyKeys } from '#src/auth/valkey-keys.ts'
+import { caseRoutes } from '#src/compliance/cases.ts'
 import { noticeRoutes } from '#src/compliance/notice.ts'
 import { DB_TRANSFERS, type TransferCheck } from '#src/compliance/transfers.ts'
 import type { Database } from '#src/db/database.ts'
@@ -137,6 +139,7 @@ export function registerApi(app: FastifyInstance, deps: ApiDeps & { appOrigin: s
       await scope.register(adminRoutes(api), { prefix: '/admin' })
       await scope.register(webRoutes(api))
       await scope.register(noticeRoutes(api))
+      await scope.register(caseRoutes(api), { prefix: '/requests' })
       await scope.register(cspReportRoute(api), { prefix: '/csp-report' })
     },
     { prefix: '/api' },
