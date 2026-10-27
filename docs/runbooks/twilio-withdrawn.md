@@ -40,11 +40,11 @@ If there is no current DPO (the only one has left or lost the role), the re-clea
 ### Branch A: re-clear Twilio Verify
 
 1. The person on call pauses the deploy pipeline before taking the checkout, then prepares the run and opens a production session under the logged break-glass role, as [Running the Owner bootstrap script](first-owner-set-up.md#running-the-owner-bootstrap-script) says.
-2. The person on call runs the recovery mode's plan, `OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>`, types the recovery document, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). The document holds no name or number, so echo stays on: `{ "environment": "<DEPLOY_ENV's value>", "dpo": "<the DPO's person id>", "reviewOn": "<YYYY-MM-DD>", "reason": "<one sentence>", "fromEntry": [] }`. `environment` is exactly the target's `DEPLOY_ENV` (`nonprod` for a drill, `prod` in production): the script refuses any other. `fromEntry` lists only a stated fact the DPO decided changed (Before you start, step 5), and is otherwise empty.
+2. The person on call types the recovery document once into `doc` with `doc="$(cat)"`, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line), and runs the recovery mode's plan, `OWNER_BOOTSTRAP_INPUT="$doc" node scripts/owner-bootstrap.ts recover --database <the database>`. The document holds no name or number, so echo stays on: `{ "environment": "<DEPLOY_ENV's value>", "dpo": "<the DPO's person id>", "reviewOn": "<YYYY-MM-DD>", "reason": "<one sentence>", "fromEntry": [] }`. `environment` is exactly the target's `DEPLOY_ENV` (`nonprod` for a drill, `prod` in production): the script refuses any other. `fromEntry` lists only a stated fact the DPO decided changed (Before you start, step 5), and is otherwise empty.
    - The plan changes nothing. It repeats the inputs back, and prints how many DPOs are signed in, Twilio Verify's clearance now, where the facts come from, which facts would change and the send state it would leave.
    - The person on call checks its line starting `named DPO` against what the DPO gave.
    - If it can't connect (exit 2, a line `owner-bootstrap: could not connect: …`), the person on call uses [that section's table](first-owner-set-up.md#if-it-fails-before-it-connects).
-3. The person on call runs the same command with `--commit`, and types the same document, then Enter and Ctrl-D. In one transaction as `hearth_owner`, acting as the organisation's Hearth principal, it sets the emergency marker and the server's 2-second lock timeout, reads the facts of the Twilio Verify clearance the latest published version names (or, with none, the clearance that ended last), and calls the bootstrap's function for `twilio` with those facts, the new review date, the DPO's id and the reason. Nobody types a fact into this repository or a chat.
+3. The person on call runs the same command with `--commit`, which reads the same `doc`, so the commit runs on exactly what the plan checked; nobody types the document again. In one transaction as `hearth_owner`, acting as the organisation's Hearth principal, it sets the emergency marker and the server's 2-second lock timeout, reads the facts of the Twilio Verify clearance the latest published version names (or, with none, the clearance that ended last), and calls the bootstrap's function for `twilio` with those facts, the new review date, the DPO's id and the reason. Nobody types a fact into this repository or a chat.
 4. If it answers that a DPO is signed in, the person on call stops: that DPO clears Twilio Verify in Hearth (Before you start, step 1).
 5. If it answers that Twilio Verify is cleared already, the person on call stops: someone else cleared it. After an exit 4, step 7 first.
 6. If it timed out waiting for a lock (exit 3, "a lock was busy: run it once more"), the person on call runs it once more, unless they stopped it themselves.
@@ -69,7 +69,7 @@ Until C0.11 and C0.12 there is no production, so this branch runs only against t
 ## Afterwards
 
 - The DPO reviews Twilio Verify's entry on Transfers and records anything that changed, including any fact the re-clear put back from the published snapshot.
-- The person on call records the use in the break-glass log, for the quarterly review, and resumes the deploy pipeline.
+- The person on call runs `unset doc`, records the use in the break-glass log, for the quarterly review, and resumes the deploy pipeline.
 - The DPO notes it in their log.
 
 ## Don't

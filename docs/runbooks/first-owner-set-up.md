@@ -68,15 +68,16 @@ The plan and the commit both load that version, so the commit runs on exactly th
 OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --version-id <the version id> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>
 ```
 
-If the secret can't be read, the run waits until it can. The set-up and correction documents are never pasted or typed: their commits print no summary of what they keep, so only a pinned version shows that a commit runs on the document its plan checked.
+If the secret can't be read, the script refuses the empty input before it connects, and the person on call runs the command again once the secret can be read. The set-up and correction documents are never pasted or typed: their commits print no summary of what they keep, so only a pinned version shows that a commit runs on the document its plan checked.
 
-The recovery document holds no name or number, so it is typed with echo on, ended with Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line):
+The recovery document holds no name or number. The person on call types it once, with echo on, into `doc`, a shell variable that is never exported, ended with Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). The plan and the commit both read `doc`, so the commit runs on exactly what its plan checked, and nobody types it twice:
 
 ```
-OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>
+doc="$(cat)"
+OWNER_BOOTSTRAP_INPUT="$doc" node scripts/owner-bootstrap.ts recover --database <the database>
 ```
 
-The recovery document is typed again for the commit, whose line starting `named DPO` repeats what it acts on, as the plan's did, before its `committing` line. If it differs from the plan's, the person on call tells the DPO, who corrects the review date with their own Save in Hearth.
+Once the commit has run, `unset doc`.
 
 Never `read` it into a variable, and never `export` it: a one-line `read` takes only the first line and runs the rest of the document as shell commands, which land in the history.
 
