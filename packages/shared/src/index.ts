@@ -9,7 +9,8 @@
 // PR 2 the privacy notice's (notice.ts), its generator (notice-text.ts, which only the server runs)
 // and the words no screen holds before the AI stages (ai-copy.ts), from its PR 3a the DPO's
 // business contact (dpo-contact.ts), and from its PR 3b the requests to the DPO (cases.ts) and the
-// DPO's reply targets (dpo-contact.ts).
+// DPO's reply targets (dpo-contact.ts). From the first-Owner bootstrap: the rules for the
+// organisation's name (org-name.ts), and the transfer facts' body alone (registers.ts).
 
 export * from './ai-copy.ts'
 export * from './api-errors.ts'
@@ -22,6 +23,7 @@ export * from './gateway.ts'
 export * from './ids.ts'
 export * from './notice.ts'
 export * from './notice-text.ts'
+export * from './org-name.ts'
 export * from './phone.ts'
 export * from './pin-policy.ts'
 export * from './purposes.ts'

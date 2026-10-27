@@ -466,6 +466,12 @@ export const RecordTransferBody = z.strictObject({
 })
 export type RecordTransferJSON = z.input<typeof RecordTransferBody>
 
+// The facts alone, read exactly as RecordTransferBody reads them: the Owner bootstrap script parses
+// Twilio's and AWS's from its set-up document with it before it connects (TECH-SPEC T22 item 64,
+// PD-119), so the script and the DPO's page read facts alike.
+export const TransferFactsBody = z.strictObject(transferFactsBody)
+export type TransferFactsJSON = z.input<typeof TransferFactsBody>
+
 // POST /api/admin/registers/transfers/clear: clears the facts of the revision the page showed.
 export const ClearTransferBody = z.strictObject({ provider: z.enum(PROVIDERS), seen: Revision })
 export type ClearTransferJSON = z.input<typeof ClearTransferBody>

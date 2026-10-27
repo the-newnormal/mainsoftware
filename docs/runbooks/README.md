@@ -2,7 +2,7 @@
 
 ## What these are
 
-The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), and C0.9 PR 3b moved the request procedures to the queue (item 60). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
+The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), and the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
 
 Every runbook but this one has the same sections, in this order: *Use this when*, *Who does what*, *Before you start*, *Steps*, *Check it worked*, *Afterwards* and *Code paths*. *Don't* may sit between them where a mistake would make things worse, and other sections, such as *Prevention*, may too. *Code paths* lists the code each one relies on, so a change to that code shows here (`scripts/guards/runbooks.test.ts`).
 
@@ -23,13 +23,14 @@ Hearth has no screen yet for signing out someone else's devices, resetting a PIN
   - your own devices: `GET /api/devices` lists them, and `POST /api/devices/sign-out` signs out one device, or all your other devices;
   - an Owner's or Admin's: `POST /api/admin/people/sign-out-devices`, `POST /api/admin/people/reset-pin` and `POST /api/admin/people/deactivate`, and `GET /api/admin/people/:person/devices`.
 - Each admin route needs a re-authentication within the last 5 minutes (for an Owner or an Admin, the PIN, through `POST /api/auth/reauth/pin`) and an actor who has acknowledged the latest version of the notice (TECH-SPEC T22 item 36). The Owner or Admin sends it from their own signed-in Hearth tab, with the person on call guiding them if needed. A coding agent never sends one.
-- A PIN reset or a deactivation refuses an action on yourself, and only an Owner resets a DPO's PIN. So while one founder is the sole Owner and the DPO (D35), nobody can reset their PIN in the app. From the bootstrap PR, its break-glass PIN reset can (TECH-SPEC T14 item 21).
-- Nothing changes a number or a roster fact until C0.16 (ACC-06's phone change, the roster import), and nobody writes to a table instead.
+- A PIN reset or a deactivation refuses an action on yourself, and only an Owner resets a DPO's PIN. So while one founder is the sole Owner and the DPO (D35), nobody can reset their PIN in the app. From the break-glass PIN reset's PR, before C0.15, the bootstrap script's PIN reset can (TECH-SPEC T14 item 21).
+- Nothing changes a number or a roster fact until C0.16 (ACC-06's phone change, the roster import), and nobody writes to a table instead, except the founder's own number before their first sign-in, which the bootstrap script's correction replaces ([Setting up the organisation and its first Owner](first-owner-set-up.md)).
 
 ## The index
 
 | Runbook | Use it when | Who leads |
 |---|---|---|
+| [Setting up the organisation and its first Owner](first-owner-set-up.md) | A new environment's database holds no organisation yet | The DPO decides; the person on call runs it |
 | [Publishing a version of the notice](publishing-the-notice.md) | Production's first version, and every later one | The DPO |
 | [A stated Twilio fact changed, and codes go to the DPO alone](twilio-fact-changed.md) | Sign-in codes reach only the DPO after a change to Twilio Verify's entry | The DPO |
 | [Twilio withdrawn, and no DPO signed in](twilio-withdrawn.md) | Nobody gets a sign-in code, the DPO included | The DPO decides; the person on call runs it |

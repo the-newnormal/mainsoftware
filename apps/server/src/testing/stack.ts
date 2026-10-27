@@ -36,6 +36,14 @@
 // The api's routes are collected as Fastify adds them (routes), for the notice suite's sweep of
 // every route (NTI-01).
 //
+// From the first-Owner bootstrap PR (TECH-SPEC T22 items 63 to 71, PD-133): startStack({ firstOrg:
+// 'bootstrap' }) has the Owner bootstrap script set up the stack's org (testing/owner-bootstrap.ts),
+// as a person sets up production's, in the gap after the migrations and the runtime roles' logins
+// and before the write tracking starts, so the outbox sweep sees only the suite's own writes. That
+// org is production's shape: no it.* flag rows and no stand-in v0, a founder (Owner and DPO, D35)
+// with a number from the drama range, Twilio Verify and AWS cleared by the bootstrap and nobody
+// else; founder is that Person (undefined otherwise), who signs in like anyone else.
+//
 // From C0.9 PR 3b (PDPA-04, PDPA-13; OD-06 to OD-17): sendRequest() sends a request to the DPO
 // through its route as a signed-in client, with a fresh client key unless given; logRequest() logs
 // one through log_case(), the superuser acting as the org's DPO, for fixtures of any day received
@@ -96,6 +104,7 @@ import type { Admission, CheckOrg } from '#src/realtime/checks.ts'
 import { type Gateway, registerRealtime } from '#src/realtime/index.ts'
 import { GATEWAY_POLICY, type GatewayPolicy } from '#src/realtime/policy.ts'
 import { TestClient } from '#src/testing/gateway.ts'
+import { setUpFirstOrg } from '#src/testing/owner-bootstrap.ts'
 import { startProxy, type TcpProxy } from '#src/testing/proxy.ts'
 import { installWriteTracking } from '#src/testing/writes.ts'
 import { closeValkey, createBlockingReader, createSubscriber, createValkey, valkeyCheck } from '#src/valkey.ts'
@@ -448,6 +457,9 @@ export interface Stack {
   keys: AuthKeys
   sms: FakeVerify
   org: { id: string; system: string }
+  // The org's founder, the first Owner and DPO the bootstrap script set up, with startStack({
+  // firstOrg: 'bootstrap' }); undefined otherwise.
+  founder: Person | undefined
   logs: Record<string, unknown>[]
   warnings: Error[]
   replies: Seen[]
@@ -658,8 +670,15 @@ function setCookiesOf(header: unknown): string[] {
 // passkeysForTests switches the dormant passkeys on for the stack's main api (D46; the dormant
 // suite only, scripts/guards/api-test-overrides.test.ts).
 // admissionForTests sets the stack's realtime app's admission (RealtimeOptions; 'none' unless given).
+// firstOrg: 'bootstrap' has the Owner bootstrap script set up the stack's org (the first-owner
+// suite; PD-133), instead of the harness's newOrg().
 export async function startStack(
-  options: { recheckMs?: number; passkeysForTests?: boolean; admissionForTests?: Admission | 'none' | 'notice' } = {},
+  options: {
+    recheckMs?: number
+    passkeysForTests?: boolean
+    admissionForTests?: Admission | 'none' | 'notice'
+    firstOrg?: 'bootstrap'
+  } = {},
 ): Promise<Stack> {
   const c = connection()
   if (!LOCAL_HOSTS.has(c.host)) {
@@ -735,6 +754,12 @@ export async function startStack(
     // password.
     await superuser.query(`alter role hearth_app login password '${APP_PASSWORD}'`)
     await superuser.query(`alter role hearth_worker login password '${APP_PASSWORD}'`)
+    // The Owner bootstrap script's set-up, before the tracking below, so its writes (hearth_owner's,
+    // outside the runtime roles the outbox's contract covers) are no suite's to sweep.
+    const bootstrapped =
+      options.firstOrg === 'bootstrap'
+        ? await setUpFirstOrg(superuser, { host: c.host, port: c.port, database }, drop => closers.push(drop))
+        : undefined
     // Every write a runtime role commits from here on, for the outbox's contract sweep.
     await installWriteTracking(superuser)
 
@@ -765,7 +790,9 @@ export async function startStack(
       orgs.set(made.id, made)
       return made
     }
-    const org = await newOrg('Integration test')
+    // The script's org has no it.* flag rows and no stand-in v0: production's shape (T22 item 70).
+    const org = bootstrapped?.org ?? (await newOrg('Integration test'))
+    if (bootstrapped !== undefined) orgs.set(org.id, org)
     let second: Org | undefined
 
     const logs: Record<string, unknown>[] = []
@@ -1072,6 +1099,21 @@ export async function startStack(
     const issued = new Set<string>()
     const pins = new Set<string>()
     const numbers = new Set<string>()
+
+    // The script's founder, a PIN-role holder (owner and dpo) with no account until they sign in.
+    const founder: Person | undefined =
+      bootstrapped === undefined
+        ? undefined
+        : {
+            id: bootstrapped.founder.id,
+            orgId: org.id,
+            e164: bootstrapped.founder.e164,
+            local: bootstrapped.founder.e164.slice(3),
+            phoneNumberId: bootstrapped.founder.phoneNumberId,
+            pin: undefined,
+            holdsPinRole: true,
+          }
+    if (founder !== undefined) numbers.add(founder.e164)
 
     function number(): string {
       for (;;) {
@@ -1723,6 +1765,7 @@ export async function startStack(
       keys,
       sms,
       org,
+      founder,
       logs,
       warnings,
       replies,

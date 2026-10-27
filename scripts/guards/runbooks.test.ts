@@ -9,8 +9,9 @@
 //   a Singapore number written locally), an email address, an AWS account id (12 digits, run
 //   together or in hyphenated fours), an ARN, a Twilio SID, a link other than one on the PDPC's site,
 //   or a link by any scheme but http(s), since a runbook names roles only (CLAUDE.md, Security and
-//   privacy). A finding names the line and the kind, never the value. These are shapes: a person's
-//   name or a postal address has none, so review keeps those out;
+//   privacy). A finding names the line and the kind, never the value. These are shapes (identifying.ts,
+//   which the Owner bootstrap guard's BSG-01 shares): a person's name or a postal address has none, so
+//   review keeps those out;
 // - RB-04: every name a ## Code paths section lists in backticks exists now, so a runbook never
 //   leans on code that isn't there. A name() is a function a migration creates; an /api/… path is
 //   one the server registers (api.ts's prefixes joined to each route module's paths); any other
@@ -32,6 +33,7 @@ import { CONDUCT_WITHDRAWABLE, PURPOSE_KEYS } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
 import { APP_PATHS, NOTICE_PATH } from '../../apps/web/src/router/paths.ts'
 import { ADMIN_ACTIONS, SELF_ACTIONS } from '../../packages/access/src/requests.ts'
+import { IDENTIFYING } from './identifying'
 import { withoutComments } from './imports'
 import { readRepoFile, repoFiles } from './repo-files'
 
@@ -192,20 +194,9 @@ describe('RB-02 (C0.9 PD-81): each runbook has the fixed sections, in order, Cod
 
 // --- RB-03: nothing that identifies anyone -------------------------------------------------------
 
-// What a public runbook must never hold. Each pattern is one kind; a finding names the kind only.
-const IDENTIFYING: readonly { kind: string; pattern: RegExp }[] = [
-  // + and a run of six or more digits, spaces, hyphens, dots or brackets, whose first figure is a
-  // digit: any international number, however it is grouped.
-  { kind: 'a phone number', pattern: /\+(?=[ ().-]*\d)[\d ().-]{6,}/ },
-  // A Singapore number written locally: eight digits starting 3, 6, 8 or 9, split after the fourth or not.
-  { kind: 'a phone number', pattern: /(?<!\d)[3689]\d{3}[ -]?\d{4}(?!\d)/ },
-  { kind: 'an email address', pattern: /[\w.%+-]+@[\w-]+(?:\.[\w-]+)+/ },
-  { kind: 'a 12-digit run (an AWS account id)', pattern: /\d{12}/ },
-  // As the AWS Console shows an account id.
-  { kind: 'a 12-digit run (an AWS account id)', pattern: /(?<!\d)\d{4}-\d{4}-\d{4}(?!\d)/ },
-  { kind: 'an ARN', pattern: /\barn:aws[\w-]*:/i },
-  { kind: 'a Twilio SID', pattern: /\b(?:AC|VA|SK|PN|MG|US)[0-9a-fA-F]{32}\b/ },
-]
+// What a public runbook must never hold is IDENTIFYING's shapes (identifying.ts, which BSG-01 in
+// owner-bootstrap.test.ts shares, so the two guards hold one list), and links.
+
 // The one site a runbook may link to: the PDPC's, for its breach notification form.
 const LINKABLE = new Set(['www.pdpc.gov.sg'])
 
