@@ -59,8 +59,11 @@
 //   named in a runbook, no runbook reads the input with read or exports it, every command that
 //   loads it is one of section 2.1's three forms, first-owner-set-up.md installs with npm ci
 //   --ignore-scripts and never a bare npm ci, twilio-withdrawn.md links its "Running the Owner
-//   bootstrap script" section, and .env.example documents both of the script's variables, commented,
-//   with no values.
+//   bootstrap script" section, first-owner-set-up.md pauses the deploy pipeline for every run and
+//   both runbooks resume it, every Ctrl-D comes with Enter, a printed line is named by what it
+//   prints (never by its kind in output.ts) and is said to start only with owner-bootstrap:, the
+//   set-up runbook checks the AWS CLI's history is off when it loads the input from the secret, and
+//   .env.example documents both of the script's variables, commented, with no values.
 // - BSG-10 (OD-32): the server image's .dockerignore admits nothing under scripts/.
 import { existsSync, readFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
@@ -596,8 +599,10 @@ describe('BSG-01 (R1, PD-120, T22 item 70): no identifying value in the script, 
 
 // --- BSG-02: inputs and reach ---------------------------------------------------------------------
 
-// The variables the script reads (section 2.1): its input, the TLS name, the target, where pg
-// would connect, and the five agent and CI markers, by their presence only.
+// The variables the script reads (section 2.1): its input, the TLS name, the target, where and how
+// pg would connect (PGSSLNEGOTIATION, which pg refuses to make a client with unless it is postgres or
+// direct, read so that refusal comes before connecting, IO-03), and the five agent and CI markers,
+// by their presence only.
 const ENV_NAMES = new Set([
   'OWNER_BOOTSTRAP_INPUT',
   'OWNER_BOOTSTRAP_TLS_NAME',
@@ -607,6 +612,7 @@ const ENV_NAMES = new Set([
   'PGSERVICE',
   'PGSERVICEFILE',
   'PGSSLMODE',
+  'PGSSLNEGOTIATION',
   'CLAUDECODE',
   'CLAUDE_CODE_ENTRYPOINT',
   'AI_AGENT',
@@ -2215,7 +2221,7 @@ describe('BSG-08 (T22 item 37, PD-124): the input and the environment are checke
 
 // What pg 8.23.1 reads of the environment itself (connection-parameters.js: 'PG' and the key), and
 // the CA bundle Node reads: a runbook may name these as well as the script's own.
-const PG_READS = ['PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGSSLMODE']
+const PG_READS = ['PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGSSLMODE', 'PGSSLNEGOTIATION']
 const NODE_READS = ['NODE_EXTRA_CA_CERTS']
 const VARIABLE_SHAPE =
   /^(?:OWNER_BOOTSTRAP_[A-Z0-9_]+|DEPLOY_ENV|PG[A-Z]+|NODE_[A-Z0-9_]+|CLAUDECODE|CLAUDE_CODE_[A-Z_]+|AI_AGENT|GITHUB_ACTIONS|CI)$/
@@ -2226,6 +2232,30 @@ const LOADS = [
   /^OWNER_BOOTSTRAP_INPUT="\$\(aws secretsmanager get-secret-value --secret-id <[^>]+> --query SecretString --output text\)" node scripts\/owner-bootstrap\.ts /,
   /^OWNER_BOOTSTRAP_INPUT="\$\(stty -echo; cat; stty echo\)" node scripts\/owner-bootstrap\.ts /,
   /^OWNER_BOOTSTRAP_INPUT="\$\(cat\)" node scripts\/owner-bootstrap\.ts recover\b/,
+]
+
+// The Line kinds whose printed text doesn't start with the kind, so a runbook naming one as
+// "`<kind>` line" names a label nobody sees (output.ts's render(); committing, committed and next
+// print their kind).
+const UNPRINTED_KINDS = [
+  'target',
+  'organisation',
+  'founder_name',
+  'number',
+  'reviews',
+  'inputs',
+  'dpo_sessions',
+  'twilio_now',
+  'log_warning',
+  'facts_source',
+  'changed',
+  'send_state',
+  'kept_nothing',
+  'connect_failed',
+  'refused',
+  'lost',
+  'interrupted',
+  'unexpected',
 ]
 
 // The code a Markdown text holds: each inline span, and each line of a fenced block.
@@ -2280,7 +2310,9 @@ function surfaceOf(files: ReadonlyMap<string, ts.SourceFile>): ScriptSurface {
 
 // What is wrong with the runbooks: a mode, flag or variable the script doesn't have; a mode no
 // runbook names; the input read with read, exported, or loaded any way but section 2.1's three; a
-// bare npm ci; and no link to the section that prepares a run.
+// bare npm ci; no link to the section that prepares a run; the deploy pipeline not paused or not
+// resumed; Ctrl-D without Enter; a printed line named by its kind, or said to start with anything
+// but owner-bootstrap:; and the input loaded from the secret without checking the AWS CLI's history.
 function runbookProblems(runbooks: Sources, surface: ScriptSurface): string[] {
   const found: string[] = []
   const placeholder = (word: string) => /^<[^>]+>$/.test(word)
@@ -2327,6 +2359,29 @@ function runbookProblems(runbooks: Sources, surface: ScriptSurface): string[] {
   if (!(runbooks.get(WITHDRAWN) ?? '').includes('first-owner-set-up.md#running-the-owner-bootstrap-script')) {
     found.push(`${WITHDRAWN}: doesn't link "Running the Owner bootstrap script"`)
   }
+  // The deploy pipeline is paused for every mode, the recovery mode included, which takes no
+  // migration lock (PD-124), and resumed afterwards.
+  if (!/\bdeploy pipeline paused\b/.test(setUp))
+    found.push(`${RUNBOOK}: doesn't pause the deploy pipeline for every run`)
+  for (const path of [RUNBOOK, WITHDRAWN]) {
+    const text = runbooks.get(path) ?? ''
+    if (!/\bresumes the deploy pipeline\b/.test(text)) found.push(`${path}: doesn't resume the deploy pipeline`)
+    // Ctrl-D ends a line-mode read only at the start of a line, so a paste without a final newline
+    // needs Enter first.
+    if (text.split('\n').some(line => line.includes('Ctrl-D') && !/\bEnter\b/.test(line)))
+      found.push(`${path}: says Ctrl-D without Enter`)
+    // A printed line is named by what it prints, never by its kind in output.ts.
+    for (const [, kind] of text.matchAll(/`([a-z_]+)` line\b/g)) {
+      if (kind !== undefined && UNPRINTED_KINDS.includes(kind))
+        found.push(`${path}: names the ${kind} line by its kind, not by what it prints`)
+    }
+    // Every line starts owner-bootstrap: (output.ts's sink).
+    if (/\bstarts? `(?!owner-bootstrap:)/.test(text))
+      found.push(`${path}: says a line starts with something other than owner-bootstrap:`)
+  }
+  // The AWS CLI's own history keeps each response's body, the secret's value among it.
+  if (codeUnits(setUp).some(unit => LOADS[0]?.test(unit)) && !setUp.includes('aws configure get cli_history'))
+    found.push(`${RUNBOOK}: loads the input from the secret without checking the AWS CLI's history is off`)
   return [...new Set(found)]
 }
 
@@ -2429,6 +2484,7 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
           'Install with `npm ci --ignore-scripts`; set `DEPLOY_ENV`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `NODE_EXTRA_CA_CERTS` and `OWNER_BOOTSTRAP_TLS_NAME`, and no `PGDATABASE`.',
           `From the secret: \`${fromSecret}\`. Pasted: \`${pasted}\`. Never \`read\` or \`export\`: a one-line \`read\` takes only the first line.`,
           'Run `set-up --database <the database>`, then with `--commit`; a wrong number: `correct-number`.',
+          'Prepare: `aws configure get cli_history` prints nothing, and the deploy pipeline paused. Paste, then press Enter and Ctrl-D. Every line starts `owner-bootstrap:`. Afterwards the person on call resumes the deploy pipeline.',
           '```sh',
           typed,
           '```',
@@ -2436,7 +2492,7 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
       ],
       [
         WITHDRAWN,
-        `Prepare the run as [Running the Owner bootstrap script](first-owner-set-up.md#running-the-owner-bootstrap-script) says, then \`${typed}\`.`,
+        `Prepare the run as [Running the Owner bootstrap script](first-owner-set-up.md#running-the-owner-bootstrap-script) says, then \`${typed}\`. Type it, then Enter and Ctrl-D, and check the line starting \`named DPO\`. Afterwards, resumes the deploy pipeline.`,
       ],
       ['docs/runbooks/breach.md', '# Breach'],
     ])
@@ -2488,6 +2544,26 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
     expect(
       slip(WITHDRAWN, '(first-owner-set-up.md#running-the-owner-bootstrap-script)', '(first-owner-set-up.md)'),
     ).toEqual([`${WITHDRAWN}: doesn't link "Running the Owner bootstrap script"`])
+    // DOCS-01: the pipeline is paused for every mode and resumed after.
+    expect(slip(RUNBOOK, 'and the deploy pipeline paused', 'and the terminal ready')).toEqual([
+      `${RUNBOOK}: doesn't pause the deploy pipeline for every run`,
+    ])
+    expect(slip(WITHDRAWN, 'resumes the deploy pipeline', 'records the use')).toEqual([
+      `${WITHDRAWN}: doesn't resume the deploy pipeline`,
+    ])
+    // DOCS-05: Ctrl-D comes with Enter.
+    expect(slip(WITHDRAWN, 'then Enter and Ctrl-D', 'then Ctrl-D')).toEqual([`${WITHDRAWN}: says Ctrl-D without Enter`])
+    // DOCS-04: a line is named by what it prints, and every line starts owner-bootstrap:.
+    expect(slip(WITHDRAWN, 'the line starting `named DPO`', 'its `inputs` line')).toEqual([
+      `${WITHDRAWN}: names the inputs line by its kind, not by what it prints`,
+    ])
+    expect(slip(RUNBOOK, 'Every line starts `owner-bootstrap:`', 'A failure starts `could not connect:`')).toEqual([
+      `${RUNBOOK}: says a line starts with something other than owner-bootstrap:`,
+    ])
+    // PRIVACY-03: the AWS CLI's history is checked before the secret is read.
+    expect(slip(RUNBOOK, '`aws configure get cli_history` prints nothing, and', '')).toEqual([
+      `${RUNBOOK}: loads the input from the secret without checking the AWS CLI's history is off`,
+    ])
   })
 
   it('passes planted CI wiring and fails each slip', () => {
@@ -2573,6 +2649,9 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
     const runbooks = new Map([...sources].filter(([path]) => /^docs\/runbooks\/[^/]+\.md$/.test(path)))
     expect(runbooks.has(RUNBOOK)).toBe(true)
     expect(runbookProblems(runbooks, real)).toEqual([])
+    // Every kind the wording rule knows is still one of output.ts's line kinds.
+    const output = sources.get(OUTPUT) ?? ''
+    expect(UNPRINTED_KINDS.filter(kind => !output.includes(`kind: '${kind}'`))).toEqual([])
   })
 })
 

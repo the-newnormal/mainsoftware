@@ -82,6 +82,7 @@ import {
   makeBootstrapLogin,
   ORG_NAME,
   RECOVERY_REASON,
+  REVIEW_DATES,
   recoverDocument,
   runOwnerBootstrap,
   SET_UP_REASON,
@@ -660,7 +661,11 @@ async function setUpCommitted(name: string, document = setUpDocument()): Promise
 
 // --- The cases ----------------------------------------------------------------------------------
 
-const D60 = () => daysAhead(60)
+// The set-up documents' review dates (REVIEW_DATES, pinned once in the fixture): Twilio Verify's, 60
+// days ahead of the day the run began, and AWS's, a year ahead. Every case's set-up and the
+// templates' carry them, so each is the entry's own date whatever the day is now (TESTS-04).
+const D60 = REVIEW_DATES.twilio
+const D365 = REVIEW_DATES.aws
 const STATED = 'send state for Twilio Verify: '
 const WOULD_LEAVE = `${PREFIX}would leave the send state for Twilio Verify at `
 const CLEARED_TEXT = 'cleared (everyone gets sign-in codes again)'
@@ -702,7 +707,7 @@ const SET_UP_CASES: Case[] = [
         'the plan',
       )
       expectSaid(run, `${PREFIX}founder's number: ${maskNumber(FOUNDER_E164)}\n`, 'the plan')
-      expectSaid(run, `${PREFIX}review dates: Twilio Verify ${D60()}, AWS ${daysAhead(365)}\n`, 'the plan')
+      expectSaid(run, `${PREFIX}review dates: Twilio Verify ${D60}, AWS ${D365}\n`, 'the plan')
       expectSaid(run, `${WOULD_LEAVE}${NO_NOTICE_TEXT}\n`, 'the plan')
       expectSaid(run, `${PREFIX}${KEPT_NOTHING}\n`, 'the plan')
       expectNotSaid(run, 'committing', 'the plan')
@@ -725,7 +730,7 @@ const SET_UP_CASES: Case[] = [
         `${PREFIX}next: the founder signs in now on their own phone, then follows docs/runbooks/publishing-the-notice.md\n`,
         'the set-up',
       )
-      expect(printed.twilioReview === D60() && printed.awsReview === daysAhead(365), 'the committed review dates')
+      expect(printed.twilioReview === D60 && printed.awsReview === D365, 'the committed review dates')
 
       const orgs = await rows<{ id: string; name: string; time_zone: string }>(
         db,
@@ -824,7 +829,7 @@ const SET_UP_CASES: Case[] = [
       }
       const baseline = PROVIDERS.find(provider => provider !== 'twilio' && provider !== 'aws')
       for (const provider of ['twilio', 'aws'] as const) {
-        const reviewOn = provider === 'twilio' ? D60() : daysAhead(365)
+        const reviewOn = provider === 'twilio' ? D60 : D365
         const facts = await rows<{ ok: boolean }>(
           db,
           `select (t.services, t.data_types, t.processing_countries, t.storage_countries, t.countries_confirmed,
@@ -1145,14 +1150,14 @@ const REFUSAL_CASES: Case[] = [
       await refuses('a pin key', { input: setUpDocument({ pin: '271828' }) }, 'the document: an unknown key, pin')
       await refuses(
         'a recovery document given to set-up',
-        { input: recoverDocument({ dpo: randomUUID(), reviewOn: D60() }) },
+        { input: recoverDocument({ dpo: randomUUID(), reviewOn: D60 }) },
         'the document: an unknown key, dpo',
       )
       await refuses(
         'a fromEntry of countries_confirmed',
         {
           mode: 'recover',
-          input: recoverDocument({ dpo: randomUUID(), reviewOn: D60(), fromEntry: ['countries_confirmed'] }),
+          input: recoverDocument({ dpo: randomUUID(), reviewOn: D60, fromEntry: ['countries_confirmed'] }),
         },
         'fromEntry.0: not a fact the notice states',
       )
@@ -1197,6 +1202,18 @@ const REFUSAL_CASES: Case[] = [
         'OWNER_BOOTSTRAP_TLS_NAME under DEPLOY_ENV test',
         { input: setUpDocument(), env: { OWNER_BOOTSTRAP_TLS_NAME: PROD_ENV.OWNER_BOOTSTRAP_TLS_NAME } },
         'OWNER_BOOTSTRAP_TLS_NAME is set: it is only for a port forward under nonprod or prod',
+      )
+      // IO-03: a PGSSLNEGOTIATION pg would refuse to make a client with is refused by name before
+      // connecting, never left to the constructor.
+      await refuses(
+        'a PGSSLNEGOTIATION pg doesn’t know',
+        { input: setUpDocument(), env: { PGSSLNEGOTIATION: 'bogus' } },
+        'PGSSLNEGOTIATION must be unset, postgres or direct',
+      )
+      await refuses(
+        'PGSSLNEGOTIATION direct without TLS under DEPLOY_ENV test',
+        { input: setUpDocument(), env: { PGSSLNEGOTIATION: 'direct' } },
+        'PGSSLNEGOTIATION is direct, which needs TLS',
       )
     },
   ],
@@ -1254,7 +1271,7 @@ const REFUSAL_CASES: Case[] = [
     async () => {
       const db = await copy('bss05d')
       const run = await script('recover', db, {
-        input: recoverDocument({ dpo: randomUUID(), reviewOn: D60(), environment: 'prod' }),
+        input: recoverDocument({ dpo: randomUUID(), reviewOn: D60, environment: 'prod' }),
         env: PROD_ENV,
       })
       expectExit(run, 2, 'the run')
@@ -1449,7 +1466,7 @@ const REFUSAL_CASES: Case[] = [
       const bounds = 'bounds: transaction 30s, lock 2s, idle 5s'
       const setUp = await script('set-up', db, { input: setUpDocument() })
       expectExit(setUp, 0, 'the set-up plan')
-      const recover = await script('recover', db, { input: recoverDocument({ dpo: randomUUID(), reviewOn: D60() }) })
+      const recover = await script('recover', db, { input: recoverDocument({ dpo: randomUUID(), reviewOn: D60 }) })
       expectExit(recover, 1, 'the recovery plan with no org')
       const correction = await script('correct-number', db, { input: correctionDocument() })
       expectExit(correction, 1, 'the correction plan with no org')
@@ -1484,7 +1501,45 @@ async function latestVersion(db: string): Promise<number> {
 const inputsLine = (f: Founded, reviewOn: string, days: number, fromEntry = 'none', reason = RECOVERY_REASON) =>
   `${PREFIX}named DPO ${f.founder}; review date ${reviewOn} (${days} ${days === 1 ? 'day' : 'days'} ahead in ${ZONE}); from the DPO's record: ${fromEntry}; reason: ${[...reason].length} characters\n`
 const NO_DPO_SIGNED_IN = `${PREFIX}DPOs signed in, before the re-clear's own check: 0\n`
-const notClearedSince = (day: string) => `${PREFIX}Twilio Verify now: not cleared since ${day}\n`
+const notClearedSince = (day: string | undefined) => `${PREFIX}Twilio Verify now: not cleared since ${day}\n`
+
+// The run's inputs line. The script counts the days ahead from the day its transaction began in
+// Singapore, which fell between the run's spawn and its exit, so the line may count from either
+// day: a run that crosses midnight there counts one fewer than a case worked out before it did
+// (TESTS-04).
+function expectInputsLine(run: BootstrapRun, f: Founded, reviewOn: string, what: string, fromEntry?: string): void {
+  const counts = new Set(
+    [run.started, run.started + run.ms].map(
+      at => (Date.parse(reviewOn) - Date.parse(daysAhead(0, ZONE, new Date(at)))) / 86_400_000,
+    ),
+  )
+  expect(
+    [...counts].some(days => output(run).includes(inputsLine(f, reviewOn, days, fromEntry))),
+    `${what}: didn't print the inputs line for ${reviewOn}, ${[...counts].join(' or ')} days ahead`,
+  )
+}
+
+// Days the script prints from rows, read from the rows rather than the check's clock, so a case
+// that crosses midnight in Singapore still expects the day the row holds (TESTS-04): the day
+// Twilio Verify's last clearance ended, and the day a clearance was made (undefined if it wasn't).
+async function withdrawnOn(db: string): Promise<string | undefined> {
+  const [found] = await rows<{ day: string | null }>(
+    db,
+    `select ((max(withdrawn_at) at time zone $1)::date)::text as day from transfer_clearances
+     where provider = 'twilio'`,
+    [ZONE],
+  )
+  return found?.day ?? undefined
+}
+async function clearedOn(db: string, clearance: string | undefined): Promise<string | undefined> {
+  if (clearance === undefined) return undefined
+  const [found] = await rows<{ day: string }>(
+    db,
+    'select ((cleared_at at time zone $2)::date)::text as day from transfer_clearances where id = $1',
+    [clearance, ZONE],
+  )
+  return found?.day
+}
 
 // A committed re-clear's records: one new open clearance by break_glass in the founder's name, its
 // audit row (the function's own) and its event, and the write set one transaction of hearth_owner's.
@@ -1578,15 +1633,15 @@ const RECOVERY_CASES: Case[] = [
   [
     'BSS-07 BSC-05 T22 item 44 C0.9 OD-20 PD-77 to PD-80: the re-clear on the facts v0 states clears Twilio Verify for everyone; with the entry’s own review date the revision stays, with a new one it moves on as Hearth’s',
     async () => {
-      const today = daysAhead(0)
       const { db, f, setUpClearance, version } = await withdrawnCopy('bss07a')
       const entry = await twilioEntry(db)
+      expect(entry?.facts.review_on === D60, `the entry's review date is ${entry?.facts.review_on}, not the set-up's`)
       const before = await digest(db)
-      const plan = await script('recover', db, { input: recoverDocument({ dpo: f.founder, reviewOn: D60() }) })
+      const plan = await script('recover', db, { input: recoverDocument({ dpo: f.founder, reviewOn: D60 }) })
       expectExit(plan, 0, 'the plan')
-      expectSaid(plan, inputsLine(f, D60(), 60), 'the plan')
+      expectInputsLine(plan, f, D60, 'the plan')
       expectSaid(plan, NO_DPO_SIGNED_IN, 'the plan')
-      expectSaid(plan, notClearedSince(today), 'the plan')
+      expectSaid(plan, notClearedSince(await withdrawnOn(db)), 'the plan')
       expectSaid(
         plan,
         `${PREFIX}facts: the Twilio Verify clearance version ${version} states (${setUpClearance})\n`,
@@ -1600,10 +1655,10 @@ const RECOVERY_CASES: Case[] = [
 
       const run = await script('recover', db, {
         commit: true,
-        input: recoverDocument({ dpo: f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: f.founder, reviewOn: D60 }),
       })
       const { clearance } = await expectRecleared(db, run, f, {
-        reviewOn: D60(),
+        reviewOn: D60,
         changed: {},
         revision: entry?.revision ?? '',
         wasRevision: entry?.revision ?? '',
@@ -1632,7 +1687,7 @@ const RECOVERY_CASES: Case[] = [
       })
       await expectRecleared(other, moved, g, {
         reviewOn: d30,
-        changed: { review_on: { to: d30, from: D60() } },
+        changed: { review_on: { to: d30, from: was?.facts.review_on } },
         revision: String(Number(was?.revision) + 1),
         wasRevision: was?.revision ?? '',
         ended,
@@ -1660,7 +1715,7 @@ const RECOVERY_CASES: Case[] = [
       const entry = await twilioEntry(db)
       const run = await script('recover', db, {
         commit: true,
-        input: recoverDocument({ dpo: f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: f.founder, reviewOn: D60 }),
       })
       expectSaid(
         run,
@@ -1668,7 +1723,7 @@ const RECOVERY_CASES: Case[] = [
         'the re-clear',
       )
       await expectRecleared(db, run, f, {
-        reviewOn: D60(),
+        reviewOn: D60,
         changed: {
           provider_retention: { to: 'Plover records kept for thirty days', from: 'Plover records kept for sixty days' },
         },
@@ -1690,7 +1745,7 @@ const RECOVERY_CASES: Case[] = [
       const entry = await twilioEntry(db)
       const run = await script('recover', db, {
         commit: true,
-        input: recoverDocument({ dpo: f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: f.founder, reviewOn: D60 }),
       })
       expectSaid(
         run,
@@ -1698,7 +1753,7 @@ const RECOVERY_CASES: Case[] = [
         'the re-clear with no version',
       )
       const { clearance } = await expectRecleared(db, run, f, {
-        reviewOn: D60(),
+        reviewOn: D60,
         changed: {},
         revision: entry?.revision ?? '',
         wasRevision: entry?.revision ?? '',
@@ -1725,7 +1780,7 @@ const RECOVERY_CASES: Case[] = [
       const [first] = await twilioClearances(standIn)
       const fell = await script('recover', standIn, {
         commit: true,
-        input: recoverDocument({ dpo: g.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: g.founder, reviewOn: D60 }),
       })
       expectExit(fell, 0, 'the re-clear under a stand-in')
       expectSaid(
@@ -1747,9 +1802,9 @@ const RECOVERY_CASES: Case[] = [
       expect(entry?.updated_by === f.founder, 'the DPO’s record didn’t move the entry to their revision')
       const run = await script('recover', db, {
         commit: true,
-        input: recoverDocument({ dpo: f.founder, reviewOn: D60(), fromEntry: ['provider_retention'] }),
+        input: recoverDocument({ dpo: f.founder, reviewOn: D60, fromEntry: ['provider_retention'] }),
       })
-      expectSaid(run, inputsLine(f, D60(), 60, 'provider_retention'), 'the re-clear')
+      expectInputsLine(run, f, D60, 'the re-clear', 'provider_retention')
       expect(
         lineOf(run, `facts: the Twilio Verify clearance version ${await latestVersion(db)} states`)?.endsWith(
           "; from the DPO's record: provider_retention",
@@ -1758,7 +1813,7 @@ const RECOVERY_CASES: Case[] = [
       )
       const [ended] = (await twilioClearances(db)).filter(c => c.withdrawn_at !== null)
       const { clearance } = await expectRecleared(db, run, f, {
-        reviewOn: D60(),
+        reviewOn: D60,
         changed: {},
         revision: entry?.revision ?? '',
         wasRevision: entry?.revision ?? '',
@@ -1782,10 +1837,10 @@ const RECOVERY_CASES: Case[] = [
       const [gone] = (await twilioClearances(other.db)).filter(c => c.withdrawn_at !== null)
       const both = await script('recover', other.db, {
         commit: true,
-        input: recoverDocument({ dpo: other.f.founder, reviewOn: D60(), fromEntry: ['providerRetention'] }),
+        input: recoverDocument({ dpo: other.f.founder, reviewOn: D60, fromEntry: ['providerRetention'] }),
       })
       await expectRecleared(other.db, both, other.f, {
-        reviewOn: D60(),
+        reviewOn: D60,
         changed: { countries_confirmed: { to: 'Plover agreement, annex 1', from: 'Plover agreement, annex 3' } },
         revision: String(Number(was?.revision) + 1),
         wasRevision: was?.revision ?? '',
@@ -1797,7 +1852,7 @@ const RECOVERY_CASES: Case[] = [
       const port = await closedPort()
       const refused = await script('recover', other.db, {
         port,
-        input: recoverDocument({ dpo: other.f.founder, reviewOn: D60(), fromEntry: ['countries_confirmed'] }),
+        input: recoverDocument({ dpo: other.f.founder, reviewOn: D60, fromEntry: ['countries_confirmed'] }),
       })
       expectExit(refused, 2, 'an unstated fact in fromEntry')
       expectSaid(refused, 'fromEntry.0: not a fact the notice states', 'an unstated fact in fromEntry')
@@ -1806,7 +1861,6 @@ const RECOVERY_CASES: Case[] = [
   [
     'BSS-11 BSC-04: the re-clear refuses as the function does, writing nothing, after printing the DPOs signed in and Twilio Verify now',
     async () => {
-      const today = daysAhead(0)
       // A live DPO session, ending on the hour three days from now.
       const ends = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000 + 3 * 86_400_000)
       const live = await withdrawnCopy('bss11_live')
@@ -1814,7 +1868,7 @@ const RECOVERY_CASES: Case[] = [
       const before = await digest(live.db)
       const refused = await script('recover', live.db, {
         commit: true,
-        input: recoverDocument({ dpo: live.f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: live.f.founder, reviewOn: D60 }),
       })
       expectExit(refused, 1, 'a re-clear with a DPO signed in')
       expectSaid(
@@ -1822,7 +1876,7 @@ const RECOVERY_CASES: Case[] = [
         `${PREFIX}DPOs signed in, before the re-clear's own check: 1, the last session ending ${clock(ends, ZONE)} ${ZONE} (${clock(ends, 'UTC')} UTC) (the re-clear refuses until then, unless that session is signed out)\n`,
         'a re-clear with a DPO signed in',
       )
-      expectSaid(refused, notClearedSince(today), 'a re-clear with a DPO signed in')
+      expectSaid(refused, notClearedSince(await withdrawnOn(live.db)), 'a re-clear with a DPO signed in')
       expectSaid(refused, `${SIGNED_IN} (SQLSTATE HF006). Nothing was written.`, 'a re-clear with a DPO signed in')
       expect(
         output(refused).indexOf('Twilio Verify now') < output(refused).indexOf(SIGNED_IN),
@@ -1840,7 +1894,7 @@ const RECOVERY_CASES: Case[] = [
       )
       const ahead = await script('recover', out.db, {
         commit: true,
-        input: recoverDocument({ dpo: out.f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: out.f.founder, reviewOn: D60 }),
       })
       expectExit(ahead, 0, 'a re-clear once the DPO’s device is signed out')
       expectSaid(ahead, NO_DPO_SIGNED_IN, 'a re-clear once the DPO’s device is signed out')
@@ -1850,12 +1904,12 @@ const RECOVERY_CASES: Case[] = [
       const [open] = await twilioClearances(cleared)
       const already = await script('recover', cleared, {
         commit: true,
-        input: recoverDocument({ dpo: c.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: c.founder, reviewOn: D60 }),
       })
       expectExit(already, 1, 'a re-clear while Twilio Verify is cleared')
       expectSaid(
         already,
-        `${PREFIX}Twilio Verify now: cleared, clearance ${open?.id}, by bootstrap, ${today}\n`,
+        `${PREFIX}Twilio Verify now: cleared, clearance ${open?.id}, by bootstrap, ${await clearedOn(cleared, open?.id)}\n`,
         'a re-clear while Twilio Verify is cleared',
       )
       expectSaid(already, CLEARED_ALREADY, 'a re-clear while Twilio Verify is cleared')
@@ -1885,7 +1939,7 @@ const RECOVERY_CASES: Case[] = [
         )
         await client.query('commit')
       })
-      const first = await script('recover', never, { commit: true, input: recoverDocument({ dpo, reviewOn: D60() }) })
+      const first = await script('recover', never, { commit: true, input: recoverDocument({ dpo, reviewOn: D60 }) })
       expectExit(first, 1, 'a re-clear where Twilio Verify was never cleared')
       expectSaid(
         first,
@@ -1918,10 +1972,10 @@ const RECOVERY_CASES: Case[] = [
       const kept = await digest(dates.db)
       for (const [what, document, text] of [
         ['91 days ahead', recoverDocument({ dpo: dates.f.founder, reviewOn: daysAhead(91) }), AT_MOST_90],
-        ['today', recoverDocument({ dpo: dates.f.founder, reviewOn: today }), AFTER_TODAY],
-        ['someone without the role', recoverDocument({ dpo: plain, reviewOn: D60() }), NOT_DPO],
-        ['a leaver', recoverDocument({ dpo: leaver, reviewOn: D60() }), NOT_DPO],
-        ['nobody', recoverDocument({ dpo: randomUUID(), reviewOn: D60() }), NOT_DPO],
+        ['today', recoverDocument({ dpo: dates.f.founder, reviewOn: daysAhead(0) }), AFTER_TODAY],
+        ['someone without the role', recoverDocument({ dpo: plain, reviewOn: D60 }), NOT_DPO],
+        ['a leaver', recoverDocument({ dpo: leaver, reviewOn: D60 }), NOT_DPO],
+        ['nobody', recoverDocument({ dpo: randomUUID(), reviewOn: D60 }), NOT_DPO],
       ] as const) {
         const run = await script('recover', dates.db, { commit: true, input: document })
         expectExit(run, 1, `a re-clear naming ${what}`)
@@ -1941,7 +1995,7 @@ const RECOVERY_CASES: Case[] = [
       const twice = await digest(two.db)
       const orgs = await script('recover', two.db, {
         commit: true,
-        input: recoverDocument({ dpo: two.f.founder, reviewOn: D60() }),
+        input: recoverDocument({ dpo: two.f.founder, reviewOn: D60 }),
       })
       expectExit(orgs, 1, 'a re-clear with two orgs')
       expectSaid(
@@ -1963,7 +2017,7 @@ const RECOVERY_CASES: Case[] = [
         await holder.query('lock table public.notice_version_providers in access exclusive mode')
         const run = await script('recover', db, {
           commit: true,
-          input: recoverDocument({ dpo: f.founder, reviewOn: D60() }),
+          input: recoverDocument({ dpo: f.founder, reviewOn: D60 }),
         })
         expectExit(run, 3, 'the re-clear behind a held lock')
         expectSaid(run, LOCK_BUSY, 'the re-clear behind a held lock')
@@ -2266,9 +2320,8 @@ const LOST_CASES: Case[] = [
       )
 
       // The re-clear, whichever way the race falls: the plan's Twilio Verify now line says which.
-      const today = daysAhead(0)
       const recovered = await withdrawnCopy('bss15_reclear')
-      const document = recoverDocument({ dpo: recovered.f.founder, reviewOn: D60() })
+      const document = recoverDocument({ dpo: recovered.f.founder, reviewOn: D60 })
       const once = await lostAtCommit('recover', recovered.db, document)
       const clearance = /clearance (\S+)$/.exec(lineOf(once, 'committing the re-clear') ?? '')?.[1]
       expect(clearance !== undefined && (once.status === 4 || once.status === 0), `the re-clear exited ${once.status}`)
@@ -2280,11 +2333,22 @@ const LOST_CASES: Case[] = [
         )
       }
       const plan = await script('recover', recovered.db, { input: document })
-      if (output(plan).includes(`Twilio Verify now: cleared, clearance ${clearance}, by break_glass, ${today}`)) {
+      // Which way it fell is the database's to say, and the plan must agree.
+      const committedOn = await clearedOn(recovered.db, clearance)
+      if (committedOn !== undefined) {
+        expectSaid(
+          plan,
+          `Twilio Verify now: cleared, clearance ${clearance}, by break_glass, ${committedOn}`,
+          'the plan after a re-clear that went through',
+        )
         expectExit(plan, 1, 'the plan after a re-clear that went through')
         expectSaid(plan, CLEARED_ALREADY, 'the plan after a re-clear that went through')
       } else {
-        expectSaid(plan, notClearedSince(today), 'the plan after a re-clear that didn’t go through')
+        expectSaid(
+          plan,
+          notClearedSince(await withdrawnOn(recovered.db)),
+          'the plan after a re-clear that didn’t go through',
+        )
         expectExit(plan, 0, 'the plan after a re-clear that didn’t go through')
         expectExit(
           await script('recover', recovered.db, { commit: true, input: document }),
@@ -2297,7 +2361,7 @@ const LOST_CASES: Case[] = [
       // open one, and the same command commits.
       const severed = await withdrawnCopy('bss15_cut_reclear')
       const restore = await slowCommit(severed.db, 'transfer_clearances')
-      const again2 = recoverDocument({ dpo: severed.f.founder, reviewOn: D60() })
+      const again2 = recoverDocument({ dpo: severed.f.founder, reviewOn: D60 })
       const cutRun = await lostAtCommit('recover', severed.db, again2)
       expectExit(cutRun, 4, 'the re-clear cut at its commit')
       const named = /clearance (\S+)$/.exec(lineOf(cutRun, 'committing the re-clear') ?? '')?.[1]
@@ -2309,7 +2373,7 @@ const LOST_CASES: Case[] = [
       await restore()
       const look = await script('recover', severed.db, { input: again2 })
       expectExit(look, 0, 'the plan after a cut re-clear')
-      expectSaid(look, notClearedSince(today), 'the plan after a cut re-clear')
+      expectSaid(look, notClearedSince(await withdrawnOn(severed.db)), 'the plan after a cut re-clear')
       expectExit(
         await script('recover', severed.db, { commit: true, input: again2 }),
         0,
@@ -2503,11 +2567,9 @@ const RACE_CASES: Case[] = [
       try {
         expect(await pinStep(step, f), 'the step issued nothing')
         const correction = script('correct-number', db, { commit: true, input: correctionDocument() })
-        await until(
-          async () => (await waiting(watcher, db, { script: true })).length === 1,
-          'the correction waiting',
-          1800,
-        )
+        // From the spawn, so the window covers the child's cold start: the script's 2 s lock bound
+        // starts only once it waits, and the step commits as soon as it is seen waiting (CI-02).
+        await until(async () => (await waiting(watcher, db, { script: true })).length === 1, 'the correction waiting')
         await step.query('commit')
         const run = await correction
         expectExit(run, 1, 'the correction after the step')
@@ -2540,8 +2602,17 @@ const RACE_CASES: Case[] = [
           'the correction held at its audit row',
         )
         const stepPid = await pidOf(later)
-        const issued = pinStep(later, g)
-        const lookup = asServer(other, app => personByPhone(app, FOUNDER_E164))
+        // Each settled where it is made, as BSR-04's sign-in is: if a wait below throws, finally ends
+        // the connections under them, and a rejection nothing awaits would end the process before
+        // the clean-up (CI-01).
+        const issued = pinStep(later, g).then(
+          made => made,
+          (error: unknown) => message(error),
+        )
+        const lookup = asServer(other, app => personByPhone(app, FOUNDER_E164)).then(
+          found => found,
+          (error: unknown) => message(error),
+        )
         await until(
           async () => {
             const others = await waiting(look, other, { script: false })
@@ -2553,8 +2624,18 @@ const RACE_CASES: Case[] = [
         await holder.query('commit')
         const run = await correction
         expectExit(run, 0, 'the correction held at its audit row')
-        expect(!(await issued), 'the step issued a session on a number no longer theirs')
-        expect((await lookup).length === 0, 'the lookup of the old number found someone')
+        const stepped = await issued
+        expect(
+          stepped === false,
+          typeof stepped === 'string'
+            ? `the step failed: ${stepped}`
+            : 'the step issued a session on a number no longer theirs',
+        )
+        const looked = await lookup
+        expect(
+          Array.isArray(looked) && looked.length === 0,
+          typeof looked === 'string' ? `the lookup failed: ${looked}` : 'the lookup of the old number found someone',
+        )
         const [users] = await rows<{ n: number }>(other, 'select count(*)::int as n from users')
         expect(users?.n === 0, 'the step made an account')
       } finally {
@@ -2609,12 +2690,12 @@ const RACE_CASES: Case[] = [
         await signIn(step, first.f, first.device)
         const reclear = script('recover', first.db, {
           commit: true,
-          input: recoverDocument({ dpo: first.f.founder, reviewOn: D60() }),
+          input: recoverDocument({ dpo: first.f.founder, reviewOn: D60 }),
         })
+        // From the spawn, as BSR-03's first wait is (CI-02).
         await until(
           async () => (await waiting(watcher, first.db, { script: true })).length === 1,
           'the re-clear waiting',
-          1800,
         )
         await step.query('commit')
         const run = await reclear
@@ -2641,7 +2722,7 @@ const RACE_CASES: Case[] = [
         await holder.query('lock table public.audit_events in share mode')
         const reclear = script('recover', second.db, {
           commit: true,
-          input: recoverDocument({ dpo: second.f.founder, reviewOn: D60() }),
+          input: recoverDocument({ dpo: second.f.founder, reviewOn: D60 }),
         })
         await until(
           async () => (await waiting(look, second.db, { script: true, event: 'relation' })).length === 1,
@@ -2866,6 +2947,13 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     void cleanUp().finally(() => process.exit(1))
   })
 }
+// A rejection nothing handles (a case's promise left behind when a wait threw) would otherwise end
+// the process at once, leaving the databases and the login behind: name it, clean up, exit 1
+// (CI-01).
+process.on('unhandledRejection', error => {
+  console.error(`check-owner-bootstrap: unhandled rejection in ${currentCase || 'the start-up'}: ${message(error)}`)
+  void cleanUp().finally(() => process.exit(1))
+})
 
 process.exitCode = await main().catch(async (error: unknown) => {
   console.error(`check-owner-bootstrap: ${message(error)}`)

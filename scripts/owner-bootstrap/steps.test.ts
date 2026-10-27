@@ -123,7 +123,7 @@ const ANSWERS: Partial<Record<Name, Answer>> = {
       state: 'no_notice',
     },
   ],
-  orgs: [{ id: IDS.org, time_zone: 'Asia/Singapore' }],
+  orgs: [{ id: IDS.org }],
   hearth: [{ id: IDS.hearth }],
   twilioNow: [
     {
@@ -133,6 +133,7 @@ const ANSWERS: Partial<Record<Name, Answer>> = {
       open_via: null,
       open_on: null,
       withdrawn_since: '2026-10-26',
+      time_zone: 'Asia/Singapore',
       days_ahead: 60,
     },
   ],
@@ -436,6 +437,12 @@ describe('BSU-08 (PD-115, PD-124 to PD-129; R2, R4): the statements of each mode
       { kind: 'committed', mode: 'recover', clearance: NEW_CLEARANCE, reviewOn: '2026-12-26' },
       { kind: 'send_state', state: 'cleared', committed: true },
     ])
+    // R3 reads across orgs for their ids alone (ACC-11's named exception); R6 reads the zone by the
+    // one org's id, and the printed times use the zone R6 returned (SQL-01).
+    expect(SQL.orgs).toBe('select o.id::text as id from public.orgs o order by o.id limit 2')
+    expect(SQL.twilioNow).toMatch(/^with zone as \(\s+select o\.time_zone from public\.orgs o where o\.id = \$1\s+\)/)
+    expect(SQL.twilioNow).not.toContain('$3')
+    expect(r.statements.find(statement => statement.name === 'twilioNow')?.values).toEqual([IDS.org, '2026-12-26'])
     const sent = r.statements.find(statement => statement.name === 'reclear')
     expect(sent?.values).toEqual([IDS.org, IDS.founder, '2026-12-26', ['provider_retention'], RECOVER.reason])
     // R7's opaque text goes to R8 as it came, and to no line.
@@ -453,6 +460,7 @@ describe('BSU-08 (PD-115, PD-124 to PD-129; R2, R4): the statements of each mode
         open_via: 'break_glass',
         open_on: '2026-10-27',
         withdrawn_since: null,
+        time_zone: 'Asia/Singapore',
         days_ahead: 30,
       },
     ]
@@ -477,14 +485,7 @@ describe('BSU-08 (PD-115, PD-124 to PD-129; R2, R4): the statements of each mode
   it('refuses a recovery with no org, two orgs or no Hearth principal', async () => {
     const none = run({ answers: { orgs: [] } })
     expect(await refusalOf(recover(none.ctx, RECOVER))).toEqual({ kind: 'no_org' })
-    const two = run({
-      answers: {
-        orgs: [
-          { id: IDS.org, time_zone: 'Asia/Singapore' },
-          { id: IDS.hearth, time_zone: 'Asia/Singapore' },
-        ],
-      },
-    })
+    const two = run({ answers: { orgs: [{ id: IDS.org }, { id: IDS.hearth }] } })
     expect(await refusalOf(recover(two.ctx, RECOVER))).toEqual({ kind: 'two_orgs' })
     const hearthless = run({ answers: { hearth: [] } })
     expect(await refusalOf(recover(hearthless.ctx, RECOVER))).toEqual({ kind: 'no_hearth' })
@@ -519,12 +520,32 @@ describe('BSU-08 (PD-115, PD-124 to PD-129; R2, R4): the statements of each mode
       [{ founder: [{ ...founder[0], founder_roles: 1 }] }, 'not_founder'],
       [{ roster: [{ id: IDS.founder }, { id: IDS.hearth }] }, 'roster'],
       [{ roster: [] }, 'no_founder'],
+      [{ founder: [{ ...founder[0], number_id: null }] }, 'no_number'],
     ]
     for (const [answers, kind] of refusals) {
       const refused = run({ commit: true, answers })
       expect((await refusalOf(correctNumber(refused.ctx, CORRECT, IDS.number))).kind).toBe(kind)
       expect(refused.names()).not.toContain('removeNumber')
       expect(refused.names().at(-1)).toBe('rollback')
+    }
+    // C4, under the locks: S4's second comparison of the ledger, then exactly one org, each refused
+    // before anything else is sent (TESTS-03).
+    const atC4: [Partial<Record<Name, Answer>>, unknown][] = [
+      [
+        { orgsAndLedger: [{ orgs: [IDS.org], migrations: [...CHECKOUT, '9999_late'] }] },
+        { kind: 'target', problems: [{ code: 'migration_unknown', name: '9999_late' }] },
+      ],
+      [
+        { orgsAndLedger: [{ orgs: [IDS.org], migrations: CHECKOUT.slice(0, -1) }] },
+        { kind: 'target', problems: [{ code: 'migration_missing', name: '0012_request_cases' }] },
+      ],
+      [{ orgsAndLedger: [{ orgs: [IDS.org, IDS.hearth], migrations: CHECKOUT }] }, { kind: 'two_orgs' }],
+      [{ orgsAndLedger: [{ orgs: [], migrations: CHECKOUT }] }, { kind: 'no_org' }],
+    ]
+    for (const [answers, refusal] of atC4) {
+      const refused = run({ commit: true, answers })
+      expect(await refusalOf(correctNumber(refused.ctx, CORRECT, IDS.number))).toEqual(refusal)
+      expect(refused.names()).toEqual(['begin', 'prologue', 'locks', 'orgsAndLedger', 'rollback'])
     }
     const plan = run()
     await correctNumber(plan.ctx, CORRECT, IDS.number)

@@ -281,8 +281,10 @@ const EnvironmentProblemSchema: z.ZodType<EnvironmentProblem> = z.union([
     code: z.enum([
       'deploy_env_missing',
       'deploy_env_unknown',
+      'sslnegotiation',
       'host_not_loopback',
       'tls_name_local',
+      'sslnegotiation_direct',
       'host_missing',
       'host_socket',
       'sslmode',
@@ -473,8 +475,12 @@ function environmentText(problem: EnvironmentProblem): string {
       return 'under DEPLOY_ENV local or test, PGHOST must be this machine (127.0.0.1, localhost or ::1)'
     case 'elsewhere':
       return `${problem.variable} is set: unset it, so the client connects only where PGHOST says`
+    case 'sslnegotiation':
+      return 'PGSSLNEGOTIATION must be unset, postgres or direct'
     case 'tls_name_local':
       return 'OWNER_BOOTSTRAP_TLS_NAME is set: it is only for a port forward under nonprod or prod'
+    case 'sslnegotiation_direct':
+      return 'PGSSLNEGOTIATION is direct, which needs TLS: unset it, or set PGSSLMODE to turn TLS on'
     case 'agent_marker':
       return `${problem.variable} is set: the script never runs against nonprod or prod from a coding agent or CI`
     case 'host_missing':
@@ -486,7 +492,7 @@ function environmentText(problem: EnvironmentProblem): string {
     case 'tls_name_missing':
       return 'PGHOST is an IP address, so OWNER_BOOTSTRAP_TLS_NAME must name the RDS endpoint the certificate names'
     case 'tls_name_with_name':
-      return 'OWNER_BOOTSTRAP_TLS_NAME is set but PGHOST is a name: unset it (the certificate is checked against PGHOST)'
+      return 'OWNER_BOOTSTRAP_TLS_NAME is set but PGHOST is a name: for a port forward set PGHOST to 127.0.0.1, otherwise unset it (the certificate is then checked against PGHOST)'
     case 'tls_name_malformed':
       return "OWNER_BOOTSTRAP_TLS_NAME must be the RDS endpoint's name, ending .rds.amazonaws.com"
   }
@@ -624,7 +630,7 @@ function targetText(problem: TargetProblem): string {
     case 'log_unsafe':
       return `this database may log statement parameters or a failed row's values (${list(problem.settings)}): C0.12's parameter group sets them`
     case 'log_unreadable':
-      return `this login can't read ${list(problem.settings)}, so the script can't tell whether parameters are logged (C0.12 grants pg_read_all_settings)`
+      return `the session, acting as hearth_owner, can't read ${list(problem.settings)} in pg_settings, so the script can't tell whether parameters are logged: stop and report it (on Postgres 17 every role can read them; never grant the bootstrap's login another role)`
   }
 }
 
@@ -706,7 +712,7 @@ const CONNECT_TEXT: Record<ConnectCause, string> = {
   timed_out: 'timed out connecting',
   untrusted: "the server's certificate isn't trusted: set NODE_EXTRA_CA_CERTS to RDS's bundle",
   wrong_name:
-    "the certificate doesn't name the host you connected to: use the RDS endpoint's name, or OWNER_BOOTSTRAP_TLS_NAME for a port forward",
+    "the certificate doesn't name the host you connected to: use the RDS endpoint's name, or, for a port forward, PGHOST=127.0.0.1 with OWNER_BOOTSTRAP_TLS_NAME",
   no_tls: "the server doesn't offer TLS",
   sign_in: 'signing in to Postgres failed: check PGUSER and get a fresh IAM token',
   no_database: "that database doesn't exist",

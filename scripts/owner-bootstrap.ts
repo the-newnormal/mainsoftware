@@ -68,8 +68,8 @@ interface Environment extends TargetEnvironment {
 }
 
 // The one place the script reads process.env. OWNER_BOOTSTRAP_INPUT is deleted once read, so
-// nothing the script starts or prints can reach it. pg reads PGHOST, PGPORT, PGUSER, PGPASSWORD and
-// PGSSLMODE itself when the client is made.
+// nothing the script starts or prints can reach it. pg reads PGHOST, PGPORT, PGUSER, PGPASSWORD,
+// PGSSLMODE and PGSSLNEGOTIATION itself when the client is made.
 function readEnvironment(): Environment {
   const env = process.env
   const input = env.OWNER_BOOTSTRAP_INPUT
@@ -89,6 +89,7 @@ function readEnvironment(): Environment {
     PGSERVICE: env.PGSERVICE,
     PGSERVICEFILE: env.PGSERVICEFILE,
     PGSSLMODE: env.PGSSLMODE,
+    PGSSLNEGOTIATION: env.PGSSLNEGOTIATION,
     OWNER_BOOTSTRAP_TLS_NAME: env.OWNER_BOOTSTRAP_TLS_NAME,
     // Their presence only, never their values.
     markers: AGENT_MARKERS.filter(name => present[name]),
@@ -116,6 +117,22 @@ export function clientConfig(args: Arguments, env: TargetEnvironment, deployEnv:
   }
 }
 
+// Makes the client and connects it, in one try: pg's constructor throws on a setting it can't use
+// (PGSSLNEGOTIATION direct without TLS, say), and that is a failure to connect too, exit 2 with its
+// connect_failed line, never the unexpected line's "run it again" (PD-132).
+export async function openClient(config: ClientConfig): Promise<{ client: Client } | { outcome: Outcome }> {
+  try {
+    const client = new Client(config)
+    // A connection the server ends emits 'error' on the client, which without a listener would
+    // crash the process; the statement in flight rejects either way, and the printer reports it.
+    client.on('error', () => {})
+    await client.connect()
+    return { client }
+  } catch (error) {
+    return { outcome: { lines: [connectFailure(error)], exit: EXIT.wrong } }
+  }
+}
+
 async function main(phase: Phase, print: Print): Promise<ExitStatus> {
   const finish = (outcome: Outcome): ExitStatus => report(outcome, print)
 
@@ -138,16 +155,9 @@ async function main(phase: Phase, print: Print): Promise<ExitStatus> {
   // Minted before connecting, so a lost commit's line can name the organisation.
   const ids = { org: randomUUID(), hearth: randomUUID(), founder: randomUUID(), number: randomUUID() }
 
-  const client = new Client(clientConfig(args.value, env, deployEnv))
-  // A connection the server ends emits 'error' on the client, which without a listener would crash
-  // the process; the statement in flight rejects either way, and the printer reports it.
-  client.on('error', () => {})
-  try {
-    await client.connect()
-  } catch (error) {
-    print(connectFailure(error))
-    return EXIT.wrong
-  }
+  const opened = await openClient(clientConfig(args.value, env, deployEnv))
+  if ('outcome' in opened) return finish(opened.outcome)
+  const { client } = opened
   const db: Queryable = { query: (text, values) => client.query(text, values === undefined ? [] : [...values]) }
   const ctx: StepContext = {
     db,

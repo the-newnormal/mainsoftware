@@ -139,17 +139,20 @@ values ($1, $2, 'bootstrap.set_up', 'person', $3, $4, $5::jsonb)`,
        (select pg_catalog.count(*)::int from public.dpo_settings s where s.org_id = $1) as contacts,
        public.transfer_send_state('twilio') as state`,
 
-  // R3: exactly one org (D1), and its zone for the printed times: ids and zones only, the second
-  // named exception to ACC-11.
-  orgs: 'select o.id::text as id, o.time_zone from public.orgs o order by o.id limit 2',
+  // R3: exactly one org (D1): org ids only, the second named exception to ACC-11. Its zone is read
+  // by R6, filtered by that id.
+  orgs: 'select o.id::text as id from public.orgs o order by o.id limit 2',
   // R4, C5: the org's Hearth principal.
   hearth: `select p.id::text as id from public.principals p
 where p.org_id = $1 and p.kind = 'system' and p.system_key = 'hearth'`,
   // R6: plain reads, before the function: the DPOs signed in (item 44 check 7's predicate, word for
   // word from 0011, so the count means what the function will decide) and when the last of those
   // sessions ends; Twilio Verify's open clearance, else when its last one ended; and how far ahead
-  // the review date is in the org's zone ($3). Counts, clearance ids, days and an instant.
-  twilioNow: `with dpos as (
+  // the review date is in the org's zone, read here by the org's id (R3 reads ids only), and
+  // returned for the printed times. Counts, clearance ids, days, an instant and a zone.
+  twilioNow: `with zone as (
+  select o.time_zone from public.orgs o where o.id = $1
+), dpos as (
   select pg_catalog.count(distinct s.user_id)::int as signed_in, pg_catalog.max(s.expires_at) as last_ends
   from public.sessions s
   join public.devices d on d.org_id = s.org_id and d.user_id = s.user_id and d.id = s.device_id
@@ -158,19 +161,21 @@ where p.org_id = $1 and p.kind = 'system' and p.system_key = 'hearth'`,
                       join public.people p on p.org_id = r.org_id and p.id = r.person_id
                       where r.org_id = $1 and r.role = 'dpo' and r.revoked_at is null and p.deactivated_at is null)
 ), open as (
-  select c.id::text as id, c.cleared_via, ((c.cleared_at at time zone $3::text)::date)::text as cleared_on
+  select c.id::text as id, c.cleared_via,
+         ((c.cleared_at at time zone (select z.time_zone from zone z))::date)::text as cleared_on
   from public.transfer_clearances c
   where c.org_id = $1 and c.provider = 'twilio' and c.withdrawn_at is null
   order by c.cleared_at desc
   limit 1
 ), ended as (
-  select ((pg_catalog.max(c.withdrawn_at) at time zone $3::text)::date)::text as since
+  select ((pg_catalog.max(c.withdrawn_at) at time zone (select z.time_zone from zone z))::date)::text as since
   from public.transfer_clearances c
   where c.org_id = $1 and c.provider = 'twilio'
 )
 select d.signed_in, d.last_ends, o.id as open_id, o.cleared_via as open_via, o.cleared_on as open_on,
-       e.since as withdrawn_since, ($2::date - (pg_catalog.now() at time zone $3::text)::date) as days_ahead
-from dpos d cross join ended e left join open o on true`,
+       e.since as withdrawn_since, z.time_zone,
+       ($2::date - (pg_catalog.now() at time zone z.time_zone)::date) as days_ahead
+from dpos d cross join ended e cross join zone z left join open o on true`,
   // R7: the re-clear in one statement ($1 the org, $2 the named DPO, $3 the review date, $4 the
   // fromEntry keys, $5 the reason). It reads the facts snapshot of the Twilio clearance the latest
   // version links, else the last ended one's, overlays the DPO's record (the entry) only for the
@@ -480,7 +485,6 @@ export async function setUp(ctx: StepContext, doc: SetUpDocument, ids: SetUpIds)
   ctx.say({ kind: 'next' })
 }
 
-const OrgRow = z.object({ id: z.string(), time_zone: z.string() })
 const TwilioNowRow = z.object({
   signed_in: z.number(),
   last_ends: z.date().nullable(),
@@ -488,6 +492,7 @@ const TwilioNowRow = z.object({
   open_via: z.enum(['app', 'bootstrap', 'break_glass']).nullable(),
   open_on: z.string().nullable(),
   withdrawn_since: z.string().nullable(),
+  time_zone: z.string(),
   days_ahead: z.number(),
 })
 const ReclearRow = z.object({
@@ -521,23 +526,23 @@ export async function recover(ctx: StepContext, doc: RecoverDocument): Promise<v
   await begin(db)
   try {
     await prologue(ctx, 'recover', reclearMarker, doc.environment)
-    const orgs = (await db.query(SQL.orgs)).rows.map(row => OrgRow.parse(row))
+    const orgs = (await db.query(SQL.orgs)).rows.map(row => IdRow.parse(row))
     const [only] = orgs
     if (only === undefined) throw new Refused({ kind: 'no_org' })
     if (orgs.length > 1) throw new Refused({ kind: 'two_orgs' })
     const hearth = await hearthOf(db, only.id)
     await db.query(SQL.actAsHearth, [only.id, hearth])
-    const now = one(await db.query(SQL.twilioNow, [only.id, doc.reviewOn, only.time_zone]), TwilioNowRow)
+    const now = one(await db.query(SQL.twilioNow, [only.id, doc.reviewOn]), TwilioNowRow)
     ctx.say({
       kind: 'inputs',
       dpo: doc.dpo,
       reviewOn: doc.reviewOn,
       daysAhead: now.days_ahead,
-      zone: only.time_zone,
+      zone: now.time_zone,
       fromEntry: doc.fromEntry,
       reasonLength: [...doc.reason].length,
     })
-    ctx.say({ kind: 'dpo_sessions', count: now.signed_in, lastEnds: now.last_ends, zone: only.time_zone })
+    ctx.say({ kind: 'dpo_sessions', count: now.signed_in, lastEnds: now.last_ends, zone: now.time_zone })
     if (now.open_id !== null && now.open_via !== null && now.open_on !== null) {
       ctx.say({ kind: 'twilio_now', clearance: now.open_id, via: now.open_via, on: now.open_on })
     } else if (now.withdrawn_since !== null) {

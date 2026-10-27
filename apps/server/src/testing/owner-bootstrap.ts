@@ -78,27 +78,38 @@ export const FACT_TEXTS: readonly string[] = [
   'Plover carriers only',
 ]
 
-// The day (YYYY-MM-DD) a number of days from today in a time zone (Asia/Singapore, every new org's
-// zone, unless given), as the function and the clearance trigger judge review dates.
-export function daysAhead(days: number, zone = 'Asia/Singapore'): string {
+// The day (YYYY-MM-DD) a number of days from the day an instant (now, unless given) falls on in a
+// time zone (Asia/Singapore, every new org's zone, unless given), as the function and the
+// clearance trigger judge review dates.
+export function daysAhead(days: number, zone = 'Asia/Singapore', at: Date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
-    .formatToParts(new Date())
+    .formatToParts(at)
     .reduce<Record<string, string>>((all, part) => Object.assign(all, { [part.type]: part.value }), {})
   const today = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day))
   return new Date(today + days * 86_400_000).toISOString().slice(0, 10)
 }
 
+// The set-up documents' review dates, Twilio's 60 days ahead and AWS's a year ahead of the day
+// this module loaded, worked out once and never again: every document a run makes (the check's
+// templates and its cases, the harness's first org) carries the same two, so a run that crosses
+// midnight in Singapore still finds the entry's own date where a case expects it (design §10.2
+// BSS-07: both dates pinned in the fixture, since the function diffs review_on too).
+export const REVIEW_DATES: { readonly twilio: string; readonly aws: string } = Object.freeze({
+  twilio: daysAhead(60),
+  aws: daysAhead(365),
+})
+
 // The set-up document (T22 item 64), with the founder, the org, the reason and both providers'
-// facts, Twilio's review date 60 days ahead and AWS's a year ahead unless given, written for
-// DEPLOY_ENV test. A case changes what it tests with patch, which replaces keys whole.
+// facts, with REVIEW_DATES' review dates unless given, written for DEPLOY_ENV test. A case changes
+// what it tests with patch, which replaces keys whole.
 export function setUpDocument(patch: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     environment: 'test',
     organisation: ORG_NAME,
     founder: { fullName: FOUNDER_NAME, number: FOUNDER_NUMBER },
     reason: SET_UP_REASON,
-    twilio: bootstrapFacts(daysAhead(60)),
-    aws: bootstrapFacts(daysAhead(365)),
+    twilio: bootstrapFacts(REVIEW_DATES.twilio),
+    aws: bootstrapFacts(REVIEW_DATES.aws),
     ...patch,
   }
 }
@@ -170,7 +181,9 @@ export interface BootstrapRun {
   stderr: string
   // Each stdout line as it arrived, with the milliseconds since the spawn.
   lines: { text: string; at: number }[]
-  // How long the run took, spawn to exit.
+  // When it was spawned (ms since the epoch), and how long it took, spawn to exit: its transaction
+  // began between the two, so a check can bracket the day the script's now() fell on.
+  started: number
   ms: number
 }
 
@@ -185,7 +198,7 @@ export interface BootstrapRunOptions {
   host: string
   port: number
   // Variables added to (or, for DEPLOY_ENV, PGHOST and PGPORT, replacing) the run's environment:
-  // CI or a marker, PGDATABASE, PGSSLMODE, OWNER_BOOTSTRAP_TLS_NAME.
+  // CI or a marker, PGDATABASE, PGSSLMODE, PGSSLNEGOTIATION, OWNER_BOOTSTRAP_TLS_NAME.
   env?: Readonly<Record<string, string>>
   // The arguments after the script, in place of `<mode> --database <name> [--commit]`, for the
   // command line's own refusals.
@@ -247,7 +260,7 @@ export function runOwnerBootstrap(mode: BootstrapMode, o: BootstrapRunOptions): 
     child.on('close', (status, signal) => {
       clearTimeout(timer)
       if (partial !== '') lines.push({ text: partial, at: Date.now() - started })
-      resolve({ mode, status, signal, stdout, stderr, lines, ms: Date.now() - started })
+      resolve({ mode, status, signal, stdout, stderr, lines, started, ms: Date.now() - started })
     })
   })
 }

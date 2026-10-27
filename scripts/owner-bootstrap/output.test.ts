@@ -302,6 +302,43 @@ describe('BSU-10 (PD-132): the exit statuses, and a failure to connect names its
     expect(busy.all()).toContain('a lock was busy: run it once more')
   })
 
+  it("names PGSSLNEGOTIATION's refusals, and the log settings as the acting role reads them, in fixed words (IO-02, IO-03)", () => {
+    const env = capture()
+    env.print({
+      kind: 'refused',
+      refusal: { kind: 'environment', problems: [{ code: 'sslnegotiation' }, { code: 'sslnegotiation_direct' }] },
+    })
+    expect(env.err).toHaveLength(1)
+    expect(env.all()).toContain('PGSSLNEGOTIATION must be unset, postgres or direct')
+    expect(env.all()).toContain('PGSSLNEGOTIATION is direct, which needs TLS')
+    expect(refused({ kind: 'environment', problems: [{ code: 'sslnegotiation_direct' }] }).exit).toBe(EXIT.wrong)
+    const logs = capture()
+    logs.print({
+      kind: 'refused',
+      refusal: {
+        kind: 'target',
+        problems: [
+          { code: 'log_unsafe', settings: ['auto_explain.log_min_duration'] },
+          { code: 'log_unreadable', settings: ['log_statement'] },
+        ],
+      },
+    })
+    expect(logs.all()).toContain('(auto_explain.log_min_duration)')
+    expect(logs.all()).toContain('acting as hearth_owner')
+    expect(logs.all()).toContain('stop and report it')
+    // Never advice to grant the login a role: the script refuses a login with a second membership.
+    expect(logs.all()).not.toMatch(/grants? pg_read_all_settings/)
+  })
+
+  it('points a port forward at PGHOST=127.0.0.1 from both TLS-name lines, so neither sends the person in a loop (DOCS-06)', () => {
+    const named = capture()
+    named.print({ kind: 'refused', refusal: { kind: 'environment', problems: [{ code: 'tls_name_with_name' }] } })
+    expect(named.all()).toContain('for a port forward set PGHOST to 127.0.0.1')
+    const altname = capture()
+    altname.print(connectFailure(Object.assign(new Error('altname'), { code: 'ERR_TLS_CERT_ALTNAME_INVALID' })))
+    expect(altname.all()).toContain('for a port forward, PGHOST=127.0.0.1 with OWNER_BOOTSTRAP_TLS_NAME')
+  })
+
   it('maps every failure before the first statement returns to 2 with its own line, echoing no host, user or message', () => {
     const host = 'db.wren-canary.example'
     const node = (code: string) => Object.assign(new Error(`connect ${code} ${host} as wren_canary`), { code })

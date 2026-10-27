@@ -2,8 +2,9 @@
 // checks before and after connecting, and BSU-09, the client's settings (owner-bootstrap.ts).
 import { Client } from 'pg'
 import { describe, expect, it } from 'vitest'
-import { clientConfig, STARTUP_OPTIONS } from '../owner-bootstrap.ts'
+import { clientConfig, openClient, STARTUP_OPTIONS } from '../owner-bootstrap.ts'
 import type { Arguments, DeployEnv } from './input.ts'
+import { EXIT } from './output.ts'
 import {
   AGENT_MARKERS,
   checkoutMigrations,
@@ -28,6 +29,7 @@ function env(overrides: Partial<TargetEnvironment> = {}): TargetEnvironment {
     PGSERVICE: undefined,
     PGSERVICEFILE: undefined,
     PGSSLMODE: undefined,
+    PGSSLNEGOTIATION: undefined,
     OWNER_BOOTSTRAP_TLS_NAME: undefined,
     markers: [],
     ...overrides,
@@ -106,6 +108,33 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
     expect(environmentProblems(env({ markers: [...AGENT_MARKERS] }))).toEqual([])
   })
 
+  it('refuses a PGSSLNEGOTIATION pg would refuse to make a client with, before connecting (IO-03, PD-132)', () => {
+    for (const deployEnv of ['local', 'test', 'nonprod', 'prod']) {
+      const base =
+        deployEnv === 'local' || deployEnv === 'test'
+          ? env({ DEPLOY_ENV: deployEnv })
+          : remote({ DEPLOY_ENV: deployEnv })
+      for (const value of [undefined, '', 'postgres']) {
+        expect(environmentProblems({ ...base, PGSSLNEGOTIATION: value }), `${deployEnv} ${value}`).toEqual([])
+      }
+      expect(environmentProblems({ ...base, PGSSLNEGOTIATION: 'Direct' }), deployEnv).toEqual([
+        { code: 'sslnegotiation' },
+      ])
+    }
+    // Direct needs TLS: the script turns it on itself under nonprod and prod, PGSSLMODE under local
+    // and test.
+    expect(environmentProblems(remote({ PGSSLNEGOTIATION: 'direct' }))).toEqual([])
+    expect(environmentProblems(env({ PGSSLNEGOTIATION: 'direct' }))).toEqual([{ code: 'sslnegotiation_direct' }])
+    for (const mode of ['disable', 'allow', '']) {
+      expect(environmentProblems(env({ PGSSLNEGOTIATION: 'direct', PGSSLMODE: mode })), mode).toEqual([
+        { code: 'sslnegotiation_direct' },
+      ])
+    }
+    for (const mode of ['prefer', 'require', 'verify-ca', 'verify-full', 'no-verify']) {
+      expect(environmentProblems(env({ PGSSLNEGOTIATION: 'direct', PGSSLMODE: mode })), mode).toEqual([])
+    }
+  })
+
   it('under nonprod and prod: no agent or CI marker, PGSSLMODE unset or verify-full, and a TLS name exactly for an IP host', () => {
     for (const deployEnv of ['nonprod', 'prod']) {
       expect(environmentProblems(remote({ DEPLOY_ENV: deployEnv }))).toEqual([])
@@ -182,6 +211,9 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
       [{ memberships: [member({ admin: true })] }, ['login_grant']],
       [{ memberships: [member({ set: false })] }, ['login_grant']],
       [{ memberships: [member(), member({ role: 'pg_read_all_data' })] }, ['login_other_membership']],
+      // pg_read_all_settings on the login would change nothing pg_settings shows the acting role,
+      // and is refused like any other second membership (IO-02).
+      [{ memberships: [member(), member({ role: 'pg_read_all_settings' })] }, ['login_other_membership']],
       [{ memberships: [member(), member({ role: 'rds_iam' })] }, ['login_other_membership']],
       [{ login_createrole: true }, ['login_createrole']],
       [{ login_createdb: true }, ['login_createdb']],
@@ -218,8 +250,15 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
       [{ log_error_verbosity: 'default' }, 'log_error_verbosity'],
       [
         { 'auto_explain.log_min_duration': '0', 'auto_explain.log_parameter_max_length': '-1' },
-        'auto_explain.log_parameter_max_length',
+        'auto_explain.log_min_duration',
       ],
+      // A custom plan prints the bound values as literals whatever auto_explain's parameter length
+      // says, which covers only its "Query Parameters" line (IO-01).
+      [
+        { 'auto_explain.log_min_duration': '0', 'auto_explain.log_parameter_max_length': '0' },
+        'auto_explain.log_min_duration',
+      ],
+      [{ 'auto_explain.log_min_duration': '250' }, 'auto_explain.log_min_duration'],
       [{ 'pgaudit.log_parameter': 'on' }, 'pgaudit.log_parameter'],
     ]
     for (const [logs, setting] of unsafe) {
@@ -240,7 +279,7 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
       { log_statement: 'mod' },
       { log_statement: 'ddl' },
       { 'auto_explain.log_min_duration': '-1', 'auto_explain.log_parameter_max_length': '-1' },
-      { 'auto_explain.log_min_duration': '0', 'auto_explain.log_parameter_max_length': '0' },
+      { 'auto_explain.log_min_duration': '-1' },
       { 'pgaudit.log_parameter': 'off' },
     ]
     for (const logs of safe) {
@@ -298,6 +337,24 @@ describe("BSU-09 (PD-121, PD-125): the client's settings", () => {
     } finally {
       if (before === undefined) delete process.env.PGDATABASE
       else process.env.PGDATABASE = before
+    }
+  })
+
+  it("treats a client pg can't make as a failure to connect, exit 2, never the unexpected line's exit 3 (IO-03, PD-132)", async () => {
+    const saved = { negotiation: process.env.PGSSLNEGOTIATION, mode: process.env.PGSSLMODE }
+    process.env.PGSSLNEGOTIATION = 'direct'
+    delete process.env.PGSSLMODE
+    try {
+      // Port 1 on loopback, where nothing answers: a constructor that stopped throwing would show
+      // as nothing_answered, not as this line.
+      const opened = await openClient({ ...clientConfig(args, env(), 'test'), host: '127.0.0.1', port: 1 })
+      expect(opened).toEqual({
+        outcome: { lines: [{ kind: 'connect_failed', cause: 'other', code: null }], exit: EXIT.wrong },
+      })
+    } finally {
+      if (saved.negotiation === undefined) delete process.env.PGSSLNEGOTIATION
+      else process.env.PGSSLNEGOTIATION = saved.negotiation
+      if (saved.mode !== undefined) process.env.PGSSLMODE = saved.mode
     }
   })
 

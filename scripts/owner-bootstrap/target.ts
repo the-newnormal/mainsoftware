@@ -33,6 +33,7 @@ export interface TargetEnvironment {
   PGSERVICE: string | undefined
   PGSERVICEFILE: string | undefined
   PGSSLMODE: string | undefined
+  PGSSLNEGOTIATION: string | undefined
   OWNER_BOOTSTRAP_TLS_NAME: string | undefined
   markers: readonly AgentMarker[]
 }
@@ -40,10 +41,13 @@ export interface TargetEnvironment {
 export type EnvironmentProblem =
   | { code: 'deploy_env_missing' }
   | { code: 'deploy_env_unknown' }
-  // local and test: PGHOST isn't this machine.
+  // Any environment: a PGSSLNEGOTIATION pg refuses to make a client with.
+  | { code: 'sslnegotiation' }
+  // local and test: PGHOST isn't this machine, or PGSSLNEGOTIATION is direct without TLS.
   | { code: 'host_not_loopback' }
   | { code: 'elsewhere'; variable: Elsewhere }
   | { code: 'tls_name_local' }
+  | { code: 'sslnegotiation_direct' }
   // nonprod and prod.
   | { code: 'agent_marker'; variable: AgentMarker }
   | { code: 'host_missing' }
@@ -54,6 +58,9 @@ export type EnvironmentProblem =
   | { code: 'tls_name_malformed' }
 
 const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+// The PGSSLMODE values with which pg 8.23.1 turns TLS on (connection-parameters.js), which a direct
+// TLS negotiation needs.
+const TLS_MODES = new Set(['prefer', 'require', 'verify-ca', 'verify-full', 'no-verify'])
 // An RDS endpoint's DNS name, which the server's certificate names.
 const RDS_ENDPOINT =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.rds\.amazonaws\.com$/i
@@ -68,20 +75,28 @@ export const isIpAddress = (host: string): boolean => /^\d{1,3}(?:\.\d{1,3}){3}$
 export const deployEnvOf = (value: string | undefined): DeployEnv | undefined =>
   isDeployEnv(value) ? value : undefined
 
-// Everything the environment alone can refuse. Under local and test: PGHOST on this machine, none
-// of the variables that point elsewhere, and no TLS name. Under nonprod and prod: no agent or CI
-// marker, PGHOST given and not a socket, PGSSLMODE unset or verify-full (the script verifies TLS
-// itself, so the person's stated intent and the connection agree), and OWNER_BOOTSTRAP_TLS_NAME
-// exactly when PGHOST is an IP address (a port forward), naming an RDS endpoint.
+// Everything the environment alone can refuse. In every environment: PGSSLNEGOTIATION unset,
+// postgres or direct, the values pg makes a client with. Under local and test: PGHOST on this
+// machine, none of the variables that point elsewhere, no TLS name, and a direct negotiation only
+// with a PGSSLMODE that turns TLS on. Under nonprod and prod: no agent or CI marker, PGHOST given and
+// not a socket, PGSSLMODE unset or verify-full (the script verifies TLS itself, so the person's
+// stated intent and the connection agree), and OWNER_BOOTSTRAP_TLS_NAME exactly when PGHOST is an IP
+// address (a port forward), naming an RDS endpoint.
 export function environmentProblems(env: TargetEnvironment): EnvironmentProblem[] {
   if (!given(env.DEPLOY_ENV)) return [{ code: 'deploy_env_missing' }]
   const deployEnv = deployEnvOf(env.DEPLOY_ENV)
   if (deployEnv === undefined) return [{ code: 'deploy_env_unknown' }]
   const problems: EnvironmentProblem[] = []
+  const negotiation = env.PGSSLNEGOTIATION
+  if (given(negotiation) && negotiation !== 'postgres' && negotiation !== 'direct') {
+    problems.push({ code: 'sslnegotiation' })
+  }
   if (!isRemote(deployEnv)) {
     if (given(env.PGHOST) && !LOCAL_HOSTS.has(env.PGHOST)) problems.push({ code: 'host_not_loopback' })
     for (const variable of ELSEWHERE) if (given(env[variable])) problems.push({ code: 'elsewhere', variable })
     if (given(env.OWNER_BOOTSTRAP_TLS_NAME)) problems.push({ code: 'tls_name_local' })
+    if (negotiation === 'direct' && !TLS_MODES.has(env.PGSSLMODE ?? ''))
+      problems.push({ code: 'sslnegotiation_direct' })
     return problems
   }
   for (const variable of env.markers) problems.push({ code: 'agent_marker', variable })
@@ -111,14 +126,15 @@ export function tlsServerName(env: TargetEnvironment, deployEnv: DeployEnv): str
 // --- After connecting (section 3) ---------------------------------------------------------------
 
 // The log settings that decide whether a statement's bind values could reach the server's log, as
-// pg_settings names them (PD-121). The first four are core and must be readable.
+// pg_settings names them (PD-121). The first four are core and must be readable. auto_explain's
+// parameter length isn't among them: it shortens only a plan's "Query Parameters" line, never the
+// literals a custom plan prints (below).
 export const LOG_SETTINGS = [
   'log_parameter_max_length',
   'log_parameter_max_length_on_error',
   'log_statement',
   'log_error_verbosity',
   'auto_explain.log_min_duration',
-  'auto_explain.log_parameter_max_length',
   'pgaudit.log_parameter',
 ] as const
 export type LogSetting = (typeof LOG_SETTINGS)[number]
@@ -199,9 +215,11 @@ export function markerOf(comment: string | null): Marker {
 // The log settings a statement's bind values could reach the log through: both parameter lengths
 // must be 0 (a statement logged by log_statement or log_min_duration_statement then shows only its
 // placeholders, so mod is as safe as none), errors terse (a failed statement's DETAIL can carry a
-// row's values), auto_explain absent or logging none (since Postgres 16 it logs a slow statement's
-// bind values by its own length setting, -1 by default), and pgaudit's parameter logging off. A
-// core setting pg_settings doesn't show this role is unreadable, by name.
+// row's values), auto_explain absent or logging none (log_min_duration -1), and pgaudit's parameter
+// logging off. auto_explain's own parameter length doesn't make it safe: Postgres plans the script's
+// unnamed statements as custom plans, whose Index Cond, Filter and (with log_verbose) Output lines
+// print the bound name and number as literals; the length covers only the "Query Parameters" line.
+// A core setting pg_settings doesn't show the acting role is unreadable, by name.
 export function logFindings(logs: Readonly<Record<string, string>>): {
   unsafe: LogSetting[]
   unreadable: LogSetting[]
@@ -220,9 +238,7 @@ export function logFindings(logs: Readonly<Record<string, string>>): {
   const verbosity = at('log_error_verbosity')
   if (verbosity !== undefined && verbosity !== 'terse') unsafe.push('log_error_verbosity')
   const explainAfter = at('auto_explain.log_min_duration')
-  if (explainAfter !== undefined && explainAfter !== '-1' && at('auto_explain.log_parameter_max_length') !== '0') {
-    unsafe.push('auto_explain.log_parameter_max_length')
-  }
+  if (explainAfter !== undefined && explainAfter !== '-1') unsafe.push('auto_explain.log_min_duration')
   const audit = at('pgaudit.log_parameter')
   if (audit !== undefined && audit !== 'off') unsafe.push('pgaudit.log_parameter')
   return { unsafe, unreadable }
