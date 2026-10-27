@@ -16,8 +16,8 @@
 //
 // Every mode is a plan unless given --commit: it runs its whole transaction and rolls back. Its
 // input is one JSON document in OWNER_BOOTSTRAP_INPUT, set for the one command from the
-// environment's bootstrap secret (or pasted by the runbook's command, which reads every line), never
-// an argument, a file or a prompt. DEPLOY_ENV names the target, which the document names too; the
+// environment's bootstrap secret at the version its plan read (the recovery document typed into the
+// runbook's command, which reads every line), never an argument, a file or a prompt. DEPLOY_ENV names the target, which the document names too; the
 // standard PG* variables say where to connect, and --database which database, whatever PGDATABASE
 // says. Exit statuses: 0 done or the plan passed, 1 refused, 2 the inputs or the target are wrong or
 // connecting failed, 3 nothing written (run it again), 4 lost while committing (output.ts).

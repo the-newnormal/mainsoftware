@@ -68,21 +68,17 @@ The plan and the commit both load that version, so the commit runs on exactly th
 OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --version-id <the version id> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>
 ```
 
-Only if the secret can't be read, the DPO pastes the document at the person on call's terminal, with echo off, so nobody else holds the founder's whole number: the person on call runs the command below, and the DPO pastes the document over several lines, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). Lay the document out with one fact to a line, each line under 1,000 characters: a terminal cuts a longer line without showing it (at 1,024 bytes on macOS), and the script then answers that the input is not valid JSON. If the DPO is there only by video, the run waits until the secret can be read. After a Ctrl-C, type `stty echo` to see your typing again.
+If the secret can't be read, the run waits until it can. The set-up and correction documents are never pasted or typed: their commits print no summary of what they keep, so only a pinned version shows that a commit runs on the document its plan checked.
 
-```
-OWNER_BOOTSTRAP_INPUT="$(stty -echo; cat; stty echo)" node scripts/owner-bootstrap.ts <mode> --database <the database>
-```
-
-The recovery document holds no name or number, so it is typed the same way with echo on, ended with Enter and Ctrl-D:
+The recovery document holds no name or number, so it is typed with echo on, ended with Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line):
 
 ```
 OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>
 ```
 
-A pasted or typed document is pasted or typed again for the commit. The commit prints the same lines as its plan before its `committing` line, so the person on call compares them with the plan's. If one differs, the commit ran on a different document: they tell the DPO, who corrects it (a number with `correct-number` below, a review date with their own Save in Hearth).
+The recovery document is typed again for the commit, whose line starting `named DPO` repeats what it acts on, as the plan's did, before its `committing` line. If it differs from the plan's, the person on call tells the DPO, who corrects the review date with their own Save in Hearth.
 
-Never `read` it into a variable, and never `export` it: a one-line `read` takes only the first line and runs the rest of a pasted document as shell commands, which land in the history.
+Never `read` it into a variable, and never `export` it: a one-line `read` takes only the first line and runs the rest of the document as shell commands, which land in the history.
 
 Every line the script prints starts `owner-bootstrap:`; this runbook quotes what follows it.
 
@@ -126,7 +122,7 @@ A refusal that names the input or the environment comes before it connects. One 
 
 - Exit 2 with `owner-bootstrap: could not connect: …`: [the table above](#if-it-fails-before-it-connects).
 - Exit 3: run it once more. If you stopped it yourself, nothing was committed.
-- Exit 4 (the connection was lost, or the run stopped, while committing): run the same command again. If it answers that the database already has an organisation, compare that organisation with the one the `committing organisation …` line named: the same one means it committed. Otherwise it sets up now.
+- Exit 4 (the connection was lost, or the run stopped, while committing): run the same command again, with `--commit`. If it sets up, the first run hadn't committed. If it answers that the database already has an organisation, compare that organisation with the one the `committing organisation …` line named: the same one means the first run committed. A different one means someone else set this database up meanwhile: stop, and the person on call and the DPO find out what it holds before anything else runs on it.
 - After an exit 4 whose commit landed, the `committed: …` line never printed, so Hearth's id, the founder's person id and the clearance ids weren't shown. The person on call records the organisation id in the break-glass log entry, notes that the other ids weren't printed, and goes on to step 8. Once the founder has signed in, the DPO opens `/api/session` in their own signed-in browser, reads `personId`, keeps it in their records and gives it to the person on call to add to the entry. Transfers shows both clearances as cleared by the set-up.
 
 ### If the founder's code doesn't arrive within two minutes
@@ -155,7 +151,7 @@ The correction refuses once the founder has signed in (C0.16's phone change does
 
 ## Don't
 
-- Never pass a value on the command line, in a file or in a chat, and never load the input any way but the three commands above.
+- Never pass a value on the command line, in a file or in a chat, and never load the input any way but the two commands above.
 - Never run the script from a Claude Code session or from CI, and never let a coding agent run any step.
 - Never edit the script to skip a check, and never change the database's environment marker to get past a refusal.
 - Never write to a table instead.

@@ -74,9 +74,9 @@
 // - BSG-11 (R2DOCS-03): BUILD-PLAN's C0.12 row and TECH-SPEC item 71's C0.12 bullet give the
 //   bootstrap secret to the DPO alone, with the break-glass role only loading it into a run, and
 //   never say "readable only under the break-glass role"; the set-up runbook's Who does what says
-//   the same, the DPO checks the number in the secret and pastes the document when the secret can't
-//   be read, and the person on call never checks, reads, views, opens, sees or pastes the secret, the
-//   number or the document.
+//   the same, the DPO checks the number in the secret, a run waits when the secret can't be read
+//   (nothing is pasted), and the person on call never checks, reads, views, opens, sees or pastes the
+//   secret, the number or the document.
 import { existsSync, readFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import { AI_COPY, NOTICE_TRANSFER_FACTS, TRANSFER_PROBLEMS, TransferFactsBody } from '@hearth/shared'
@@ -2463,12 +2463,12 @@ const NODE_READS = ['NODE_EXTRA_CA_CERTS']
 const VARIABLE_SHAPE =
   /^(?:OWNER_BOOTSTRAP_[A-Z0-9_]+|DEPLOY_ENV|PG[A-Z]+|NODE_[A-Z0-9_]+|CLAUDECODE|CLAUDE_CODE_[A-Z_]+|AI_AGENT|GITHUB_ACTIONS|CI)$/
 
-// Section 2.1's three ways to load the input, each for one command and never kept: from the secret,
-// at the version id read before the plan, so the commit runs on the document the plan checked;
-// pasted with echo off; or (the recovery document alone) typed with echo on.
+// Section 2.1's two ways to load the input, each for one command and never kept: from the secret,
+// at the version id read before the plan, so the commit runs on the document the plan checked; or
+// (the recovery document alone) typed with echo on. Nothing is pasted: a set-up's or correction's
+// commit prints no summary of what it keeps, so only a pinned version binds it to its plan.
 const LOADS = [
   /^OWNER_BOOTSTRAP_INPUT="\$\(aws secretsmanager get-secret-value --secret-id <[^>]+> --version-id <[^>]+> --query SecretString --output text\)" node scripts\/owner-bootstrap\.ts /,
-  /^OWNER_BOOTSTRAP_INPUT="\$\(stty -echo; cat; stty echo\)" node scripts\/owner-bootstrap\.ts /,
   /^OWNER_BOOTSTRAP_INPUT="\$\(cat\)" node scripts\/owner-bootstrap\.ts recover\b/,
 ]
 
@@ -2561,7 +2561,7 @@ function runbookProblems(runbooks: Sources, surface: ScriptSurface): string[] {
       if (unit.includes('OWNER_BOOTSTRAP_INPUT') && /(?:^|[\s;|&(])read\b/.test(unit))
         found.push(`${path}: reads OWNER_BOOTSTRAP_INPUT with read`)
       if (/OWNER_BOOTSTRAP_INPUT=/.test(unit) && !LOADS.some(form => form.test(unit))) {
-        found.push(`${path}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`)
+        found.push(`${path}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`)
       }
       if (![RUNBOOK, WITHDRAWN].includes(path)) continue
       // The script's own words: after its path in a command, after a mode written alone, or a
@@ -2717,8 +2717,6 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
   it('passes planted runbooks and fails each slip', () => {
     const fromSecret =
       'OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --version-id <the version id> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>'
-    const pasted =
-      'OWNER_BOOTSTRAP_INPUT="$(stty -echo; cat; stty echo)" node scripts/owner-bootstrap.ts set-up --database <the database>'
     const typed = 'OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>'
     const good = new Map([
       [
@@ -2726,7 +2724,7 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
         [
           '# Setting up',
           'First the deploy pipeline paused, then install with `npm ci --ignore-scripts`; set `DEPLOY_ENV`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `NODE_EXTRA_CA_CERTS` and `OWNER_BOOTSTRAP_TLS_NAME`, and no `PGDATABASE`.',
-          `From the secret: \`${fromSecret}\`. Pasted: \`${pasted}\`. Never \`read\` or \`export\`: a one-line \`read\` takes only the first line.`,
+          `From the secret: \`${fromSecret}\`. Never \`read\` or \`export\`: a one-line \`read\` takes only the first line.`,
           'Run `set-up --database <the database>`, then with `--commit`; a wrong number: `correct-number`.',
           'Prepare: `aws configure get cli_history` prints nothing, and the terminal ready. Paste, then press Enter and Ctrl-D. Every line starts `owner-bootstrap:`. Afterwards the person on call resumes the deploy pipeline.',
           '```sh',
@@ -2755,7 +2753,7 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
       `${RUNBOOK}: names a flag the script doesn't have: --yes`,
     ])
     expect(slip(WITHDRAWN, 'owner-bootstrap.ts recover', 'owner-bootstrap.ts reset-pin')).toEqual([
-      `${WITHDRAWN}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`,
+      `${WITHDRAWN}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`,
       `${WITHDRAWN}: names a mode the script doesn't have: reset-pin`,
     ])
     expect(slip(RUNBOOK, '`OWNER_BOOTSTRAP_TLS_NAME`', '`OWNER_BOOTSTRAP_FILE`')).toEqual([
@@ -2773,17 +2771,25 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
     expect(
       slip(
         RUNBOOK,
-        pasted,
+        fromSecret,
         "OWNER_BOOTSTRAP_INPUT='{…}' node scripts/owner-bootstrap.ts set-up --database <the database>",
       ),
-    ).toEqual([`${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`])
+    ).toEqual([`${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`])
+    // Nothing is pasted, not even with echo off: only a pinned version binds a commit to its plan.
+    expect(
+      slip(
+        RUNBOOK,
+        'Never `read`',
+        'Pasted: `OWNER_BOOTSTRAP_INPUT="$(stty -echo; cat; stty echo)" node scripts/owner-bootstrap.ts set-up --database <the database>`. Never `read`',
+      ),
+    ).toEqual([`${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`])
     // The secret is loaded at the version the plan read, never its current value.
     expect(slip(RUNBOOK, ' --version-id <the version id>', '')).toEqual([
-      `${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`,
+      `${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`,
     ])
     // Echo on is for the recovery document alone.
     expect(slip(WITHDRAWN, 'owner-bootstrap.ts recover', 'owner-bootstrap.ts set-up')).toEqual([
-      `${WITHDRAWN}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`,
+      `${WITHDRAWN}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's two commands`,
     ])
     expect(slip(RUNBOOK, '`npm ci --ignore-scripts`', '`npm ci`')).toEqual([
       `${RUNBOOK}: doesn't install with npm ci --ignore-scripts`,
@@ -2963,9 +2969,9 @@ const PLANS = ['docs/BUILD-PLAN.md', 'docs/TECH-SPEC.md'] as const
 
 // What lets anyone but the DPO see what the bootstrap secret holds: a plan file without C0.12's
 // words, or with the old "readable only under the break-glass role"; a set-up runbook whose Who
-// does what doesn't give the secret to the DPO, in which the DPO doesn't check the number or paste
-// the document, or with a sentence in which the person on call checks, reads, views, opens, sees or
-// pastes the secret, the number or the document.
+// does what doesn't give the secret to the DPO, in which the DPO doesn't check the number or a run
+// doesn't wait for a secret that can't be read, or with a sentence in which the person on call
+// checks, reads, views, opens, sees or pastes the secret, the number or the document.
 function secretAccessProblems(sources: Sources): string[] {
   const found: string[] = []
   for (const path of PLANS) {
@@ -2980,8 +2986,8 @@ function secretAccessProblems(sources: Sources): string[] {
     found.push(`${RUNBOOK}: Who does what doesn't give the bootstrap secret to the DPO`)
   if (!runbook.includes('The DPO checks the number in the secret'))
     found.push(`${RUNBOOK}: the DPO doesn't check the number in the secret`)
-  if (!runbook.includes('the DPO pastes the document'))
-    found.push(`${RUNBOOK}: the DPO doesn't paste the document when the secret can't be read`)
+  if (!runbook.includes("If the secret can't be read, the run waits until it can"))
+    found.push(`${RUNBOOK}: doesn't make the run wait when the secret can't be read`)
   const sentences = runbook.split(/(?<=[.!?])\s+/)
   if (
     sentences.some(
@@ -3004,7 +3010,7 @@ describe('BSG-11 (R2DOCS-03): the DPO alone writes and checks the bootstrap secr
         '## Who does what',
         '- The DPO writes, checks and corrects the bootstrap secret in the AWS console. The person on call only loads it into a run.',
         '## Running the Owner bootstrap script',
-        "Only if the secret can't be read, the DPO pastes the document at the person on call's terminal.",
+        "If the secret can't be read, the run waits until it can.",
         '## Steps',
         '1. The person on call checks that Database Activity Streams are off: they would record the name and number.',
         '2. The DPO checks the number in the secret, which is still there.',
@@ -3035,8 +3041,14 @@ describe('BSG-11 (R2DOCS-03): the DPO alone writes and checks the bootstrap secr
       `${RUNBOOK}: the DPO doesn't check the number in the secret`,
       `${RUNBOOK}: has the person on call see what the secret holds`,
     ])
-    expect(slip(RUNBOOK, 'the DPO pastes the document', 'the person on call pastes the document')).toEqual([
-      `${RUNBOOK}: the DPO doesn't paste the document when the secret can't be read`,
+    expect(
+      slip(
+        RUNBOOK,
+        "If the secret can't be read, the run waits until it can.",
+        "If the secret can't be read, the person on call pastes the document.",
+      ),
+    ).toEqual([
+      `${RUNBOOK}: doesn't make the run wait when the secret can't be read`,
       `${RUNBOOK}: has the person on call see what the secret holds`,
     ])
     expect(
