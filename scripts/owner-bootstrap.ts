@@ -60,8 +60,13 @@ import {
 // The connection's role and bounds, as start-up options, so every transaction is bounded from its
 // first statement and a login that can't take hearth_owner fails to connect (42501). A timer set
 // later can't shorten one already running (BGR-06). The only place the script takes a role.
+// debug_print_plan is set off here too: any role may turn it on (user context), and a plan it logs
+// carries the bound name and number as Consts in its DETAIL, which no parameter length shortens and
+// csvlog or jsonlog write whatever the verbosity. A client's start-up value outranks the parameter
+// group's, ALTER DATABASE's and ALTER ROLE's, and the log check reads it back (target.ts).
+// debug_print_parse and debug_print_rewritten print trees from before planning, which hold Params.
 export const STARTUP_OPTIONS =
-  '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s'
+  '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s -c debug_print_plan=off'
 
 interface Environment extends TargetEnvironment {
   input: string | undefined

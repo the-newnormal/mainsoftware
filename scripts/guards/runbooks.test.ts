@@ -247,6 +247,8 @@ describe('RB-03 (C0.9 OD-21, PD-81): no runbook holds a number, an address, an a
       'Account 1234-5678-9012.',
       'Bucket s3://hearth-prod-recordings-acme/ and [the share](ftp://files.acme.example/dpo).',
       'Write [to the DPO](mailto:dpo) or [call](tel:0).',
+      // A Verify verification's SID (PRIVACY-04), built here so no file holds one.
+      `Verification ${['VE', '0a'.repeat(16)].join('')}.`,
     ].join('\n')
     expect(identifying('x.md', planted)).toEqual([
       'x.md:1: a phone number',
@@ -263,6 +265,7 @@ describe('RB-03 (C0.9 OD-21, PD-81): no runbook holds a number, an address, an a
       'x.md:13: a link by ftp:',
       'x.md:14: a link by mailto:',
       'x.md:14: a link by tel:',
+      'x.md:15: a Twilio SID',
     ])
   })
 

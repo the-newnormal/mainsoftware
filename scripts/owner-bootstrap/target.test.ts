@@ -44,6 +44,8 @@ const SAFE_LOGS = {
   log_parameter_max_length_on_error: '0',
   log_statement: 'none',
   log_error_verbosity: 'terse',
+  log_destination: 'stderr',
+  debug_print_plan: 'off',
 }
 
 function facts(overrides: Partial<ServerFacts> = {}): ServerFacts {
@@ -260,6 +262,19 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
       ],
       [{ 'auto_explain.log_min_duration': '250' }, 'auto_explain.log_min_duration'],
       [{ 'pgaudit.log_parameter': 'on' }, 'pgaudit.log_parameter'],
+      // csvlog and jsonlog write a message's DETAIL whatever log_error_verbosity says, so terse no
+      // longer drops a failed row's values or a logged plan's Consts (R2SCRIPT-01); a destination
+      // Postgres would read as csvlog is one, whatever its case, spacing or quotes.
+      [{ log_destination: 'csvlog' }, 'log_destination'],
+      [{ log_destination: 'stderr,csvlog' }, 'log_destination'],
+      [{ log_destination: 'stderr, CSVLOG' }, 'log_destination'],
+      [{ log_destination: 'stderr,"csvlog"' }, 'log_destination'],
+      [{ log_destination: 'jsonlog' }, 'log_destination'],
+      [{ log_destination: 'syslog,jsonlog' }, 'log_destination'],
+      [{ log_destination: '' }, 'log_destination'],
+      // A logged plan carries the bound name and number as Consts (R2DOCS-01): the start-up option
+      // sets it off, so anything else means the option didn't hold.
+      [{ debug_print_plan: 'on' }, 'debug_print_plan'],
     ]
     for (const [logs, setting] of unsafe) {
       const f = remoteFacts({ logs: { ...SAFE_LOGS, ...logs } })
@@ -281,6 +296,9 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
       { 'auto_explain.log_min_duration': '-1', 'auto_explain.log_parameter_max_length': '-1' },
       { 'auto_explain.log_min_duration': '-1' },
       { 'pgaudit.log_parameter': 'off' },
+      { log_destination: 'stderr' },
+      { log_destination: 'Stderr, syslog' },
+      { log_destination: '"stderr",eventlog' },
     ]
     for (const logs of safe) {
       expect(check(remoteFacts({ logs: { ...SAFE_LOGS, ...logs } }), { env: 'prod' }).problems).toEqual([])
@@ -317,9 +335,9 @@ describe('BSU-06 (PD-120 to PD-123; R3): the target, before and after connecting
 describe("BSU-09 (PD-121, PD-125): the client's settings", () => {
   const args: Arguments = { mode: 'set-up', database: 'owner_bootstrap_case_check', commit: false }
 
-  it('takes the role and the bounds as start-up options, and connects to --database whatever PGDATABASE says', () => {
+  it('takes the role, the bounds and debug_print_plan off as start-up options (R2SCRIPT-01), and connects to --database whatever PGDATABASE says', () => {
     expect(STARTUP_OPTIONS).toBe(
-      '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s',
+      '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s -c debug_print_plan=off',
     )
     const config = clientConfig(args, env(), 'test')
     expect(config).toMatchObject({

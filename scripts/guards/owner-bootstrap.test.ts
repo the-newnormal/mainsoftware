@@ -6,13 +6,15 @@
 // held on the real files, as RB-01 to RB-05 do. Code is read from TypeScript's syntax tree, so a
 // comment proves nothing (BSG-01 alone reads comments, on purpose):
 // - BSG-01 (R1, PD-120): no phone number, email address, AWS account id, ARN or Twilio SID
-//   (identifying.ts, which RB-03 shares) in the script, its tests, its check, its harness, its
-//   integration suite or its runbook, comments included. A finding names the file, line and kind,
-//   never the value. Allowed, by the whole run of digits once spaces, brackets, dots and dashes are
-//   gone: Ofcom's drama range (exactly 447700900 and three more, or that prefix followed by a
-//   pattern's three digits); in input.ts alone, the seed's twelve; the id of Kysely's migration lock
-//   as the installed Kysely writes it (S3, BSU-12); and a match inside a uuid, which is a uuid's
-//   groups, not a number.
+//   (identifying.ts, which RB-03 shares), nor a number written with 00 for the international prefix
+//   or nationally after a trunk 0 (two shapes of BSG-01's own, each of at least ten digits;
+//   TESTS-01), in the script, its tests, its check, its harness and its tests, its integration suite
+//   or its runbook, comments included. A finding names the file, line and kind, never the value. Allowed,
+//   by the whole run of digits once spaces, brackets, dots and dashes are gone, a leading 00 dropped
+//   and a trunk 0 read as the United Kingdom's 44: Ofcom's drama range (exactly 447700900 and three
+//   more, or that prefix followed by a pattern's three digits); in input.ts alone, the seed's
+//   twelve; the id of Kysely's migration lock as the installed Kysely writes it (S3, BSU-12); and a
+//   match inside a uuid, which is a uuid's groups, not a number.
 // - BSG-02 (PD-116, R7): parseArgs takes exactly --commit and --database, with positionals; only
 //   the entry names process.argv; only readEnvironment() in the entry reads process.env, and only
 //   the variables section 2.1 lists, by a name the guard can read, deleting OWNER_BOOTSTRAP_INPUT
@@ -24,7 +26,10 @@
 //   (apps/server/src/testing/owner-bootstrap.ts) names the script's path, to spawn it.
 // - BSG-03 (PD-131): no console, process.stdout or process.stderr outside output.ts; the printer
 //   takes only the Line union; process.stdout.isTTY is read once, in output.ts, and only for the
-//   founder_name line.
+//   founder_name line; and the entry's if (import.meta.main), before it calls main(), registers with
+//   process.on() a handler for each of uncaughtException and unhandledRejection that exits through
+//   report(outcomeOf(…)), and one for each of SIGINT, SIGTERM and SIGHUP that exits through
+//   report(interrupted(…)), so Node's own print of an error never runs (TESTS-02, R1).
 // - BSG-04 (R4, PD-125): outside steps.ts, db/migrations/, db/tests/, the server's testing/ and
 //   scripts/ folders, scripts/check-*.sh, test files and Markdown, nothing names
 //   bootstrap_transfer_clearance, hearth.break_glass, twilio_reclear or hearth.owner_bootstrap
@@ -59,18 +64,25 @@
 //   named in a runbook, no runbook reads the input with read or exports it, every command that
 //   loads it is one of section 2.1's three forms, first-owner-set-up.md installs with npm ci
 //   --ignore-scripts and never a bare npm ci, twilio-withdrawn.md links its "Running the Owner
-//   bootstrap script" section, first-owner-set-up.md pauses the deploy pipeline for every run and
-//   both runbooks resume it, every Ctrl-D comes with Enter, a printed line is named by what it
+//   bootstrap script" section, first-owner-set-up.md pauses the deploy pipeline for every run,
+//   before it installs the checkout (DOCS-02), and both runbooks resume it, every Ctrl-D comes with
+//   Enter, a printed line is named by what it
 //   prints (never by its kind in output.ts) and is said to start only with owner-bootstrap:, the
 //   set-up runbook checks the AWS CLI's history is off when it loads the input from the secret, and
 //   .env.example documents both of the script's variables, commented, with no values.
 // - BSG-10 (OD-32): the server image's .dockerignore admits nothing under scripts/.
+// - BSG-11 (R2DOCS-03): BUILD-PLAN's C0.12 row and TECH-SPEC item 71's C0.12 bullet give the
+//   bootstrap secret to the DPO alone, with the break-glass role only loading it into a run, and
+//   never say "readable only under the break-glass role"; the set-up runbook's Who does what says
+//   the same, the DPO checks the number in the secret and pastes the document when the secret can't
+//   be read, and the person on call never checks, reads, views, opens, sees or pastes the secret, the
+//   number or the document.
 import { existsSync, readFileSync } from 'node:fs'
 import { join, posix } from 'node:path'
 import { AI_COPY, NOTICE_TRANSFER_FACTS, TRANSFER_PROBLEMS, TransferFactsBody } from '@hearth/shared'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { ACCOUNT_ID, identifyingMatches, PHONE_NUMBER } from './identifying'
+import { ACCOUNT_ID, type IdentifyingMatch, identifyingMatches, PHONE_NUMBER } from './identifying'
 import { moduleImports, withoutComments } from './imports'
 import { readRepoFile, repoFiles, root } from './repo-files'
 import { workflowJobs } from './workflow'
@@ -83,6 +95,7 @@ const STEPS = `${DIR}steps.ts`
 const OUTPUT = `${DIR}output.ts`
 const CHECK = 'apps/server/scripts/check-owner-bootstrap.ts'
 const HARNESS = 'apps/server/src/testing/owner-bootstrap.ts'
+const HARNESS_TEST = 'apps/server/src/testing/owner-bootstrap.test.ts'
 const SUITE = 'apps/server/src/auth/first-owner.integration.test.ts'
 const RUNBOOK = 'docs/runbooks/first-owner-set-up.md'
 const WITHDRAWN = 'docs/runbooks/twilio-withdrawn.md'
@@ -93,7 +106,21 @@ const ENV_EXAMPLE = '.env.example'
 const DOCKERIGNORE = 'apps/server/Dockerfile.dockerignore'
 
 // The files the guard reads that this PR adds or changes, so a rename can't pass by reading nothing.
-const REQUIRED = [ENTRY, INPUT, TARGET, STEPS, OUTPUT, CHECK, HARNESS, SUITE, RUNBOOK, WITHDRAWN, WRITES, CI]
+const REQUIRED = [
+  ENTRY,
+  INPUT,
+  TARGET,
+  STEPS,
+  OUTPUT,
+  CHECK,
+  HARNESS,
+  HARNESS_TEST,
+  SUITE,
+  RUNBOOK,
+  WITHDRAWN,
+  WRITES,
+  CI,
+]
 
 const MODE_FUNCTIONS = ['setUp', 'recover', 'correctNumber'] as const
 
@@ -483,16 +510,44 @@ function scriptFile(files: ReadonlyMap<string, ts.SourceFile>, path: string): ts
 
 // --- BSG-01: no identifying values ----------------------------------------------------------------
 
-// The files BSG-01 reads: the script and its tests, the check, the harness, the integration suite
-// and the runbook.
+// The files BSG-01 reads: the script and its tests, the check, the harness and its tests, the
+// integration suite and the runbook.
 const readsIdentifying = (path: string): boolean =>
-  path === ENTRY || path.startsWith(DIR) || [CHECK, HARNESS, SUITE, RUNBOOK].includes(path)
+  path === ENTRY || path.startsWith(DIR) || [CHECK, HARNESS, HARNESS_TEST, SUITE, RUNBOOK].includes(path)
 
 // Ofcom's drama range, +44 7700 900000 to +44 7700 900999, by its digits.
 const FICTION_DIGITS = /^447700900\d{3}$/
 // The seed's twelve numbers (db/seed/tembusu.sql), +65 8000 0001 to +65 8000 0012.
 const SEED_DIGITS = /^65800000(?:0[1-9]|1[0-2])$/
 const UUID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+
+// BSG-01's own two shapes, beyond identifying.ts's list (which RB-03 shares as the design set it):
+// a number written with 00 for the international prefix, and one written nationally after a trunk
+// 0 (07700 900123, or (0)7700 900123), each standing alone (not inside a word, a uuid's later
+// group, a decimal, a time or a path) and a match only with at least ten digits once spaces,
+// hyphens, dots and brackets are gone, so a migration's number (0011) or a short run is none.
+const OWN_SHAPES: readonly RegExp[] = [
+  /(?<![\w.:/+-])00[ -]?[1-9][\d ().-]*\d(?!\w)/g,
+  /(?<![\w.:/+-])(?:\(0\) ?|0)[1-9][\d ().-]*\d(?!\w)/g,
+]
+
+// Every match of BSG-01's own shapes on a line, as a phone number.
+function ownMatches(line: string): IdentifyingMatch[] {
+  return OWN_SHAPES.flatMap(pattern =>
+    [...line.matchAll(pattern)].flatMap(match => {
+      const start = match.index ?? 0
+      return match[0].replace(/[ ().-]/g, '').length >= 10
+        ? [{ kind: PHONE_NUMBER, start, end: start + match[0].length, text: match[0] }]
+        : []
+    }),
+  )
+}
+
+// A run's digits as E.164 writes them: an international 00 dropped, and a trunk 0 read as the
+// United Kingdom's, the only country whose numbers BSG-01 allows any of, so the drama range passes
+// written either way (0044 7700 900123, 07700 900123) and every other number still fails.
+const internationalDigits = (digits: string): string =>
+  digits.startsWith('00') ? digits.slice(2) : digits.startsWith('0') ? `44${digits.slice(1)}` : digits
 
 // The id of Kysely's migration lock, as the installed Kysely writes it (postgres-adapter.js's
 // LOCK_ID), which S3 takes and BSU-12 pins.
@@ -510,14 +565,17 @@ function kyselyLockId(): string {
 }
 
 // Whether a phone-number or account-id match is one BSG-01 allows: the drama range, a seed number
-// (in input.ts alone) or Kysely's lock id, each by the whole run of digits around it.
+// (in input.ts alone) or Kysely's lock id, each by the whole run of digits around it, the range and
+// the seed read through internationalDigits() so that 00 or a trunk 0 doesn't hide them.
 function allowedNumber(line: string, start: number, end: number, seed: boolean, lockId: string): boolean {
   let from = start
   let to = end
   while (from > 0 && /\d/.test(line[from - 1] ?? '')) from -= 1
   while (to < line.length && /\d/.test(line[to] ?? '')) to += 1
-  const digits = line.slice(from, to).replace(/[+ ().-]/g, '')
-  if (FICTION_DIGITS.test(digits) || digits === lockId) return true
+  const run = line.slice(from, to).replace(/[+ ().-]/g, '')
+  if (run === lockId) return true
+  const digits = internationalDigits(run)
+  if (FICTION_DIGITS.test(digits)) return true
   if (seed && SEED_DIGITS.test(digits)) return true
   // The range written as a pattern: its prefix, then three digits.
   return digits === '447700900' && /^(?:\\d|\[0-9\])\{3\}/.test(line.slice(to))
@@ -528,7 +586,7 @@ function identifyingIn(path: string, text: string, lockId: string): string[] {
   const found: string[] = []
   const seed = path === INPUT
   for (const [index, line] of text.split('\n').entries()) {
-    const matches = identifyingMatches(line)
+    const matches = [...identifyingMatches(line), ...ownMatches(line)]
     const uuids = [...line.matchAll(UUID_SHAPE)].map(m => [m.index ?? 0, (m.index ?? 0) + m[0].length] as const)
     const allowed = matches
       .filter(
@@ -551,7 +609,7 @@ describe('BSG-01 (R1, PD-120, T22 item 70): no identifying value in the script, 
   // Built here, so this file holds no plausible live number.
   const real = (...parts: string[]) => parts.join(' ')
 
-  it("allows the drama range in each grouping, the seed in input.ts, Kysely's lock and a uuid, and finds the rest", () => {
+  it("allows the drama range in each grouping and form, the seed in input.ts, Kysely's lock and a uuid, and finds the rest", () => {
     const planted = [
       'Call +44 7700 900123, +447700900123, +44-7700-900-123, +44.7700.900.123 or +44 (7700) 900123.',
       'Digits 447700900123, and the range +44 7700 900000 to +44 7700 900999.',
@@ -568,6 +626,15 @@ describe('BSG-01 (R1, PD-120, T22 item 70): no identifying value in the script, 
       `Service ${['VA', 'a'.repeat(32)].join('')}.`,
       `Another run: ${lockId}0.`,
       'Account 1234-5678-9012.',
+      // PRIVACY-04: a verification's SID, built here so no file holds one.
+      `Verification ${['VE', '0a'.repeat(16)].join('')}.`,
+      // TESTS-01: BSG-01's own shapes, the range written nationally or with 00, and what isn't a number.
+      'Nationally 07700 900123, 07700900123, (07700) 900123 or (0)7700 900123.',
+      'With 00: 0044 7700 900123, 00447700900123, 00 44 7700 900123 or 0044-7700-900-123.',
+      `Out of range, with 00: ${real('0044', '7700', '901123')}.`,
+      `Out of range, nationally: ${real('07700', '901123')}.`,
+      "const id = '00123456-7890-4abc-8def-0123456789ab'",
+      'Migrations 0011 and 0012_request_cases.sql, at 09:00:00 on 2026-10-27, a ratio of 0.25.',
     ].join('\n')
     expect(identifyingIn(`${DIR}steps.test.ts`, planted, lockId)).toEqual([
       `${DIR}steps.test.ts:6: ${ACCOUNT_ID}`,
@@ -580,7 +647,12 @@ describe('BSG-01 (R1, PD-120, T22 item 70): no identifying value in the script, 
       `${DIR}steps.test.ts:13: a Twilio SID`,
       `${DIR}steps.test.ts:14: ${ACCOUNT_ID}`,
       `${DIR}steps.test.ts:15: ${ACCOUNT_ID}`,
+      `${DIR}steps.test.ts:16: a Twilio SID`,
+      `${DIR}steps.test.ts:19: ${PHONE_NUMBER}`,
+      `${DIR}steps.test.ts:20: ${PHONE_NUMBER}`,
     ])
+    // The uuid passes as a uuid, not because the shapes miss it: its first groups read as a 00 run.
+    expect(ownMatches("const id = '00123456-7890-4abc-8def-0123456789ab'")).not.toEqual([])
     // The seed's twelve only in input.ts, and only those twelve.
     const seed = [real('+65', '8000', '0001'), real('+65', '8000', '0012'), real('+65', '8000', '0013')]
     expect(identifyingIn(INPUT, seed.join('\n'), lockId)).toEqual([`${INPUT}:3: ${PHONE_NUMBER}`])
@@ -826,14 +898,14 @@ const harnessNamesScript = (text: string): boolean =>
 // --- Planted script: the shape the real one has, small -------------------------------------------
 
 const START_OPTIONS =
-  '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s'
+  '-c role=hearth_owner -c transaction_timeout=30s -c lock_timeout=2s -c idle_in_transaction_session_timeout=5s -c debug_print_plan=off'
 
 const PLANTED: Record<string, string> = {
   [ENTRY]: [
     "import { randomUUID } from 'node:crypto'",
     "import pg from 'pg'",
     "import { parseArguments, parseDocument } from './owner-bootstrap/input.ts'",
-    "import { printer, processSink } from './owner-bootstrap/output.ts'",
+    "import { interrupted, outcomeOf, printer, processSink, report } from './owner-bootstrap/output.ts'",
     "import { setUp } from './owner-bootstrap/steps.ts'",
     "import { AGENT_MARKERS, environmentProblems } from './owner-bootstrap/target.ts'",
     '',
@@ -861,9 +933,20 @@ const PLANTED: Record<string, string> = {
     '  const client = await open(args.database)',
     '  await setUp(client, doc, randomUUID())',
     "  printer(processSink)({ kind: 'kept_nothing' })",
+    '  return 0',
     '}',
     '',
-    'await main()',
+    'if (import.meta.main) {',
+    '  const phase = { committing: undefined }',
+    '  const print = printer(processSink)',
+    '  const fail = (error: unknown) => process.exit(report(outcomeOf(error, phase), print))',
+    "  process.on('uncaughtException', fail)",
+    "  process.on('unhandledRejection', fail)",
+    "  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {",
+    '    process.on(signal, () => process.exit(report(interrupted(phase), print)))',
+    '  }',
+    '  process.exitCode = await main()',
+    '}',
   ].join('\n'),
   [INPUT]: [
     "import { parseArgs } from 'node:util'",
@@ -930,6 +1013,14 @@ const PLANTED: Record<string, string> = {
     '  }',
     '}',
     'export const isDatabaseError = (e: unknown) => e instanceof DatabaseError',
+    'export interface Outcome { line: Line; exit: number }',
+    'export interface Phase { committing: string | undefined }',
+    "export const outcomeOf = (error: unknown, phase: Phase): Outcome => ({ line: { kind: 'kept_nothing' }, exit: isDatabaseError(error) && phase.committing ? 4 : 3 })",
+    "export const interrupted = (phase: Phase): Outcome => ({ line: { kind: 'kept_nothing' }, exit: phase.committing ? 4 : 3 })",
+    'export function report(outcome: Outcome, print: Print): number {',
+    '  print(outcome.line)',
+    '  return outcome.exit',
+    '}',
   ].join('\n'),
   [STEPS]: [
     "import { FLAGS, PROVIDERS, PURPOSE_KEYS } from '@hearth/shared'",
@@ -1304,6 +1395,95 @@ function printerProblems(files: ReadonlyMap<string, ts.SourceFile>): string[] {
   return found
 }
 
+// The entry's process-level handlers (TESTS-02, R1): Node's own print of an uncaught error would
+// show a DatabaseError's detail, and a stop would leave no line saying whether anything was kept.
+const ERROR_EVENTS = ['uncaughtException', 'unhandledRejection'] as const
+const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const
+
+// Whether an expression is import.meta.main.
+function isImportMetaMain(expr: ts.Expression): boolean {
+  const e = unwrap(expr)
+  return (
+    ts.isPropertyAccessExpression(e) &&
+    e.name.text === 'main' &&
+    ts.isMetaProperty(e.expression) &&
+    e.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+    e.expression.name.text === 'meta'
+  )
+}
+
+// The function a handler argument is: written in place, a const holding one, or a function the file
+// declares at its top level.
+function handlerOf(arg: ts.Expression): ts.Node | undefined {
+  const e = unwrap(arg)
+  if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return e
+  if (!ts.isIdentifier(e)) return undefined
+  const binding = bindingOf(e)
+  const init = binding?.kind === 'value' ? unwrap(binding.init) : undefined
+  if (init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) return init
+  return topFunction(e.getSourceFile(), e.text)
+}
+
+// Whether a handler exits with what report() returns for the outcome a maker of output.ts gives:
+// process.exit(report(<maker>(…), …)).
+function exitsThrough(handler: ts.Node, maker: string): boolean {
+  const named = (node: ts.Expression | undefined, name: string): node is ts.CallExpression => {
+    const call = node === undefined ? undefined : unwrap(node)
+    return (
+      call !== undefined &&
+      ts.isCallExpression(call) &&
+      ts.isIdentifier(unwrap(call.expression)) &&
+      calleeName(call) === name
+    )
+  }
+  return nodesOf(handler).some(node => {
+    if (!ts.isCallExpression(node) || !isProcessMember(unwrap(node.expression), 'exit')) return false
+    const report = node.arguments[0] === undefined ? undefined : unwrap(node.arguments[0])
+    return named(report, 'report') && named(report.arguments[0], maker)
+  })
+}
+
+// What is wrong with the entry's handlers: no if (import.meta.main), or, run by it directly and
+// before it calls main(), no process.on() for each of uncaughtException and unhandledRejection
+// whose handler exits through report(outcomeOf(…)), or for each of SIGINT, SIGTERM and SIGHUP
+// whose handler exits through report(interrupted(…)). An event is read as stringsOf() reads it, so
+// a loop over a literal list counts for each of its signals.
+function handlerProblems(files: ReadonlyMap<string, ts.SourceFile>): string[] {
+  const entry = files.get(ENTRY)
+  if (entry === undefined) return [`${ENTRY} is missing`]
+  const block = entry.statements.find((s): s is ts.IfStatement => ts.isIfStatement(s) && isImportMetaMain(s.expression))
+  if (block === undefined) return [`${ENTRY}: no if (import.meta.main) at its top level`]
+  // Only what the block itself runs: a call inside a function it holds runs only if that is called.
+  const direct = (node: ts.Node): boolean => {
+    for (let up = node.parent; up !== undefined && up !== block; up = up.parent) if (isFunctionLike(up)) return false
+    return true
+  }
+  const calls = nodesOf(block.thenStatement).filter(ts.isCallExpression).filter(direct)
+  const main = calls.find(call => ts.isIdentifier(unwrap(call.expression)) && calleeName(call) === 'main')
+  if (main === undefined) return [`${ENTRY}: if (import.meta.main) never calls main()`]
+  const handlers = new Map<string, ts.Node[]>()
+  for (const call of calls) {
+    const callee = unwrap(call.expression)
+    if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== 'on') continue
+    if (!ts.isIdentifier(callee.expression) || callee.expression.text !== 'process') continue
+    if (call.end > main.getStart()) continue
+    const [event, handler] = call.arguments
+    const fn = handler === undefined ? undefined : handlerOf(handler)
+    if (event === undefined || fn === undefined) continue
+    for (const name of stringsOf(event, files) ?? []) handlers.set(name, [...(handlers.get(name) ?? []), fn])
+  }
+  const found: string[] = []
+  const want = [
+    ...ERROR_EVENTS.map(event => [event, 'outcomeOf'] as const),
+    ...SIGNALS.map(event => [event, 'interrupted'] as const),
+  ]
+  for (const [event, maker] of want) {
+    if (!(handlers.get(event) ?? []).some(fn => exitsThrough(fn, maker)))
+      found.push(`${ENTRY}: no ${event} handler, before main(), that exits through report(${maker}(…))`)
+  }
+  return found
+}
+
 describe('BSG-03 (PD-131): one printer, which takes only a Line', () => {
   it('passes the planted script and fails each other way out', () => {
     const check = (sources: Sources) => printerProblems(parsedScript(sources))
@@ -1350,8 +1530,65 @@ describe('BSG-03 (PD-131): one printer, which takes only a Line', () => {
     ])
   })
 
-  it('the real script prints only through output.ts', () => {
-    expect(printerProblems(parsedScript(realSources()))).toEqual([])
+  it('the entry hands every uncaught error and every stop to output.ts, on planted text (TESTS-02)', () => {
+    const check = (sources: Sources) => handlerProblems(parsedScript(sources))
+    expect(check(planted())).toEqual([])
+    const none = (event: string, maker: string) =>
+      `${ENTRY}: no ${event} handler, before main(), that exits through report(${maker}(…))`
+    // Each handler missing.
+    expect(check(plant(ENTRY, "  process.on('uncaughtException', fail)\n", ''))).toEqual([
+      none('uncaughtException', 'outcomeOf'),
+    ])
+    expect(check(plant(ENTRY, "  process.on('unhandledRejection', fail)\n", ''))).toEqual([
+      none('unhandledRejection', 'outcomeOf'),
+    ])
+    // A signal missing from the loop, and the loop gone.
+    const signals = "['SIGINT', 'SIGTERM', 'SIGHUP'] as const"
+    expect(check(plant(ENTRY, signals, "['SIGINT', 'SIGTERM'] as const"))).toEqual([none('SIGHUP', 'interrupted')])
+    expect(
+      check(plant(ENTRY, '    process.on(signal, () => process.exit(report(interrupted(phase), print)))\n', '')),
+    ).toEqual(SIGNALS.map(signal => none(signal, 'interrupted')))
+    // A signal handler that reports the stop as an error.
+    expect(check(plant(ENTRY, 'report(interrupted(phase), print)', 'report(outcomeOf(signal, phase), print)'))).toEqual(
+      SIGNALS.map(signal => none(signal, 'interrupted')),
+    )
+    // An error handler that reports as a stop, or reports without exiting.
+    expect(check(plant(ENTRY, 'report(outcomeOf(error, phase), print)', 'report(interrupted(phase), print)'))).toEqual(
+      ERROR_EVENTS.map(event => none(event, 'outcomeOf')),
+    )
+    expect(
+      check(
+        plant(
+          ENTRY,
+          'process.exit(report(outcomeOf(error, phase), print))',
+          '{\n    report(outcomeOf(error, phase), print)\n  }',
+        ),
+      ),
+    ).toEqual(ERROR_EVENTS.map(event => none(event, 'outcomeOf')))
+    // Registered once main() has run, or outside if (import.meta.main).
+    const run = '  process.exitCode = await main()\n'
+    const late = plantAll(ENTRY, [
+      [run, ''],
+      ['  const fail =', `${run}  const fail =`],
+    ])
+    expect(check(late)).toEqual([
+      ...ERROR_EVENTS.map(event => none(event, 'outcomeOf')),
+      ...SIGNALS.map(signal => none(signal, 'interrupted')),
+    ])
+    expect(check(plant(ENTRY, 'if (import.meta.main) {', 'if (import.meta.url) {'))).toEqual([
+      `${ENTRY}: no if (import.meta.main) at its top level`,
+    ])
+    expect(check(plant(ENTRY, run, ''))).toEqual([`${ENTRY}: if (import.meta.main) never calls main()`])
+    // Registered only inside a function the block never calls.
+    const wrapped = plantAll(ENTRY, [
+      ["  process.on('uncaughtException', fail)\n", "  const install = () => process.on('uncaughtException', fail)\n"],
+    ])
+    expect(check(wrapped)).toEqual([none('uncaughtException', 'outcomeOf')])
+  })
+
+  it('the real script prints only through output.ts, and its entry hands every error and stop to it', () => {
+    const files = parsedScript(realSources())
+    expect([...printerProblems(files), ...handlerProblems(files)]).toEqual([])
   })
 })
 
@@ -2310,8 +2547,8 @@ function surfaceOf(files: ReadonlyMap<string, ts.SourceFile>): ScriptSurface {
 
 // What is wrong with the runbooks: a mode, flag or variable the script doesn't have; a mode no
 // runbook names; the input read with read, exported, or loaded any way but section 2.1's three; a
-// bare npm ci; no link to the section that prepares a run; the deploy pipeline not paused or not
-// resumed; Ctrl-D without Enter; a printed line named by its kind, or said to start with anything
+// bare npm ci; no link to the section that prepares a run; the deploy pipeline not paused, paused
+// only after the checkout is installed, or not resumed; Ctrl-D without Enter; a printed line named by its kind, or said to start with anything
 // but owner-bootstrap:; and the input loaded from the secret without checking the AWS CLI's history.
 function runbookProblems(runbooks: Sources, surface: ScriptSurface): string[] {
   const found: string[] = []
@@ -2363,6 +2600,12 @@ function runbookProblems(runbooks: Sources, surface: ScriptSurface): string[] {
   // migration lock (PD-124), and resumed afterwards.
   if (!/\bdeploy pipeline paused\b/.test(setUp))
     found.push(`${RUNBOOK}: doesn't pause the deploy pipeline for every run`)
+  // It is paused before the checkout is installed, so no deploy migrates the database past the
+  // commit checked out (DOCS-02).
+  const paused = setUp.search(/\bdeploy pipeline paused\b/)
+  const installed = setUp.indexOf('npm ci --ignore-scripts')
+  if (paused !== -1 && installed !== -1 && installed < paused)
+    found.push(`${RUNBOOK}: installs the checkout before the deploy pipeline is paused`)
   for (const path of [RUNBOOK, WITHDRAWN]) {
     const text = runbooks.get(path) ?? ''
     if (!/\bresumes the deploy pipeline\b/.test(text)) found.push(`${path}: doesn't resume the deploy pipeline`)
@@ -2481,10 +2724,10 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
         RUNBOOK,
         [
           '# Setting up',
-          'Install with `npm ci --ignore-scripts`; set `DEPLOY_ENV`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `NODE_EXTRA_CA_CERTS` and `OWNER_BOOTSTRAP_TLS_NAME`, and no `PGDATABASE`.',
+          'First the deploy pipeline paused, then install with `npm ci --ignore-scripts`; set `DEPLOY_ENV`, `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `NODE_EXTRA_CA_CERTS` and `OWNER_BOOTSTRAP_TLS_NAME`, and no `PGDATABASE`.',
           `From the secret: \`${fromSecret}\`. Pasted: \`${pasted}\`. Never \`read\` or \`export\`: a one-line \`read\` takes only the first line.`,
           'Run `set-up --database <the database>`, then with `--commit`; a wrong number: `correct-number`.',
-          'Prepare: `aws configure get cli_history` prints nothing, and the deploy pipeline paused. Paste, then press Enter and Ctrl-D. Every line starts `owner-bootstrap:`. Afterwards the person on call resumes the deploy pipeline.',
+          'Prepare: `aws configure get cli_history` prints nothing, and the terminal ready. Paste, then press Enter and Ctrl-D. Every line starts `owner-bootstrap:`. Afterwards the person on call resumes the deploy pipeline.',
           '```sh',
           typed,
           '```',
@@ -2545,9 +2788,17 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
       slip(WITHDRAWN, '(first-owner-set-up.md#running-the-owner-bootstrap-script)', '(first-owner-set-up.md)'),
     ).toEqual([`${WITHDRAWN}: doesn't link "Running the Owner bootstrap script"`])
     // DOCS-01: the pipeline is paused for every mode and resumed after.
-    expect(slip(RUNBOOK, 'and the deploy pipeline paused', 'and the terminal ready')).toEqual([
+    expect(slip(RUNBOOK, 'First the deploy pipeline paused, then install', 'Install')).toEqual([
       `${RUNBOOK}: doesn't pause the deploy pipeline for every run`,
     ])
+    // DOCS-02: and paused before the checkout is installed.
+    expect(
+      slip(
+        RUNBOOK,
+        'First the deploy pipeline paused, then install with `npm ci --ignore-scripts`;',
+        'Install with `npm ci --ignore-scripts`, then the deploy pipeline paused;',
+      ),
+    ).toEqual([`${RUNBOOK}: installs the checkout before the deploy pipeline is paused`])
     expect(slip(WITHDRAWN, 'resumes the deploy pipeline', 'records the use')).toEqual([
       `${WITHDRAWN}: doesn't resume the deploy pipeline`,
     ])
@@ -2694,5 +2945,101 @@ describe('BSG-10 (OD-32, PD-114): the server image never carries the script', ()
 
   it('the real .dockerignore', () => {
     expect(imageProblems(readRepoFile(DOCKERIGNORE))).toEqual([])
+  })
+})
+
+// --- BSG-11: who reaches the bootstrap secret -----------------------------------------------------
+
+// C0.12's words in both plan files, so only the DPO ever sees the founder's whole number
+// (R2DOCS-03).
+const SECRET_ACCESS =
+  'written, checked and corrected in the AWS console by the DPO alone, through access to that one secret and nothing else, and read under the break-glass role only to load it into a run'
+const PLANS = ['docs/BUILD-PLAN.md', 'docs/TECH-SPEC.md'] as const
+
+// What lets anyone but the DPO see what the bootstrap secret holds: a plan file without C0.12's
+// words, or with the old "readable only under the break-glass role"; a set-up runbook whose Who
+// does what doesn't give the secret to the DPO, in which the DPO doesn't check the number or paste
+// the document, or with a sentence in which the person on call checks, reads, views, opens, sees or
+// pastes the secret, the number or the document.
+function secretAccessProblems(sources: Sources): string[] {
+  const found: string[] = []
+  for (const path of PLANS) {
+    const text = sources.get(path) ?? ''
+    if (!text.includes(SECRET_ACCESS)) found.push(`${path}: C0.12 doesn't give the bootstrap secret to the DPO alone`)
+    if (text.includes('readable only under the break-glass role'))
+      found.push(`${path}: C0.12 makes the bootstrap secret readable only under the break-glass role`)
+  }
+  const runbook = sources.get(RUNBOOK) ?? ''
+  const who = runbook.split(/^## /m).find(section => section.startsWith('Who does what')) ?? ''
+  if (!who.includes('The DPO writes, checks and corrects the bootstrap secret'))
+    found.push(`${RUNBOOK}: Who does what doesn't give the bootstrap secret to the DPO`)
+  if (!runbook.includes('The DPO checks the number in the secret'))
+    found.push(`${RUNBOOK}: the DPO doesn't check the number in the secret`)
+  if (!runbook.includes('the DPO pastes the document'))
+    found.push(`${RUNBOOK}: the DPO doesn't paste the document when the secret can't be read`)
+  const sentences = runbook.split(/(?<=[.!?])\s+/)
+  if (
+    sentences.some(
+      sentence =>
+        /\bperson on call (?:checks|reads|views|opens|sees|pastes)\b/.test(sentence) &&
+        /\b(?:secret|the number|whole number|the document)\b/.test(sentence),
+    )
+  )
+    found.push(`${RUNBOOK}: has the person on call see what the secret holds`)
+  return found
+}
+
+describe('BSG-11 (R2DOCS-03): the DPO alone writes and checks the bootstrap secret, and the plan says so', () => {
+  const good = new Map([
+    ['docs/BUILD-PLAN.md', `| C0.12 | … one secret per environment, ${SECRET_ACCESS} (never by a service) … |`],
+    ['docs/TECH-SPEC.md', `- **C0.12:** one bootstrap secret per environment, ${SECRET_ACCESS} (never by a service);`],
+    [
+      RUNBOOK,
+      [
+        '## Who does what',
+        '- The DPO writes, checks and corrects the bootstrap secret in the AWS console. The person on call only loads it into a run.',
+        '## Running the Owner bootstrap script',
+        "Only if the secret can't be read, the DPO pastes the document at the person on call's terminal.",
+        '## Steps',
+        '1. The person on call checks that Database Activity Streams are off: they would record the name and number.',
+        '2. The DPO checks the number in the secret, which is still there.',
+      ].join('\n'),
+    ],
+  ])
+  const slip = (path: string, from: string, to: string) => {
+    const sources = new Map(good)
+    const text = sources.get(path) ?? ''
+    if (!text.includes(from)) throw new Error(`the planted ${path} has no ${from}`)
+    sources.set(path, text.replace(from, to))
+    return secretAccessProblems(sources)
+  }
+
+  it('passes the planted docs and fails each slip', () => {
+    expect(secretAccessProblems(good)).toEqual([])
+    expect(slip('docs/BUILD-PLAN.md', SECRET_ACCESS, 'readable only under the break-glass role')).toEqual([
+      "docs/BUILD-PLAN.md: C0.12 doesn't give the bootstrap secret to the DPO alone",
+      'docs/BUILD-PLAN.md: C0.12 makes the bootstrap secret readable only under the break-glass role',
+    ])
+    expect(slip('docs/TECH-SPEC.md', 'by the DPO alone', 'by the person on call')).toEqual([
+      "docs/TECH-SPEC.md: C0.12 doesn't give the bootstrap secret to the DPO alone",
+    ])
+    expect(slip(RUNBOOK, 'The DPO writes, checks and corrects', 'The DPO writes')).toEqual([
+      `${RUNBOOK}: Who does what doesn't give the bootstrap secret to the DPO`,
+    ])
+    expect(slip(RUNBOOK, '2. The DPO checks the number', '2. The person on call checks the number')).toEqual([
+      `${RUNBOOK}: the DPO doesn't check the number in the secret`,
+      `${RUNBOOK}: has the person on call see what the secret holds`,
+    ])
+    expect(slip(RUNBOOK, 'the DPO pastes the document', 'the person on call pastes the document')).toEqual([
+      `${RUNBOOK}: the DPO doesn't paste the document when the secret can't be read`,
+      `${RUNBOOK}: has the person on call see what the secret holds`,
+    ])
+    expect(
+      slip(RUNBOOK, 'only loads it into a run.', 'only loads it into a run. The person on call opens the secret.'),
+    ).toEqual([`${RUNBOOK}: has the person on call see what the secret holds`])
+  })
+
+  it('the real plan, spec and runbook', () => {
+    expect(secretAccessProblems(realSources())).toEqual([])
   })
 })

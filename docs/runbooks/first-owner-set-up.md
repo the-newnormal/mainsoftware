@@ -10,6 +10,7 @@ The Owner bootstrap script's set-up mode creates the organisation, Hearth's own 
 ## Who does what
 
 - The DPO (the founder) decides the providers' facts and the reason, writes their own name and number into the input, is there in person or by video while the script runs, and signs in straight after.
+- The DPO writes, checks and corrects the bootstrap secret in the AWS console, through C0.12's access to that one secret and nothing else, so nobody else sees the founder's whole number. The person on call only loads it into a run, as [Running the Owner bootstrap script](#running-the-owner-bootstrap-script) says, and never opens it in the console.
 - The person on call for production runs the script under C0.11's logged break-glass role.
 - A second person reviews the use, in C0.19's quarterly review of break-glass uses.
 
@@ -18,7 +19,7 @@ The Owner bootstrap script's set-up mode creates the organisation, Hearth's own 
 1. The environment exists, with its break-glass role, the bootstrap's own database login and the database's environment marker (C0.11, C0.12), and the deploy's migrate step has run against this database.
 2. Twilio Verify's and AWS's facts are complete and confirmed in writing: Twilio's log retention and the countries it stores in above all (TECH-SPEC T20 item 11), and AWS's services naming hosting and CloudWatch with RUM (TECH-SPEC T22 item 3). Each review date is after today.
 3. The founder's number's country is allowed in Twilio's Geo Permissions (TECH-SPEC T20 item 11).
-4. The DPO writes the set-up document into this environment's bootstrap secret in Secrets Manager, in the AWS console, never on a command line (the shell's history and the process list would keep the founder's name and number). Its `environment` names this environment, and its reason is one sentence that names roles, never people: what this is, which role decided, and where the records are. Its shape (TECH-SPEC T22 item 64), with every fact as Transfers names it:
+4. The DPO writes the set-up document into this environment's bootstrap secret in Secrets Manager, in the AWS console with their own access to that secret (C0.12), never on a command line (the shell's history and the process list would keep the founder's name and number). Its `environment` names this environment, and its reason is one sentence that names roles, never people: what this is, which role decided, and where the records are. Its shape (TECH-SPEC T22 item 64), with every fact as Transfers names it:
 
    ```
    {
@@ -42,7 +43,8 @@ The Owner bootstrap script's set-up mode creates the organisation, Hearth's own 
 
 Every mode is prepared the same way. The recovery runbook ([Twilio withdrawn, and no DPO signed in](twilio-withdrawn.md)) sends you here too.
 
-- A fresh checkout of the commit the database was migrated by (the script refuses any other), installed with `npm ci --ignore-scripts` before the break-glass session opens.
+- First, before the checkout: the deploy pipeline paused, so no deploy migrates the database past the commit you check out. It stays paused until the last command has finished, and is resumed then, whether or not it committed: the recovery mode takes no migration lock, and a migration applied in between makes the next command refuse.
+- Then a fresh checkout of the commit the database was migrated by (the script refuses any other), installed with `npm ci --ignore-scripts` before the break-glass session opens.
 - Node 24.12 or later (`node --version`).
 - A terminal outside any Claude Code session, and outside any folder another tool syncs.
 - `DEPLOY_ENV` set to the environment: `nonprod` or `prod`.
@@ -53,7 +55,6 @@ Every mode is prepared the same way. The recovery runbook ([Twilio withdrawn, an
 - `NODE_EXTRA_CA_CERTS` pointing at RDS's CA bundle.
 - The input set for each command on its own, never kept in the shell.
 - For `set-up` and `correct-number`, which load the input from the secret, the AWS CLI keeps no history for the profile in use: `aws configure get cli_history` prints nothing or `disabled`. If it prints `enabled`, run `aws configure set cli_history disabled` first: the CLI's history would keep the secret's value, the founder's name and number, in `~/.aws/cli/history`. Never add the debug option (`aws --debug`): it prints the secret's value.
-- The deploy pipeline paused from before the plan until the last command has finished, and resumed then, whether or not it committed: the recovery mode takes no migration lock, and a migration applied in between makes the next command refuse.
 
 Load the input from the secret, for `set-up` and `correct-number`:
 
@@ -61,7 +62,7 @@ Load the input from the secret, for `set-up` and `correct-number`:
 OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>
 ```
 
-Only if the secret can't be read, paste the document with echo off: run the command below, paste the document over several lines, then press Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). After a Ctrl-C, type `stty echo` to see your typing again.
+Only if the secret can't be read, the DPO pastes the document at the person on call's terminal, with echo off, so nobody else holds the founder's whole number: the person on call runs the command below, and the DPO pastes the document over several lines, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). Lay the document out with one fact to a line, each line under 1,000 characters: a terminal cuts a longer line without showing it (at 1,024 bytes on macOS), and the script then answers that the input is not valid JSON. If the DPO is there only by video, the run waits until the secret can be read. After a Ctrl-C, type `stty echo` to see your typing again.
 
 ```
 OWNER_BOOTSTRAP_INPUT="$(stty -echo; cat; stty echo)" node scripts/owner-bootstrap.ts <mode> --database <the database>
@@ -96,7 +97,7 @@ It exits 2, with a line `owner-bootstrap: could not connect: …`. It never name
 | this login may not act as hearth_owner | nothing: this is the wrong login. Stop and tell the owner |
 | this is a read-only server | `PGHOST` set to the writer endpoint |
 
-A refusal that names the input or the environment comes before it connects. One that names the target (the checkout, the server, the database, its marker, its migrations, its settings or the login) is followed by the line `nothing was written`. Each exits 2, writes nothing, and says what to fix in words: the DPO fixes the secret, or the person on call fixes the environment, and the plan runs again.
+A refusal that names the input or the environment comes before it connects. One that names the target (the checkout, the server, the database, its marker, its migrations, its settings or the login) is followed by the line `nothing was written`. Each exits 2, writes nothing, and says what to fix in words: the DPO fixes the secret in the AWS console, or the person on call fixes the environment, and the plan runs again.
 
 ## Steps
 
@@ -108,7 +109,7 @@ A refusal that names the input or the environment comes before it connects. One 
    - the number's country code and last two digits, against their phone (the script never prints the whole number);
    - both review dates.
 4. The person on call checks the plan's first line, `set-up (plan) on database …`: the database, `DEPLOY_ENV`, the input's environment (`input for …`), the marker and the newest migration.
-5. If the plan refused, its line names the field or the setting, never its value. The DPO fixes the secret, and the person on call runs the plan again.
+5. If the plan refused, its line names the field or the setting, never its value. The DPO fixes the secret in the AWS console, and the person on call runs the plan again.
 6. The person on call runs the same command with `--commit`.
 7. The person on call records the ids the `committed: …` line prints in the break-glass log entry (after an exit 4, see [If a run stops before it says "committed"](#if-a-run-stops-before-it-says-committed)). The DPO keeps their own person id in their records: the recovery mode needs it, and the recovery runbook asks the DPO for it, or sends the person on call to that entry.
 8. Within five minutes, the founder opens Hearth on their own phone, asks for a code once, enters it and sets their PIN (TECH-SPEC T20 item 12). Before the first version of the notice, only the DPO gets a code.
@@ -123,7 +124,7 @@ A refusal that names the input or the environment comes before it connects. One 
 ### If the founder's code doesn't arrive within two minutes
 
 1. The founder doesn't ask again yet: three requests in 10 minutes is the limit (TECH-SPEC T14 item 5).
-2. The DPO checks the number in the secret, which is still there.
+2. The DPO checks the number in the secret, which is still there, in the AWS console with their own access: never the person on call, so nobody else sees the whole number.
 3. If the number is wrong and the founder has never signed in, the DPO writes the correction document into the same secret as a new version, in the AWS console as in Before you start, step 4: its `environment`, the right `number` and a `reason`. The set-up document stays in the previous version, and goes when the secret is deleted.
 4. The person on call loads it from the secret, exactly as for the set-up, never typing the number, and runs `correct-number --database <the database>`: the plan, which prints the new number's country code and last two digits for the founder to check, then the same command with `--commit`. A retry after a lost connection that answers "already that one" means it committed.
 5. The founder asks for a code once more.

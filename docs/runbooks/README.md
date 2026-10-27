@@ -11,7 +11,7 @@ Every runbook but this one has the same sections, in this order: *Use this when*
 - This repository is public, so the runbooks name roles only: the DPO, an Owner, an Admin, the person on call for production (who holds C0.11's logged break-glass role) and the second reviewer. Never a person's name, a phone number, an email address, a postal address, an account or a Console user.
 - Nothing here holds anyone's data. Facts are read at run time, from Secrets Manager or from the DPO's own records.
 - Any output that holds people's data goes only under `local-data/` at the repository root, which git ignores, and is never committed.
-- Production steps need C0.11's logged break-glass role, and each use is reviewed by a second person every quarter (C0.19). They are never a coding agent's: coding agents never connect to production.
+- Production steps need C0.11's logged break-glass role, and each use is reviewed by a second person every quarter (C0.19); the one exception is the DPO's own writing and checking of the bootstrap secret, through C0.12's access to that one secret alone ([Setting up the organisation and its first Owner](first-owner-set-up.md)). No production step is ever a coding agent's: coding agents never connect to production.
 - Nothing calls Twilio from CI. Tests use the fake provider, with fictional numbers only.
 
 ## Before C0.16's console: what exists

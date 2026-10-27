@@ -26,7 +26,9 @@ export const IDENTIFYING: readonly IdentifyingShape[] = [
   // As the AWS Console shows an account id.
   { kind: ACCOUNT_ID, pattern: /(?<!\d)\d{4}-\d{4}-\d{4}(?!\d)/ },
   { kind: 'an ARN', pattern: /\barn:aws[\w-]*:/i },
-  { kind: 'a Twilio SID', pattern: /\b(?:AC|VA|SK|PN|MG|US)[0-9a-fA-F]{32}\b/ },
+  // An account (AC), a Verify service (VA) or one verification (VE, apps/server/src/auth/sms/twilio.ts),
+  // an API key (SK), a number (PN), a messaging service (MG) or a user (US).
+  { kind: 'a Twilio SID', pattern: /\b(?:AC|VA|VE|SK|PN|MG|US)[0-9a-fA-F]{32}\b/ },
 ]
 
 // One match on a line: its kind, where it starts and ends, and the text it matched, which a guard

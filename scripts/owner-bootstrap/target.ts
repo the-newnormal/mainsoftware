@@ -126,19 +126,37 @@ export function tlsServerName(env: TargetEnvironment, deployEnv: DeployEnv): str
 // --- After connecting (section 3) ---------------------------------------------------------------
 
 // The log settings that decide whether a statement's bind values could reach the server's log, as
-// pg_settings names them (PD-121). The first four are core and must be readable. auto_explain's
+// pg_settings names them (PD-121). The first six are core and must be readable. auto_explain's
 // parameter length isn't among them: it shortens only a plan's "Query Parameters" line, never the
-// literals a custom plan prints (below).
+// literals a custom plan prints (below). debug_print_plan is the session's own value, which the
+// entry's start-up option sets off, so reading it checks that the option held.
 export const LOG_SETTINGS = [
   'log_parameter_max_length',
   'log_parameter_max_length_on_error',
   'log_statement',
   'log_error_verbosity',
+  'log_destination',
+  'debug_print_plan',
   'auto_explain.log_min_duration',
   'pgaudit.log_parameter',
 ] as const
 export type LogSetting = (typeof LOG_SETTINGS)[number]
-const CORE_LOG_SETTINGS: readonly LogSetting[] = LOG_SETTINGS.slice(0, 4)
+const CORE_LOG_SETTINGS: readonly LogSetting[] = LOG_SETTINGS.slice(0, 6)
+
+// The log destinations that obey log_error_verbosity: elog.c builds one message for stderr, syslog
+// and eventlog, with a DETAIL only above terse, while csvlog and jsonlog write the DETAIL whatever
+// the verbosity. Postgres reads the list as identifiers in any case, quotes allowed; a name outside
+// these three, or an empty list, is unsafe.
+const TERSE_DESTINATIONS: ReadonlySet<string> = new Set(['stderr', 'syslog', 'eventlog'])
+const obeysTerse = (destinations: string): boolean =>
+  destinations.split(',').every(name =>
+    TERSE_DESTINATIONS.has(
+      name
+        .trim()
+        .replace(/^"(.*)"$/, '$1')
+        .toLowerCase(),
+    ),
+  )
 
 // The second statement's row (steps.ts, PROLOGUE), as Postgres returns it.
 export const ServerFactsRow = z.object({
@@ -215,10 +233,12 @@ export function markerOf(comment: string | null): Marker {
 // The log settings a statement's bind values could reach the log through: both parameter lengths
 // must be 0 (a statement logged by log_statement or log_min_duration_statement then shows only its
 // placeholders, so mod is as safe as none), errors terse (a failed statement's DETAIL can carry a
-// row's values), auto_explain absent or logging none (log_min_duration -1), and pgaudit's parameter
-// logging off. auto_explain's own parameter length doesn't make it safe: Postgres plans the script's
-// unnamed statements as custom plans, whose Index Cond, Filter and (with log_verbose) Output lines
-// print the bound name and number as literals; the length covers only the "Query Parameters" line.
+// row's values) and written only where terse drops that DETAIL (stderr, syslog or eventlog, never
+// csvlog or jsonlog), debug_print_plan off (a logged plan's DETAIL carries the bound values),
+// auto_explain absent or logging none (log_min_duration -1), and pgaudit's parameter logging off.
+// auto_explain's own parameter length doesn't make it safe: Postgres plans the script's unnamed
+// statements as custom plans, whose Index Cond, Filter and (with log_verbose) Output lines print
+// the bound name and number as literals; the length covers only the "Query Parameters" line.
 // A core setting pg_settings doesn't show the acting role is unreadable, by name.
 export function logFindings(logs: Readonly<Record<string, string>>): {
   unsafe: LogSetting[]
@@ -237,6 +257,10 @@ export function logFindings(logs: Readonly<Record<string, string>>): {
   if (statement !== undefined && !['none', 'ddl', 'mod'].includes(statement)) unsafe.push('log_statement')
   const verbosity = at('log_error_verbosity')
   if (verbosity !== undefined && verbosity !== 'terse') unsafe.push('log_error_verbosity')
+  const destination = at('log_destination')
+  if (destination !== undefined && !obeysTerse(destination)) unsafe.push('log_destination')
+  const plan = at('debug_print_plan')
+  if (plan !== undefined && plan !== 'off') unsafe.push('debug_print_plan')
   const explainAfter = at('auto_explain.log_min_duration')
   if (explainAfter !== undefined && explainAfter !== '-1') unsafe.push('auto_explain.log_min_duration')
   const audit = at('pgaudit.log_parameter')
