@@ -38,6 +38,14 @@
 // published version, which notice.published covers). Its codes are the registers'
 // (register_changed, register_invalid), whose shared copy fits it. It lives beside the register
 // writers for their refusal map; its read is compliance/notice.ts's, which this file imports.
+//
+// From C0.9 PR 3b (OD-08, PD-94) the DPO's reply targets are written here too, POST
+// /api/admin/notice/targets/set (notice.targets.set: the DPO alone, before v0 too, NOTICE_SETUP),
+// by the same steps: can(); the shared range (targetsProblems(), 400 register_invalid);
+// set_reply_targets() (migration 0012), which re-checks the DPO, refuses no contact yet or a figure
+// out of range (HF006) or a stale page (HF005), records the next settings version, copying the
+// contact, with its audit row; and no outbox event, for PD-72's reason. Whole numbers only, so no
+// free text and no AI_COPY check.
 import {
   type ClearTransferBody,
   type ContactWriteJSON,
@@ -52,8 +60,10 @@ import {
   type RegistersJSON,
   type SetContactBody,
   type SetPurposeBody,
+  type SetTargetsBody,
   type TransferRowJSON,
   type TransferWriteJSON,
+  targetsProblems,
   type WithdrawTransferBody,
 } from '@hearth/shared'
 import { sql } from 'kysely'
@@ -80,7 +90,8 @@ import { appendOutbox } from '#src/outbox/append.ts'
 export const REGISTER_ERRORS = ['register_changed', 'register_invalid'] as const
 
 // A check constraint (23514) of a register's own table: a fact's shape the table refuses, such as a
-// certification with no verification date, or of the DPO's contact (dpo_settings, 0011). The body's
+// certification with no verification date, or of the DPO's settings (dpo_settings, 0011's contact
+// and from 0012 its reply targets' range). The body's
 // schema and the shared rules catch each before the database, so this is a backstop that answers
 // as the rule it is. Postgres names the constraint, and each of these tables' names starts with its
 // table's (0009, 0011). A check of any other
@@ -500,6 +511,36 @@ export async function setContact(
     )
     const row = rows[0]
     if (row === undefined) throw new Error('set_dpo_contact() returned no row')
+    return { version: row.version, changed: row.changed }
+  })
+  return { body: written }
+}
+
+// --- POST /api/admin/notice/targets/set -----------------------------------------------------------
+
+// The DPO records their reply targets (C0.9 OD-08, PD-94) as the next settings version from the
+// version the page showed (seen), with a fresh PIN (PD-30), before v0 too (NOTICE_SETUP). The shared
+// range refuses a figure outside 5 to 10 business days or 14 to 30 days (400 register_invalid)
+// before the database is asked; set_reply_targets() then refuses no contact yet or a figure out of
+// range (HF006), or a stale page (HF005, 409 register_changed), copies the contact into the new
+// version, and writes nothing for the same targets again (changed false). No outbox event (PD-72):
+// nothing acts on the targets until the next published version, which states them.
+export async function setTargets(
+  api: Api,
+  body: z.output<typeof SetTargetsBody>,
+  session: SessionIds,
+  info: ReqInfo,
+): Promise<Answer> {
+  const written = await inSession(api, info, session, async (trx): Promise<ContactWriteJSON> => {
+    await authorise(trx, session, { action: 'notice.targets.set' }, 'forbidden')
+    if (targetsProblems(body).length > 0) throw new ApiError(400, 'register_invalid')
+    const { rows } = await refusing(
+      sql<{ version: number; changed: boolean }>`
+        select version, changed from public.set_reply_targets(${body.seen}::integer, ${body.businessDays}::integer,
+          ${body.calendarDays}::integer, ${info.requestId}, ${session.deviceId}::uuid, ${info.ip}::inet)`.execute(trx),
+    )
+    const row = rows[0]
+    if (row === undefined) throw new Error('set_reply_targets() returned no row')
     return { version: row.version, changed: row.changed }
   })
   return { body: written }

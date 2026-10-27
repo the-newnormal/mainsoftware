@@ -5,7 +5,8 @@
 // carries only its own copy: this one, what both pages say; strings/dpo-purposes.ts, the processing
 // register's; strings/dpo-transfers.ts, the transfer register's; strings/dpo-contact.ts, the
 // contact page's (C0.9 PD-70); strings/dpo-notice.ts, the Notice tab's and the notice markers';
-// strings/dpo-record.ts, the Notice tab's record dialog's (PD-76). The registers' rules are
+// strings/dpo-record.ts, the Notice tab's record dialog's (PD-76); strings/dpo-requests.ts, the
+// requests queue's, its case sheet's and its log dialog's (C0.9 PR 3b). The registers' rules are
 // codes in packages/shared (registers.ts) and are worded in these files, once each; a code with no
 // line fails typecheck. The purposes' own wording is the register's (PURPOSES[key].register), and
 // dpo/copy.test.ts holds every label the pages can render to AI_COPY (DPP-06). The DPO and the
@@ -16,10 +17,15 @@ import type { AI_PROVIDERS, ProviderKey } from '@hearth/shared'
 export type NonAiProviderKey = Exclude<ProviderKey, (typeof AI_PROVIDERS)[number]>
 
 export const DPO = {
-  // The links between the two registers, the contact details (C0.9 PD-70) and the notice (PD-48),
-  // at the top of each page.
+  // The links between the DPO's pages at the top of each: the requests (C0.9 PR 3b, PD-98), the two
+  // registers, the contact details (C0.9 PD-70) and the notice (PD-48). The track is named for all
+  // of them, "Data protection", since it holds more than the registers (PPL-06).
   tabs: {
-    label: 'Registers',
+    label: 'Data protection',
+    requests: 'Requests',
+    // The Requests link's accessible name with a count (PD-99, PPL-12): the pill is hidden from
+    // assistive technology, so the name says it in words.
+    requestsCount: (n: number) => (n === 1 ? 'Requests, 1 needs attention' : `Requests, ${n} need attention`),
     purposes: 'Purposes',
     transfers: 'Transfers',
     contact: 'Contact',

@@ -3,7 +3,7 @@
 // what holds a save back, what a refused save says (dpo/contact-model.ts), and its calls
 // (dpo/queries.ts). How the page and the dialog render is dpo.markup.test.tsx's; how they behave in
 // a browser, dpo.spec.ts's (DPP-E7).
-import { MESSAGES, REAUTH_METHOD_MESSAGES, SetContactBody } from '@hearth/shared'
+import { MESSAGES, REAUTH_METHOD_MESSAGES, SetContactBody, SetTargetsBody } from '@hearth/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiFailure } from '@/api/http.ts'
 import { CONTACT } from '@/strings/dpo-contact.ts'
@@ -15,9 +15,22 @@ import {
   contactSavedText,
   contactView,
   DEFAULT_TITLE,
+  targetsEditor,
+  targetsFormOf,
+  targetsRefusalOf,
+  targetsSavedText,
+  targetsView,
 } from './contact-model.ts'
-import { CONTACT_SAVE_MOVES, contactQuery, noticeAdminQuery, registersQuery, saveContact } from './queries.ts'
-import { contactAdminForClient, contactRow } from './testing/registers.ts'
+import {
+  CONTACT_SAVE_MOVES,
+  contactQuery,
+  noticeAdminQuery,
+  registersQuery,
+  saveContact,
+  setTargets,
+  TARGETS_SAVE_MOVES,
+} from './queries.ts'
+import { contactAdminForClient, contactRow, TARGETS } from './testing/registers.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -196,5 +209,111 @@ describe('C0.9 PD-70: the DPO’s contact page (dpo/contact-model.ts)', () => {
       phone: null,
       postal: null,
     })
+  })
+})
+
+describe('C0.9 PR 3b: the reply targets on the contact page (dpo/contact-model.ts)', () => {
+  it('CTW-06 OD-08 PD-94 PD-95: with no contact the card says to record it first and offers no change; with one, both figures, whether the published notice gives them (in it, not yet with why, not published yet, or nothing when the marker can’t be read); unreadable targets show no figures and no change', () => {
+    expect(targetsView(contactAdminForClient())).toEqual({ kind: 'first_contact' })
+    const row = contactRow()
+    const view = (targetsStated: 'unpublished' | 'stated' | 'not_printed' | 'not_stated') =>
+      targetsView(
+        contactAdminForClient({
+          notice: targetsStated === 'unpublished' ? 'none' : 'out_of_date',
+          contact: row,
+          stated: targetsStated === 'unpublished' ? 'unpublished' : 'stated',
+          targetsStated,
+        }),
+      )
+    const figures = {
+      kind: 'targets',
+      business: 'Questions, complaints, withdrawals and objections: 10 business days',
+      calendar: 'Copies of data and corrections: 30 calendar days',
+    }
+    expect(view('stated')).toEqual({ ...figures, pill: { tone: 'ok', text: CONTACT.stated.yes }, line: undefined })
+    expect(view('not_stated')).toEqual({
+      ...figures,
+      pill: { tone: 'warn', text: CONTACT.stated.no },
+      line: 'The published notice still gives your earlier targets.',
+    })
+    expect(view('not_printed')).toEqual({
+      ...figures,
+      pill: { tone: 'warn', text: CONTACT.stated.no },
+      line: CONTACT.targets.notPrinted,
+    })
+    expect(view('unpublished')).toEqual({
+      ...figures,
+      pill: { tone: 'muted', text: CONTACT.stated.none },
+      line: undefined,
+    })
+    expect(
+      targetsView({ contact: contactAdminForClient({ contact: row }).contact, targets: TARGETS, targetsStated: null }),
+    ).toMatchObject({
+      pill: undefined,
+      line: undefined,
+    })
+    expect(
+      targetsView({ contact: contactAdminForClient({ contact: row }).contact, targets: null, targetsStated: null }),
+    ).toEqual({
+      kind: 'unreadable',
+    })
+  })
+
+  it('CTW-07 OD-08 OD-26 PD-94: the dialog holds Save back while a figure is out of range (5 to 10, 14 to 30) or not a whole number, and while nothing changed; the body is the settings version read and both figures; a save warns the notice goes out of date only once a version is published; its refusals in the card’s words', () => {
+    const published = contactAdminForClient({
+      notice: 'up_to_date',
+      contact: contactRow({ version: 3 }),
+      stated: 'stated',
+    })
+    const form = targetsFormOf(TARGETS)
+    expect(form).toEqual({ businessDays: '10', calendarDays: '30' })
+    expect(targetsEditor(form, published)).toEqual({ problems: [], unchanged: true, stale: true, body: undefined })
+    expect(targetsEditor({ ...form, businessDays: '7' }, published)).toEqual({
+      problems: [],
+      unchanged: false,
+      stale: true,
+      body: { seen: 3, businessDays: 7, calendarDays: 30 },
+    })
+    expect(SetTargetsBody.parse(targetsEditor({ ...form, businessDays: ' 7 ' }, published).body)).toEqual({
+      seen: 3,
+      businessDays: 7,
+      calendarDays: 30,
+    })
+    for (const businessDays of ['4', '11', '7.5', '', 'ten', '-5']) {
+      expect(targetsEditor({ ...form, businessDays }, published).problems, businessDays).toEqual([
+        'Choose from 5 to 10 business days.',
+      ])
+    }
+    expect(targetsEditor({ businessDays: '4', calendarDays: '31' }, published).problems).toEqual([
+      'Choose from 5 to 10 business days.',
+      'Choose from 14 to 30 calendar days.',
+    ])
+    expect(targetsEditor({ ...form, calendarDays: '14' }, published).body?.calendarDays).toBe(14)
+    // Before v0: no out-of-date warning.
+    const unpublished = contactAdminForClient({ contact: contactRow() })
+    expect(targetsEditor({ ...form, businessDays: '5' }, unpublished).stale).toBe(false)
+    expect(targetsSavedText({ changed: true })).toBe(CONTACT.targets.saved)
+    expect(targetsSavedText({ changed: false })).toBe(CONTACT.nothingChanged)
+    expect(targetsRefusalOf(new ApiFailure(409, 'register_changed', MESSAGES.register_changed))).toEqual({
+      kind: 'changed',
+      text: CONTACT.targets.changedSince,
+    })
+    expect(targetsRefusalOf(new ApiFailure(400, 'register_invalid', MESSAGES.register_invalid))).toEqual({
+      kind: 'message',
+      text: CONTACT.targets.invalid,
+    })
+    expect(targetsRefusalOf(new ApiFailure(403, 'reauth_required', 'PIN', { method: 'pin' }))).toEqual({ kind: 'pin' })
+  })
+
+  it('CTW-07 PD-94 PD-72: Save posts the settings version and both figures to /api/admin/notice/targets/set and reads the version and whether it changed; it moves what a contact save moves', async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    vi.stubGlobal('fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init })
+      return json(200, { version: 4, changed: true, later: true })
+    })
+    expect(await setTargets({ seen: 3, businessDays: 7, calendarDays: 30 })).toEqual({ version: 4, changed: true })
+    expect(calls.map(call => [call.url, call.init?.method])).toEqual([['/api/admin/notice/targets/set', 'POST']])
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ seen: 3, businessDays: 7, calendarDays: 30 })
+    expect(TARGETS_SAVE_MOVES).toEqual(CONTACT_SAVE_MOVES)
   })
 })

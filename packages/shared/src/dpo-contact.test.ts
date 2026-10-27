@@ -1,8 +1,11 @@
 // The DPO's business contact (PDPA-13, PDPA-02; C0.9 OD-10, PD-63 to PD-65, PD-69, PD-70): its
 // shapes and limits, contactProblems(), the body and answers of /api/admin/notice/contact, and the
-// links Settings makes. That contactProblems() and set_dpo_contact() (migration 0011) refuse the
-// same samples is the notice integration suite's (NTI-12); the database's own checks are
-// db/tests/165_dpo_settings.sql's. Every contact here is fictional, on a reserved domain.
+// links Settings makes; and from C0.9 PR 3b the reply targets kept with it (OD-08, PD-94), their
+// range, targetsProblems() and the body of /api/admin/notice/targets/set. That contactProblems()
+// and set_dpo_contact() (migration 0011) refuse the same samples is the notice integration suite's
+// (NTI-12), and targetsProblems() and set_reply_targets() (0012) the cases suite's (RQI-09); the
+// database's own checks are db/tests/165_dpo_settings.sql's. Every contact here is fictional, on a
+// reserved domain.
 import { describe, expect, it } from 'vitest'
 import {
   CONTACT_EMAIL_MAX,
@@ -26,10 +29,18 @@ import {
   NoticeContact,
   NoticeContactForClient,
   normalisePostal,
+  postalInShape,
   postalLines,
   postalOneLine,
+  REPLY_TARGETS,
+  ReplyTargetsForClient,
+  ReplyTargetsSchema,
   SetContactBody,
+  SetTargetsBody,
   sameContact,
+  sameTargets,
+  TARGETS_PROBLEMS,
+  targetsProblems,
   telHref,
 } from './dpo-contact.ts'
 import { NOTICE_STATUSES } from './registers.ts'
@@ -50,6 +61,8 @@ const CONTACT: DpoContact = {
   phone: '+65 8000 0197',
   postal: '1 Example Road\nSingapore 000000',
 }
+// OD-08's reply targets, the columns' defaults (C0.9 PR 3b, PD-94).
+const TARGETS = { businessDays: 10, calendarDays: 30 }
 const only = (change: Partial<DpoContact>): DpoContact => ({
   ...CONTACT,
   email: null,
@@ -406,7 +419,13 @@ describe('DCS-05 C0.9 PD-67 PD-74: comparing contacts and printing a postal addr
 
 describe('DCS-06 C0.9 PD-70 P6: GET /api/admin/notice/contact and the contact GET /api/notice carries', () => {
   const row = { version: 2, ...CONTACT, recordedOn: '2026-10-23', recordedBy: 'Ashton Tan' }
-  const answer = { notice: 'out_of_date', contact: row, stated: 'not_stated' }
+  const answer = {
+    notice: 'out_of_date',
+    contact: row,
+    stated: 'not_stated',
+    targets: TARGETS,
+    targetsStated: 'stated',
+  }
 
   it('DCS-06 PD-70: the answer is the notice’s status, the current contact and whether the latest version prints it, and nothing more', () => {
     expect(ContactAdminResponse.parse(answer)).toEqual(answer)
@@ -418,14 +437,21 @@ describe('DCS-06 C0.9 PD-70 P6: GET /api/admin/notice/contact and the contact GE
     ]
     expect(states.map(([, stated]) => stated)).toEqual([...CONTACT_STATED])
     for (const [notice, stated, none] of states) {
-      expect(ContactAdminResponse.parse({ notice, contact: row, stated }).stated, stated).toBe(stated)
+      const recorded = { notice, contact: row, stated, targets: TARGETS, targetsStated: stated }
+      expect(ContactAdminResponse.parse(recorded).stated, stated).toBe(stated)
       // No contact recorded yet: nothing published, or a latest version that prints none.
-      expect(ContactAdminResponse.safeParse({ notice, contact: null, stated }).success, stated).toBe(none)
+      const nothing = { notice, contact: null, stated, targets: null, targetsStated: stated }
+      expect(ContactAdminResponse.safeParse(nothing).success, stated).toBe(none)
     }
     for (const notice of NOTICE_STATUSES) {
-      expect(ContactAdminResponse.safeParse({ notice, contact: row, stated: 'unpublished' }).success, notice).toBe(
-        notice === 'none',
-      )
+      const unpublished = {
+        notice,
+        contact: row,
+        stated: 'unpublished',
+        targets: TARGETS,
+        targetsStated: 'unpublished',
+      }
+      expect(ContactAdminResponse.safeParse(unpublished).success, notice).toBe(notice === 'none')
     }
     for (const bad of [
       { ...answer, extra: 1 },
@@ -459,7 +485,13 @@ describe('DCS-06 C0.9 PD-70 P6: GET /api/admin/notice/contact and the contact GE
       stated: 'printed',
       contact: { ...row, recordedBy: 7, later: 1 },
     })
-    expect(read).toEqual({ notice: 'up_to_date', contact: { ...row, recordedBy: null }, stated: null })
+    expect(read).toEqual({
+      notice: 'up_to_date',
+      contact: { ...row, recordedBy: null },
+      stated: null,
+      targets: TARGETS,
+      targetsStated: 'stated',
+    })
     expect(ContactAdminResponseForClient.parse({ notice: 'none', contact: null }).stated).toBeNull()
     for (const contact of [{ ...row, email: 'dpo at contact.example' }, { ...row, title: 7 }, 'none', undefined]) {
       expect(ContactAdminResponseForClient.safeParse({ ...answer, contact }).success, JSON.stringify(contact)).toBe(
@@ -483,5 +515,147 @@ describe('DCS-06 C0.9 PD-70 P6: GET /api/admin/notice/contact and the contact GE
     expect(NoticeContactForClient.safeParse({ ...CONTACT, phone: 'tel:+65' }).success).toBe(false)
     const fields: ContactField[] = ['title', 'email', 'phone', 'postal']
     expect(Object.keys(NoticeContactForClient.parse(CONTACT))).toEqual(fields)
+  })
+})
+
+describe('DCS-07 C0.9 OD-08 OD-26 PD-94: the reply targets’ range and targetsProblems()', () => {
+  it('DCS-07 OD-08 OD-26: 5 to 10 business days and 14 to 30 calendar days, defaulting to OD-08’s 10 and 30, as 0012’s checks', () => {
+    expect(REPLY_TARGETS).toEqual({
+      businessDays: { min: 5, max: 10, default: 10 },
+      calendarDays: { min: 14, max: 30, default: 30 },
+    })
+    expect(TARGETS_PROBLEMS).toEqual(['business_days_range', 'calendar_days_range'])
+  })
+
+  it('DCS-07 PD-94: every figure in range holds nothing back; each one out of range, or not whole, is its own problem, in set_reply_targets()’s order', () => {
+    for (let business = 5; business <= 10; business++) {
+      for (let calendar = 14; calendar <= 30; calendar++) {
+        expect(targetsProblems({ businessDays: business, calendarDays: calendar })).toEqual([])
+      }
+    }
+    for (const business of [4, 11, 0, -5, 7.5, Number.NaN]) {
+      expect(targetsProblems({ businessDays: business, calendarDays: 30 }), String(business)).toEqual([
+        'business_days_range',
+      ])
+    }
+    for (const calendar of [13, 31, 0, 21.5]) {
+      expect(targetsProblems({ businessDays: 10, calendarDays: calendar }), String(calendar)).toEqual([
+        'calendar_days_range',
+      ])
+    }
+    expect(targetsProblems({ businessDays: 30, calendarDays: 10 })).toEqual([
+      'business_days_range',
+      'calendar_days_range',
+    ])
+  })
+
+  it('DCS-07 PD-94: two settings versions hold the same targets only when both figures match', () => {
+    expect(sameTargets(TARGETS, { ...TARGETS })).toBe(true)
+    expect(sameTargets(TARGETS, { ...TARGETS, businessDays: 9 })).toBe(false)
+    expect(sameTargets(TARGETS, { ...TARGETS, calendarDays: 29 })).toBe(false)
+  })
+
+  it('DCS-07 PD-94: the stored schema takes the range, whole numbers only, and nothing more; the web app’s reader any whole number from 1', () => {
+    expect(ReplyTargetsSchema.parse(TARGETS)).toEqual(TARGETS)
+    for (const bad of [
+      { businessDays: 4, calendarDays: 30 },
+      { businessDays: 10, calendarDays: 31 },
+      { businessDays: 7.5, calendarDays: 30 },
+      { ...TARGETS, later: 1 },
+      { businessDays: 10 },
+    ]) {
+      expect(ReplyTargetsSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    expect(ReplyTargetsForClient.parse({ ...TARGETS, later: 1 })).toEqual(TARGETS)
+    expect(ReplyTargetsForClient.parse({ businessDays: 12, calendarDays: 45 })).toEqual({
+      businessDays: 12,
+      calendarDays: 45,
+    })
+    expect(ReplyTargetsForClient.safeParse({ businessDays: 0, calendarDays: 30 }).success).toBe(false)
+  })
+})
+
+describe('DCS-08 C0.9 PD-94: SetTargetsBody', () => {
+  it('DCS-08: the settings version the page showed and both figures; a figure out of range parses, so the page explains it', () => {
+    const body = { seen: 2, businessDays: 7, calendarDays: 21 }
+    expect(SetTargetsBody.parse(body)).toEqual(body)
+    const out = { seen: 2, businessDays: 40, calendarDays: 3 }
+    expect(SetTargetsBody.parse(out)).toEqual(out)
+    expect(targetsProblems(SetTargetsBody.parse(out))).toEqual(['business_days_range', 'calendar_days_range'])
+  })
+
+  it('DCS-08: a malformed body is refused: no version (the targets are kept with a recorded contact), a figure not whole, too large for the column, or another field', () => {
+    for (const bad of [
+      { seen: null, businessDays: 7, calendarDays: 21 },
+      { seen: 0, businessDays: 7, calendarDays: 21 },
+      { seen: 2, businessDays: 7.5, calendarDays: 21 },
+      { seen: 2, businessDays: '7', calendarDays: 21 },
+      { seen: 2, businessDays: 2 ** 31, calendarDays: 21 },
+      { seen: 2, businessDays: 7 },
+      { seen: 2, businessDays: 7, calendarDays: 21, person: 'b0000000-0000-4000-8000-000000000012' },
+    ]) {
+      expect(SetTargetsBody.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+  })
+})
+
+describe('DCS-09 C0.9 PD-94 PD-95 P6: the targets in GET /api/admin/notice/contact', () => {
+  const row = { version: 2, ...CONTACT, recordedOn: '2026-10-23', recordedBy: 'Ashton Tan' }
+  const answer = {
+    notice: 'out_of_date',
+    contact: row,
+    stated: 'stated',
+    targets: TARGETS,
+    targetsStated: 'not_stated',
+  }
+
+  it('DCS-09 PD-94: the targets are kept with the contact, so they are null exactly when it is', () => {
+    expect(ContactAdminResponse.parse(answer)).toEqual(answer)
+    expect(ContactAdminResponse.safeParse({ ...answer, targets: null }).success).toBe(false)
+    const none = { notice: 'none', contact: null, stated: 'unpublished', targets: null, targetsStated: 'unpublished' }
+    expect(ContactAdminResponse.safeParse(none).success).toBe(true)
+    expect(ContactAdminResponse.safeParse({ ...none, targets: TARGETS }).success).toBe(false)
+  })
+
+  it('DCS-09 PD-95: targetsStated takes the contact’s four states, unpublished exactly when nothing is, and stated or earlier only once targets are recorded', () => {
+    // A change to the targets alone leaves the contact stated, and the targets not stated.
+    expect(ContactAdminResponse.parse(answer).stated).toBe('stated')
+    for (const targetsStated of ['stated', 'not_printed', 'not_stated']) {
+      expect(ContactAdminResponse.safeParse({ ...answer, targetsStated }).success, targetsStated).toBe(true)
+    }
+    expect(ContactAdminResponse.safeParse({ ...answer, targetsStated: 'unpublished' }).success).toBe(false)
+    const unpublished = { ...answer, notice: 'none', stated: 'unpublished', targetsStated: 'unpublished' }
+    expect(ContactAdminResponse.safeParse(unpublished).success).toBe(true)
+    expect(ContactAdminResponse.safeParse({ ...unpublished, targetsStated: 'stated' }).success).toBe(false)
+    const nothing = { notice: 'out_of_date', contact: null, stated: 'not_printed', targets: null }
+    expect(ContactAdminResponse.safeParse({ ...nothing, targetsStated: 'not_printed' }).success).toBe(true)
+    for (const targetsStated of ['stated', 'not_stated']) {
+      expect(ContactAdminResponse.safeParse({ ...nothing, targetsStated }).success, targetsStated).toBe(false)
+    }
+    for (const bad of [
+      { ...answer, targetsStated: 'printed' },
+      { ...answer, targets: { businessDays: 11, calendarDays: 30 } },
+      { ...answer, targets: { ...TARGETS, later: 1 } },
+    ]) {
+      expect(ContactAdminResponse.safeParse(bad).success, JSON.stringify(bad).slice(0, 140)).toBe(false)
+    }
+    const { targets: _targets, targetsStated: _stated, ...older } = answer
+    expect(ContactAdminResponse.safeParse(older).success).toBe(false)
+  })
+
+  it('DCS-09 P6: the web app reads targets or a marker it can’t read as null, and an answer from before 0012 still reads', () => {
+    const read = (change: object) => ContactAdminResponseForClient.parse({ ...answer, ...change })
+    expect(read({})).toMatchObject({ targets: TARGETS, targetsStated: 'not_stated' })
+    expect(read({ targets: 'ten', targetsStated: 'printed' })).toMatchObject({ targets: null, targetsStated: null })
+    expect(read({ targets: { ...TARGETS, later: 1 } }).targets).toEqual(TARGETS)
+    const { targets: _targets, targetsStated: _stated, ...older } = answer
+    expect(ContactAdminResponseForClient.parse(older)).toMatchObject({ targets: null, targetsStated: null })
+  })
+
+  it('DCS-09 PD-94: a requester’s postal address is held to the DPO contact’s postal shape (postalInShape())', () => {
+    expect(postalInShape('1 Example Road\nSingapore 000000')).toBe(true)
+    for (const bad of ['', '1 Example Road\n\nSingapore', '1 Example Road\u0007', '---', 'x'.repeat(501)]) {
+      expect(postalInShape(bad), JSON.stringify(bad)).toBe(false)
+    }
   })
 })

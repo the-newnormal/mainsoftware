@@ -52,12 +52,19 @@ export const SHELL = {
   account: {
     menu: 'Account',
     trigger: (name: string) => `Account, ${name}`,
+    // The DPO's avatar button with a count of requests needing attention (C0.9 OD-22, PD-99,
+    // PPL-05): the badge is hidden from assistive technology, so the name says it in words.
+    triggerWithRequests: (name: string, n: number) =>
+      n === 1 ? `Account, ${name}, 1 request needs attention` : `Account, ${name}, ${n} requests need attention`,
     // Everyone's (C0.9 PD-47).
     settings: 'Settings',
     signOut: 'Sign out',
     signOutFailed: "Couldn't sign out. Check your connection and try again.",
-    // The DPO's entry (C0.9 PD-26), shown only when the session's capabilities say so.
+    // The DPO's entry (C0.9 PD-26), shown only when the session's capabilities say so, and its
+    // accessible name with the count (C0.9 PD-99).
     dataProtection: 'Data protection',
+    dataProtectionCount: (n: number) =>
+      n === 1 ? 'Data protection, 1 request needs attention' : `Data protection, ${n} requests need attention`,
   },
   // The privacy notice's screen, outside the shell (C0.9 PD-46), and Settings with its sections
   // (PD-47). What they say is in strings/notice.ts, which only their lazy chunks load.
@@ -66,10 +73,12 @@ export const SHELL = {
     title: 'Settings',
     privacy: 'Privacy',
   },
-  // The DPO's pages' titles (C0.9 PD-26, PD-48, PD-70). Everything else they say is in
-  // strings/dpo.ts, dpo-purposes.ts, dpo-transfers.ts, dpo-contact.ts and dpo-notice.ts, which only
-  // their lazy chunks load (PD-31).
+  // The DPO's pages' titles (C0.9 PD-26, PD-48, PD-70, and from PR 3b PD-98). Everything else they
+  // say is in strings/dpo.ts, dpo-purposes.ts, dpo-transfers.ts, dpo-contact.ts, dpo-notice.ts and
+  // dpo-requests.ts, which only their lazy chunks load (PD-31).
   dpo: {
+    // The requests to the DPO (C0.9 PR 3b, PD-98).
+    requests: 'Requests',
     purposes: 'Processing register',
     transfers: 'Transfer register',
     // The DPO's business contact, which the notice prints (C0.9 PD-70).

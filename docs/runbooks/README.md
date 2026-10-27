@@ -2,7 +2,7 @@
 
 ## What these are
 
-The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
+The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), and C0.9 PR 3b moved the request procedures to the queue (item 60). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
 
 Every runbook but this one has the same sections, in this order: *Use this when*, *Who does what*, *Before you start*, *Steps*, *Check it worked*, *Afterwards* and *Code paths*. *Don't* may sit between them where a mistake would make things worse, and other sections, such as *Prevention*, may too. *Code paths* lists the code each one relies on, so a change to that code shows here (`scripts/guards/runbooks.test.ts`).
 
@@ -39,32 +39,55 @@ Hearth has no screen yet for signing out someone else's devices, resetting a PIN
 | [A withdrawal of consent, or an objection, carried out by hand](withdrawal-by-hand.md) | Someone withdraws deemed consent or objects; and before recording deemed consent by conduct for any purpose | The DPO |
 | [A question or complaint about how personal data is handled](complaints.md) | Someone asks or complains about how their personal data is handled | The DPO |
 
-## Working targets until PR 3b tracks them
+## Reply targets
 
-C0.9 PR 3b brings the request form, the DPO's queue and its reply targets (C0.9 OD-08, OD-09). Until then the DPO works to the same targets by hand:
+The DPO sets the reply targets on Contact (`/dpo/contact`), and the published notice prints them under "Your rights" (C0.9 OD-08):
 
-- withdrawals, objections, questions and complaints: within 10 business days, counted as weekdays in the organisation's time zone (public holidays count, so a due date is never late);
-- access and correction: within 30 calendar days.
+- questions, complaints, withdrawals and objections: 10 business days, unless the DPO sets fewer (from 5 to 10);
+- a copy of someone's data, and a correction: 30 calendar days, unless the DPO sets fewer (from 14 to 30).
 
-These are the DPO's working targets. Nothing in the app or the notice promises them yet.
+How a due day is counted:
 
-## Records until PR 3b's queue
+- The day a request is received never counts.
+- Business days are weekdays in the organisation's time zone. Public holidays count as business days, so a due day errs early, never late (C0.9 OD-09).
+- A copy or a correction counts calendar days, weekends and public holidays included.
 
-The DPO keeps one private request log, outside Hearth and outside this repository (C0.9 PD-85). For each request it holds:
+The queue shows each request's due day, and it never moves later than the targets stated when the request arrived: a shorter target applies to open requests at once, and a longer one only to requests received after the notice that states it is published. A request that arrived before any notice stated targets (one logged as received before v0) follows the targets on Contact as soon as they are recorded, sooner or later, never past 10 business days or 30 days.
 
-- the day it was received, and the channel it came by;
-- the kind: a question, a complaint, an access, correction or withdrawal request, or an objection;
+## Records: the queue
+
+Every request is a case on Requests (`/dpo/requests`, the first page under Data protection): sent from the form in Settings › Privacy, or logged with "Log a request" when it came another way (C0.9 PD-109). A case holds what the private request log held:
+
+- the day it was received, and how it came;
+- the kind: a question, a complaint, a copy of their data, a correction, a withdrawal or an objection;
 - the requester;
-- how their identity was checked: a name, one contact channel and a note of how (for example, in person or against HR records), never a copy of an ID document (C0.9 OD-16);
+- how their identity was checked, as a step on the case ("Checked who they are", with how and the day it was checked), never a copy of an ID document or an ID number (C0.9 OD-16);
 - the due date;
 - each step, with its date;
 - the outcome.
 
-When PR 3b lands, every open entry moves into the queue.
+Each case has a reference: eight letters and digits, shown as two groups of four. It names nobody and reveals no count.
 
-## The daily routine until C0.14 and PR 3b's indicator
+- Quote it in every reply outside Hearth and in any break-glass citation, never the requester's name.
+- A reference doesn't prove who is writing, since anyone who sees an email can quote it. Reply only to the channel the case records (required for someone who has left and for someone without an account, and optional for a current member), or else one the organisation already holds for a current member, after checking identity.
+- A case note holds your own working notes, never messages, files or anything else read in Hearth.
 
-Each working day, the DPO checks the mailbox and any other channel the contact names, and opens Data protection in the avatar menu (C0.9 OD-22). Hearth sends no alert about a request yet.
+### Moving the private log into the queue
+
+Before C0.9 PR 3b the DPO kept one private request log, outside Hearth and outside this repository (C0.9 PD-85). The queue opens only once v0 is published and you have acknowledged it. Then:
+
+1. The DPO logs each open entry with "Log a request", with the day it was originally received (and, for someone who has left, the channel they wrote from).
+2. On its case, the DPO records its earlier steps with their days, how identity was checked included.
+3. The DPO writes "moved:" and the case's reference beside the entry in the private log.
+4. Once every open entry has moved, the DPO closes the private log and keeps it under their retention.
+
+## The daily routine until C0.14
+
+The count on the avatar button, and on "Data protection" in its menu, shows the requests needing attention when Hearth is opened: new ones sent in Hearth, and any due within 2 business days or overdue (C0.9 OD-22). Each working day the DPO also checks the mailbox and any other channel the contact names, and logs what came there. Hearth still sends no alert.
+
+## If the DPO leaves
+
+Only the DPO reads requests (C0.9 OD-14). If the sole DPO leaves, nobody reads open requests until C0.16's console grants a new DPO, who then reads every case, complaints about their predecessor included, while the due days keep running.
 
 ## Changing a runbook
 

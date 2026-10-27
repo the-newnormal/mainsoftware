@@ -30,10 +30,13 @@ export const NOTICE_FREE: ReadonlySet<NoticeUse> = new Set<NoticeUse>([
 
 // What the DPO alone may do before any version is published (C0.9 OD-01, PD-44): read and change
 // the registers, read the draft and publish the first version, and re-authenticate with the PIN
-// that each of those needs; and record their contact, which publishing needs (C0.9 PR 3a, OD-10).
-// Each is an admin action can() allows only to a holder of dpo. Recording someone's acknowledgement
-// and listing the people to pick from aren't setup uses: before v0 there is nothing to record, and
-// after it the DPO acknowledges the latest version first, like everyone (PD-44).
+// that each of those needs; and record their contact, which publishing needs (C0.9 PR 3a, OD-10),
+// and their reply targets, which the notice prints (C0.9 PR 3b, OD-08). Each is an admin action
+// can() allows only to a holder of dpo. Recording someone's acknowledgement and listing the people
+// to pick from aren't setup uses: before v0 there is nothing to record, and after it the DPO
+// acknowledges the latest version first, like everyone (PD-44). Nor are requests to the DPO, the
+// DPO's or anyone's own (C0.9 OD-13, PD-98): before v0 only the DPO is sent a sign-in code, so no
+// request can arrive, and the queue opens once the DPO has acknowledged the latest version.
 export const NOTICE_SETUP: ReadonlySet<NoticeUse> = new Set<NoticeUse>([
   'register.read',
   'register.purpose.set',
@@ -41,6 +44,7 @@ export const NOTICE_SETUP: ReadonlySet<NoticeUse> = new Set<NoticeUse>([
   'notice.read',
   'notice.publish',
   'notice.contact.set',
+  'notice.targets.set',
   'reauth',
 ])
 

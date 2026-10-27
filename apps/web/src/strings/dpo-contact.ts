@@ -1,11 +1,12 @@
 // What the DPO's contact page (/dpo/contact) says (PDPA-13, PDPA-02; C0.9 OD-10, OD-11, PD-64,
-// PD-70). strings/dpo.ts's header gives the rules for every DPO page's copy: British English, short
-// and active, never "ask" and never an AI word (decision 8, ST-02, DPP-06). Only the contact page's
-// lazy chunk loads this file. What holds a contact back is packages/shared's codes
-// (CONTACT_PROBLEMS, which set_dpo_contact() in 0011 refuses in the same order), worded here once
-// each, naming the field and never the words matched (C-05). The DPO and the owner may reword any
-// of it in the PR.
-import type { ContactProblemCode } from '@hearth/shared'
+// PD-70), and from C0.9 PR 3b its reply targets (OD-08, PD-94). strings/dpo.ts's header gives the
+// rules for every DPO page's copy: British English, short and active, never "ask" and never an AI
+// word (decision 8, ST-02, DPP-06). Only the contact page's lazy chunk loads this file. What holds
+// a contact back is packages/shared's codes (CONTACT_PROBLEMS, which set_dpo_contact() in 0011
+// refuses in the same order), worded here once each, naming the field and never the words matched
+// (C-05), and the targets' likewise (TARGETS_PROBLEMS). The DPO and the owner may reword any of it
+// in the PR.
+import type { ContactProblemCode, TargetsProblem } from '@hearth/shared'
 
 export const CONTACT = {
   loading: 'Loading your contact details…',
@@ -52,6 +53,34 @@ export const CONTACT = {
     // Once a version is published (OD-11): a contact change makes it out of date.
     staleWarning:
       'Once you save, the published notice is out of date. Everyone acknowledges the next version you publish.',
+  },
+  // The DPO's reply targets (C0.9 OD-08, OD-09, PD-94), kept with the contact: a card below it and a
+  // dialog to change them. The pills are the contact card's (stated); the out-of-date warning is the
+  // dialog's (dialog.staleWarning).
+  targets: {
+    title: 'Reply targets',
+    business: (n: string) => `Questions, complaints, withdrawals and objections: ${n} business days`,
+    calendar: (m: string) => `Copies of data and corrections: ${m} calendar days`,
+    notStated: 'The published notice still gives your earlier targets.',
+    notPrinted: 'The published notice doesn’t give your reply targets yet. Publish a new version so it does.',
+    firstContact: 'Record your contact details first: the reply targets are kept with them.',
+    unreadable: 'Your reply targets can’t be shown. Reload the page to try again.',
+    edit: 'Change reply targets',
+    dialogTitle: 'Change your reply targets',
+    businessField: 'Business days for questions, complaints, withdrawals and objections',
+    businessHint: 'From 5 to 10. Weekdays in the organisation’s time zone; public holidays count.',
+    calendarField: 'Calendar days for copies of data and corrections',
+    calendarHint: 'From 14 to 30. Weekends and public holidays count.',
+    unchanged: 'Change a figure first.',
+    saved: 'Reply targets saved.',
+    // 409 register_changed and 400 register_invalid, in this card's words.
+    changedSince: 'Your reply targets changed since this page read them. Reload, then try again.',
+    invalid:
+      'Your reply targets can’t be saved as they are. Check each figure, and that your contact details are recorded.',
+    problems: {
+      business_days_range: 'Choose from 5 to 10 business days.',
+      calendar_days_range: 'Choose from 14 to 30 calendar days.',
+    } satisfies Record<TargetsProblem, string>,
   },
   saved: 'Contact details saved.',
   nothingChanged: 'Nothing changed.',

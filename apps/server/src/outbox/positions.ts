@@ -33,7 +33,10 @@ export interface OutboxRow {
   entity: { type: string; id: string }
   container: { type: string; id: string } | null
   acl: { tokens: string[]; more: string[][]; indexClass: string; epoch: number } | null
-  actor: { id: string; kind: string }
+  // No actor (C0.9 PD-111, DB-02): no consumer acts on who wrote an event (offboarding re-reads
+  // deactivated_by, revocation reads ids and subjects), and from C0.9 PR 3b a form request's
+  // case.opened names its requester as actor, so no consumer loads it. The job roles' grants still
+  // allow reading actor_id; 032_worker_roles.sql pins which roles can (OD-27).
   subjects: string[]
   purpose: string
   tombstone: boolean
@@ -148,8 +151,6 @@ type BatchRow = {
   acl_more: string[][] | null
   index_class: string | null
   acl_epoch: string | null
-  actor_id: string
-  actor_kind: string
   subject_ids: string[]
   purpose: string
   tombstone: boolean
@@ -159,13 +160,14 @@ type BatchRow = {
 // The floor and the next batch after `from`, below the horizon, in one statement: one snapshot
 // covers both, so a clean-up committing meanwhile can't hide a gap (it writes the floor in the
 // transaction of its deletion). The checkpoint is passed as parameters, which keeps the read an
-// index condition on outbox_events_cursor.
+// index condition on outbox_events_cursor. It selects every column but the actor (C0.9 PD-111):
+// no consumer loads who wrote an event, a requester's case.opened among them.
 export async function readBatch(trx: InOrg, orgId: string, from: Position, limit: number): Promise<Batch> {
   const { rows } = await sql<BatchRow>`
     with f as (select last_tx, last_id from outbox_floors where org_id = ${orgId}),
     b as (
       select id, tx_id, at, type, version, entity_type, entity_id, container_type, container_id, acl_tokens,
-             acl_more, index_class, acl_epoch, actor_id, actor_kind, subject_ids, purpose, tombstone, ids
+             acl_more, index_class, acl_epoch, subject_ids, purpose, tombstone, ids
       from outbox_events
       where org_id = ${orgId} and (tx_id, id) > (${from.txId}::xid8, ${from.id}::bigint)
         and tx_id < pg_snapshot_xmin(pg_current_snapshot())
@@ -205,7 +207,6 @@ export async function readBatch(trx: InOrg, orgId: string, from: Position, limit
                       indexClass: row.index_class,
                       epoch: Number(row.acl_epoch),
                     },
-              actor: { id: row.actor_id, kind: row.actor_kind },
               subjects: row.subject_ids,
               purpose: row.purpose,
               tombstone: row.tombstone,

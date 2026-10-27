@@ -10,7 +10,9 @@
 // session uses (D46), and (from C0.9) the registers, which are the DPO's alone (PDPA-13), and the
 // privacy notice, which the DPO alone publishes and everyone reads and acknowledges (PDPA-03), and
 // (from C0.9 PR 3a) the DPO's business contact and the acknowledgements the DPO records for someone
-// else still at the organisation (OD-10, OD-19).
+// else still at the organisation (OD-10, OD-19), and (from C0.9 PR 3b) the DPO's reply targets and
+// requests to the DPO, which the DPO alone reads and works and everyone sends and follows for
+// themselves (OD-08, OD-14 to OD-16).
 //
 // The actors are the fixture org (src/testing) plus one persona per role holding exactly that role,
 // so each role's powers show on their own, and the seed's combined holders, which show that roles
@@ -1257,6 +1259,74 @@ const SECTIONS: readonly Section[] = [
     ],
   },
   {
+    ids: 'RQA-01 PDPA-04 PDPA-13 C0.9 OD-08 OD-14 PD-94 PD-98',
+    title: 'case.read, case.step and notice.targets.set (the DPO alone, counts included)',
+    rows: [
+      {
+        name: 'OD-14: only a DPO reads the queue, a case with its steps and the people a request may be logged for, never an Owner, Admin or Compliance Officer as such, nor a DPO who has left',
+        request: { action: 'case.read' },
+        allowed: DPOS,
+      },
+      {
+        name: 'OD-14 PD-90 PD-91: only a DPO records a step on a request or closes it',
+        request: { action: 'case.step' },
+        allowed: DPOS,
+      },
+      {
+        name: 'OD-08 PD-94: only a DPO records their reply targets',
+        request: { action: 'notice.targets.set' },
+        allowed: DPOS,
+      },
+    ],
+  },
+  {
+    ids: 'RQA-02 PDPA-04 PDPA-13 C0.9 OD-16 PD-89',
+    title:
+      'case.log (the DPO alone; for anyone else of the organisation, current or former, or someone without an account)',
+    rows: [
+      {
+        name: 'OD-16: only a DPO logs a request from someone without a Hearth account',
+        request: { action: 'case.log', person: null },
+        allowed: DPOS,
+      },
+      {
+        name: 'PD-89: only a DPO logs one that Marcus sent by email',
+        request: { action: 'case.log', person: P.marcus },
+        allowed: DPOS,
+      },
+      {
+        name: 'PD-89 PDPA-05: and one from someone who has left, whose request is still theirs',
+        request: { action: 'case.log', person: P.formerDpo },
+        allowed: DPOS,
+      },
+      {
+        name: 'PD-89: and one from someone whose Admin role was revoked',
+        request: { action: 'case.log', person: P.formerAdmin },
+        allowed: DPOS,
+      },
+      {
+        name: 'CLAUDE.md Database: nobody logs their own: only the other DPO logs one for Ashton',
+        request: { action: 'case.log', person: P.ashton },
+        allowed: ['dpo'],
+      },
+      {
+        name: 'CLAUDE.md Database: and only Ashton logs one for the other DPO',
+        request: { action: 'case.log', person: ONE.dpo },
+        allowed: ['ashton'],
+      },
+      {
+        name: 'ACC-11: nobody logs one for an id the organisation doesn’t hold',
+        request: { action: 'case.log', person: X.unknownPerson },
+        allowed: NOBODY,
+      },
+      {
+        name: 'ACC-11: nor for another org’s person',
+        request: { action: 'case.log', person: ORG_2_PEOPLE.owner },
+        allowed: NOBODY,
+      },
+    ],
+  },
+  {
     ids: 'ADM-03 ROOM-01 CHAT-01 FILE-01 D16',
     title: 'create (no re-authentication needed; only a person creates)',
     rows: [
@@ -1387,6 +1457,24 @@ const SECTIONS: readonly Section[] = [
       },
     ],
   },
+  {
+    ids: 'RQA-03 PDPA-13 C0.9 OD-07 OD-13 OD-15 PD-96 PD-97',
+    title: 'your own requests to the DPO: sending one and following them (no re-authentication)',
+    rows: [
+      {
+        // A leaver, another org's Owner, an assistant, an agent and the system principal are refused
+        // (ACC-05, ACC-11, R9-03, D16): nobody sends one for anyone else.
+        name: 'OD-07 PD-96: everyone active sends a request to the DPO, as themselves',
+        request: { action: 'case.send_own' },
+        allowed: ACTIVE_PEOPLE,
+      },
+      {
+        name: 'OD-15 PD-97: everyone active reads the requests they are the requester of',
+        request: { action: 'case.list_own' },
+        allowed: ACTIVE_PEOPLE,
+      },
+    ],
+  },
 ]
 
 const ALL_ROWS: readonly Row[] = SECTIONS.flatMap(s => s.rows)
@@ -1428,6 +1516,10 @@ const ADMIN_ACTION_IDS: Record<AdminRequest['action'], string> = {
   'notice.contact.set': 'PDPA-13 PDPA-02',
   'notice.acknowledgement.record': 'PDPA-03 ACC-12',
   'notice.people.read': 'PDPA-03 ACC-12',
+  'notice.targets.set': 'PDPA-13 PDPA-02',
+  'case.read': 'PDPA-04 PDPA-13',
+  'case.log': 'PDPA-04 PDPA-13',
+  'case.step': 'PDPA-04 PDPA-13',
 }
 const ADMIN_ACTIONS = Object.keys(ADMIN_ACTION_IDS) as AdminRequest['action'][]
 const isAdminRow = (row: Row) => (ADMIN_ACTIONS as string[]).includes(row.request.action)
@@ -1441,6 +1533,8 @@ const SELF_ACTION_IDS: Record<SelfRequest['action'], string> = {
   'session.read_own': 'T17 T21',
   'notice.read_own': 'PDPA-02',
   'notice.acknowledge_own': 'PDPA-03 ACC-12',
+  'case.send_own': 'PDPA-13',
+  'case.list_own': 'PDPA-13',
 }
 const SELF_KINDS = Object.keys(SELF_ACTION_IDS) as SelfRequest['action'][]
 const PASSKEY_ACTIONS: readonly SelfRequest['action'][] = ['passkeys.add_own', 'passkeys.remove_own']
@@ -1541,7 +1635,7 @@ describe('§9.4 ADM-02: every admin request needs a fresh re-authentication', ()
     })
   }
 
-  test('§9.4 ACC-04 T21 C0.9 PD-49: reading your own session and client flags, listing and signing out your own devices, reading and acknowledging the notice, and creating things need no re-authentication', () => {
+  test('§9.4 ACC-04 T21 C0.9 PD-49 PD-96: reading your own session and client flags, listing and signing out your own devices, reading and acknowledging the notice, sending a request to the DPO and reading your own, and creating things need no re-authentication', () => {
     const rows = ALL_ROWS.filter(
       r =>
         r.request.action === 'session.read_own' ||
@@ -1549,10 +1643,14 @@ describe('§9.4 ADM-02: every admin request needs a fresh re-authentication', ()
         r.request.action === 'devices.list_own' ||
         r.request.action === 'notice.read_own' ||
         r.request.action === 'notice.acknowledge_own' ||
+        r.request.action === 'case.send_own' ||
+        r.request.action === 'case.list_own' ||
         r.request.action === 'create',
     )
     expect(rows.some(r => r.request.action === 'session.read_own')).toBe(true)
     expect(rows.some(r => r.request.action === 'notice.acknowledge_own')).toBe(true)
+    expect(rows.some(r => r.request.action === 'case.send_own')).toBe(true)
+    expect(rows.some(r => r.request.action === 'case.list_own')).toBe(true)
     for (const row of rows) {
       for (const context of [undefined, {}, { reauthenticated: false }]) {
         expect(allowedIn(worldOf(row), row.request), `${JSON.stringify(context)}: ${row.name}`).toEqual(
@@ -1565,6 +1663,8 @@ describe('§9.4 ADM-02: every admin request needs a fresh re-authentication', ()
     expect(can(W, human(ONE.member), { action: 'devices.list_own' })).toBe(true)
     expect(can(W, human(ONE.member), { action: 'notice.read_own' })).toBe(true)
     expect(can(W, human(ONE.member), { action: 'notice.acknowledge_own' })).toBe(true)
+    expect(can(W, human(ONE.member), { action: 'case.send_own' })).toBe(true)
+    expect(can(W, human(ONE.member), { action: 'case.list_own' })).toBe(true)
     expect(can(W, human(P.marcus), { action: 'devices.sign_out_own', device: DEV.marcusPhone })).toBe(true)
   })
 
@@ -2336,6 +2436,190 @@ describe('NTA-06 PDPA-13 PDPA-03 C0.9 OD-10 OD-19 PD-76: the DPO’s contact and
       for (const a of ACTORS) {
         expect(can(W, a.subject, smuggled, REAUTH), `${a.key} ${action}`).toBe(can(W, a.subject, { action }, REAUTH))
       }
+    }
+  })
+})
+
+// The DPO's reply targets and requests to the DPO (PDPA-04, PDPA-13; C0.9 OD-08, OD-13 to OD-16,
+// PD-89, PD-94, PD-96 to PD-98): the matrix's RQA rows show each request on its own; these show the
+// rule across every actor, the fresh PIN the DPO's requests need, who a request may be logged for,
+// and that your own need none. Whether each passes the notice gate is packages/access's
+// notice.test.ts (NTA-02): the targets before v0 too, the requests only once acknowledged.
+describe('RQA-01 PDPA-04 PDPA-13 C0.9 OD-08 OD-14: the queue, its steps and the reply targets are the DPO’s alone', () => {
+  const REQUESTS: readonly AdminRequest[] = [
+    { action: 'case.read' },
+    { action: 'case.step' },
+    { action: 'notice.targets.set' },
+  ]
+  const ashtonNotDpo = matrixWorld(f => ({
+    ...f,
+    roles: f.roles.map(r => (r.personId === P.ashton && r.role === 'dpo' ? { ...r, revokedAt: 1 } : r)),
+  }))
+
+  test('RQA-01 OD-14: a DPO, alone or with another role, does each, and nobody else does; Ashton does so as the DPO, not as the Owner', () => {
+    for (const request of REQUESTS) expect(allowedIn(W, request), request.action).toEqual(inOrder(DPOS))
+    // Refused by name, each with a fresh re-authentication: every other role on its own, the
+    // combined holders who don't hold dpo, a DPO who has left, and an assistant, an agent and Hearth.
+    const refused: readonly ActorKey[] = [
+      'owner',
+      'admin',
+      'aiAdmin',
+      'leadership',
+      'compliance',
+      'teamAdmin',
+      'member',
+      'arjun',
+      'weiling',
+      'formerDpo',
+      'assistant',
+      'agent',
+      'system',
+    ]
+    for (const request of REQUESTS) {
+      for (const key of refused) {
+        expect(can(W, subjectOf(key), request, REAUTH), `${key} ${request.action}`).toBe(false)
+      }
+      expect(can(ashtonNotDpo, human(P.ashton), request, REAUTH), request.action).toBe(false)
+      expect(allowedIn(ashtonNotDpo, request), request.action).toEqual(['dpo'])
+    }
+  })
+
+  test('RQA-01 ACC-05 Rule 6: a DPO who has left, or whose role was revoked, reads and works no request and sets no target', () => {
+    const revoked = matrixWorld(f => ({
+      ...f,
+      roles: f.roles.map(r => (r.personId === ONE.dpo ? { ...r, revokedAt: 1 } : r)),
+    }))
+    const left = matrixWorld(f => ({
+      ...f,
+      people: f.people.map(p => (p.id === ONE.dpo ? { ...p, deactivatedAt: 1 } : p)),
+    }))
+    const all: readonly AdminRequest[] = [...REQUESTS, { action: 'case.log', person: P.marcus }]
+    for (const request of all) {
+      expect(can(W, human(ONE.dpo), request, REAUTH), request.action).toBe(true)
+      expect(can(W, human(P.formerDpo), request, REAUTH), request.action).toBe(false)
+      expect(can(revoked, human(ONE.dpo), request, REAUTH), request.action).toBe(false)
+      expect(can(left, human(ONE.dpo), request, REAUTH), request.action).toBe(false)
+    }
+  })
+
+  test('RQA-01 §9.4 D46 C0.9 PD-30: each, and logging a request, needs the DPO’s fresh PIN; a DPO session off the PIN rule never gets there', () => {
+    const pinRule: ReauthFacts = { stampFresh: true, pinSet: true, issuedUnderPinRule: true }
+    const codeSession: ReauthFacts = { stampFresh: true, pinSet: true, issuedUnderPinRule: false }
+    const all: readonly AdminRequest[] = [...REQUESTS, { action: 'case.log', person: P.rachel }]
+    for (const id of [ONE.dpo, P.ashton]) {
+      expect(reauthMethodOf(W, id, pinRule), id).toBe('pin')
+      expect(reauthMethodOf(W, id, codeSession), id).toBe('sign_in')
+      for (const request of all) {
+        const fresh = { reauthenticated: reauthenticated(W, id, pinRule) }
+        const stale = { reauthenticated: reauthenticated(W, id, { ...pinRule, stampFresh: false }) }
+        const code = { reauthenticated: reauthenticated(W, id, codeSession) }
+        expect(can(W, human(id), request, fresh), `${id} ${request.action}`).toBe(true)
+        expect(can(W, human(id), request, stale), `${id} ${request.action}`).toBe(false)
+        expect(can(W, human(id), request, code), `${id} ${request.action}`).toBe(false)
+        expect(can(W, human(id), request), `${id} ${request.action}`).toBe(false)
+      }
+    }
+  })
+
+  test('RQA-01 OD-14 PD-98: none names a case or a person to can(), so a field naming one changes nothing; the case a step names is the database’s to check', () => {
+    for (const request of REQUESTS) {
+      for (const named of [P.ashton, P.formerDpo, ORG_2_PEOPLE.owner, X.unknownPerson]) {
+        const smuggled = { ...request, person: named, case: named, requester: named } as unknown as AdminRequest
+        for (const a of ACTORS) {
+          expect(can(W, a.subject, smuggled, REAUTH), `${a.key} ${request.action} ${named}`).toBe(
+            can(W, a.subject, request, REAUTH),
+          )
+        }
+      }
+    }
+  })
+})
+
+describe('RQA-02 PDPA-04 PDPA-13 C0.9 OD-16 PD-89: a request the DPO logs', () => {
+  const log = (person: Id | null): AdminRequest => ({ action: 'case.log', person })
+
+  test('RQA-02 OD-16 PD-89: a DPO logs one for anyone else of the organisation, current or former, whatever they hold, or for someone without an account; nobody else logs any', () => {
+    for (const dpo of [ONE.dpo, P.ashton]) {
+      expect(can(W, human(dpo), log(null), REAUTH), `${dpo} null`).toBe(true)
+      for (const person of [
+        ONE.owner,
+        ONE.admin,
+        ONE.compliance,
+        ONE.member,
+        P.marcus,
+        P.weiling,
+        P.formerDpo,
+        P.formerAdmin,
+        P.farah,
+      ]) {
+        expect(can(W, human(dpo), log(person), REAUTH), `${dpo} ${person}`).toBe(true)
+      }
+    }
+    for (const a of ACTORS) {
+      if ((DPOS as readonly string[]).includes(a.key)) continue
+      for (const person of [null, P.marcus, P.formerDpo, P.kelvin]) {
+        expect(can(W, a.subject, log(person), REAUTH), `${a.key} ${person}`).toBe(false)
+      }
+    }
+  })
+
+  test('RQA-02 CLAUDE.md Database ACC-11 R9-03: never for yourself, nor for an id the organisation doesn’t hold, another org’s person, an assistant, an agent or Hearth', () => {
+    for (const dpo of [ONE.dpo, P.ashton]) {
+      expect(can(W, human(dpo), log(dpo), REAUTH), dpo).toBe(false)
+      for (const person of [X.unknownPerson, ORG_2_PEOPLE.owner, AS.ashton, AG.it, HEARTH]) {
+        expect(can(W, human(dpo), log(person), REAUTH), `${dpo} ${person}`).toBe(false)
+      }
+    }
+    // In their own org, another org's Owner is no DPO, so logs nothing there either.
+    const theirs = new World(otherOrgFacts())
+    expect(can(theirs, human(ORG_2_PEOPLE.owner), log(null), REAUTH)).toBe(false)
+  })
+
+  test('RQA-02 PD-89 ACC-05 PDPA-05: someone deactivated a moment ago is still someone a request may be logged for', () => {
+    const left = matrixWorld(f => ({
+      ...f,
+      people: f.people.map(p => (p.id === P.marcus ? { ...p, deactivatedAt: 1 } : p)),
+    }))
+    expect(left.isActivePerson(P.marcus)).toBe(false)
+    expect(allowedIn(left, log(P.marcus))).toEqual(inOrder(DPOS))
+    // Unlike an acknowledgement, which is recorded only for someone still at the organisation (OD-19).
+    expect(can(left, human(P.ashton), { action: 'notice.acknowledgement.record', person: P.marcus }, REAUTH)).toBe(
+      false,
+    )
+  })
+})
+
+describe('RQA-03 PDPA-13 C0.9 OD-07 OD-15 PD-96: your own requests to the DPO', () => {
+  const OWN: readonly SelfRequest[] = [{ action: 'case.send_own' }, { action: 'case.list_own' }]
+
+  test('RQA-03 PD-96: everyone active sends one and reads their own, with or without re-authentication; a leaver, another org’s Owner, an assistant, an agent and Hearth never do', () => {
+    for (const request of OWN) {
+      for (const context of [undefined, {}, { reauthenticated: false }, REAUTH]) {
+        expect(
+          ACTORS.filter(a => can(W, a.subject, request, context)).map(a => a.key),
+          `${request.action} ${JSON.stringify(context)}`,
+        ).toEqual(inOrder(ACTIVE_PEOPLE))
+      }
+      for (const key of ['formerDpo', 'otherOrgOwner', 'assistant', 'agent', 'system'] as const) {
+        expect(can(W, subjectOf(key), request, REAUTH), `${key} ${request.action}`).toBe(false)
+      }
+    }
+  })
+
+  test('RQA-03 OD-15 ACC-05: neither names anyone, so a field naming someone else changes nothing; someone deactivated a moment ago is refused at once', () => {
+    for (const request of OWN) {
+      for (const named of [P.ashton, P.formerDpo, ORG_2_PEOPLE.owner]) {
+        const smuggled = { ...request, person: named, requester: named } as unknown as SelfRequest
+        for (const a of ACTORS) {
+          expect(can(W, a.subject, smuggled), `${a.key} ${request.action} ${named}`).toBe(can(W, a.subject, request))
+        }
+      }
+      const left = matrixWorld(f => ({
+        ...f,
+        people: f.people.map(p => (p.id === P.marcus ? { ...p, deactivatedAt: 1 } : p)),
+      }))
+      expect(can(W, human(P.marcus), request), request.action).toBe(true)
+      expect(can(left, human(P.marcus), request), request.action).toBe(false)
     }
   })
 })

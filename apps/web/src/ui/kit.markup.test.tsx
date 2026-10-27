@@ -18,6 +18,7 @@ import { Avatar, initialsOf } from './Avatar.tsx'
 import { AVATAR_BG, avatarHue } from './avatar-hue.ts'
 import { Button, IconButton } from './Button.tsx'
 import { CodeField } from './CodeField.tsx'
+import { CountBadge, countText } from './CountBadge.tsx'
 import { Dialog } from './Dialog.tsx'
 import { EmptyState } from './EmptyState.tsx'
 import { CONTROL_CLASS, DIGITS_CONTROL_CLASS, Field } from './Field.tsx'
@@ -29,6 +30,7 @@ import { Segmented } from './Segmented.tsx'
 import { Select } from './Select.tsx'
 import { SkipLink } from './SkipLink.tsx'
 import { Switch } from './Switch.tsx'
+import { TextArea } from './TextArea.tsx'
 
 const html = (element: ReactElement) => renderToStaticMarkup(element)
 
@@ -227,6 +229,18 @@ describe('T21: the kit’s markup', () => {
     )
     one(markup, 'fieldset')
     expect(markup).toMatch(/<legend class="sr-only">Show<\/legend>/)
+    // A line elsewhere describes the group only when one is named (the log dialog's leaver line).
+    expect(markup).not.toContain('aria-describedby')
+    const described = html(
+      <Segmented
+        label="Show"
+        value="mine"
+        options={[{ value: 'mine', label: 'Mine' }]}
+        onChange={() => {}}
+        describedBy="show-note"
+      />,
+    )
+    expect(described).toMatch(/<fieldset aria-describedby="show-note"/)
     const radios = tags(markup, 'input')
     expect(radios.map(radio => radio.get('type'))).toEqual(['radio', 'radio'])
     expect(new Set(radios.map(radio => radio.get('name'))).size).toBe(1)
@@ -522,5 +536,72 @@ describe('T21: the kit’s markup', () => {
       return <p>{usePrefersReducedMotion() ? 'reduced' : 'full'}</p>
     }
     expect(html(<Motion />)).toBe('<p>full</p>')
+  })
+
+  it('RQW-10 PD-99 PPL-05: a Menu item without a badge renders exactly as before; with one, a pill after its label hidden from assistive technology, and the item named in words', () => {
+    const items = [
+      { id: 'settings', label: 'Settings', icon: Settings, onSelect: () => {} },
+      { id: 'sign-out', label: 'Sign out', icon: LogOut, onSelect: () => {} },
+    ]
+    const trigger = (props: Parameters<Parameters<typeof Menu>[0]['trigger']>[0]) => (
+      <IconButton {...props} label="Account, Ashton" icon={<Bell />} />
+    )
+    const plain = html(<Menu label="Account" items={items} trigger={trigger} />)
+    // A badge of undefined is no badge: the same markup.
+    expect(
+      html(<Menu label="Account" items={items.map(item => ({ ...item, badge: undefined }))} trigger={trigger} />),
+    ).toBe(plain)
+    expect(plain).not.toMatch(/role="menuitem"[^>]*aria-label=/)
+    const badged = html(
+      <Menu
+        label="Account"
+        items={[
+          items[0] as (typeof items)[0],
+          { ...(items[1] as (typeof items)[0]), badge: { text: '2', label: 'Sign out, 2 waiting' } },
+        ]}
+        trigger={trigger}
+      />,
+    )
+    const menuItems = tags(badged, 'button').filter(button => button.get('role') === 'menuitem')
+    expect(menuItems.map(item => item.get('aria-label'))).toEqual([undefined, 'Sign out, 2 waiting'])
+    expect(badged).toMatch(
+      /<span class="min-w-0 flex-1">Sign out<\/span><span aria-hidden="true" class="inline-flex h-5 min-w-5[^"]*bg-fg text-surface">2<\/span>/,
+    )
+  })
+
+  it('RQW-10 PD-99: CountBadge shows a whole count above 0 as text, at most 99+, hidden from assistive technology; 0 or none renders nothing', () => {
+    expect(html(<CountBadge count={3} />)).toMatch(
+      /^<span aria-hidden="true" class="[^"]*bg-fg text-surface[^"]*">3<\/span>$/,
+    )
+    expect(html(<CountBadge count={3} tone="inverse" />)).toMatch(/bg-surface text-fg/)
+    expect(html(<CountBadge count={250} />)).toMatch(/>99\+</)
+    for (const count of [0, null, undefined, -2]) expect(html(<CountBadge count={count} />), String(count)).toBe('')
+    expect(countText(100)).toBe('99+')
+  })
+
+  it('PD-96 Rule 8 WCAG 3.3.2: TextArea is labelled, its hint and notes describe it, its text is 16 px with a 44 px floor, five rows that grow, in its own direction, never autofilled, and an error marks it invalid', () => {
+    const markup = html(
+      <TextArea
+        label="What it’s about"
+        hint="Up to 4,000 characters."
+        notes={['3,700 of 4,000 characters']}
+        name="details"
+        value=""
+        onChange={() => {}}
+      />,
+    )
+    const box = one(markup, 'textarea')
+    const label = one(markup, 'label')
+    expect(label.get('for')).toBe(box.get('id'))
+    expect(box.get('dir')).toBe('auto')
+    expect(box.get('rows')).toBe('5')
+    expect(box.get('autoComplete')).toBe('off')
+    expect(box.has('maxLength')).toBe(false)
+    expect(classesOf(box)).toEqual(expect.arrayContaining(['text-base', 'min-h-11', 'resize-y']))
+    const described = (box.get('aria-describedby') ?? '').split(' ')
+    expect(described.map(id => textOfId(markup, id))).toEqual(['Up to 4,000 characters.', '3,700 of 4,000 characters'])
+    const invalid = html(<TextArea label="Note" error="Write the note." name="note" value="" onChange={() => {}} />)
+    expect(one(invalid, 'textarea').get('aria-invalid')).toBe('true')
+    expect(invalid).toContain('Write the note.')
   })
 })

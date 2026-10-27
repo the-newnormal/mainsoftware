@@ -101,6 +101,18 @@ export type AdminRequest =
   // person's name, department, manager and the day they were added, never a number or who has
   // acknowledged. An action of its own, so notice.read still names nobody (PD-49).
   | { action: 'notice.people.read' }
+  // The DPO's reply targets (C0.9 OD-08, PD-94): recording the next settings version with them.
+  // Reading them is notice.read's.
+  | { action: 'notice.targets.set' }
+  // A request to the DPO (PDPA-04, PDPA-13; C0.9 OD-06, OD-14, PD-98): reading the queue, one case
+  // with its steps and the people a request may be logged for (current and former); logging one that
+  // came outside Hearth, for a person of the organisation (never yourself; null for someone without
+  // an account, OD-16); and recording a step or the closure. The DPO alone (OD-14): never an Owner,
+  // Admin or Compliance Officer as such, counts included. Not Rule 9: request details aren't Rule 9
+  // material (OD-06), and no content is read here.
+  | { action: 'case.read' }
+  | { action: 'case.log'; person: Id | null }
+  | { action: 'case.step' }
 
 // Your own session, devices and passkeys (ACC-02, ACC-04, T21), for any active person. Reading your
 // own session, listing and signing out devices need no re-authentication and are never refused,
@@ -123,6 +135,12 @@ export type SelfRequest =
   // person and with no re-authentication, so the notice gate never locks anyone out.
   | { action: 'notice.read_own' }
   | { action: 'notice.acknowledge_own' }
+  // Your own requests to the DPO (PDPA-13; C0.9 OD-07, OD-13, OD-15, PD-96, PD-97): sending one, and
+  // reading the ones you are the requester of, sent or logged for you, never one you are only named
+  // in. For any active person, with no re-authentication; outside NOTICE_FREE, so only once you
+  // have acknowledged the current notice.
+  | { action: 'case.send_own' }
+  | { action: 'case.list_own' }
 
 // A live topic on the realtime gateway (BUILD-PLAN C0.7, TECH-SPEC T19 item 7): a person's own,
 // their org's, or a team's. C1.1 adds spaces, decided by canRead or by membership (OD-05).
@@ -176,6 +194,10 @@ export const ADMIN_ACTIONS = new Set<string>([
   'notice.contact.set',
   'notice.acknowledgement.record',
   'notice.people.read',
+  'notice.targets.set',
+  'case.read',
+  'case.log',
+  'case.step',
 ])
 
 export function isAdminRequest(request: Request): request is AdminRequest {
@@ -190,6 +212,8 @@ export const SELF_ACTIONS = new Set<string>([
   'session.read_own',
   'notice.read_own',
   'notice.acknowledge_own',
+  'case.send_own',
+  'case.list_own',
 ])
 
 export function isSelfRequest(request: Request): request is SelfRequest {

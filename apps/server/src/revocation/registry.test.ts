@@ -32,7 +32,6 @@ import { productionRegistries } from '#src/worker/index.ts'
 const ORG = 'a0000000-0000-4000-8000-000000000001'
 const PERSON = 'b0000000-0000-4000-8000-000000000001'
 const OTHER = 'b0000000-0000-4000-8000-000000000002'
-const ADMIN = 'b0000000-0000-4000-8000-000000000003'
 const SYSTEM = 'c0000000-0000-4000-8000-000000000001'
 const JOB = 'd0000000-0000-4000-8000-000000000009'
 const S1 = 'e0000000-0000-4000-8000-000000000001'
@@ -63,7 +62,6 @@ function event(id: number, type: OutboxRow['type'], ids: Record<string, unknown>
     entity: { type: 'person', id: PERSON },
     container: null,
     acl: null,
-    actor: { id: ADMIN, kind: 'human' },
     subjects: [PERSON],
     purpose: 'accounts',
     tombstone: false,
@@ -506,8 +504,6 @@ describe('C0.7 OD-39 S8 PDPA-04: no processing switch holds back a revocation', 
       acl_more: null,
       index_class: null,
       acl_epoch: null,
-      actor_id: ADMIN,
-      actor_kind: 'human',
       subject_ids: [PERSON],
       purpose: 'accounts',
       tombstone: false,

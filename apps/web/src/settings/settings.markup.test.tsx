@@ -1,12 +1,18 @@
 // Settings and its Privacy section, rendered with react-dom/server in Node inside the shell (C0.9
 // PD-47; PDPA-02 "always available in Settings", PDPA-03), and from C0.9 PR 3a how to reach the
 // Data Protection Officer there (PDPA-13; OD-12, PD-69) and the acknowledgements the DPO records
-// (OD-19, PD-75). How they lay out at each width is the e2e suite's (shell.spec.ts NTE-01).
-import type { NoticeForClient } from '@hearth/shared'
+// (OD-19, PD-75), and from C0.9 PR 3b the requests form and "Your requests" (OD-07, OD-15, PD-96,
+// PD-97; NTW-15). How they lay out at each width is the e2e suite's (shell.spec.ts NTE-01, NTE-02).
+import { MyRequestsResponseForClient, type NoticeForClient } from '@hearth/shared'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory } from '@tanstack/react-router'
+import { createRef, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { ApiFailure } from '@/api/http.ts'
+import { ownRequestsQuery } from '@/api/queries.ts'
 import { App } from '@/app/App.tsx'
+import { RuntimeContext } from '@/app/runtime-context.ts'
 import { formattersFor } from '@/lib/time.ts'
 import { createLiveStore } from '@/live/live-status.ts'
 import { APP_PATHS } from '@/router/paths.ts'
@@ -16,7 +22,21 @@ import { createQueryClient } from '@/session/query-client.ts'
 import type { SessionRuntime } from '@/session/runtime.ts'
 import { aiCopyIn } from '@/strings/ai-copy.ts'
 import { SETTINGS } from '@/strings/notice.ts'
+import { REQUEST_KINDS, REQUESTS } from '@/strings/requests.ts'
 import { ContactSection } from './PrivacySettings.tsx'
+import { DiscardQuestion, RequestSheetDialog } from './RequestsSection.tsx'
+import {
+  draftsAfter,
+  failedSheet,
+  NO_DRAFTS,
+  openSheet,
+  type RequestSheet,
+  sendBodyOf,
+  sendingSheet,
+  sentSheet,
+  sheetFor,
+  withText,
+} from './requests-model.ts'
 import { SETTINGS_SECTIONS } from './sections.ts'
 
 // Marcus, from the Tembusu seed (db/seed/tembusu.sql), who has acknowledged its notice.
@@ -61,10 +81,71 @@ const CONTACT = {
   postal: '1 Example Road\nUnit 01-01\nSingapore 000000',
 } as const
 
-async function appAt(path: string, notice?: NoticeForClient): Promise<string> {
+// Marcus's own requests (C0.9 OD-15, PD-97), as GET /api/requests would answer: one replied to on
+// time, one past its target day with no reply, one closed. Every reference is made up.
+const TODAY = '2026-11-12'
+function myRequests(change: Record<string, unknown> = {}) {
+  return MyRequestsResponseForClient.parse({
+    today: TODAY,
+    requests: [
+      {
+        id: 'c0000000-0000-4000-8000-000000000001',
+        reference: 'K7QMX3TD',
+        kind: 'complaint',
+        cameBy: 'hearth',
+        receivedOn: '2026-10-27',
+        state: 'in_progress',
+        dueOn: '2026-11-10',
+        repliedOn: '2026-11-04',
+        repliedInTime: true,
+        closedOn: null,
+      },
+      {
+        id: 'c0000000-0000-4000-8000-000000000002',
+        reference: 'BC2DFG3H',
+        kind: 'access',
+        cameBy: 'email',
+        receivedOn: '2026-10-01',
+        state: 'received',
+        dueOn: '2026-10-31',
+        repliedOn: null,
+        repliedInTime: false,
+        closedOn: null,
+      },
+      {
+        id: 'c0000000-0000-4000-8000-000000000003',
+        reference: 'MNP4QRS5',
+        kind: 'question',
+        cameBy: 'hearth',
+        receivedOn: '2026-08-03',
+        state: 'closed',
+        dueOn: null,
+        repliedOn: '2026-08-05',
+        repliedInTime: true,
+        closedOn: '2026-08-07',
+      },
+    ],
+    more: false,
+    open: 2,
+    ...change,
+  })
+}
+
+type Requests = ReturnType<typeof myRequests> | ApiFailure
+
+async function appAt(path: string, notice?: NoticeForClient, requests?: Requests): Promise<string> {
   const queryClient = createQueryClient(() => {})
   queryClient.setQueryData(['session'], MARCUS)
   if (notice !== undefined) queryClient.setQueryData(['notice'], notice)
+  if (requests instanceof ApiFailure) {
+    // A failed read stays failed as the page mounts (no retry on mount), as it shows once the
+    // browser's first fetch has failed.
+    queryClient.setQueryDefaults(ownRequestsQuery.queryKey, { retryOnMount: false })
+    queryClient
+      .getQueryCache()
+      .build(queryClient, { queryKey: ownRequestsQuery.queryKey })
+      .setState({ status: 'error', error: requests, fetchStatus: 'idle' })
+  } else if (requests !== undefined) queryClient.setQueryData(ownRequestsQuery.queryKey, requests)
   const noop = () => {}
   const runtime = {
     info: MARCUS,
@@ -118,7 +199,7 @@ describe('C0.9 PD-47: Settings (settings/)', () => {
     expect(links).toEqual([
       {
         href: '/settings/privacy',
-        text: 'Privacy How to reach the Data Protection Officer, the privacy notice and your acknowledgements',
+        text: 'Privacy How to reach the Data Protection Officer, questions and requests, the privacy notice and your acknowledgements',
         tall: true,
       },
     ])
@@ -128,9 +209,12 @@ describe('C0.9 PD-47: Settings (settings/)', () => {
     const markup = await appAt('/settings/privacy', ACKNOWLEDGED)
     expect(textsOf(markup, 'h1')).toEqual(['Privacy'])
     const screen = screenOf(markup)
-    // The contact first (C0.9 OD-12; PR 3b inserts its form after it), then the notice, then yours.
+    // The contact first (C0.9 OD-12), then the form and your requests (PR 3b, NTW-15), then the
+    // notice, then yours.
     expect(textsOf(screen, 'h2')).toEqual([
       'Contact the Data Protection Officer',
+      'Questions and requests',
+      'Your requests',
       'Privacy notice',
       'Your acknowledgements',
     ])
@@ -162,6 +246,8 @@ describe('C0.9 PD-47: Settings (settings/)', () => {
     expect(textsOf(none, 'p')).toEqual([
       SETTINGS.privacy.contact.body,
       SETTINGS.privacy.contact.none,
+      REQUESTS.intro,
+      REQUESTS.mine.loading,
       'No privacy notice has been published yet.',
       'You haven’t acknowledged a version yet.',
     ])
@@ -250,5 +336,281 @@ describe('C0.9 PD-47: Settings (settings/)', () => {
       ]),
     )
     expect(textsOf(screen, 'span').filter(text => text.startsWith('How: '))).toHaveLength(1)
+  })
+})
+
+// The sheet on its own, inside what it reads: Marcus's QueryClient and runtime.
+function alone(node: ReactNode): string {
+  const queryClient = createQueryClient(() => {})
+  queryClient.setQueryData(['session'], MARCUS)
+  const runtime = { info: MARCUS, queryClient, formatters: formattersFor(MARCUS.timeZone) } as unknown as SessionRuntime
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <RuntimeContext value={runtime}>{node}</RuntimeContext>
+    </QueryClientProvider>,
+  )
+}
+
+const decoded = (text: string) => text.replaceAll('&#x27;', "'").replaceAll('&quot;', '"').replaceAll('&amp;', '&')
+
+// What a reader meets: the text of every element, one line each.
+const readable = (markup: string) =>
+  markup
+    .replace(/<[^>]+>/g, '\n')
+    .split('\n')
+    .map(line => decoded(line.trim()))
+    .filter(Boolean)
+
+// The buttons, by their accessible name, with whether each is held.
+const buttonsOf = (markup: string) =>
+  [...markup.matchAll(/<button\b([^>]*)>(.*?)<\/button>/gs)].map(match => ({
+    name: decoded((match[1] ?? '').match(/aria-label="([^"]*)"/)?.[1] ?? (match[2] ?? '').replace(/<[^>]+>/g, '')),
+    held: /aria-disabled="true"/.test(match[1] ?? ''),
+  }))
+
+const PUBLISHED_TARGETS = { businessDays: 7, calendarDays: 21 }
+
+describe('C0.9 PR 3b: requests to the Data Protection Officer on Settings › Privacy (settings/)', () => {
+  it('NTW-15 OD-07 OD-15 T22 item 41: the page reads the contact, then Questions and requests (the six kinds as rows of at least 44 px, in OD-07’s order), then Your requests, then the notice, then your acknowledgements', async () => {
+    const screen = screenOf(
+      await appAt('/settings/privacy', { ...ACKNOWLEDGED, targets: PUBLISHED_TARGETS }, myRequests()),
+    )
+    expect(textsOf(screen, 'h2')).toEqual([
+      SETTINGS.privacy.contact.title,
+      REQUESTS.title,
+      REQUESTS.mine.title,
+      SETTINGS.privacy.noticeTitle,
+      SETTINGS.privacy.historyTitle,
+    ])
+    const kinds = buttonsOf(screen).map(button => button.name)
+    expect(kinds).toEqual(Object.values(REQUEST_KINDS))
+    expect([...screen.matchAll(/<button\b([^>]*)>/g)].every(match => /\bmin-h-11\b/.test(match[1] ?? ''))).toBe(true)
+    expect(readable(screen).filter(text => aiCopyIn(text) !== undefined)).toEqual([])
+  })
+
+  it('RQW-05 OD-15 PD-97 PD-112: Your requests shows each row’s kind, state in words, reference spelled out and never broken, how it came and its days; the DPO’s reply day; past its target day with what to do only when no reply is recorded; never the words or the outcome', async () => {
+    const screen = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED, myRequests()))
+    const text = readable(screen)
+    expect(text).toEqual(
+      expect.arrayContaining([
+        'A complaint',
+        'In progress',
+        'K7QM-X3TD',
+        'Reference K 7 Q M, X 3 T D',
+        '· Sent in Hearth',
+        'Received Tue 27 Oct 2026 · Reply due Tue 10 Nov 2026',
+        'The Data Protection Officer replied on Wed 4 Nov 2026.',
+        'A copy of my data',
+        'Received',
+        '· Received by email',
+        'Past its target day (Sat 31 Oct 2026).',
+        REQUESTS.mine.lateHelp,
+        'Closed',
+        'Received Mon 3 Aug 2026 · Closed Fri 7 Aug 2026',
+      ]),
+    )
+    // The complaint was replied to on time: it never reads as late (PD-112). Only the copy does.
+    expect(text.filter(line => line.startsWith('Past its target day'))).toEqual([
+      'Past its target day (Sat 31 Oct 2026).',
+    ])
+    expect(screen).toMatch(/translate="no" class="whitespace-nowrap"/)
+    // Each row takes focus after Done (by the case's id).
+    expect(screen).toContain('id="request-c0000000-0000-4000-8000-000000000001" tabindex="-1"')
+    expect(text.filter(line => aiCopyIn(line) !== undefined)).toEqual([])
+  })
+
+  it('RQW-05 PD-97: Your requests says when it is loading, when there are none, when it can’t be read (and the form still shows), and when the list was cut at 50', async () => {
+    const loading = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED))
+    expect(loading).toMatch(/<p role="status"[^>]*>Loading your requests…<\/p>/)
+    const none = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED, myRequests({ requests: [], open: 0 })))
+    expect(readable(none)).toContain(REQUESTS.mine.empty)
+    const failed = screenOf(
+      await appAt('/settings/privacy', ACKNOWLEDGED, new ApiFailure(503, 'unavailable', 'Try again.')),
+    )
+    expect(readable(failed)).toContain(REQUESTS.mine.unreadable)
+    expect(readable(failed)).not.toContain(REQUESTS.mine.empty)
+    // The form shows whether or not Your requests could be read.
+    expect(buttonsOf(failed).map(button => button.name)).toEqual(Object.values(REQUEST_KINDS))
+    const cut = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED, myRequests({ more: true })))
+    expect(readable(cut)).toContain(REQUESTS.mine.cut)
+  })
+
+  it('RQW-05 PD-96 OD-25: with 10 open requests the kinds are replaced by the cap’s line, so nobody writes what they can’t send; an unreadable count leaves the kinds', async () => {
+    const cap = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED, myRequests({ open: 10 })))
+    expect(readable(cap)).toContain(REQUESTS.atCap)
+    expect(buttonsOf(cap).map(button => button.name)).not.toContain(REQUEST_KINDS.complaint)
+    const unknown = screenOf(await appAt('/settings/privacy', ACKNOWLEDGED, myRequests({ open: 'ten' })))
+    expect(buttonsOf(unknown).map(button => button.name)).toContain(REQUEST_KINDS.complaint)
+  })
+
+  it('RQW-03 OD-07 PD-96 PD-102: a kind’s sheet gives what happens next, the published target for the kind, that the reply comes outside Hearth, a 16 px box of five rows in its own direction with its hint, who it is sent as, and Send held until something is written; never an invented figure', () => {
+    const sheet = openSheet('complaint', 'd0000000-0000-4000-8000-000000000001')
+    const markup = alone(
+      <RequestSheetDialog
+        sheet={sheet}
+        onChange={() => {}}
+        targets={PUBLISHED_TARGETS}
+        open={2}
+        onDone={() => {}}
+        onDiscard={() => {}}
+        onSetAside={() => {}}
+      />,
+    )
+    expect(textsOf(markup, 'h2')).toEqual([REQUEST_KINDS.complaint])
+    const text = readable(markup)
+    expect(text).toEqual(
+      expect.arrayContaining([
+        'Say what went wrong. If you’d rather not raise it with your organisation, you can contact the PDPC instead, as the privacy notice says.',
+        'The Data Protection Officer aims to reply within 7 business days.',
+        REQUESTS.reply,
+        REQUESTS.field,
+        REQUESTS.hint,
+        'Sent as Marcus Lim. The Data Protection Officer may check it’s you before replying.',
+      ]),
+    )
+    const box = markup.match(/<textarea\b([^>]*)>/)?.[1] ?? ''
+    expect(box).toMatch(/dir="auto"/)
+    expect(box).toMatch(/rows="5"/)
+    expect(box).toMatch(/\btext-base\b/)
+    expect(box).toMatch(/\bmin-h-11\b/)
+    expect(box).toMatch(/\bresize-y\b/)
+    expect(box).not.toMatch(/maxLength/)
+    expect(buttonsOf(markup).find(button => button.name === REQUESTS.send)).toEqual({ name: REQUESTS.send, held: true })
+    // No target line when the notice prints none, or couldn't be read.
+    for (const targets of [null, undefined]) {
+      const bare = alone(
+        <RequestSheetDialog
+          sheet={sheet}
+          onChange={() => {}}
+          targets={targets}
+          open={2}
+          onDone={() => {}}
+          onDiscard={() => {}}
+          onSetAside={() => {}}
+        />,
+      )
+      expect(readable(bare).filter(line => line.includes('aims to reply'))).toEqual([])
+    }
+    // A copy of their data counts calendar days, and may be sent with nothing written.
+    const copy = alone(
+      <RequestSheetDialog
+        sheet={openSheet('access', 'd0000000-0000-4000-8000-000000000002')}
+        onChange={() => {}}
+        targets={PUBLISHED_TARGETS}
+        open={2}
+        onDone={() => {}}
+        onDiscard={() => {}}
+        onSetAside={() => {}}
+      />,
+    )
+    expect(readable(copy)).toEqual(
+      expect.arrayContaining([
+        'The Data Protection Officer aims to reply within 21 calendar days.',
+        REQUESTS.fieldOptional,
+      ]),
+    )
+    expect(buttonsOf(copy).find(button => button.name === REQUESTS.send)?.held).toBe(false)
+    expect(text.filter(line => aiCopyIn(line) !== undefined)).toEqual([])
+  })
+
+  it('RQW-03 RQW-04 OD-22 PD-96: written, Send acts; an ID-number shape adds a hint, never a refusal; once sent, the sheet’s content is the confirmation with the due day and the reference, and Done alone', () => {
+    const written = withText(
+      openSheet('question', 'd0000000-0000-4000-8000-000000000003'),
+      'My number is S1234567D, please check.',
+    )
+    const markup = alone(
+      <RequestSheetDialog
+        sheet={written}
+        onChange={() => {}}
+        targets={PUBLISHED_TARGETS}
+        open={2}
+        onDone={() => {}}
+        onDiscard={() => {}}
+        onSetAside={() => {}}
+      />,
+    )
+    expect(buttonsOf(markup).find(button => button.name === REQUESTS.send)?.held).toBe(false)
+    expect(readable(markup)).toContain(REQUESTS.idHint)
+    const sent = sentSheet(written, {
+      case: 'c0000000-0000-4000-8000-000000000009',
+      reference: 'K7QMX3TD' as never,
+      dueOn: '2026-11-10',
+      changed: true,
+    })
+    const confirmation = alone(
+      <RequestSheetDialog
+        sheet={sent}
+        onChange={() => {}}
+        targets={PUBLISHED_TARGETS}
+        open={2}
+        onDone={() => {}}
+        onDiscard={() => {}}
+        onSetAside={() => {}}
+      />,
+    )
+    expect(textsOf(confirmation, 'p')).toEqual([
+      'Sent to the Data Protection Officer.',
+      'They aim to reply by Tue 10 Nov 2026.',
+      'Your reference is K7QM-X3TD. Quote it if you write to them about this request.',
+      'You can follow it under “Your requests”.',
+    ])
+    expect(buttonsOf(confirmation).map(button => button.name)).toEqual(['Close', REQUESTS.done])
+    expect(confirmation).not.toContain('<textarea')
+    // Nothing claims the DPO was told.
+    expect(readable(confirmation).filter(line => /\b(?:told|alerted|notified)\b/.test(line))).toEqual([])
+  })
+
+  it('RQW-03 PD-96 WS-01 lost words: a sheet the browser closed with no decision (Chrome’s second Escape) reopens from its kind’s row with the words, the same key and why the last send didn’t land, in the box, never the discard question; another kind opens empty; after Discard or Done it opens empty', () => {
+    const written = withText(
+      openSheet('complaint', 'd0000000-0000-4000-8000-000000000004'),
+      'The rota went to the wrong group.',
+    )
+    const failed = failedSheet(sendingSheet(written), { status: 0, code: 'network', serverMessage: '' }, 2)
+    const drafts = draftsAfter(NO_DRAFTS, failed, 'forced')
+    const render = (sheet: RequestSheet) =>
+      alone(
+        <RequestSheetDialog
+          sheet={sheet}
+          onChange={() => {}}
+          targets={PUBLISHED_TARGETS}
+          open={2}
+          onDone={() => {}}
+          onDiscard={() => {}}
+          onSetAside={() => {}}
+        />,
+      )
+    // The row's next opening, with a new key made: the draft comes back, with its own key.
+    const reopened = sheetFor(drafts, 'complaint', 'd0000000-0000-4000-8000-000000000005')
+    expect(sendBodyOf(reopened)).toEqual({
+      kind: 'complaint',
+      details: 'The rota went to the wrong group.',
+      key: 'd0000000-0000-4000-8000-000000000004',
+    })
+    const markup = render(reopened)
+    expect(decoded(markup.match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1] ?? '')).toBe(
+      'The rota went to the wrong group.',
+    )
+    expect(readable(markup)).toContain(REQUESTS.failed)
+    expect(markup).not.toContain(REQUESTS.discard)
+    expect(buttonsOf(markup).find(button => button.name === REQUESTS.send)?.held).toBe(false)
+    // Another kind opens empty, and the complaint's draft stays.
+    const question = render(sheetFor(drafts, 'question', 'd0000000-0000-4000-8000-000000000006'))
+    expect(question.match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1]).toBe('')
+    // Discard or Done clears it: the row opens a new, empty sheet with the new key.
+    for (const how of ['discarded', 'done'] as const) {
+      const after = sheetFor(draftsAfter(drafts, reopened, how), 'complaint', 'd0000000-0000-4000-8000-000000000007')
+      expect(after).toEqual(openSheet('complaint', 'd0000000-0000-4000-8000-000000000007'))
+      expect(render(after).match(/<textarea\b[^>]*>([^<]*)<\/textarea>/)?.[1]).toBe('')
+    }
+  })
+
+  it('RQW-03 X6 R8: the discard question is a group named by the question, which takes focus (tabindex -1) so a screen reader reads it first, with Keep writing before Discard', () => {
+    const markup = alone(<DiscardQuestion question={createRef()} onKeep={() => {}} onDiscard={() => {}} />)
+    const group = markup.match(/<fieldset aria-labelledby="([^"]+)"/)
+    const question = markup.match(/<p id="([^"]+)" tabindex="-1"[^>]*>(.*?)<\/p>/)
+    expect(group?.[1]).toBeDefined()
+    expect(question?.[1]).toBe(group?.[1])
+    expect(decoded(question?.[2] ?? '')).toBe(REQUESTS.discard)
+    expect(buttonsOf(markup).map(button => button.name)).toEqual([REQUESTS.discardNo, REQUESTS.discardYes])
   })
 })

@@ -44,14 +44,15 @@ $$;
 -- RGS-01 (PDPA-01, C0.9 PD-03, PD-06): every org has exactly the defaults' version 1 of each
 -- purpose, naming nobody and recording nothing, and the defaults' entry for each provider, untouched:
 -- the fixture orgs (beside the rows the fixture adds, e4 and e5) and an org made now, through the
--- orgs trigger. The defaults: 23 purposes, of which the two pinned (core.system's) and
--- security_audit and backups start active and every other one planned; the ten AI ones planned;
+-- orgs trigger. The defaults: 24 purposes, of which the two pinned (core.system's) and
+-- security_audit, backups and request_handling (0012, C0.9 OD-17, PD-87: RQD-17) start active and
+-- every other one planned; the ten AI ones planned;
 -- PDPA-04's list needs a switch, the transcription test set aside. Ten providers, openai and bedrock
 -- the AI ones.
-select pg_temp.check(cardinality(pg_temp.default_purposes()) = 23 and cardinality(pg_temp.default_providers()) = 10,
-                     'the defaults do not list 23 purposes and 10 providers');
+select pg_temp.check(cardinality(pg_temp.default_purposes()) = 24 and cardinality(pg_temp.default_providers()) = 10,
+                     'the defaults do not list 24 purposes and 10 providers');
 select pg_temp.check(
-  array_agg(d.purpose order by d.purpose) filter (where d.status = 'active') = '{accounts,backups,security_audit,service_operation}'
+  array_agg(d.purpose order by d.purpose) filter (where d.status = 'active') = '{accounts,backups,request_handling,security_audit,service_operation}'
   and array_agg(d.purpose order by d.purpose) filter (where d.pinned) = '{accounts,service_operation}'
   and array_agg(d.purpose order by d.purpose) filter (where d.ai) = '{agents,ai_cost_figures,ai_writing,assistant,meeting_notes,org_brain,people_inference,transcription,transcription_test_set,voice_message_transcription}'
   and array_agg(d.purpose order by d.purpose) filter (where d.needs_switch) = '{agents,ai_cost_figures,ai_writing,assistant,meeting_notes,org_brain,people_inference,recording_drop_in,recording_meetings,transcription,voice_message_transcription}'
@@ -69,7 +70,7 @@ select pg_temp.check(
   'a fixture org does not have the defaults'' entries (aws aside, which the fixture recorded)');
 insert into public.orgs (id, name) values ('f3000000-0000-4000-8000-000000000000', 'A new org');
 select pg_temp.check(pg_temp.first_versions('3') = pg_temp.default_purposes() and pg_temp.first_entries('3') = pg_temp.default_providers()
-                     and (select count(*) from public.processing_register where org_id = pg_temp.id('3', '00')) = 23
+                     and (select count(*) from public.processing_register where org_id = pg_temp.id('3', '00')) = 24
                      and (select count(*) from public.transfer_register where org_id = pg_temp.id('3', '00')) = 10
                      and not exists (select 1 from public.transfer_clearances where org_id = pg_temp.id('3', '00')),
                      'a new org did not get exactly the defaults, with nothing cleared');
@@ -254,13 +255,13 @@ select pg_temp.check((select count(*) from public.processing_register) = 0 and (
                      and (select count(*) from public.processing_restrictions) = 0, 'hearth_queue saw a register row with no org set');
 reset role;
 select pg_temp.act_as('2', 'a5');
-select pg_temp.check((select count(*) filter (where org_id = pg_temp.id('2', '00')) = 24 and count(*) = 24 from public.processing_register)
+select pg_temp.check((select count(*) filter (where org_id = pg_temp.id('2', '00')) = 25 and count(*) = 25 from public.processing_register)
                      and (select count(*) filter (where org_id = pg_temp.id('2', '00')) = 10 and count(*) = 10 from public.transfer_register)
                      and (select count(*) filter (where org_id = pg_temp.id('2', '00')) = 1 and count(*) = 1 from public.transfer_clearances),
                      'hearth_app acting in org 2 did not see exactly org 2''s register rows');
 reset role;
 select pg_temp.act_as_job('1', 'hearth_queue');
-select pg_temp.check((select count(*) filter (where org_id = pg_temp.id('1', '00')) = 24 and count(*) = 24 from public.processing_register)
+select pg_temp.check((select count(*) filter (where org_id = pg_temp.id('1', '00')) = 25 and count(*) = 25 from public.processing_register)
                      and (select count(*) filter (where org_id = pg_temp.id('1', '00')) = 10 and count(*) = 10 from public.transfer_register)
                      and (select count(*) filter (where org_id = pg_temp.id('1', '00')) = 1 and count(*) = 1 from public.transfer_clearances)
                      and (select count(*) filter (where org_id = pg_temp.id('1', '00')) = 1 and count(*) = 1 from public.processing_restrictions),
@@ -478,7 +479,7 @@ select pg_temp.check(not exists (
 select pg_temp.check(bool_and(n = top), 'a purpose''s versions skip a number')
 from (select org_id, purpose, count(*) as n, max(version) as top from public.processing_register group by org_id, purpose) v;
 -- Another org's register is untouched.
-select pg_temp.check(count(*) = 23 + 1, 'a change reached org 2''s register')
+select pg_temp.check(count(*) = 24 + 1, 'a change reached org 2''s register')
 from public.processing_register where org_id = pg_temp.id('2', '00');
 
 -- RGS-07 (PDPA-04a, C0.9 PD-10): the processing-restrictions hook. A restriction is admitted only

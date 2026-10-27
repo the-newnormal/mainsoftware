@@ -38,6 +38,8 @@
 #   transfer_clearances are validated; in org C, the bootstrap's clearance of Twilio again is
 #   refused as cleared before without the emergency marker (0009's refusal), and as cleared
 #   already with it (the re-clear's).
+# 0012 (C0.9 PR 3b) is applied here too, as everything after 0010 is, and changes no notice row; its
+# own upgrade check, over data built at 0011, is scripts/check-cases-upgrade.sh (PD-107).
 # The data is made up; none of it is anyone's.
 #
 # Usage, after a full scratch build (BASE_DB, default hearth_check):

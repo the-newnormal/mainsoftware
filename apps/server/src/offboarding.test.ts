@@ -52,7 +52,6 @@ function event(id: number, person = PERSON): OutboxRow {
     entity: { type: 'person', id: person },
     container: null,
     acl: null,
-    actor: { id: ADMIN, kind: 'human' },
     subjects: [person],
     purpose: 'accounts',
     tombstone: false,

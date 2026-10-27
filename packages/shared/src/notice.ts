@@ -4,15 +4,27 @@
 // what changed between two versions, and the bodies and answers of /api/notice and
 // /api/admin/notice. From C0.9 PR 3a (OD-11, OD-19): the DPO's contact each version printed, and the
 // acknowledgements the DPO records for someone who acknowledged outside Hearth, with the people
-// they pick from. The words are notice-text.ts's, which only the server runs (the web imports it in
-// tests); the database decides what is published (migration 0011's publish_notice()). The problems
-// and warnings are codes; the pages word each (apps/web's strings), never this file.
+// they pick from. From C0.9 PR 3b (OD-08, PD-95): the reply targets each version printed, which
+// only a generator from c09.3 prints. The words are notice-text.ts's, which only the server runs
+// (the web imports it in tests); the database decides what is published (migration 0011's
+// publish_notice()). The problems and warnings are codes; the pages word each (apps/web's strings),
+// never this file.
 //
 // The server loads this file on Node (T2), and the package compiles with lib ES2024 and no DOM or
 // Node types.
 import { z } from 'zod'
 import { aiCopyIn } from './ai-copy.ts'
-import { type DpoContact, flatText, NoticeContact, NoticeContactForClient, sameContact } from './dpo-contact.ts'
+import {
+  type DpoContact,
+  flatText,
+  NoticeContact,
+  NoticeContactForClient,
+  type ReplyTargets,
+  ReplyTargetsForClient,
+  ReplyTargetsSchema,
+  sameContact,
+  sameTargets,
+} from './dpo-contact.ts'
 import { LowerUuid } from './ids.ts'
 import { PROVIDERS, type ProviderKey, PURPOSE_KEYS, type PurposeKey } from './purposes.ts'
 import { NON_AI_PROVIDERS, NON_AI_PURPOSE_KEYS, type TransferFacts } from './registers.ts'
@@ -37,6 +49,19 @@ export const NOTICE_BODY_MAX = 100_000
 
 // The generator ids notice_versions.generator admits (0010's check); null marks a stand-in.
 export const NOTICE_GENERATOR_PATTERN = /^[a-z0-9][a-z0-9.-]{0,31}$/
+
+// The generators that printed no reply targets (C0.9 PD-93, PD-95): every one before c09.3, a
+// closed and historic list that never grows. A version they wrote states no targets, whatever its
+// linked settings row now reads (every row recorded before 0012 reads OD-08's defaults), so what it
+// stated is decided by its generator, never by those figures. 0012's notice_states_targets() names
+// the same two (NTS-10 and RQD-09 pin both).
+export const TARGETLESS_GENERATORS = ['c09.1', 'c09.2'] as const
+
+// Whether a version from this generator printed the DPO's reply targets: a generated version (a
+// stand-in, null, prints none) from a generator not on the closed list above.
+export function printsTargets(generator: string | null): boolean {
+  return generator !== null && !(TARGETLESS_GENERATORS as readonly string[]).includes(generator)
+}
 
 // --- What a version states about each provider (C0.9 PD-41) ------------------------------------
 
@@ -200,13 +225,16 @@ export interface NoticeWarning {
 // words (null for a draft that can't be written yet), the register version of each purpose it lists
 // (active or retired, C0.9 PD-60), each provider's clearance with the facts that clearance rests
 // on, and the DPO's settings version it printed, with its contact (C0.9 PD-66; null on a stand-in
-// and on a version that printed none, such as a c09.1 one). A stand-in lists nothing.
+// and on a version that printed none, such as a c09.1 one), and the reply targets it printed (C0.9
+// PD-95; null on a stand-in and on a c09.1 or c09.2 version, whatever its linked settings row reads:
+// printsTargets()), or a draft's current ones. A stand-in lists nothing.
 export interface NoticeSources {
   generator: string | null
   body: string | null
   purposes: readonly { key: PurposeKey; version: number }[]
   clearances: readonly { id: string; provider: ProviderKey; facts: NoticeFacts }[]
   contact: { version: number; facts: DpoContact } | null
+  targets: ReplyTargets | null
 }
 
 // How the DPO's contact changed from one version to the next (C0.9 PD-67), comparing what the two
@@ -219,15 +247,25 @@ export interface NoticeSources {
 export const NOTICE_CONTACT_CHANGES = ['same', 'added', 'changed'] as const
 export type NoticeContactChange = (typeof NOTICE_CONTACT_CHANGES)[number]
 
+// How the DPO's reply targets changed from one version to the next (C0.9 PD-95), comparing what the
+// two printed:
+//   same     neither prints them, or both print the same figures
+//   added    the earlier version printed none and this one does: the first c09.3 version after a
+//            c09.2 one, or after a stand-in
+//   changed  both print them, with other figures
+export const NOTICE_TARGET_CHANGES = ['same', 'added', 'changed'] as const
+export type NoticeTargetChange = (typeof NOTICE_TARGET_CHANGES)[number]
+
 // What changed from one version to the next, in the registries' order: the purposes and providers
 // added, changed (a purpose at a new register version; a provider stating other facts, so one
-// cleared again on the same facts hasn't changed) or removed, the DPO's contact, and whether the
-// notice's own words changed (a new generator, or new words from the same sources, such as a new
-// org name).
+// cleared again on the same facts hasn't changed) or removed, the DPO's contact and reply targets,
+// and whether the notice's own words changed (a new generator, or new words from the same sources,
+// such as a new org name).
 export interface NoticeChanges {
   purposes: { added: PurposeKey[]; changed: PurposeKey[]; removed: PurposeKey[] }
   providers: { added: ProviderKey[]; changed: ProviderKey[]; removed: ProviderKey[] }
   contact: NoticeContactChange
+  targets: NoticeTargetChange
   wording: boolean
 }
 
@@ -235,6 +273,12 @@ function contactChange(before: NoticeSources['contact'], after: NoticeSources['c
   if (after === null) return 'same'
   if (before === null) return 'added'
   return sameContact(before.facts, after.facts) ? 'same' : 'changed'
+}
+
+function targetsChange(before: NoticeSources['targets'], after: NoticeSources['targets']): NoticeTargetChange {
+  if (after === null) return 'same'
+  if (before === null) return 'added'
+  return sameTargets(before, after) ? 'same' : 'changed'
 }
 
 export function noticeChanges(before: NoticeSources, after: NoticeSources): NoticeChanges {
@@ -259,11 +303,18 @@ export function noticeChanges(before: NoticeSources, after: NoticeSources): Noti
     removed: PROVIDERS.filter(key => providersBefore.has(key) && !providersAfter.has(key)),
   }
   const contact = contactChange(before.contact, after.contact)
-  // New words that come with a listed change, or a new contact, are that change, not new wording.
+  const targets = targetsChange(before.targets, after.targets)
+  // New words that come with a listed change, a new contact or new targets are that change, not new
+  // wording.
   const listed = [purposes, providers].some(lists => Object.values(lists).some(list => list.length > 0))
   const reworded =
-    before.body !== null && after.body !== null && before.body !== after.body && !listed && contact === 'same'
-  return { purposes, providers, contact, wording: before.generator !== after.generator || reworded }
+    before.body !== null &&
+    after.body !== null &&
+    before.body !== after.body &&
+    !listed &&
+    contact === 'same' &&
+    targets === 'same'
+  return { purposes, providers, contact, targets, wording: before.generator !== after.generator || reworded }
 }
 
 // --- The api: bodies and answers (TECH-SPEC T22 items 25 and 26) --------------------------------
@@ -318,6 +369,7 @@ const Changes = z.strictObject({
   purposes: changeLists(NonAiPurpose, NON_AI_PURPOSE_KEYS.length),
   providers: changeLists(NonAiProvider, NON_AI_PROVIDERS.length),
   contact: z.enum(NOTICE_CONTACT_CHANGES),
+  targets: z.enum(NOTICE_TARGET_CHANGES),
   wording: z.boolean(),
 })
 export type NoticeChangesJSON = z.infer<typeof Changes>
@@ -362,15 +414,17 @@ const MyAcknowledgement = z
 
 // GET /api/notice (C0.9 PD-46, B-11): whose answer it is (so a tab whose cookie now holds someone
 // else's session ends its document), their standing, the latest version (null while none is
-// published) with the DPO's contact it printed (null when it printed none: C0.9 PD-69), what
-// changed since the last generated version they acknowledged (null when there is none, or the
-// latest is a stand-in), and their own acknowledgements, newest first.
+// published) with the DPO's contact it printed (null when it printed none: C0.9 PD-69) and the
+// reply targets it printed (null when it printed none: C0.9 PD-95, a stand-in or a c09.1 or c09.2
+// version), what changed since the last generated version they acknowledged (null when there is
+// none, or the latest is a stand-in), and their own acknowledgements, newest first.
 export const NoticeResponse = z
   .strictObject({
     person: LowerUuid,
     standing: z.enum(NOTICE_STANDINGS),
     current: CurrentVersion.nullable(),
     contact: NoticeContact.nullable(),
+    targets: ReplyTargetsSchema.nullable(),
     changes: Changes.nullable(),
     mine: z.array(MyAcknowledgement).max(NOTICE_MINE_MAX),
   })
@@ -379,6 +433,9 @@ export const NoticeResponse = z
   })
   .refine(answer => answer.current !== null || answer.contact === null, {
     message: 'a contact only from a published version',
+  })
+  .refine(answer => answer.current !== null || answer.targets === null, {
+    message: 'reply targets only from a published version',
   })
 export type NoticeJSON = z.infer<typeof NoticeResponse>
 
@@ -401,6 +458,7 @@ const ChangesForClient = z.object({
   purposes: changeListsForClient(NonAiPurpose),
   providers: changeListsForClient(NonAiProvider),
   contact: z.enum(NOTICE_CONTACT_CHANGES).catch('same'),
+  targets: z.enum(NOTICE_TARGET_CHANGES).catch('same'),
   wording: z.boolean().catch(false),
 })
 export type NoticeChangesForClient = z.infer<typeof ChangesForClient>
@@ -409,8 +467,9 @@ export type NoticeChangesForClient = z.infer<typeof ChangesForClient>
 // read reads as required, so the screen still offers the notice to acknowledge, and an unreadable
 // change list or acknowledgement is left out rather than breaking the screen. A contact it can't
 // read is undefined, never null, so Settings says it couldn't be read rather than that the notice
-// gives none; a recorded day or note it can't read is left out. An answer with no readable person
-// or version fails.
+// gives none; so are targets it can't read (C0.9 PD-95), and the form then shows no target line
+// rather than inventing one; a recorded day or note it can't read is left out. An answer with no
+// readable person or version fails.
 export const NoticeResponseForClient = z.object({
   person: z.string().min(1),
   standing: z.enum(NOTICE_STANDINGS).catch('required'),
@@ -418,6 +477,7 @@ export const NoticeResponseForClient = z.object({
     .object({ id: z.string().min(1), version: z.int().min(0), publishedAt: Instant, body: z.string().min(1) })
     .nullable(),
   contact: NoticeContactForClient.nullable().optional().catch(undefined),
+  targets: ReplyTargetsForClient.nullable().optional().catch(undefined),
   changes: ChangesForClient.nullable().catch(null),
   mine: readableRows(
     z.object({

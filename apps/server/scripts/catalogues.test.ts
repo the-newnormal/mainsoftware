@@ -585,12 +585,13 @@ describe('RGS-19 C0.9 T22 item 18 check 6: the registers’ starting rows equal 
     expect(registerProblems(code, purposeDefaults, providerDefaults, [])).toEqual([])
   })
 
-  it('C0.9 PD-06: compares the starting status with ACTIVE_FROM_START, so security_audit and backups start active though not pinned', () => {
-    // "Active exactly when pinned" is not the rule: Hearth already processes for both.
+  it('C0.9 PD-06 PD-87: compares the starting status with ACTIVE_FROM_START, so security_audit, backups and request_handling start active though not pinned', () => {
+    // "Active exactly when pinned" is not the rule: Hearth already processes for each.
     const pinnedOnly = purposeDefaults.map(row => ({ ...row, status: row.pinned ? 'active' : 'planned' }))
     expect(registerProblems(code, pinnedOnly, providerDefaults, [])).toEqual([
       'security_audit: packages/shared says ai false, pinned false, needs_switch false, status active (PURPOSES, PINNED_PURPOSES, ACTIVE_FROM_START); processing_register_defaults() says ai false, pinned false, needs_switch false, status planned',
       'backups: packages/shared says ai false, pinned false, needs_switch false, status active (PURPOSES, PINNED_PURPOSES, ACTIVE_FROM_START); processing_register_defaults() says ai false, pinned false, needs_switch false, status planned',
+      'request_handling: packages/shared says ai false, pinned false, needs_switch false, status active (PURPOSES, PINNED_PURPOSES, ACTIVE_FROM_START); processing_register_defaults() says ai false, pinned false, needs_switch false, status planned',
     ])
     expect(registerProblems(code, changing('presence_receipts', { status: 'active' }), providerDefaults, [])).toEqual([
       'presence_receipts: packages/shared says ai false, pinned false, needs_switch false, status planned (PURPOSES, PINNED_PURPOSES, ACTIVE_FROM_START); processing_register_defaults() says ai false, pinned false, needs_switch false, status active',

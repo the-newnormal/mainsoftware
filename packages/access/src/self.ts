@@ -3,10 +3,14 @@ import type { RequestContext, SelfRequest } from './requests.ts'
 import type { World } from './world.ts'
 
 // What anyone active may do about their own session, devices and passkeys (ACC-02, ACC-04, T14,
-// T21), and the privacy notice (C0.9 PD-49). Reading your own session and client flags, signing
-// out and listing devices, and reading and acknowledging the notice need no re-authentication, so
-// a lost phone can always be signed out, the shell can always load, and the notice gate never
-// stands between anyone and the notice it asks them to acknowledge.
+// T21), the privacy notice (C0.9 PD-49) and their own requests to the DPO (PDPA-13; C0.9 OD-07,
+// OD-15). Reading your own session and client flags, signing out and listing devices, and reading
+// and acknowledging the notice need no re-authentication, so a lost phone can always be signed out,
+// the shell can always load, and the notice gate never stands between anyone and the notice it asks
+// them to acknowledge. Sending a request to the DPO and reading your own need none either (PD-96):
+// a code to the same number adds nothing against a SIM swap, and the DPO checks who someone is
+// before answering a copy or a correction (PD-91). They wait for the notice, though: they sit outside
+// NOTICE_FREE (OD-13).
 // A device or passkey the request names must be the person's own and not already ended; one the
 // snapshot doesn't hold is refused like someone else's, so the answer never shows what exists.
 export function selfCan(world: World, me: Id, request: SelfRequest, context: RequestContext): boolean {
@@ -15,6 +19,10 @@ export function selfCan(world: World, me: Id, request: SelfRequest, context: Req
     case 'session.read_own':
     case 'notice.read_own':
     case 'notice.acknowledge_own':
+      return true
+    // The requester is always the session's own person: neither request names anyone (OD-15).
+    case 'case.send_own':
+    case 'case.list_own':
       return true
     case 'devices.list_own':
       return true

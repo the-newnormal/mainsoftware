@@ -202,7 +202,13 @@ jobs:
       # and consumer rounds against flag changes and each other, and the outbox's horizon; from
       # C0.9, the registers' and the notice's, and from PR 3a the contact's, the recorded
       # acknowledgement's and the break-glass re-clear's, and 0011 applied while a request reads
-      # the notice and then a clearance), in two connections to a throwaway database.
+      # the notice and then a clearance; from PR 3b, requests to the DPO: a send against its
+      # requester's deactivation, two sends with one client key, two logs whose references clash,
+      # a log, a step and a queue read by a DPO leaving or losing the role, two steps or closures
+      # from one revision, a log against its requester's deactivation, the reply targets against a
+      # publish and a contact change, an audit read against the reader losing the dpo role, and
+      # 0012 applied while a publish, a register write and the notice's read touch dpo_settings and
+      # the outbox, RQR-01 to RQR-09), in two connections to a throwaway database.
       - run: node apps/server/scripts/check-concurrency.ts
       # The catalogues in code match the database (C0.6): every write grant of every runtime role,
       # every function one can run and every SECURITY DEFINER and trigger function is covered by
@@ -269,6 +275,20 @@ jobs:
       - env:
           CHECK_DB: hearth_upgrade_check
         run: UP_TO=0010 scripts/check-migrations.sh && scripts/check-notice-upgrade.sh
+      # 0012 (C0.9 PR 3b) updates no row, but it changes what rows already there read: every DPO
+      # settings version reads the two reply targets' defaults, every org gains request_handling's
+      # register entry, read_audit_events() withholds a request's rows from a reader who doesn't hold
+      # dpo, and the outbox's type check widens (C0.9 PD-107). Its data is built at 0011, where
+      # dpo_settings exists, so it can't ride the 0010 step above (whose run applies 0012 too): over
+      # the seed, an org with two contact versions written through 0011's function, a c09.2 version
+      # linking one, a restriction naming no case, a Compliance Officer who reads the log and outbox
+      # events of an existing type, and an org with no contact and a stand-in: every row unchanged,
+      # the defaults read, the new checks and foreign keys validated, the Compliance Officer reading
+      # what it read before, a request under c09.2 stating no targets, the contact's and the
+      # targets' writers working over the upgraded rows, and the schema matching the fresh build.
+      - env:
+          CHECK_DB: hearth_upgrade_check
+        run: UP_TO=0012 scripts/check-migrations.sh && scripts/check-cases-upgrade.sh
       # The schema digest the upgrade checks compare (scripts/schema-digest.sql), against pairs of
       # throwaway databases: each respect it was widened for (partitions, options, sequences,
       # identity and generated columns, collations, default privileges, schemas, NOT VALID,

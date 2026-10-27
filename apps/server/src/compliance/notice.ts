@@ -41,6 +41,16 @@
 // publish_notice() (migration 0011) locks and compares it as one more source and links the version
 // to it, so GET /api/notice answers the contact the latest version printed, from the same row.
 //
+// From PR 3b the same settings versions hold the DPO's reply targets (OD-08, PD-94, PD-95), which
+// set_reply_targets() (migration 0012) records: the draft's input reads them with the contact, and a
+// version from generator c09.3 prints them, so GET /api/notice answers the targets the latest
+// version printed, from the same row, and only when its generator prints any (printsTargets(): a
+// stand-in, a c09.1 or a c09.2 version states none, whatever its linked row now reads). The contact
+// page says whether the published notice gives the current targets beside the contact, each decided
+// by what it printed, never by settings version numbers, since a change to the targets alone records
+// a new version with the same contact. readLatestPurposes() reads what the latest version told
+// people, for the withdrawal reply on a request's sheet (compliance/cases.ts, PD-105).
+//
 // The answers carry ids, numbers, the notice's own words, the DPO's role contact and the names of
 // who published, never anyone's number or who has acknowledged: the DPO sees a count (data
 // minimisation, PD-48), and the people they may record for by name, never by standing (PD-76).
@@ -88,7 +98,11 @@ import {
   type PublishResponseJSON,
   type PurposeKey,
   type PurposeStatus,
+  printsTargets,
   type RecordAcknowledgementBody,
+  type ReplyTargets,
+  sameContact,
+  sameTargets,
   TRAINING,
 } from '@hearth/shared'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
@@ -170,18 +184,41 @@ type VersionRow = {
   dpo_settings_version: number | null
 }
 type ContactRow = { title: string; email: string | null; phone: string | null; postal: string | null }
+// A settings version's reply targets (0012's columns, which every version holds).
+type TargetsRow = { business_days: number; calendar_days: number }
 
 // The DPO's current settings version (its highest) with their business contact, the day it was
-// recorded in the org's zone and who recorded it, from the roster (C0.9 OD-10, PD-63, PD-70).
-export type ContactRead = ContactRowJSON
+// recorded in the org's zone and who recorded it, from the roster (C0.9 OD-10, PD-63, PD-70), and
+// from C0.9 PR 3b the reply targets it holds (OD-08, PD-94).
+export type ContactRead = ContactRowJSON & { targets: ReplyTargets }
 
-// The current contact, in one statement, or null until the DPO records one. The draft's input and
-// the contact page's answer read it.
+const targetsOf = (row: TargetsRow): ReplyTargets => ({
+  businessDays: row.business_days,
+  calendarDays: row.calendar_days,
+})
+
+// The contact as the contact page's answer carries it: its row, without the targets, which the
+// answer gives beside it.
+const contactRowOf = (contact: ContactRead): ContactRowJSON => ({
+  version: contact.version,
+  title: contact.title,
+  email: contact.email,
+  phone: contact.phone,
+  postal: contact.postal,
+  recordedOn: contact.recordedOn,
+  recordedBy: contact.recordedBy,
+})
+
+// The current contact and targets, in one statement, or null until the DPO records a contact. The
+// draft's input and the contact page's answer read it.
 export async function readContact(trx: InOrg, orgId: string): Promise<ContactRead | null> {
-  const { rows } = await sql<ContactRow & { version: number; recorded_on: string; recorded_by: string | null }>`
+  const { rows } = await sql<
+    ContactRow & TargetsRow & { version: number; recorded_on: string; recorded_by: string | null }
+  >`
     select s.version, s.contact_title as title, s.contact_email as email, s.contact_phone as phone,
       s.contact_postal as postal, ((s.recorded_at at time zone o.time_zone)::date)::text as recorded_on,
-      p.full_name as recorded_by
+      p.full_name as recorded_by, s.target_business_days as business_days,
+      s.target_calendar_days as calendar_days
     from dpo_settings s
     join orgs o on o.id = s.org_id
     left join people p on p.org_id = s.org_id and p.id = s.recorded_by
@@ -198,6 +235,7 @@ export async function readContact(trx: InOrg, orgId: string): Promise<ContactRea
     postal: row.postal,
     recordedOn: row.recorded_on,
     recordedBy: row.recorded_by,
+    targets: targetsOf(row),
   }
 }
 
@@ -275,8 +313,10 @@ async function readClearances(trx: InOrg, orgId: string): Promise<NoticeClearanc
 }
 
 // What each of these versions lists (PD-34): its purposes at their register versions, and its
-// clearances with the facts each rests on, from the link tables; and the DPO's settings version it
-// printed, with the contact (C0.9 PD-66), or none.
+// clearances with the facts each rests on, from the link tables; the DPO's settings version it
+// printed, with the contact (C0.9 PD-66), or none; and the reply targets it printed, read from that
+// settings version only when its generator prints targets (C0.9 PD-93, PD-95): a stand-in, a c09.1
+// or a c09.2 version states none, whatever its linked row now reads.
 async function readSources(
   trx: InOrg,
   orgId: string,
@@ -299,9 +339,10 @@ async function readSources(
   const { rows: contacts } =
     printed.length === 0
       ? { rows: [] }
-      : await sql<ContactRow & { version: number }>`
+      : await sql<ContactRow & TargetsRow & { version: number }>`
           select version, contact_title as title, contact_email as email, contact_phone as phone,
-            contact_postal as postal
+            contact_postal as postal, target_business_days as business_days,
+            target_calendar_days as calendar_days
           from dpo_settings
           where org_id = ${orgId} and version = any(${printed}::integer[])`.execute(trx)
   for (const version of versions) {
@@ -320,6 +361,7 @@ async function readSources(
             : [],
         ),
       contact: contact === undefined ? null : { version: contact.version, facts: contactOf(contact) },
+      targets: contact !== undefined && printsTargets(version.generator) ? targetsOf(contact) : null,
     })
   }
   return sources
@@ -332,7 +374,14 @@ const versionRead = (row: VersionRow, sources: NoticeSources | undefined): Notic
   publishedBy: row.published_by,
   generated: row.generator !== null,
   body: row.body,
-  sources: sources ?? { generator: row.generator, body: row.body, purposes: [], clearances: [], contact: null },
+  sources: sources ?? {
+    generator: row.generator,
+    body: row.body,
+    purposes: [],
+    clearances: [],
+    contact: null,
+    targets: null,
+  },
 })
 
 // The org's latest version, with who published it from the roster (none when Hearth did).
@@ -348,6 +397,43 @@ async function readLatest(trx: InOrg, orgId: string): Promise<NoticeVersionRead 
   const row = rows[0]
   if (row === undefined) return null
   return versionRead(row, (await readSources(trx, orgId, [row])).get(row.id))
+}
+
+// What the latest published version told people, for the withdrawal reply a request's sheet offers
+// (PDPA-04; C0.9 PD-105, compliance/cases.ts): the org's name, the active purposes it lists with
+// the basis each rests on at the register version it links, and the DPO's role title it printed.
+// Null with no version, or when the latest printed no contact (a stand-in, a c09.1 version), since
+// the reply is signed with the title the requester was given. Plain reads, which hearth_app's own
+// grants allow, in the caller's transaction.
+export interface LatestPurposes {
+  org: string
+  purposes: { key: PurposeKey; basis: Basis }[]
+  contactTitle: string
+}
+
+export async function readLatestPurposes(trx: InOrg, orgId: string): Promise<LatestPurposes | null> {
+  const { rows: heads } = await sql<{ id: string; org: string; title: string | null }>`
+    select v.id, o.name as org, s.contact_title as title
+    from notice_versions v
+    join orgs o on o.id = v.org_id
+    left join dpo_settings s on s.org_id = v.org_id and s.version = v.dpo_settings_version
+    where v.org_id = ${orgId} and v.generator is not null
+      and v.version = (select max(version) from notice_versions where org_id = ${orgId})`.execute(trx)
+  const head = heads[0]
+  if (head === undefined || head.title === null) return null
+  const { rows } = await sql<{ purpose: string; basis: Basis | null }>`
+    select l.purpose, r.basis
+    from notice_version_purposes l
+    join processing_register r on r.org_id = l.org_id and r.purpose = l.purpose and r.version = l.register_version
+    where l.org_id = ${orgId} and l.notice_version_id = ${head.id} and r.status = 'active' and not r.ai
+    order by l.purpose`.execute(trx)
+  return {
+    org: head.org,
+    purposes: rows.flatMap(row =>
+      isNonAiPurpose(row.purpose) && row.basis !== null ? [{ key: row.purpose, basis: row.basis }] : [],
+    ),
+    contactTitle: head.title,
+  }
 }
 
 // The problems after which the draft is neither written nor shown: an entry it can't state (no
@@ -383,7 +469,7 @@ export async function noticeDraft(trx: InOrg, orgId: string): Promise<NoticeDraf
     org: org.name,
     purposes: await readPurposes(trx, orgId),
     clearances: await readClearances(trx, orgId),
-    contact: contact === null ? null : { version: contact.version, ...contactOf(contact) },
+    contact: contact === null ? null : { version: contact.version, ...contactOf(contact), targets: contact.targets },
   }
   const latest = await readLatest(trx, orgId)
   const problems = noticeProblems(input, latest?.sources ?? null)
@@ -454,13 +540,16 @@ type MineRow = {
   acknowledged_on: string | null
   recorded_note: string | null
 }
-// The latest version, whether you acknowledged it, and the contact it printed (all null for none).
+// The latest version, whether you acknowledged it, and the contact and targets of the settings
+// version it links (all null for none).
 type CurrentRow = VersionRow & {
   acknowledged: boolean
   contact_title: string | null
   contact_email: string | null
   contact_phone: string | null
   contact_postal: string | null
+  target_business_days: number | null
+  target_calendar_days: number | null
 }
 
 // The contact a version printed, from its row's join, or none (a stand-in, a c09.1 version).
@@ -469,9 +558,19 @@ function printedContact(row: CurrentRow): NoticeContactJSON | null {
   return { title: row.contact_title, email: row.contact_email, phone: row.contact_phone, postal: row.contact_postal }
 }
 
-// Your standing, the current version with the DPO's contact it printed, what changed since you last
-// acknowledged a generated one, and your own acknowledgements, newest version first, with the day
-// and the note of one the DPO recorded (C0.9 PD-69, PD-75). In a read-only transaction that leaves
+// The reply targets a version printed, from its row's join, only when its generator prints any
+// (C0.9 PD-95): none for a stand-in, a c09.1 or a c09.2 version, whatever its linked row reads.
+function printedTargets(row: CurrentRow): ReplyTargets | null {
+  if (!printsTargets(row.generator) || row.target_business_days === null || row.target_calendar_days === null) {
+    return null
+  }
+  return { businessDays: row.target_business_days, calendarDays: row.target_calendar_days }
+}
+
+// Your standing, the current version with the DPO's contact it printed (and from C0.9 PR 3b the
+// reply targets it printed, PD-95), what changed since you last acknowledged a generated one, and
+// your own acknowledgements, newest version first, with the day and the note of one the DPO
+// recorded (C0.9 PD-69, PD-75). In a read-only transaction that leaves
 // the session's last use alone: /notice polls it every 30 s while visible (PD-46), as the shell
 // polls its flags (OD-14). The standing and the contact are read with the latest version, in one
 // statement, by the rule notice-standing.ts reads it by, so none of them disagree within an answer
@@ -493,7 +592,8 @@ export async function readNotice(api: Api, session: SessionIds, info: ReqInfo): 
           v.dpo_settings_version,
           exists (select 1 from notice_acknowledgments a
             where a.org_id = v.org_id and a.person_id = ${userId} and a.notice_version_id = v.id) as acknowledged,
-          s.contact_title, s.contact_email, s.contact_phone, s.contact_postal
+          s.contact_title, s.contact_email, s.contact_phone, s.contact_postal, s.target_business_days,
+          s.target_calendar_days
         from notice_versions v
         left join dpo_settings s on s.org_id = v.org_id and s.version = v.dpo_settings_version
         where v.org_id = ${orgId}
@@ -547,6 +647,7 @@ export async function readNotice(api: Api, session: SessionIds, info: ReqInfo): 
                 body: current.body,
               },
         contact: current === undefined ? null : printedContact(current),
+        targets: current === undefined ? null : printedTargets(current),
         changes,
         mine: mine.map(row => ({
           version: row.version,
@@ -731,26 +832,43 @@ export async function publishNotice(
 // --- GET /api/admin/notice/contact ----------------------------------------------------------------
 
 // Whether the latest version prints this contact (C0.9 PD-70): none before any version; stated when
-// the latest is generated and links the current settings version; not printed when it links none (a
-// stand-in, a c09.1 version, or one published before any contact was recorded, since a version can
-// link one only once one exists); not stated when it links an earlier one. So a contact recorded
-// after a c09.1 latest reads as not printed, never as an earlier one, and no contact with a version
-// never reads as stated.
+// the latest is generated and the contact it printed has the current contact's facts; not printed
+// when it links none (a stand-in, a c09.1 version, or one published before any contact was
+// recorded, since a version can link one only once one exists); not stated when it printed other
+// facts. So a contact recorded after a c09.1 latest reads as not printed, never as an earlier one,
+// and no contact with a version never reads as stated. Decided by the facts, never the settings
+// version numbers (C0.9 PD-95): from 0012 a change to the reply targets alone records a new settings
+// version with the same contact, which the published notice still gives.
 export function contactStated(
   latest: Pick<NoticeVersionRead, 'generated' | 'sources'> | null,
-  contact: Pick<ContactRead, 'version'> | null,
+  contact: Pick<ContactRead, 'title' | 'email' | 'phone' | 'postal'> | null,
 ): ContactStated {
   if (latest === null) return 'unpublished'
   // A stand-in's words aren't the generator's, so it prints no contact whatever it links.
-  const printed = latest.generated ? (latest.sources.contact?.version ?? null) : null
-  if (contact !== null && printed === contact.version) return 'stated'
+  const printed = latest.generated ? (latest.sources.contact?.facts ?? null) : null
   if (contact === null || printed === null) return 'not_printed'
-  return 'not_stated'
+  return sameContact(printed, contactOf(contact)) ? 'stated' : 'not_stated'
+}
+
+// Whether the latest version prints these reply targets (C0.9 PR 3b, PD-94, PD-95), in the same four
+// states: none before any version; stated when it printed these figures; not printed when it
+// printed none (a stand-in, a c09.1 or a c09.2 version: their sources' targets are null whatever
+// the linked row reads, readSources()), or no targets are recorded yet (no contact); not stated when
+// it printed other figures.
+export function targetsStated(
+  latest: Pick<NoticeVersionRead, 'generated' | 'sources'> | null,
+  targets: ReplyTargets | null,
+): ContactStated {
+  if (latest === null) return 'unpublished'
+  const printed = latest.generated ? latest.sources.targets : null
+  if (targets === null || printed === null) return 'not_printed'
+  return sameTargets(printed, targets) ? 'stated' : 'not_stated'
 }
 
 // The DPO's contact page (C0.9 OD-10, PD-70): whether the published notice is up to date with the
 // registers (the Notice link's badge), the current contact (null until the DPO records one) and
-// whether the latest version prints it, from one draft. In a read-only transaction, under
+// whether the latest version prints it, and from C0.9 PR 3b the reply targets kept with it (null
+// exactly when the contact is) and whether the latest version prints them (PD-94), from one draft. In a read-only transaction, under
 // notice.read: the DPO alone, before v0 too (NOTICE_SETUP); the request counts as use of the session.
 export async function readContactAdmin(api: Api, session: SessionIds, info: ReqInfo): Promise<Answer> {
   const { orgId } = session
@@ -764,8 +882,10 @@ export async function readContactAdmin(api: Api, session: SessionIds, info: ReqI
       const draft = await noticeDraft(trx, orgId)
       return {
         notice: noticeStatusOf(draft),
-        contact: draft.contact,
+        contact: draft.contact === null ? null : contactRowOf(draft.contact),
         stated: contactStated(draft.latest, draft.contact),
+        targets: draft.contact?.targets ?? null,
+        targetsStated: targetsStated(draft.latest, draft.contact?.targets ?? null),
       }
     },
     { readOnly: true },

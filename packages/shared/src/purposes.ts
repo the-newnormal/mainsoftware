@@ -1,5 +1,6 @@
 // Why personal data is processed (PDPA-01). The keys mirror PDPA-01's pre-filled purposes, plus
-// service_operation for Hearth's own maintenance (for the DPO to confirm or fold into hosting).
+// service_operation for Hearth's own maintenance (for the DPO to confirm or fold into hosting) and
+// request_handling for requests to the DPO (C0.9 OD-17).
 // The keys and their fixed facts live here, in code; each org's entry for each key (its status,
 // legal basis, retention and providers) lives in Postgres, in the processing register the DPO
 // maintains (migration 0009, TECH-SPEC T22 item 2). processing_register_defaults() there lists
@@ -40,6 +41,13 @@ export const PURPOSES = {
   security_audit: { ai: false, needsSwitch: false, register: 'Security audit and monitoring' },
   access_logs: { ai: false, needsSwitch: false, register: 'Access logs and “viewed by” lists' },
   backups: { ai: false, needsSwitch: false, register: 'Backups' },
+  // From C0.9 PR 3b (OD-17): the questions, complaints and requests people send the DPO, through
+  // the form in Settings › Privacy or another way the DPO logs, and the DPO's record of each.
+  request_handling: {
+    ai: false,
+    needsSwitch: false,
+    register: 'Handling questions, complaints and requests about personal data',
+  },
   presence_receipts: { ai: false, needsSwitch: false, register: 'Presence and read receipts' },
   recording_meetings: { ai: false, needsSwitch: true, register: 'Recording scheduled meetings and calls' },
   recording_drop_in: { ai: false, needsSwitch: true, register: 'Recording drop-in room sessions' },

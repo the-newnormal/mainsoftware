@@ -50,6 +50,21 @@
 // then reads a clearance: the migration never waits while it holds one of the three, so neither
 // fails.
 //
+// C0.9 PR 3b (0012, TECH-SPEC T22 items 50 to 62) adds requests to the DPO, in an org of their own
+// (REQUEST_FIXTURE), after NTR-13: a request sent in Hearth against its requester's deactivation,
+// each order (RQR-01); two sends with one client key, the first committed and rolled back, and a
+// log and a send by the DPO with one key, each order (RQR-02);
+// two logs whose references are forced equal, the first committed and rolled back (RQR-03); a log,
+// a step and a queue read by a DPO being deactivated or losing the role, each order (RQR-04); two
+// steps, and two closures, from one revision (RQR-05); a log naming a member against the member's
+// deactivation, each order, with and without a channel (RQR-06); in the notice's org, a targets
+// change against a publish, each order, against a contact change from one version, and two targets
+// changes (RQR-07); read_audit_events() against the revocation of the reader's dpo role, each order
+// (RQR-08); and, in a database of its own built to 0011, 0012 applied while a publish holds
+// dpo_settings and then appends to the outbox, a register write appends to it and the notice's read
+// reads dpo_settings: the migration never waits while it holds one of the two, so none fails
+// (RQR-09).
+//
 // Each case opens two connections to a throwaway database (concurrency_check, built from
 // db/migrations/ with the migrator, owned by hearth_owner), starts the change in one, starts the
 // dependent write in the other, waits until Postgres reports that write waiting on a lock, commits
@@ -177,8 +192,8 @@ const C09_FIXTURE = `
 // C0.9 PR 2 (0010): the notice's org, NOTICE_ORG, as the owner, with no version yet. Its Hearth
 // principal n(a0); DPOs n(61) (who publishes), n(62) (who publishes alongside), n(63)
 // (deactivated in a case) and n(64) (whose role is revoked in one); members n(71) to n(75), each
-// with an account and a device n(e1) to n(e5). The four purposes active from the start (A-05) have a basis and a
-// retention at version 2, so a draft can be published; twilio, aws, livekit and apple_push have
+// with an account and a device n(e1) to n(e5). The purposes active from the start (A-05; from 0012
+// request_handling too, OD-17) have a basis and a retention at version 2, so a draft can be published; twilio, aws, livekit and apple_push have
 // every clearing fact recorded (revision 2), and twilio and aws are cleared. From 0011 (C0.9 PR
 // 3a) the DPO's contact is recorded (version 1, by n(61)), so a publish passes the contact rule,
 // and DPOs n(65) and n(67) are deactivated, and n(66) and n(68) lose the role, in NTR-11.
@@ -274,6 +289,42 @@ const BREAK_GLASS_FIXTURE = `
   where org_id = '${BREAK_GLASS_ORG}' and provider = 'twilio';
   select set_config('app.org_id', '', true), set_config('app.user_id', '', true);
 `
+// C0.9 PR 3b (0012): the requests' org, as the owner. Its Hearth principal q(a0); the DPO q(61), who
+// logs, steps and reads, and in RQR-02 sends with a key a log of theirs holds; members q(62) to
+// q(67), each with an account and a device q(e2) to q(e7): q(62) sends with one key twice (RQR-02),
+// q(64) and q(65) are deactivated against a send (RQR-01),
+// q(63), q(66) and q(67) against a log (RQR-06); DPOs q(71) to q(79), deactivated or losing the role
+// in RQR-04; and q(69), who holds dpo and leadership, both on the org's audit log readers (D45), and
+// loses dpo in RQR-08. The DPO's contact is recorded (version 1).
+const q = (suffix: string) => `c0000000-0000-4000-8000-0000000004${suffix}`
+const REQUEST_ORG = q('00')
+const qids = (suffixes: string[]) => suffixes.map(s => `'${q(s)}'`).join(', ')
+const REQUEST_MEMBERS = ['62', '63', '64', '65', '66', '67']
+const REQUEST_DPOS = ['61', '69', '71', '72', '73', '74', '75', '76', '77', '78', '79']
+const REQUEST_FIXTURE = `
+  set local role hearth_owner;
+  insert into public.orgs (id, name) values ('${REQUEST_ORG}', 'Concurrency check requests');
+  insert into public.principals (id, org_id, kind, system_key) values ('${q('a0')}', '${REQUEST_ORG}', 'system', 'hearth');
+  insert into public.principals (id, org_id, kind)
+  select s.id, '${REQUEST_ORG}', 'human' from unnest(array[${qids([...REQUEST_DPOS, ...REQUEST_MEMBERS])}]::uuid[]) as s (id);
+  insert into public.people (id, org_id, full_name, created_by)
+  select s.id, '${REQUEST_ORG}', 'Person ' || s.id, '${q('a0')}'
+  from unnest(array[${qids([...REQUEST_DPOS, ...REQUEST_MEMBERS])}]::uuid[]) as s (id);
+  insert into public.role_assignments (org_id, person_id, role, created_by)
+  select '${REQUEST_ORG}', s.id, 'dpo', '${q('a0')}' from unnest(array[${qids(REQUEST_DPOS)}]::uuid[]) as s (id);
+  insert into public.role_assignments (org_id, person_id, role, created_by)
+  values ('${REQUEST_ORG}', '${q('69')}', 'leadership', '${q('a0')}');
+  insert into public.audit_log_readers (org_id, role, created_by)
+  values ('${REQUEST_ORG}', 'dpo', '${q('61')}'), ('${REQUEST_ORG}', 'leadership', '${q('61')}');
+  insert into public.users (id, org_id)
+  select s.id, '${REQUEST_ORG}' from unnest(array[${qids(['61', ...REQUEST_MEMBERS])}]::uuid[]) as s (id);
+  insert into public.devices (id, org_id, user_id, label)
+  select ('c0000000-0000-4000-8000-0000000004e' || right(s.k, 1))::uuid, '${REQUEST_ORG}',
+         ('c0000000-0000-4000-8000-0000000004' || s.k)::uuid, 'Phone'
+  from unnest(array['61', '62', '63', '64', '65', '66', '67']) as s (k);
+  insert into public.dpo_settings (org_id, version, contact_title, contact_email, recorded_by)
+  values ('${REQUEST_ORG}', 1, 'Data Protection Officer', 'dpo@requests.example', '${q('61')}');
+`
 // A PIN hash in the one shape the server issues (0006; DB test 100 uses the same).
 const PIN_HASH = "'$argon2id$v=19$m=19456,t=2,p=1$' || repeat('A', 22) || '$' || repeat('B', 43)"
 const FIXTURE = `
@@ -312,7 +363,7 @@ const FIXTURE = `
     ('${ORG}', '${id('ba')}', 'leadership', '${ADMIN}'), ('${ORG}', '${id('c5')}', 'admin', '${ADMIN}');
   insert into public.audit_log_readers (org_id, role, created_by) values
     ('${ORG}', 'dpo', '${ADMIN}'), ('${ORG}', 'compliance_officer', '${ADMIN}'), ('${ORG}', 'leadership', '${ADMIN}');
-${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}`
+${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}${REQUEST_FIXTURE}`
 
 function url(database: string): string {
   const result = new URL(`postgres://${connection.host.includes(':') ? `[${connection.host}]` : connection.host}`)
@@ -850,6 +901,94 @@ const openTwilio = (watcher: Client) =>
     `select string_agg(cleared_via || ' ' || right(cleared_by::text, 2), ',') as v from public.transfer_clearances
      where org_id = $1 and provider = 'twilio' and withdrawn_at is null`,
     [BREAK_GLASS_ORG],
+  )
+
+// C0.9 PR 3b (0012): the statements the request routes make, each as hearth_app acting as the person
+// the server would set (REQUEST_ORG unless a case names another). A send from member q(p) with the
+// client key given; with expect, it must record (changed true) or return the first case (false).
+const sendCase = (person: string, key: string, expect?: boolean): Step => {
+  const call = `public.submit_case('question', 'How long are the rota sheets kept?', '${key}', 'race', null, null)`
+  return {
+    as: 'app',
+    org: REQUEST_ORG,
+    user: q(person),
+    sql:
+      expect === undefined
+        ? `select * from ${call}`
+        : `do $$ begin if (select changed from ${call}) is distinct from ${expect} then
+             raise exception 'the send answered changed %', not ${expect}; end if; end $$`,
+  }
+}
+// The DPO's log of a request by email, for member q(p) (with a channel when given) or someone without
+// an account, with the client key given; a reference forced for its first draw stands in for a
+// clash (RQR-03, the helper replaced in that case).
+const logCase = (
+  key: string,
+  options: { dpo?: string; person?: string; channel?: boolean; reference?: string } = {},
+): Step => ({
+  as: 'app',
+  org: REQUEST_ORG,
+  user: q(options.dpo ?? '61'),
+  sql: `${options.reference === undefined ? '' : `select set_config('test.reference', '${options.reference}', true);`}
+        select * from public.log_case('question', 'email', (now() at time zone 'Asia/Singapore')::date,
+          ${options.person === undefined ? 'null' : `'${q(options.person)}'`},
+          ${options.person === undefined ? "'Sam Example'" : 'null'},
+          ${options.person === undefined || options.channel === true ? "'email', 'sam@requester.example'" : 'null, null'},
+          'Asks how long the rota sheets are kept.', '${key}', 'race', null, null)`,
+})
+// A step on a case, from the revision the sheet showed.
+const caseStep = (
+  caseId: string,
+  seen: number,
+  step: string,
+  options: { dpo?: string; outcome?: string } = {},
+): Step => ({
+  as: 'app',
+  org: REQUEST_ORG,
+  user: q(options.dpo ?? '61'),
+  sql: `select * from public.add_case_step('${caseId}', ${seen}, '${step}', (now() at time zone 'Asia/Singapore')::date,
+          ${step === 'note' ? "'A note from the race.'" : 'null'}, null, null,
+          ${options.outcome === undefined ? 'null' : `'${options.outcome}'`}, 'race', null, null)`,
+})
+const readQueue = (dpo: string): Step => ({
+  as: 'app',
+  org: REQUEST_ORG,
+  user: q(dpo),
+  sql: 'select count(*) from public.read_cases(false, 201)',
+})
+// The DPO's reply targets from the settings version the page showed (the notice's org unless a case
+// names another).
+const targetsChange = (seen: string, business: number, calendar: number, dpo = n('61')): Step => ({
+  as: 'app',
+  org: NOTICE_ORG,
+  user: dpo,
+  sql: `select * from public.set_reply_targets(${seen}::integer, ${business}, ${calendar}, 'race', null, null)`,
+})
+// q(69)'s read of the audit log, which must hold the requests' rows (with true) or none (false).
+const readAuditCases = (expectRows: boolean): Step => ({
+  as: 'app',
+  org: REQUEST_ORG,
+  user: q('69'),
+  sql: `do $$ declare n bigint; begin
+          select count(*) into n from public.read_audit_events(now() - interval '1 day', now() + interval '1 day')
+          where target_type = 'case';
+          if (n > 0) is distinct from ${expectRows} then raise exception 'the read held % request row(s)', n; end if;
+        end $$`,
+})
+const CASE_DPO_REFUSED = 'Only the Data Protection Officer can see or work on requests.'
+const CASE_CHANGED = 'This request changed since you opened it. Reload it and try again.'
+const TARGETS_CHANGED = 'Your reply targets changed since you opened them. Reload them and try again.'
+// The watcher's reads of a case: its id by client key, and its revision (steps, plus one once closed).
+const caseByKey = (watcher: Client, key: string) =>
+  scalar(watcher, 'select id::text as v from public.cases where org_id = $1 and client_key = $2', [REQUEST_ORG, key])
+const revisionOf = async (watcher: Client, caseId: string) =>
+  Number(
+    await scalar(
+      watcher,
+      `select ((select count(*) from public.case_steps s where s.case_id = c.id) + (c.closed_at is not null)::integer)::text as v
+       from public.cases c where c.id = $1`,
+      [caseId],
+    ),
   )
 
 // One step alone, in a transaction of its own: the error it ended with, if any (committed if none).
@@ -2363,6 +2502,381 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
           expect(error === undefined, `0011 failed: ${error === undefined ? '' : message(error)}`)
         } finally {
           await request.end()
+        }
+      } finally {
+        const cleanup = await connect('postgres')
+        await cleanup.query(`drop database if exists ${db} with (force)`)
+        await cleanup.end()
+      }
+    },
+  ],
+  [
+    'RQR-01 PDPA-13 C0.9 OD-13 PD-96: a request sent in Hearth waits for its requester’s deactivation in progress and is refused (42501); a deactivation waits for a send in progress, and the request stands',
+    async watcher => {
+      await refused(
+        deactivateIn(REQUEST_ORG, q('64'), q('61')),
+        sendCase('64', q('b1')),
+        'Only someone still at the organisation can send a request.',
+      )(watcher)
+      const { waited, error } = await race(
+        watcher,
+        sendCase('65', q('b2')),
+        deactivateIn(REQUEST_ORG, q('65'), q('61')),
+      )
+      expect(waited, 'the deactivation did not wait for the send in progress')
+      expect(error === undefined, `the deactivation failed: ${error}`)
+      const stands = await scalar(
+        watcher,
+        `select format('%s %s', count(*) filter (where c.requester_person_id = $2),
+                       (select deactivated_at is not null from public.people where id = $2)) as v
+         from public.cases c where c.org_id = $1 and c.client_key in ($3, $4)`,
+        [REQUEST_ORG, q('65'), q('b1'), q('b2')],
+      )
+      expect(stands === '1 t', `the cases and q(65)'s state are ${stands ?? 'nothing'}, not one case of a leaver`)
+    },
+  ],
+  [
+    // C0.9 PD-96: the second insert waits on the first's client_key entry; once the first commits
+    // it skips, re-reads and returns that case, and once it rolls back it records its own. Never
+    // 23505, and one case and one audit row each time. A key returns only a case sent the same way
+    // (OD-14, OD-15): the DPO's send waiting on a log of theirs under its key, and their log waiting
+    // on a send of theirs, re-read the other's case and are refused (HF006) rather than returning it
+    // or drawing ten more references (40001).
+    'RQR-02 PDPA-04 C0.9 PD-96 OD-14 OD-15: of two sends with one client key the second waits, then returns the first case (changed false), or records its own when the first rolled back; never 23505; a send and a log with one key refuse the second (HF006)',
+    async watcher => {
+      const first = await race(watcher, sendCase('62', q('b3')), sendCase('62', q('b3'), false))
+      expect(first.waited, 'the second send did not wait for the first')
+      expect(first.error === undefined, `the second send failed: ${first.error}`)
+      const second = await race(watcher, sendCase('62', q('b4')), sendCase('62', q('b4'), true), 'rollback')
+      expect(second.waited, 'the second send did not wait for the first, rolled back')
+      expect(second.error === undefined, `the second send failed: ${second.error}`)
+      const written = await scalar(
+        watcher,
+        `select string_agg(format('%s:%s', c.client_key = $2, (select count(*) from public.audit_events a
+                                                                where a.target_type = 'case' and a.target_id = c.id::text)),
+                           ',' order by c.client_key) as v
+         from public.cases c where c.org_id = $1 and c.client_key in ($2, $3)`,
+        [REQUEST_ORG, q('b3'), q('b4')],
+      )
+      expect(written === 't:1,f:1', `the sends wrote ${written ?? 'nothing'}, not one case and one audit row each`)
+      await refused(logCase(q('bf')), sendCase('61', q('bf')), 'Send it from the form again.')(watcher)
+      await refused(sendCase('61', q('c1')), logCase(q('c1')), 'Send it from the form again.')(watcher)
+      const crossed = await scalar(
+        watcher,
+        `select string_agg(format('%s:%s', c.came_by, (select count(*) from public.audit_events a
+                                                        where a.target_type = 'case' and a.target_id = c.id::text)),
+                           ',' order by c.client_key) as v
+         from public.cases c where c.org_id = $1 and c.client_key in ($2, $3)`,
+        [REQUEST_ORG, q('bf'), q('c1')],
+      )
+      expect(
+        crossed === 'email:1,hearth:1',
+        `the crossed keys wrote ${crossed ?? 'nothing'}, not the first case of each`,
+      )
+    },
+  ],
+  [
+    // C0.9 PD-104: with new_case_reference() replaced in this database to return a value each
+    // transaction sets once (test.reference), two logs draw the same reference first. The second
+    // waits on the first's (org_id, reference) entry; once the first commits it draws again and
+    // records, and once the first rolls back it records that reference itself. Never 23505.
+    'RQR-03 PDPA-04 C0.9 PD-104: of two logs whose references clash on the first draw the second waits, then draws again, or keeps the reference when the first rolled back; never 23505',
+    async watcher => {
+      const original = await scalar(
+        watcher,
+        "select pg_get_functiondef('public.new_case_reference()'::regprocedure) as v",
+      )
+      if (original === null) throw new Error('new_case_reference() is missing')
+      await watcher.query(`create or replace function public.new_case_reference() returns text
+        language plpgsql volatile set search_path = '' as $f$
+        declare
+          forced text := nullif(pg_catalog.current_setting('test.reference', true), '');
+        begin
+          if forced is not null then
+            perform pg_catalog.set_config('test.reference', '', true);
+            return forced;
+          end if;
+          return (select pg_catalog.string_agg(pg_catalog.substr(
+                    case when s.n in (1, 5) then 'BCDFGHJKMNPQRSTVWXZ' else '23456789BCDFGHJKMNPQRSTVWXZ' end,
+                    pg_catalog.get_byte(b.bytes, s.pos) % (case when s.n in (1, 5) then 19 else 27 end) + 1, 1), '' order by s.n)
+                  from (select pg_catalog.uuid_send(pg_catalog.gen_random_uuid()) as bytes) b,
+                       pg_catalog.unnest(array[0, 1, 2, 3, 4, 5, 9, 10]) with ordinality as s (pos, n));
+        end
+        $f$`)
+      try {
+        const first = await race(
+          watcher,
+          logCase(q('b5'), { reference: 'BCDFBCDF' }),
+          logCase(q('b6'), { reference: 'BCDFBCDF' }),
+        )
+        expect(first.waited, 'the second log did not wait on the first’s reference')
+        expect(first.error === undefined, `the second log failed: ${first.error}`)
+        const second = await race(
+          watcher,
+          logCase(q('b7'), { reference: 'BCDFBCDG' }),
+          logCase(q('b8'), { reference: 'BCDFBCDG' }),
+          'rollback',
+        )
+        expect(second.waited, 'the second log did not wait on the first’s reference, rolled back')
+        expect(second.error === undefined, `the second log failed: ${second.error}`)
+        const references = await scalar(
+          watcher,
+          `select string_agg(case when c.reference in ('BCDFBCDF', 'BCDFBCDG') then c.reference
+                                  when c.reference ~ '^[BCDFGHJKMNPQRSTVWXZ][2-9BCDFGHJKMNPQRSTVWXZ]{3}[BCDFGHJKMNPQRSTVWXZ][2-9BCDFGHJKMNPQRSTVWXZ]{3}$'
+                                  then 'drawn' else c.reference end, ',' order by c.client_key) as v
+           from public.cases c where c.org_id = $1 and c.client_key = any ($2::uuid[])`,
+          [REQUEST_ORG, [q('b5'), q('b6'), q('b7'), q('b8')]],
+        )
+        expect(
+          references === 'BCDFBCDF,drawn,BCDFBCDG',
+          `the logs hold the references ${references ?? 'none'}, not BCDFBCDF, a fresh draw and BCDFBCDG`,
+        )
+      } finally {
+        await watcher.query(original)
+      }
+    },
+  ],
+  [
+    'RQR-04 PDPA-13 C0.9 OD-14 PD-110: a log, a step and a queue read by a DPO being deactivated or losing the role wait and are refused (42501); a revocation waits for each in progress',
+    async watcher => {
+      const open = await alone(logCase(q('b9')))
+      expect(open === undefined, `the case for RQR-04 could not be logged: ${open}`)
+      const caseId = (await caseByKey(watcher, q('b9'))) ?? ''
+      const operations = [
+        (dpo: string) => logCase(q(`c${dpo.slice(1)}`), { dpo }),
+        (dpo: string) => caseStep(caseId, 0, 'acknowledged', { dpo }),
+        (dpo: string) => readQueue(dpo),
+      ]
+      const [deactivated, revoked, firsts] = [
+        ['71', '72', '73'],
+        ['74', '75', '76'],
+        ['77', '78', '79'],
+      ]
+      for (const [i, operation] of operations.entries()) {
+        const leaver = deactivated[i] ?? ''
+        await refused(deactivateIn(REQUEST_ORG, q(leaver), q('61')), operation(leaver), CASE_DPO_REFUSED)(watcher)
+        const loser = revoked[i] ?? ''
+        await refused(revokeDpo(REQUEST_ORG, q(loser), q('61')), operation(loser), CASE_DPO_REFUSED)(watcher)
+      }
+      // Started first, each holds the DPO's role row FOR SHARE, so the revocation waits for it. The
+      // step is from revision 0, recorded by q(77); the next from 1, and so on.
+      for (const [i, operation] of operations.entries()) {
+        const dpo = firsts[i] ?? ''
+        const step = i === 1 ? caseStep(caseId, 0, 'acknowledged', { dpo }) : operation(dpo)
+        const { waited, error } = await race(watcher, step, revokeDpo(REQUEST_ORG, q(dpo), q('61')))
+        expect(waited, `the revocation of q(${dpo}) did not wait for the ${['log', 'step', 'read'][i]} in progress`)
+        expect(error === undefined, `the revocation of q(${dpo}) failed: ${error}`)
+      }
+      const recorded = await scalar(
+        watcher,
+        `select format('%s %s', (select count(*) from public.case_steps where case_id = $2),
+                       (select count(*) from public.cases where org_id = $1 and logged_by = any ($3::uuid[]))) as v`,
+        [REQUEST_ORG, caseId, [q('71'), q('72'), q('73'), q('74'), q('75'), q('76'), q('77')]],
+      )
+      expect(
+        recorded === '1 1',
+        `the refused DPOs wrote ${recorded ?? 'nothing'}, not only q(77)'s log and q(78)'s step`,
+      )
+    },
+  ],
+  [
+    'RQR-05 PDPA-04 C0.9 PD-91: of two steps, and of two closures, from one revision the second waits on the case and is refused (HF005); never 23505 or a second closure',
+    async watcher => {
+      const open = await alone(logCase(q('ba')))
+      expect(open === undefined, `the case for RQR-05 could not be logged: ${open}`)
+      const caseId = (await caseByKey(watcher, q('ba'))) ?? ''
+      await refused(caseStep(caseId, 0, 'note'), caseStep(caseId, 0, 'note'), CASE_CHANGED)(watcher)
+      const seen = await revisionOf(watcher, caseId)
+      await refused(
+        caseStep(caseId, seen, 'closed', { outcome: 'answered' }),
+        caseStep(caseId, seen, 'closed', { outcome: 'duplicate' }),
+        CASE_CHANGED,
+      )(watcher)
+      const state = await scalar(
+        watcher,
+        `select format('%s %s %s', (select string_agg(s.number || ':' || s.step, ',' order by s.number) from public.case_steps s
+                                    where s.case_id = c.id), c.outcome, (select count(*) from public.audit_events a
+                                                                          where a.target_id = c.id::text and a.action = 'case.closed'))
+                as v from public.cases c where c.id = $1`,
+        [caseId],
+      )
+      expect(state === '1:note answered 1', `the case reads ${state ?? 'nothing'}, not one note and one closure`)
+    },
+  ],
+  [
+    'RQR-06 PDPA-13 C0.9 OD-16 PD-89 PPL-01: a log naming a member waits for their deactivation in progress, then needs a channel (HF006) or records with one; a deactivation waits for a log in progress',
+    async watcher => {
+      await refused(
+        deactivateIn(REQUEST_ORG, q('63'), q('61')),
+        logCase(q('bb'), { person: '63' }),
+        'Give how to reach them: they have left the organisation.',
+      )(watcher)
+      const withChannel = await race(
+        watcher,
+        deactivateIn(REQUEST_ORG, q('66'), q('61')),
+        logCase(q('bc'), { person: '66', channel: true }),
+      )
+      expect(withChannel.waited, 'the log with a channel did not wait for the deactivation in progress')
+      expect(withChannel.error === undefined, `the log with a channel failed: ${withChannel.error}`)
+      const logFirst = await race(
+        watcher,
+        logCase(q('bd'), { person: '67' }),
+        deactivateIn(REQUEST_ORG, q('67'), q('61')),
+      )
+      expect(logFirst.waited, 'the deactivation did not wait for the log in progress')
+      expect(logFirst.error === undefined, `the deactivation failed: ${logFirst.error}`)
+      const logged = await scalar(
+        watcher,
+        `select string_agg(format('%s %s %s', right(c.requester_person_id::text, 2), coalesce(c.requester_channel, 'none'),
+                                  p.deactivated_at is not null), ',' order by c.client_key) as v
+         from public.cases c join public.people p on p.id = c.requester_person_id
+         where c.org_id = $1 and c.client_key = any ($2::uuid[])`,
+        [REQUEST_ORG, [q('bb'), q('bc'), q('bd')]],
+      )
+      expect(logged === '66 email t,67 none t', `the logs hold ${logged ?? 'nothing'}`)
+    },
+  ],
+  [
+    'RQR-07 PDPA-02 C0.9 OD-08 PD-94: a publish waits for a targets change in progress and is refused (HF007); a targets change waits for a publish, which links the version it locked; a targets change and a contact change from one version, and two targets changes, refuse the second (HF005)',
+    async watcher => {
+      const first = await race(watcher, targetsChange(LATEST_CONTACT, 7, 21), publish('Race v12'))
+      expect(first.waited, 'the publish did not wait for the targets change in progress')
+      expect(first.error?.includes(NOTICE_CONTACT_MOVED) === true, `expected HF007, got ${first.error ?? 'success'}`)
+      const second = await race(watcher, publish('Race v12'), targetsChange(LATEST_CONTACT, 8, 28, n('62')))
+      expect(second.waited, 'the targets change did not wait for the publish in progress')
+      expect(second.error === undefined, `the targets change failed: ${second.error}`)
+      const linked = await scalar(
+        watcher,
+        `select format('%s', v.dpo_settings_version = (select max(s.version) - 1 from public.dpo_settings s where s.org_id = $1))
+         as v from public.notice_versions v where v.org_id = $1 order by v.version desc limit 1`,
+        [NOTICE_ORG],
+      )
+      expect(linked === 't', 'the publish did not link the settings version it locked')
+      const seen = await scalar(watcher, 'select max(version)::text as v from public.dpo_settings where org_id = $1', [
+        NOTICE_ORG,
+      ])
+      await refused(
+        targetsChange(seen ?? '0', 9, 29),
+        contactChange(Number(seen), 'dpo7@race.example', { dpo: n('62') }),
+        CONTACT_CHANGED,
+      )(watcher)
+      await refused(
+        contactChange(Number(seen) + 1, 'dpo8@race.example'),
+        targetsChange(String(Number(seen) + 1), 6, 20, n('62')),
+        TARGETS_CHANGED,
+      )(watcher)
+      await refused(
+        targetsChange(String(Number(seen) + 2), 5, 14),
+        targetsChange(String(Number(seen) + 2), 10, 30, n('62')),
+        TARGETS_CHANGED,
+      )(watcher)
+      const whole = await scalar(
+        watcher,
+        `select format('%s %s %s %s', s.version - $2::integer, s.contact_email, s.target_business_days, s.target_calendar_days) as v
+         from public.dpo_settings s where s.org_id = $1 order by s.version desc limit 1`,
+        [NOTICE_ORG, seen],
+      )
+      expect(whole === '3 dpo8@race.example 5 14', `the latest settings version reads ${whole ?? 'nothing'}, not whole`)
+    },
+  ],
+  [
+    'RQR-08 ADM-06 C0.9 OD-14 OD-23 PD-100: a DPO’s audit read that started first answers with the requests’ rows and the revocation of their dpo role waits; one that waits for the revocation answers without them',
+    async watcher => {
+      const logged = await alone(logCase(q('be')))
+      expect(logged === undefined, `the case for RQR-08 could not be logged: ${logged}`)
+      const first = await race(watcher, readAuditCases(true), revokeDpo(REQUEST_ORG, q('69'), q('61')))
+      expect(first.waited, 'the revocation did not wait for the read in progress')
+      expect(first.error === undefined, `the revocation failed: ${first.error}`)
+      await watcher.query(
+        `insert into public.role_assignments (org_id, person_id, role, created_by) values ($1, $2, 'dpo', $3)`,
+        [REQUEST_ORG, q('69'), q('a0')],
+      )
+      const second = await race(watcher, revokeDpo(REQUEST_ORG, q('69'), q('61')), readAuditCases(false))
+      expect(second.waited, 'the read did not wait for the revocation in progress')
+      expect(second.error === undefined, `the read failed: ${second.error}`)
+    },
+  ],
+  [
+    'RQR-09 C0.9 PR 3b PD-106: 0012 applied while a publish holds dpo_settings and then appends to the outbox, a register write appends to it and the notice’s read reads dpo_settings never waits holding one of the two, so all commit',
+    async watcher => {
+      const db = 'concurrency_0012_check'
+      const admin = await connect('postgres')
+      try {
+        await admin.query(`drop database if exists ${db} with (force)`)
+        await admin.query(`create database ${db} owner hearth_owner template template0`)
+      } finally {
+        await admin.end()
+      }
+      const org = q('f0')
+      const hearth = q('f1')
+      // An outbox append as a request makes one (as the superuser here: the locks are the same).
+      const append = `select set_config('app.user_id', '${hearth}', true);
+        insert into public.outbox_events (org_id, type, entity_type, entity_id, actor_id, actor_kind, purpose, ids)
+        select '${org}', 'flag.changed', 'feature_flag', f.id, '${hearth}', 'system', 'service_operation',
+               jsonb_build_object('key', f.key, 'enabled', f.enabled)
+        from public.feature_flags f where f.org_id = '${org}' and f.key = 'core.system'`
+      try {
+        const built = await migrate({ databaseUrl: url(db), role: 'hearth_owner', before: '0012' })
+        if (built.error !== undefined) throw new Error(`the migrations before 0012 failed: ${message(built.error)}`)
+        const setup = await connect(db)
+        try {
+          await setup.query(`insert into public.orgs (id, name) values ('${org}', 'Concurrency check 0012');
+            insert into public.principals (id, org_id, kind, system_key) values ('${hearth}', '${org}', 'system', 'hearth');
+            insert into public.dpo_settings (org_id, version, contact_title, contact_email, recorded_by)
+            values ('${org}', 1, 'Data Protection Officer', 'dpo@0012.example', '${hearth}')`)
+        } finally {
+          await setup.end()
+        }
+        const publishing = await connect(db)
+        const registering = await connect(db)
+        try {
+          // The publish: the latest settings row FOR SHARE, as publish_notice() locks it; the register
+          // write: its outbox append.
+          await publishing.query("begin; set local lock_timeout = '10s'")
+          await publishing.query(
+            `select 1 from public.dpo_settings where org_id = '${org}' order by version desc limit 1 for share`,
+          )
+          await registering.query("begin; set local lock_timeout = '10s'")
+          await registering.query(append)
+          const migrating = migrate({ databaseUrl: url(db), role: 'hearth_owner' })
+          expect(await heldUp(watcher, db, 0), '0012 was never held up by the requests')
+          // GET /api/notice's read of the contact, while the migration waits.
+          const reading = await connect(db)
+          try {
+            const read = await reading
+              .query(
+                `begin; set local lock_timeout = '10s'; select count(*) from public.dpo_settings where org_id = '${org}'; commit`,
+              )
+              .then(
+                () => undefined,
+                (error: unknown) => message(error),
+              )
+            expect(read === undefined, `the notice's read failed: ${read}`)
+          } finally {
+            await reading.end()
+          }
+          const appended = await publishing.query(append).then(
+            () => undefined,
+            (error: unknown) => message(error),
+          )
+          await publishing.query(appended === undefined ? 'commit' : 'rollback')
+          expect(appended === undefined, `the publish's outbox append failed: ${appended}`)
+          await registering.query('commit')
+          const { error } = await migrating
+          expect(error === undefined, `0012 failed: ${error === undefined ? '' : message(error)}`)
+        } finally {
+          await publishing.end()
+          await registering.end()
+        }
+        const check = await connect(db)
+        try {
+          const applied = await check.query<{ v: string }>(
+            `select format('%s %s', to_regclass('public.cases') is not null,
+                           (select count(*) from public.outbox_events where org_id = '${org}')) as v`,
+          )
+          expect(applied.rows[0]?.v === 't 2', `after 0012 the database reads ${applied.rows[0]?.v ?? 'nothing'}`)
+        } finally {
+          await check.end()
         }
       } finally {
         const cleanup = await connect('postgres')

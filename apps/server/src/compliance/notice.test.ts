@@ -35,10 +35,12 @@ import {
   noticeStatusOf,
   publishNotice,
   readContactAdmin,
+  readLatestPurposes,
   readNotice,
   readNoticeAdmin,
   readNoticePeople,
   recordAcknowledgement,
+  targetsStated,
 } from '#src/compliance/notice.ts'
 import { AfterResponse, parse, type ReqInfo } from '#src/http.ts'
 import { staticFlags } from '#src/testing/flags.ts'
@@ -130,7 +132,22 @@ const purposeRows = (change: Record<string, unknown> = {}) => [
 
 // The DPO's business contact (C0.9 OD-10), fictional, on a reserved domain.
 const CONTACT = { title: 'Data Protection Officer', email: 'dpo@notice.example', phone: null, postal: null }
-type SettingsRow = { version: number; title: string; email: string | null; phone: string | null; postal: string | null }
+type SettingsRow = {
+  version: number
+  title: string
+  email: string | null
+  phone: string | null
+  postal: string | null
+  // The reply targets it holds (C0.9 PR 3b, OD-08's figures unless given).
+  targets?: { businessDays: number; calendarDays: number }
+}
+// A settings row as the reads select it: the contact, and the targets as business_days and
+// calendar_days (0012's columns).
+const settingsRead = ({ targets, ...row }: SettingsRow) => ({
+  ...row,
+  business_days: targets?.businessDays ?? 10,
+  calendar_days: targets?.calendarDays ?? 30,
+})
 type VersionFixture = {
   id: string
   version: number
@@ -161,6 +178,8 @@ interface World {
   // The function's row, or an error to raise.
   call?: unknown[] | Error
   standing?: 'acknowledged' | 'required' | 'unpublished'
+  // The latest version's active purposes with their bases (readLatestPurposes(), C0.9 PD-105).
+  latestPurposes?: readonly { purpose: string; basis: string | null }[]
 }
 
 const PUBLISHED = new Date('2026-10-21T02:00:00Z')
@@ -202,12 +221,23 @@ function org(w: World = {}) {
     }
     if (text.startsWith('select s.version, s.contact_title as title')) {
       const current = settings.at(-1)
-      return current === undefined ? [] : [{ ...current, recorded_on: '2026-10-20', recorded_by: 'Ashton Tan' }]
+      return current === undefined
+        ? []
+        : [{ ...settingsRead(current), recorded_on: '2026-10-20', recorded_by: 'Ashton Tan' }]
     }
     if (text.startsWith('select version, contact_title as title')) {
       const asked = (statement.values.find(Array.isArray) ?? []) as number[]
-      return settings.filter(row => asked.includes(row.version))
+      return settings.filter(row => asked.includes(row.version)).map(settingsRead)
     }
+    if (text.startsWith('select v.id, o.name as org, s.contact_title as title')) {
+      // readLatestPurposes(): the latest version when it is generated, with the title it printed.
+      if (w.latest === undefined || w.latest.generator === null) return []
+      return [
+        { id: w.latest.id, org: 'Integration test', title: settingsOf(w.latest.dpo_settings_version)?.title ?? null },
+      ]
+    }
+    if (text.startsWith('select l.purpose, r.basis from notice_version_purposes l'))
+      return [...(w.latestPurposes ?? [])]
     if (text.startsWith('select v.id, v.version, v.published_at, p.full_name as published_by, v.generator, v.body')) {
       return w.latest === undefined
         ? []
@@ -231,6 +261,8 @@ function org(w: World = {}) {
           contact_email: printed?.email ?? null,
           contact_phone: printed?.phone ?? null,
           contact_postal: printed?.postal ?? null,
+          target_business_days: printed === undefined ? null : (printed.targets?.businessDays ?? 10),
+          target_calendar_days: printed === undefined ? null : (printed.targets?.calendarDays ?? 30),
         },
       ]
     }
@@ -351,7 +383,7 @@ const input = () => ({
     },
   ],
   clearances: [{ id: TWILIO, provider: 'twilio' as const, facts: noticeFactsFrom(snapshot()), reviewOn: '2027-10-01' }],
-  contact: { version: 1, ...CONTACT },
+  contact: { version: 1, ...CONTACT, targets: { businessDays: 10, calendarDays: 30 } },
 })
 const BODY = generateNotice(input())
 const DIGEST = createHash('sha256')
@@ -395,7 +427,15 @@ describe('NTS-02 C0.9 PD-36 PD-37 the draft: what the registers make, and its di
     // The DPO's current settings version, with the contact "Your rights" prints (C0.9 PD-66, PD-74).
     expect(draft.sources.contact).toEqual({ version: 1, facts: CONTACT })
     expect(draft.body).toContain('- Email: dpo@notice.example')
-    expect(draft.contact).toEqual({ version: 1, ...CONTACT, recordedOn: '2026-10-20', recordedBy: 'Ashton Tan' })
+    // With the reply targets it holds (C0.9 PR 3b, PD-94), which this generator prints.
+    expect(draft.contact).toEqual({
+      version: 1,
+      ...CONTACT,
+      recordedOn: '2026-10-20',
+      recordedBy: 'Ashton Tan',
+      targets: { businessDays: 10, calendarDays: 30 },
+    })
+    expect(draft.sources.targets).toEqual({ businessDays: 10, calendarDays: 30 })
     expect(draft.problems).toEqual([])
     // The contact is no longer a warning (C0.9 PD-68).
     expect(draft.warnings.map(warning => warning.code)).toEqual(['production_access_pending'])
@@ -450,6 +490,7 @@ describe('NTS-02 C0.9 PD-36 PD-37 the draft: what the registers make, and its di
       purposes: { added: [], changed: [], removed: [] },
       providers: { added: [], changed: [], removed: [] },
       contact: 'same',
+      targets: 'same',
       wording: false,
     })
     // The latest version's sources carry the settings version it linked, read with its contact.
@@ -558,6 +599,7 @@ describe('NTS-02 C0.9 OD-10 OD-11 PD-66 PD-67 PD-68 the draft and the DPO’s co
       purposes: { added: [], changed: [], removed: [] },
       providers: { added: [], changed: [], removed: [] },
       contact: 'changed',
+      targets: 'same',
       wording: false,
     })
     // The link read asks only for the settings version the latest printed.
@@ -595,6 +637,114 @@ describe('NTS-02 C0.9 OD-10 OD-11 PD-66 PD-67 PD-68 the draft and the DPO’s co
   })
 })
 
+describe('NTS-02 C0.9 PR 3b OD-08 PD-93 PD-94 PD-95 the reply targets each version printed', () => {
+  const links = {
+    purposes: [
+      { notice_version_id: V0, purpose: 'accounts', register_version: 2 },
+      { notice_version_id: V0, purpose: 'recording_meetings', register_version: 3 },
+    ],
+    clearances: [{ notice_version_id: V0, id: TWILIO, provider: 'twilio', facts: snapshot() }],
+  }
+
+  it('reads a version’s targets only when its generator prints them: a c09.2 version or a stand-in states none, whatever its linked row reads', async () => {
+    for (const [generator, targets, change] of [
+      [NOTICE_GENERATOR, { businessDays: 10, calendarDays: 30 }, 'same'],
+      ['c09.2', null, 'added'],
+      ['c09.1', null, 'added'],
+      [null, null, 'added'],
+    ] as const) {
+      const pool = org({
+        latest: {
+          id: V0,
+          version: 0,
+          generator,
+          body: generator === null ? 'A stand-in' : BODY,
+          dpo_settings_version: 1,
+        },
+        links,
+      })
+      const draft = await pool.db.transaction().execute(trx => noticeDraft(trx as never, ORG))
+      expect(draft.latest?.sources.targets, String(generator)).toEqual(targets)
+      // The draft prints the current targets, so a targetless latest reads as targets added.
+      expect(draft.sources.targets).toEqual({ businessDays: 10, calendarDays: 30 })
+      expect(draft.input.contact?.targets).toEqual({ businessDays: 10, calendarDays: 30 })
+      expect(draft.changes?.targets, String(generator)).toBe(change)
+    }
+  })
+
+  it('NTG-20: a draft whose targets alone changed is out of date, reporting the targets changed, the contact the same and no new wording', async () => {
+    const pool = org({
+      latest: { id: V0, version: 0, generator: NOTICE_GENERATOR, body: BODY, dpo_settings_version: 1 },
+      links,
+      settings: [
+        { version: 1, ...CONTACT },
+        { version: 2, ...CONTACT, targets: { businessDays: 7, calendarDays: 30 } },
+      ],
+    })
+    const draft = await pool.db.transaction().execute(trx => noticeDraft(trx as never, ORG))
+    expect(draft.upToDate).toBe(false)
+    expect(draft.changes).toMatchObject({ contact: 'same', targets: 'changed', wording: false })
+    expect(draft.body).toContain('within 7 business days')
+  })
+
+  it('GET /api/notice answers the targets the latest printed, from its own row, and null for a c09.2 version or a stand-in', async () => {
+    for (const [generator, targets] of [
+      [NOTICE_GENERATOR, { businessDays: 7, calendarDays: 21 }],
+      ['c09.2', null],
+      [null, null],
+    ] as const) {
+      const pool = org({
+        latest: {
+          id: V1,
+          version: 1,
+          generator,
+          body: generator === null ? 'A stand-in' : BODY,
+          dpo_settings_version: 1,
+        },
+        settings: [{ version: 1, ...CONTACT, targets: { businessDays: 7, calendarDays: 21 } }],
+        acknowledged: true,
+      })
+      const c = context(pool)
+      const answer = NoticeResponse.parse((await readNotice(c.api, session(OWNER), c.info)).body)
+      expect(answer.targets, String(generator)).toEqual(targets)
+      // From the very row the answer shows, in the statement that reads the latest version.
+      expect(pool.texts().find(text => text.includes(' as acknowledged,'))).toMatch(
+        /s\.target_business_days, s\.target_calendar_days from notice_versions v/,
+      )
+    }
+  })
+
+  it('PD-105: readLatestPurposes() reads the latest generated version’s active purposes with their bases and the title it printed; null with no version, a stand-in, or no contact printed', async () => {
+    const read = (w: World) => {
+      const pool = org(w)
+      return pool.db.transaction().execute(trx => readLatestPurposes(trx as never, ORG))
+    }
+    const latest = { id: V1, version: 1, generator: NOTICE_GENERATOR, body: BODY, dpo_settings_version: 1 }
+    expect(
+      await read({
+        latest,
+        latestPurposes: [
+          { purpose: 'accounts', basis: 'employment' },
+          { purpose: 'backups', basis: 'legitimate_interests' },
+          // An AI purpose, or an active row with no basis, never reaches the reply.
+          { purpose: 'org_brain', basis: 'legitimate_interests' },
+          { purpose: 'security_audit', basis: null },
+        ],
+      }),
+    ).toEqual({
+      org: 'Integration test',
+      purposes: [
+        { key: 'accounts', basis: 'employment' },
+        { key: 'backups', basis: 'legitimate_interests' },
+      ],
+      contactTitle: CONTACT.title,
+    })
+    expect(await read({})).toBeNull()
+    expect(await read({ latest: { ...latest, generator: null, body: 'A stand-in' } })).toBeNull()
+    expect(await read({ latest: { ...latest, generator: 'c09.1', dpo_settings_version: null } })).toBeNull()
+  })
+})
+
 describe('NTS-02 C0.9 PD-46 B-11 GET /api/notice', () => {
   it('answers your standing, the current version, what changed since the generated version you last acknowledged, and your acknowledgements, in a read-only transaction that leaves the session alone', async () => {
     const pool = org({
@@ -624,11 +774,14 @@ describe('NTS-02 C0.9 PD-46 B-11 GET /api/notice', () => {
       current: { id: V1, version: 1, publishedAt: '2026-10-21T02:00:00.000Z', body: BODY },
       // The contact the current version printed (C0.9 PD-69).
       contact: CONTACT,
+      // The targets it printed, from the same row (C0.9 PD-95).
+      targets: { businessDays: 10, calendarDays: 30 },
       changes: {
         since: 0,
         purposes: { added: [], changed: ['accounts'], removed: [] },
         providers: { added: [], changed: ['twilio'], removed: [] },
         contact: 'same',
+        targets: 'same',
         wording: false,
       },
       mine: [],
@@ -665,6 +818,7 @@ describe('NTS-02 C0.9 PD-46 B-11 GET /api/notice', () => {
       standing: 'unpublished',
       current: null,
       contact: null,
+      targets: null,
       changes: null,
       mine: [],
     })
@@ -959,18 +1113,18 @@ describe('NTS-02 C0.9 OD-10 PD-70 GET /api/admin/notice/contact', () => {
   })
 
   it('answers the current contact, whether the published notice is up to date, and whether the latest version prints it, in a read-only transaction', async () => {
-    for (const [world, stated, notice] of [
+    for (const [world, stated, notice, targetsStated] of [
       // No version yet.
-      [{}, 'unpublished', 'none'],
+      [{}, 'unpublished', 'none', 'unpublished'],
       // The latest generated version links the current settings version.
-      [{ latest: generated(1) }, 'stated', 'out_of_date'],
+      [{ latest: generated(1) }, 'stated', 'out_of_date', 'stated'],
       // A version, but no contact recorded: nothing can be printed (a version links one only once
-      // one exists).
-      [{ latest: generated(null, null), settings: [] }, 'not_printed', 'out_of_date'],
+      // one exists), and no targets are recorded either.
+      [{ latest: generated(null, null), settings: [] }, 'not_printed', 'out_of_date', 'not_printed'],
       // A contact recorded after a c09.1 latest, or a stand-in: not printed, never an earlier one.
-      [{ latest: generated(null, 'c09.1') }, 'not_printed', 'out_of_date'],
-      [{ latest: generated(null, null) }, 'not_printed', 'out_of_date'],
-      // The latest prints an earlier settings version.
+      [{ latest: generated(null, 'c09.1') }, 'not_printed', 'out_of_date', 'not_printed'],
+      [{ latest: generated(null, null) }, 'not_printed', 'out_of_date', 'not_printed'],
+      // The latest prints an earlier contact, with the same targets.
       [
         {
           latest: generated(1),
@@ -981,42 +1135,85 @@ describe('NTS-02 C0.9 OD-10 PD-70 GET /api/admin/notice/contact', () => {
         },
         'not_stated',
         'out_of_date',
+        'stated',
       ],
+      // C0.9 PD-95: a c09.2 latest prints the contact and no targets, whatever its row reads.
+      [{ latest: generated(1, 'c09.2') }, 'stated', 'out_of_date', 'not_printed'],
     ] as const) {
       const pool = org(world)
       const c = context(pool)
       const answer = ContactAdminResponse.parse((await readContactAdmin(c.api, session(), c.info)).body)
       expect(answer.stated, JSON.stringify(world)).toBe(stated)
       expect(answer.notice, JSON.stringify(world)).toBe(notice)
-      const settings = 'settings' in world ? world.settings : [{ version: 1, ...CONTACT }]
+      expect(answer.targetsStated, JSON.stringify(world)).toBe(targetsStated)
+      const settings: readonly SettingsRow[] = 'settings' in world ? world.settings : [{ version: 1, ...CONTACT }]
       const current = settings.at(-1)
       expect(answer.contact).toEqual(
         current === undefined ? null : { ...current, recordedOn: '2026-10-20', recordedBy: 'Ashton Tan' },
       )
+      // The targets kept with the contact (C0.9 PD-94), beside it, never in its row.
+      expect(answer.targets).toEqual(current === undefined ? null : { businessDays: 10, calendarDays: 30 })
       expect(pool.texts()[0]).toBe('start transaction isolation level read committed read only')
       // One read of the current contact, which the draft and the answer share.
       expect(pool.texts().filter(text => text.startsWith('select s.version, s.contact_title'))).toHaveLength(1)
     }
   })
 
-  it('reads stated only from a generated latest linking the current version', () => {
-    const latest = (generated: boolean, version: number | null) => ({
-      generated,
-      sources: {
-        generator: generated ? NOTICE_GENERATOR : null,
-        body: 'Words',
-        purposes: [],
-        clearances: [],
-        contact: version === null ? null : { version, facts: CONTACT },
-      },
-    })
-    expect(contactStated(null, { version: 1 })).toBe('unpublished')
+  const TARGETS = { businessDays: 10, calendarDays: 30 }
+  const latestOf = (
+    generated: boolean,
+    contact: typeof CONTACT | null,
+    targets: { businessDays: number; calendarDays: number } | null = null,
+  ) => ({
+    generated,
+    sources: {
+      generator: generated ? NOTICE_GENERATOR : null,
+      body: 'Words',
+      purposes: [],
+      clearances: [],
+      contact: contact === null ? null : { version: 1, facts: contact },
+      targets,
+    },
+  })
+
+  it('C0.9 PD-95: reads stated only from a generated latest that printed the current contact’s facts, whatever settings version holds them', () => {
+    expect(contactStated(null, CONTACT)).toBe('unpublished')
     expect(contactStated(null, null)).toBe('unpublished')
-    expect(contactStated(latest(true, 1), { version: 1 })).toBe('stated')
-    expect(contactStated(latest(false, 1), { version: 1 })).toBe('not_printed')
-    expect(contactStated(latest(true, null), { version: 1 })).toBe('not_printed')
-    expect(contactStated(latest(true, 1), { version: 2 })).toBe('not_stated')
-    expect(contactStated(latest(true, null), null)).toBe('not_printed')
+    expect(contactStated(latestOf(true, CONTACT), CONTACT)).toBe('stated')
+    // A stand-in prints no contact, whatever it links.
+    expect(contactStated(latestOf(false, CONTACT), CONTACT)).toBe('not_printed')
+    expect(contactStated(latestOf(true, null), CONTACT)).toBe('not_printed')
+    expect(contactStated(latestOf(true, CONTACT), { ...CONTACT, title: 'Privacy Office' })).toBe('not_stated')
+    expect(contactStated(latestOf(true, null), null)).toBe('not_printed')
+  })
+
+  it('C0.9 PD-94 PD-95: targetsStated takes the same four states, from what the latest printed', () => {
+    expect(targetsStated(null, TARGETS)).toBe('unpublished')
+    expect(targetsStated(null, null)).toBe('unpublished')
+    expect(targetsStated(latestOf(true, CONTACT, TARGETS), TARGETS)).toBe('stated')
+    // A stand-in, or a version whose generator printed none (its sources' targets are null).
+    expect(targetsStated(latestOf(false, null, TARGETS), TARGETS)).toBe('not_printed')
+    expect(targetsStated(latestOf(true, CONTACT, null), TARGETS)).toBe('not_printed')
+    expect(targetsStated(latestOf(true, CONTACT, TARGETS), null)).toBe('not_printed')
+    expect(targetsStated(latestOf(true, CONTACT, TARGETS), { businessDays: 7, calendarDays: 30 })).toBe('not_stated')
+  })
+
+  it('C0.9 PD-95 RQI-12: a change to the targets alone keeps the contact stated, while the targets read not stated', async () => {
+    const pool = org({
+      latest: generated(1),
+      settings: [
+        { version: 1, ...CONTACT },
+        { version: 2, ...CONTACT, targets: { businessDays: 7, calendarDays: 30 } },
+      ],
+    })
+    const c = context(pool)
+    const answer = ContactAdminResponse.parse((await readContactAdmin(c.api, session(), c.info)).body)
+    expect(answer).toMatchObject({
+      stated: 'stated',
+      targets: { businessDays: 7, calendarDays: 30 },
+      targetsStated: 'not_stated',
+    })
+    expect(answer.contact?.version).toBe(2)
   })
 
   it('refuses everyone but the DPO, and a stale PIN, before reading the contact or the registers', async () => {

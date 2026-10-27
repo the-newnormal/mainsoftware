@@ -30,6 +30,7 @@ import { MESSAGES } from '#src/auth/errors.ts'
 import { limitSubject } from '#src/auth/limiter.ts'
 import { LIMITS, OTP } from '#src/auth/policy.ts'
 import { FakeVerify } from '#src/auth/sms/fake.ts'
+import { CASE_ERRORS } from '#src/compliance/cases.ts'
 import { NOTICE_ERRORS } from '#src/compliance/notice.ts'
 import { REGISTER_ERRORS } from '#src/compliance/routes.ts'
 import { withOrg } from '#src/db/database.ts'
@@ -354,6 +355,8 @@ describe('C0.5 sign-in, devices and socket revocation on the Compose stack (ACC-
           ...FLAG_ERRORS,
           ...REGISTER_ERRORS,
           ...NOTICE_ERRORS,
+          // Requests to the DPO's codes are the cases suite's (C0.9 PR 3b).
+          ...CASE_ERRORS,
           ...DORMANT_ERRORS,
         ])
         const missing = Object.keys(MESSAGES).filter(code => !elsewhere.has(code) && !answered.has(code))

@@ -22,6 +22,12 @@
 --      as resting on consent in its version 2
 --   e5 aws's clearance, by a5 in the app, on the facts a5 recorded (its revision 2)
 --   e6 the org's DPO contact, version 1, recorded by a5 (0011), which no version prints yet
+--   e8 a8's complaint to the DPO, sent in Hearth on e1 today, stating no reply targets (the latest
+--      version, e3, is a stand-in), with its case.submitted audit row (0012)
+--   e9 e8's first step: a5 told a8 it was received
+--   ea a copy of data a5 logged for someone without an account (Sam Example, by email), received
+--      three days ago in the org's zone, with its case.logged audit row (0012)
+--   eb ea's first step: how a5 checked who they are
 -- Each org also has every feature flag (the orgs trigger, 0007), one outbox event (flag.changed for
 -- core.system, Hearth acting), the offboarding consumer's checkpoint (at the start), a floor
 -- (nothing purged yet), and every purpose's and provider's register entry (the orgs trigger, 0009).
@@ -80,6 +86,7 @@ declare
   owner uuid := pg_temp.id(o, 'a1');
   admin uuid := pg_temp.id(o, 'a2');
   s text;
+  today date;
 begin
   insert into public.orgs (id, name) values (org, 'Test org ' || o);
   insert into public.principals (id, org_id, kind, system_key) values (hearth, org, 'system', 'hearth');
@@ -206,6 +213,29 @@ begin
   -- made-up mailbox, so a publish passes the contact rule (160).
   insert into public.dpo_settings (id, org_id, version, contact_title, contact_email, recorded_by)
     values (pg_temp.id(o, 'e6'), org, 1, 'Data Protection Officer', 'dpo-' || o || '@fixture.example', pg_temp.id(o, 'a5'));
+
+  -- Requests to the DPO (0012, C0.9 OD-06), as submit_case(), log_case() and add_case_step() write
+  -- them, with made-up words: a8's complaint sent in Hearth (e8) and its first step (e9), and a copy
+  -- of data a5 logged for someone without an account (ea) with its identity step (eb). Each case's
+  -- audit row names it by its target, never its kind or words (PD-100). Days are in the org's zone.
+  select (now() at time zone x.time_zone)::date into today from public.orgs x where x.id = org;
+  insert into public.cases (id, org_id, reference, client_key, kind, came_by, received_on, logged_by, requester_person_id,
+                            details)
+    values (pg_temp.id(o, 'e8'), org, case o when '1' then 'K7QMX3TD' else 'K7QMX3TF' end, gen_random_uuid(),
+            'complaint', 'hearth', today, pg_temp.id(o, 'a8'), pg_temp.id(o, 'a8'),
+            'The rota sheet shows my home address to the whole crew.');
+  insert into public.case_steps (id, org_id, case_id, number, step, on_day, recorded_by)
+    values (pg_temp.id(o, 'e9'), org, pg_temp.id(o, 'e8'), 1, 'acknowledged', today, pg_temp.id(o, 'a5'));
+  insert into public.cases (id, org_id, client_key, kind, came_by, received_on, logged_by, requester_name,
+                            requester_channel, requester_contact, details)
+    values (pg_temp.id(o, 'ea'), org, gen_random_uuid(), 'access', 'email', today - 3, pg_temp.id(o, 'a5'), 'Sam Example',
+            'email', 'sam@requester.example', 'Wants a copy of the personal data held about them.');
+  insert into public.case_steps (id, org_id, case_id, number, step, on_day, note, recorded_by)
+    values (pg_temp.id(o, 'eb'), org, pg_temp.id(o, 'ea'), 1, 'identity_checked', today - 3,
+            'Matched against HR records by video call', pg_temp.id(o, 'a5'));
+  insert into public.audit_events (org_id, actor_id, action, target_type, target_id, device_id) values
+    (org, pg_temp.id(o, 'a8'), 'case.submitted', 'case', pg_temp.id(o, 'e8')::text, pg_temp.id(o, 'e1')),
+    (org, pg_temp.id(o, 'a5'), 'case.logged', 'case', pg_temp.id(o, 'ea')::text, null);
 end
 $$;
 

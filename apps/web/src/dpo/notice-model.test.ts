@@ -108,6 +108,7 @@ describe('C0.9 PD-48: the DPO’s Notice tab (dpo/notice-model.ts)', () => {
           { title: 'No longer listed', lines: ['Amazon Web Services'] },
         ],
         contact: undefined,
+        targets: undefined,
         wording: false,
       },
       problems: [],
@@ -127,6 +128,7 @@ describe('C0.9 PD-48: the DPO’s Notice tab (dpo/notice-model.ts)', () => {
       purposes: { added: [], changed: [], removed: [] },
       providers: { added: ['aws_sms', 'google_fcm'], changed: ['microsoft_wns'], removed: [] },
       contact: 'same',
+      targets: 'same',
       wording: false,
     })
     expect(groups?.groups).toEqual([
@@ -240,6 +242,7 @@ describe('C0.9 PD-48: the DPO’s Notice tab (dpo/notice-model.ts)', () => {
           purposes: { added: [], changed: [], removed: [] },
           providers: { added: [], changed: [], removed: [] },
           contact: 'same',
+          targets: 'same',
           wording: false,
         },
         upToDate: true,
@@ -421,17 +424,24 @@ describe('C0.9 OD-10 OD-11: the DPO’s contact on the Notice tab (dpo/notice-mo
     expect(Object.keys(NOTICE_WARNING_COPY)).not.toContain('dpo_contact_pending')
     expect(warningLine({ code: 'production_access_pending' })).toBe(NOTICE_WARNING_COPY.production_access_pending())
     const none = { added: [], changed: [], removed: [] }
-    expect(changeGroups({ since: 0, purposes: none, providers: none, contact: 'added', wording: false })).toEqual({
+    const same = { contact: 'same', targets: 'same' } as const
+    expect(
+      changeGroups({ since: 0, purposes: none, providers: none, ...same, contact: 'added', wording: false }),
+    ).toEqual({
       groups: [],
       contact: 'The notice gives your contact details for the first time.',
+      targets: undefined,
       wording: false,
     })
-    expect(changeGroups({ since: 0, purposes: none, providers: none, contact: 'changed', wording: false })).toEqual({
+    expect(
+      changeGroups({ since: 0, purposes: none, providers: none, ...same, contact: 'changed', wording: false }),
+    ).toEqual({
       groups: [],
       contact: 'Your contact details change.',
+      targets: undefined,
       wording: false,
     })
-    expect(changeGroups({ since: 0, purposes: none, providers: none, contact: 'same', wording: false })).toBeUndefined()
+    expect(changeGroups({ since: 0, purposes: none, providers: none, ...same, wording: false })).toBeUndefined()
     // From the answer, and an unreadable marker claims nothing (ChangesForClient's catch).
     const answer = noticeAdminAnswer()
     const withContact = (contact: string) =>
@@ -441,6 +451,32 @@ describe('C0.9 OD-10 OD-11: the DPO’s contact on the Notice tab (dpo/notice-mo
       })
     expect(noticeTabView(withContact('changed'), date).changes?.contact).toBe(NOTICE_TAB.draft.contact)
     expect(noticeTabView(withContact('a marker this build can’t read'), date).changes?.contact).toBeUndefined()
+  })
+
+  it('NTW-09 OD-08 PD-94 PD-95: what the next version changes says when it gives the reply targets for the first time or other figures, and that alone is a change to show; an unreadable marker claims nothing', () => {
+    const none = { added: [], changed: [], removed: [] }
+    const base = { since: 0, purposes: none, providers: none, contact: 'same', wording: false } as const
+    expect(changeGroups({ ...base, targets: 'added' })).toEqual({
+      groups: [],
+      contact: undefined,
+      targets: 'The reply targets are new to the notice.',
+      wording: false,
+    })
+    expect(changeGroups({ ...base, targets: 'changed' })?.targets).toBe('The reply targets changed.')
+    expect(changeGroups({ ...base, targets: 'same' })).toBeUndefined()
+    // A c09.2 to c09.3 publish: the targets added, and the wording changed with the generator.
+    expect(changeGroups({ ...base, targets: 'added', wording: true })).toMatchObject({
+      targets: NOTICE_TAB.draft.targetsAdded,
+      wording: true,
+    })
+    const answer = noticeAdminAnswer()
+    const withTargets = (targets: string) =>
+      NoticeAdminResponseForClient.parse({
+        ...answer,
+        draft: { ...answer.draft, changes: { ...answer.draft.changes, targets } },
+      })
+    expect(noticeTabView(withTargets('changed'), date).changes?.targets).toBe(NOTICE_TAB.draft.targets)
+    expect(noticeTabView(withTargets('a marker this build can’t read'), date).changes?.targets).toBeUndefined()
   })
 })
 

@@ -218,6 +218,9 @@ function Changes({ changes }: { changes: ChangeLines }) {
       {changes.contact !== undefined && (
         <p>{changes.contact === 'added' ? NOTICE.changes.contactAdded : NOTICE.changes.contact}</p>
       )}
+      {changes.targets !== undefined && (
+        <p>{changes.targets === 'added' ? NOTICE.changes.targetsAdded : NOTICE.changes.targets}</p>
+      )}
       {changes.wording && <p>{NOTICE.changes.wording}</p>}
     </section>
   )

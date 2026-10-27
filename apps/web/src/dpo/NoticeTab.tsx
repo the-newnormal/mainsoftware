@@ -161,6 +161,7 @@ function Draft({ view }: { view: NoticeTabView }) {
             </div>
           ))}
           {view.changes.contact !== undefined && <p>{view.changes.contact}</p>}
+          {view.changes.targets !== undefined && <p>{view.changes.targets}</p>}
           {view.changes.wording && <p>{NOTICE_TAB.draft.wording}</p>}
         </div>
       )}

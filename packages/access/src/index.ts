@@ -6,7 +6,8 @@
 // decides the realtime gateway's live topics (topic.subscribe; canTopics for the re-checks). From
 // C0.8 it decides who signs in with the PIN and how a session re-authenticates (reauth.ts, D46),
 // and who reads their own session and client flags (session.read_own, T21). From C0.9 it decides
-// what anyone may do before acknowledging the current privacy notice (notice.ts, PDPA-03).
+// what anyone may do before acknowledging the current privacy notice (notice.ts, PDPA-03), and from
+// C0.9 PR 3b who sends, reads and works requests to the DPO (case.*, PDPA-13, OD-14, OD-15).
 export { isAdmin, isOwner } from './admin.ts'
 export {
   type Audience,

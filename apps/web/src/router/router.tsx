@@ -13,7 +13,8 @@
 //     ├── /more       the phone's More page
 //     ├── /settings /settings/privacy   Settings and its sections (C0.9 PD-47): no nav entry; the
 //     │                                 avatar menu opens them
-//     ├── /dpo/purposes /dpo/transfers /dpo/contact /dpo/notice   the DPO's registers, their
+//     ├── /dpo/requests /dpo/purposes /dpo/transfers /dpo/contact /dpo/notice   the requests to
+//     │                                  the DPO (C0.9 PR 3b, PD-98), the DPO's registers, their
 //     │                                  contact details (C0.9 PR 3a, PD-70) and notice (C0.9 PD-26,
 //     │                                  PD-48): no nav entry; the avatar menu opens them, and the
 //     │                                  server decides who may read them
@@ -226,6 +227,16 @@ const privacyRoute = createRoute({
 // and no nav entry. Their titles come from strings/shell.ts, which the boot loads anyway; the pages'
 // own copy (strings/dpo*.ts) loads only with their chunks, so the boot's bundle doesn't grow by it
 // (C0.9 PD-31).
+// The requests to the DPO (PDPA-04, PDPA-13; C0.9 OD-14, OD-22, PD-98): the queue, its own chunk;
+// the case sheet and the log dialog load behind their own lazy imports when opened. No search
+// param: an open case is component state, never the URL (T21 item 5, RO-04).
+const requestsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: '/dpo/requests',
+  staticData: { title: SHELL.dpo.requests },
+  component: lazyRouteComponent(() => import('@/dpo/RequestsScreen.tsx'), 'RequestsScreen'),
+})
+
 const purposesRoute = createRoute({
   getParentRoute: () => appRoute,
   path: '/dpo/purposes',
@@ -276,6 +287,7 @@ export const routeTree = rootRoute.addChildren([
     moreRoute,
     settingsRoute,
     privacyRoute,
+    requestsRoute,
     purposesRoute,
     transfersRoute,
     dpoContactRoute,

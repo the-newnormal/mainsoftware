@@ -5,14 +5,16 @@
 // Firefox).
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { mailtoHref, NoticeResponse, telHref } from '@hearth/shared'
+import { MyRequestsResponse, mailtoHref, NoticeResponse, SendRequestResponse, telHref } from '@hearth/shared'
 import type { Page } from '@playwright/test'
 import { SETTINGS } from '../src/strings/notice.ts'
-import { noAiCopy, noSidewaysScroll, targets44, visibleH1s } from './support/checks.ts'
+import { REQUESTS } from '../src/strings/requests.ts'
+import { expectAxeClean } from './support/axe.ts'
+import { inputs16, noAiCopy, noSidewaysScroll, targets44, visibleH1s } from './support/checks.ts'
 import { REPO_DIR } from './support/env.ts'
 import { expect, type Guard, test } from './support/fixtures.ts'
 import { CONTACT_PHONE, PERSONAS } from './support/personas.ts'
-import { hasRail, SCREENS, SIZES } from './support/viewports.ts'
+import { CHECK_SIZES, hasRail, SCHEMES, SCREENS, SIZES } from './support/viewports.ts'
 
 const TABS = ['Today', 'Chats', 'Rooms', 'Tasks', 'More']
 const RAIL = ['Today', 'Chats', 'Rooms', 'Tasks', 'Calendar', 'Drive']
@@ -353,6 +355,12 @@ test('NTE-01 PDPA-02 PDPA-03 PDPA-13 C0.9 PD-47 OD-12 PD-69: Settings, from the 
     await expect(page).toHaveTitle('Settings – Hearth')
     const sections = page.getByRole('navigation', { name: SETTINGS.sections.label })
     await expect(sections.getByRole('link')).toHaveCount(1)
+    // Privacy's line names the requests form, so someone looking for how to complain or get a copy
+    // of their data knows to open it (C0.9 PR 3b, PPL-11).
+    await expect(sections.getByRole('link', { name: /^Privacy/ })).toContainText(SETTINGS.sections.privacy)
+    expect(SETTINGS.sections.privacy).toBe(
+      'How to reach the Data Protection Officer, questions and requests, the privacy notice and your acknowledgements',
+    )
     expect(await noSidewaysScroll(page), `/settings at ${size.width}`).toEqual([])
     expect(await targets44(page), `/settings at ${size.width}`).toEqual([])
     expect(await noAiCopy(page), `/settings at ${size.width}`).toEqual([])
@@ -365,6 +373,10 @@ test('NTE-01 PDPA-02 PDPA-03 PDPA-13 C0.9 PD-47 OD-12 PD-69: Settings, from the 
     await expect(screen.getByRole('heading', { level: 2 }).first()).toHaveText(SETTINGS.privacy.contact.title)
     await expect(screen.getByText(SETTINGS.privacy.contact.none, { exact: true })).toBeVisible()
     await expect(screen.getByRole('heading', { level: 2, name: SETTINGS.privacy.noticeTitle })).toBeVisible()
+    // The requests form and Marcus's own requests follow the contact (C0.9 PR 3b): the seed holds
+    // none of his, read for real.
+    await expect(screen.getByRole('heading', { level: 2, name: REQUESTS.title })).toBeVisible()
+    await expect(screen.getByText(REQUESTS.mine.empty, { exact: true })).toBeVisible()
     // The seed's notice v0, which Marcus acknowledged in the app (db/seed/tembusu.sql).
     await expect(screen.getByText(/^Version 0 · published /)).toBeVisible()
     await expect(screen.getByText(/^You acknowledged version 0 on .+ \(in the app\)\.$/)).toBeVisible()
@@ -403,4 +415,202 @@ test('NTE-01 PDPA-02 PDPA-03 PDPA-13 C0.9 PD-47 OD-12 PD-69: Settings, from the 
     expect(await noAiCopy(page), `/settings/privacy with a contact at ${size.width}`).toEqual([])
     await page.unroute('**/api/notice')
   }
+})
+
+// --- Questions and requests (C0.9 PR 3b) ----------------------------------------------------------
+
+// Marcus's requests as the test answers GET /api/requests: a complaint the DPO replied to on time,
+// and a copy of his data past its target day with no reply recorded. The org's day and every
+// reference are fixed, so nothing here hangs on the clock; the words are made up.
+const REQUESTS_DAY = '2026-11-12'
+const SENT_ID = 'c0000000-0000-4000-8000-0000000000d3'
+const myRequests = (sent: boolean) =>
+  MyRequestsResponse.parse({
+    today: REQUESTS_DAY,
+    requests: [
+      ...(sent
+        ? [
+            {
+              id: SENT_ID,
+              reference: 'HJK5MNP6',
+              kind: 'complaint',
+              cameBy: 'hearth',
+              receivedOn: REQUESTS_DAY,
+              state: 'received',
+              dueOn: '2026-11-26',
+              repliedOn: null,
+              repliedInTime: false,
+              closedOn: null,
+            },
+          ]
+        : []),
+      {
+        id: 'c0000000-0000-4000-8000-0000000000d1',
+        reference: 'K7QMX3TD',
+        kind: 'complaint',
+        cameBy: 'hearth',
+        receivedOn: '2026-10-27',
+        state: 'in_progress',
+        dueOn: '2026-11-10',
+        repliedOn: '2026-11-04',
+        repliedInTime: true,
+        closedOn: null,
+      },
+      {
+        id: 'c0000000-0000-4000-8000-0000000000d2',
+        reference: 'BC2DFG3H',
+        kind: 'access',
+        cameBy: 'email',
+        receivedOn: '2026-10-01',
+        state: 'received',
+        dueOn: '2026-10-31',
+        repliedOn: null,
+        repliedInTime: false,
+        closedOn: null,
+      },
+    ],
+    more: false,
+    open: sent ? 3 : 2,
+  })
+
+test('NTE-02 OD-07 OD-12 OD-15 PD-96 PD-97 PD-112: Settings › Privacy reads the contact, then Questions and requests, then Your requests, then the notice; the six kinds are 44 px rows at 390 and 320; A complaint opens a sheet with the published target and a 16 px box, Send held until something is written; closing with words written asks first, with focus on the question, and Keep writing puts focus back in the box with the words kept; a send whose answer is cut off keeps the words and says sending again won’t send twice; the confirmation gives the due day and the reference and stays until Done, which focuses the new row; Your requests shows a reply and a request past its target day with what to do; axe at 320, 390 and 1440 px in both schemes', async ({
+  open,
+  guard,
+}, testInfo) => {
+  test.setTimeout(180_000)
+  guard.allowFailedRequest('/api/requests/send')
+  const page = await open({ ...SIZES.w390, signedIn: true })
+  let sent = false
+  const sends: unknown[] = []
+  await page.route('**/api/requests', route =>
+    route.request().method() === 'GET' ? route.fulfill({ json: myRequests(sent) }) : route.fallback(),
+  )
+  // The first send's answer never arrives (the connection drops); the second, with the same key,
+  // lands.
+  await page.route('**/api/requests/send', route => {
+    sends.push(route.request().postDataJSON())
+    if (sends.length === 1) return route.abort('connectionreset')
+    sent = true
+    return route.fulfill({
+      json: SendRequestResponse.parse({
+        case: SENT_ID,
+        reference: 'HJK5MNP6',
+        receivedOn: REQUESTS_DAY,
+        dueOn: '2026-11-26',
+        changed: true,
+      }),
+    })
+  })
+  // The notice the seed published, as the api answers it, stating reply targets of 7 business days
+  // and 21 calendar days, as a version from c09.3 would.
+  await page.route('**/api/notice', async route => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    const response = await route.fetch()
+    const answer = NoticeResponse.parse(await response.json())
+    return route.fulfill({
+      response,
+      json: NoticeResponse.parse({ ...answer, targets: { businessDays: 7, calendarDays: 21 } }),
+    })
+  })
+  const checked = async (what: string, sizes = CHECK_SIZES) => {
+    for (const size of sizes) {
+      await page.setViewportSize(size)
+      for (const scheme of SCHEMES) {
+        await page.emulateMedia({ colorScheme: scheme })
+        await expectAxeClean(page, `${what} at ${size.width} ${scheme}`, testInfo)
+      }
+      const label = `${what} at ${size.width}`
+      expect(await noAiCopy(page), label).toEqual([])
+      expect(await targets44(page), label).toEqual([])
+      expect(await inputs16(page), label).toEqual([])
+    }
+    await page.setViewportSize(SIZES.w320)
+    expect(await noSidewaysScroll(page), `${what} at 320`).toEqual([])
+    await page.setViewportSize(SIZES.w390)
+    await page.emulateMedia({ colorScheme: 'light' })
+  }
+
+  await page.goto('/settings/privacy')
+  await expect(h1(page)).toHaveText('Privacy')
+  const screen = page.locator('#screen')
+  await expect(screen.getByRole('heading', { level: 2 })).toHaveText([
+    SETTINGS.privacy.contact.title,
+    REQUESTS.title,
+    REQUESTS.mine.title,
+    SETTINGS.privacy.noticeTitle,
+    SETTINGS.privacy.historyTitle,
+  ])
+  const form = screen.getByRole('region', { name: REQUESTS.title })
+  await expect(form.getByRole('button')).toHaveText([
+    'A question about my data',
+    'A complaint',
+    'A copy of my data',
+    'Correct my data',
+    'Withdraw consent',
+    'Object to how my data is used',
+  ])
+  for (const size of [SIZES.w390, SIZES.w320]) {
+    await page.setViewportSize(size)
+    expect(await targets44(page), `the kinds at ${size.width}`).toEqual([])
+  }
+  await page.setViewportSize(SIZES.w390)
+
+  // Your requests: the reply on time never reads as late; the copy past its day says what to do.
+  const mine = screen.getByRole('region', { name: REQUESTS.mine.title })
+  await expect(mine.getByText('The Data Protection Officer replied on Wed 4 Nov 2026.', { exact: true })).toBeVisible()
+  await expect(mine.getByText('Past its target day (Sat 31 Oct 2026).', { exact: true })).toBeVisible()
+  await expect(mine.getByText(REQUESTS.mine.lateHelp, { exact: true })).toBeVisible()
+  await expect(mine.getByText(/^Past its target day/)).toHaveCount(1)
+  await checked('/settings/privacy with requests')
+
+  // A complaint's sheet: the published target, a 16 px box, Send held until something is written.
+  await form.getByRole('button', { name: 'A complaint', exact: true }).click()
+  const sheet = page.getByRole('dialog', { name: 'A complaint' })
+  await expect(sheet).toBeVisible()
+  await expect(
+    sheet.getByText('The Data Protection Officer aims to reply within 7 business days.', { exact: true }),
+  ).toBeVisible()
+  await expect(sheet.getByText(REQUESTS.reply, { exact: true })).toBeVisible()
+  const box = sheet.getByLabel(REQUESTS.field, { exact: true })
+  await expect(box).toHaveAttribute('dir', 'auto')
+  const send = sheet.getByRole('button', { name: 'Send', exact: true })
+  await expect(send).toHaveAttribute('aria-disabled', 'true')
+  await box.fill('The delivery rota was shared with the wrong group.')
+  await expect(send).not.toHaveAttribute('aria-disabled')
+  await checked('the request sheet', [SIZES.w320, SIZES.w390])
+
+  // Closing with words written asks first: Escape puts focus on the question, so a screen reader
+  // reads it before its answers, and Keep writing puts focus back in the box, the words kept (X6).
+  await box.click()
+  await box.press('Escape')
+  await expect(sheet.getByRole('group', { name: REQUESTS.discard })).toBeVisible()
+  await expect(sheet.getByText(REQUESTS.discard, { exact: true })).toBeFocused()
+  await sheet.getByRole('button', { name: REQUESTS.discardNo, exact: true }).click()
+  await expect(box).toBeFocused()
+  await expect(box).toHaveValue('The delivery rota was shared with the wrong group.')
+
+  // The answer is cut off: the words stay, and the sheet says sending again won't send it twice.
+  await send.click()
+  await expect(sheet.getByText(REQUESTS.failed, { exact: true })).toBeVisible()
+  await expect(box).toHaveValue('The delivery rota was shared with the wrong group.')
+  // Again, with the same key: it lands, and the sheet's content is the confirmation.
+  await send.click()
+  await expect(sheet.getByText('Sent to the Data Protection Officer.', { exact: true })).toBeVisible()
+  await expect(sheet.getByText('They aim to reply by Thu 26 Nov 2026.', { exact: true })).toBeVisible()
+  await expect(
+    sheet.getByText(/^Your reference is [B-Z2-9]{4}-[B-Z2-9]{4}\. Quote it if you write to them about this request\.$/),
+  ).toBeVisible()
+  expect(sends).toHaveLength(2)
+  expect(sends[1]).toEqual(sends[0])
+  expect(sends[0]).toMatchObject({ kind: 'complaint', details: 'The delivery rota was shared with the wrong group.' })
+  // It stays until Done, which focuses the new row.
+  await page.waitForTimeout(500)
+  await expect(sheet.getByText('Sent to the Data Protection Officer.', { exact: true })).toBeVisible()
+  await checked('the confirmation', [SIZES.w320, SIZES.w390, SIZES.desktop])
+  await sheet.getByRole('button', { name: 'Done', exact: true }).click()
+  await expect(sheet).toBeHidden()
+  await expect(page.locator(`#request-${SENT_ID}`)).toBeFocused()
+  await expect(page.locator(`#request-${SENT_ID}`)).toContainText(
+    'Received Thu 12 Nov 2026 · Reply due Thu 26 Nov 2026',
+  )
 })

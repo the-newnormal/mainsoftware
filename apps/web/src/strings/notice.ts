@@ -25,6 +25,9 @@ export const NOTICE = {
     // The DPO's contact (C0.9 OD-11, PD-67), on a line of its own.
     contact: 'The Data Protection Officer’s contact details have changed.',
     contactAdded: 'The notice now gives the Data Protection Officer’s contact details.',
+    // The DPO's reply targets (C0.9 OD-08, PD-95), on a line of their own.
+    targetsAdded: 'This version gives the Data Protection Officer’s reply targets.',
+    targets: 'The Data Protection Officer’s reply targets have changed.',
   },
   confirm: (version: string) => `I’ve read the privacy notice, version ${version}.`,
   tickFirst: 'Tick the box to say you’ve read it.',
@@ -60,7 +63,10 @@ export const SETTINGS = {
   // The registry's sections (settings/sections.ts): each one's line on /settings.
   sections: {
     label: 'Settings sections',
-    privacy: 'How to reach the Data Protection Officer, the privacy notice and your acknowledgements',
+    // From C0.9 PR 3b the section holds the requests form too, so someone looking for how to
+    // complain or get a copy of their data knows to open it (PPL-11).
+    privacy:
+      'How to reach the Data Protection Officer, questions and requests, the privacy notice and your acknowledgements',
   },
   privacy: {
     // The contact the latest version printed (C0.9 OD-12, PD-69), for everyone.

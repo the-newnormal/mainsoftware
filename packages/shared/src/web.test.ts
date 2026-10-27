@@ -3,6 +3,7 @@
 import { describe, expect, test } from 'vitest'
 import {
   ApiErrorBody,
+  Day,
   DEFAULT_TIME_ZONE,
   FlagsResponse,
   NOTICE_STANDINGS,
@@ -14,10 +15,12 @@ import {
 const personId = '0b9e6f2e-3c1a-4d5b-8e7f-1a2b3c4d5e6f'
 const capabilities = { registers: false }
 const notice = 'acknowledged'
+// Not the DPO: no count of requests (C0.9 PR 3b, PD-99).
+const requests = null
 
 describe('T21 item 10: GET /api/session', () => {
   test('T21 item 10 C0.9 PD-46: the answer is the person, a name, a zone, capability booleans and the notice standing, and nothing more', () => {
-    const answer = { personId, name: 'Ahmad', timeZone: 'Asia/Kuala_Lumpur', capabilities, notice }
+    const answer = { personId, name: 'Ahmad', timeZone: 'Asia/Kuala_Lumpur', capabilities, notice, requests }
     expect(SessionResponse.parse(answer)).toEqual(answer)
     for (const extra of [{ phone: '+65 8000 0003' }, { roles: ['admin'] }, { orgId: personId }]) {
       expect(SessionResponse.safeParse({ ...answer, ...extra }).success, Object.keys(extra)[0]).toBe(false)
@@ -28,7 +31,7 @@ describe('T21 item 10: GET /api/session', () => {
   })
 
   test('C0.9 PD-26 T21 item 10: capabilities are booleans can() decides, never roles, and the server always sends them', () => {
-    const answer = { personId, name: 'Ashton', timeZone: DEFAULT_TIME_ZONE, notice }
+    const answer = { personId, name: 'Ashton', timeZone: DEFAULT_TIME_ZONE, notice, requests }
     for (const registers of [true, false]) {
       expect(SessionResponse.parse({ ...answer, capabilities: { registers } }).capabilities).toEqual({ registers })
     }
@@ -47,7 +50,7 @@ describe('T21 item 10: GET /api/session', () => {
   })
 
   test('migration 0002: a name is bounded at 200 characters as Postgres counts them, emoji included', () => {
-    const answer = { personId, timeZone: DEFAULT_TIME_ZONE, capabilities, notice }
+    const answer = { personId, timeZone: DEFAULT_TIME_ZONE, capabilities, notice, requests }
     expect(SessionResponse.safeParse({ ...answer, name: 'a'.repeat(200) }).success).toBe(true)
     expect(SessionResponse.safeParse({ ...answer, name: 'a'.repeat(201) }).success).toBe(false)
     // 200 code points, 400 UTF-16 units: the database holds it, so the answer must carry it.
@@ -102,7 +105,7 @@ describe('T21 item 10: GET /api/session', () => {
 
   test('PDPA-03 ACC-12 C0.9 PD-43: the server always sends the standing, one of acknowledged, required and unpublished', () => {
     expect([...NOTICE_STANDINGS]).toEqual(['acknowledged', 'required', 'unpublished'])
-    const answer = { personId, name: 'Nadia', timeZone: DEFAULT_TIME_ZONE, capabilities }
+    const answer = { personId, name: 'Nadia', timeZone: DEFAULT_TIME_ZONE, capabilities, requests }
     for (const standing of NOTICE_STANDINGS) {
       expect(SessionResponse.parse({ ...answer, notice: standing }).notice).toBe(standing)
     }
@@ -121,6 +124,39 @@ describe('T21 item 10: GET /api/session', () => {
       expect(SessionResponseForClient.parse({ ...answer, notice: value }).notice, JSON.stringify(value)).toBe(
         'required',
       )
+    }
+  })
+
+  test('C0.9 OD-22 PD-99: requests is the DPO’s count of requests needing attention, a whole number, or null for everyone else, and the server always sends it', () => {
+    const answer = { personId, name: 'Ashton', timeZone: DEFAULT_TIME_ZONE, capabilities, notice }
+    for (const count of [null, 0, 1, 12, 1_000_000]) {
+      expect(SessionResponse.parse({ ...answer, requests: count }).requests, String(count)).toBe(count)
+    }
+    for (const bad of [undefined, -1, 1.5, 1_000_001, '2', true, { count: 2 }, ['a request']]) {
+      expect(SessionResponse.safeParse({ ...answer, requests: bad }).success, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  test('P6 C0.9 PD-99: SessionResponseForClient reads a count it can’t read as null, and a missing one stays missing, so no badge shows', () => {
+    const answer = { personId, name: 'Ashton', timeZone: 'UTC', capabilities, notice }
+    expect(SessionResponseForClient.parse({ ...answer, requests: 3 }).requests).toBe(3)
+    expect(SessionResponseForClient.parse({ ...answer, requests: 0 }).requests).toBe(0)
+    expect(SessionResponseForClient.parse({ ...answer, requests: null }).requests).toBeNull()
+    for (const value of [-1, 2.5, '3', true, { count: 3 }]) {
+      expect(SessionResponseForClient.parse({ ...answer, requests: value }).requests, JSON.stringify(value)).toBeNull()
+    }
+    // An answer from before C0.9 PR 3b has none, and reads with none.
+    const older = SessionResponseForClient.parse(answer)
+    expect(older.requests).toBeUndefined()
+    expect('requests' in older).toBe(false)
+  })
+})
+
+describe('C0.9 PR 3b: a day in the org’s zone', () => {
+  test('C0.9 PD-92: Day is YYYY-MM-DD from year 1, as Postgres’s date takes it', () => {
+    for (const day of ['2026-10-26', '0001-01-01', '2028-02-29']) expect(Day.safeParse(day).success, day).toBe(true)
+    for (const day of ['0000-12-31', '2026-02-30', '26 Oct 2026', '2026-10-26T00:00:00Z', '']) {
+      expect(Day.safeParse(day).success, day).toBe(false)
     }
   })
 })

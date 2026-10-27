@@ -1,11 +1,12 @@
 // C0.6's registries (TECH-SPEC T15-T17): the outbox catalogue, the flag registry and the purpose
 // keys, and the ids-only rule their schemas follow; from C0.9, the provider keys, the pinned
-// purposes and the tripwires G1 and G2 (T22). That the catalogue's names, the registry's defaults
-// and the registers' defaults equal the database's lists (migrations 0007 and 0009) is checked
-// against the database by apps/server/scripts/check-catalogues.ts.
+// purposes and the tripwires G1 and G2 (T22), and from its PR 3b the case events (PD-101). That the
+// catalogue's names, the registry's defaults and the registers' defaults equal the database's lists
+// (migrations 0007, 0009 and 0012) is checked against the database by
+// apps/server/scripts/check-catalogues.ts.
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { EVENTS, type EventSpec, isEmitted, RESERVED_NAMESPACES } from './events.ts'
+import { CONTENT_TABLES, EVENTS, type EventSpec, isEmitted, RESERVED_NAMESPACES } from './events.ts'
 import {
   COHORT_LIMIT,
   COHORT_ROLES,
@@ -192,6 +193,46 @@ describe('T16 the outbox catalogue', () => {
     expect(acknowledged.ids.safeParse({ notice, version: 3 }).success).toBe(true)
     expect(acknowledged.ids.safeParse({ notice: 'v3', version: 3 }).success).toBe(false)
     expect(acknowledged.ids.safeParse({ notice, version: 3, method: 'in_app' }).success).toBe(false)
+  })
+
+  it('C0.9 PD-101 T22 item 59: the case events are emitted from C0.9, carry request_handling alone, and hold how it came or the revision, never the kind, the reference or anyone’s words', () => {
+    const opened = EVENTS['case.opened']
+    const changed = EVENTS['case.changed']
+    for (const spec of [opened, changed]) {
+      expect(spec).toMatchObject({ status: 'emitted', stage: 'C0.9', entity: 'case', acl: 'none', tombstone: false })
+      expect(spec.purposes).toEqual(['request_handling'])
+      expect(isAiPurpose('request_handling')).toBe(false)
+    }
+    expect(Object.keys(opened.ids.shape)).toEqual(['via'])
+    expect(Object.keys(changed.ids.shape)).toEqual(['revision'])
+    for (const via of ['form', 'intake']) expect(opened.ids.safeParse({ via }).success, via).toBe(true)
+    for (const bad of [
+      { via: 'email' },
+      {},
+      { via: 'form', kind: 'complaint' },
+      { via: 'form', reference: 'K7QMX3TD' },
+    ]) {
+      expect(opened.ids.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    expect(changed.ids.safeParse({ revision: 1 }).success).toBe(true)
+    expect(changed.ids.safeParse({ revision: 101 }).success).toBe(true)
+    for (const bad of [{ revision: 0 }, { revision: 1.5 }, { revision: 1, step: 'note' }]) {
+      expect(changed.ids.safeParse(bad).success, JSON.stringify(bad)).toBe(false)
+    }
+    // case.* isn't a later stage's namespace: correction.* stays C6.1's.
+    expect(Object.keys(RESERVED_NAMESPACES).some(prefix => 'case.opened'.startsWith(prefix))).toBe(false)
+  })
+
+  it('RQS-11 G-NO-AI-REACH C0.9 PD-101: no event that may carry request_handling has a snapshot, and no case table is content an index reads', () => {
+    const carrying = entries.filter(([, spec]) => (spec.purposes as readonly string[]).includes('request_handling'))
+    expect(carrying.map(([name]) => name).sort()).toEqual(['case.changed', 'case.opened'])
+    for (const [name, spec] of carrying) {
+      expect(spec.acl, name).toBe('none')
+      // An event serves one purpose here: none that could reach a later index shares it.
+      expect(spec.purposes, name).toEqual(['request_handling'])
+    }
+    expect(CONTENT_TABLES).not.toContain('cases')
+    expect(CONTENT_TABLES).not.toContain('case_steps')
   })
 })
 
@@ -451,14 +492,21 @@ describe('C0.9 PD-07 PD-18: the pinned purposes, and the tripwires that keep PR 
     expect(isLockedOn('core.missing', registry)).toBe(false)
   })
 
-  it('RGS-15 C0.9 PD-06 T22 item 4: a new org starts with the pinned purposes, security_audit and backups active, and nothing AI', () => {
-    expect([...ACTIVE_FROM_START]).toEqual(['accounts', 'service_operation', 'security_audit', 'backups'])
+  it('RGS-15 C0.9 PD-06 T22 item 4 OD-17: a new org starts with the pinned purposes, security_audit, backups and request_handling active, and nothing AI', () => {
+    expect([...ACTIVE_FROM_START]).toEqual([
+      'accounts',
+      'service_operation',
+      'security_audit',
+      'backups',
+      'request_handling',
+    ])
     for (const key of PINNED_PURPOSES) expect(ACTIVE_FROM_START, key).toContain(key)
     for (const key of ACTIVE_FROM_START) expect(isAiPurpose(key), key).toBe(false)
-    // security_audit and backups start active without being pinned: the gate passes them only once
-    // a published notice lists them (PR 2).
+    // security_audit, backups and request_handling start active without being pinned: the gate
+    // passes them only once a published notice lists them (PR 2).
     expect(isPinnedPurpose('security_audit')).toBe(false)
     expect(isPinnedPurpose('backups')).toBe(false)
+    expect(isPinnedPurpose('request_handling')).toBe(false)
   })
 
   it(`PGT-01 G1 C0.9 PD-18: every flag outside ai.* names only pinned purposes, so a flag can't read on while its purpose is refused`, () => {

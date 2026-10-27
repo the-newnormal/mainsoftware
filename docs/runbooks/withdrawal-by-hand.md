@@ -23,6 +23,7 @@ C0.9 OD-18, PDPA s16 and PDPA-04: withdrawing deemed consent, or objecting to pr
 |---|---|---|---|
 | `security_audit` | nothing yet | it can't be: the audit log is append-only and must cover every account | everything; don't choose this basis |
 | `backups` | nothing yet | it can't be: backups can't be changed until C0.10's retention | everything; don't choose this basis |
+| `request_handling` | nothing | it can't be: handling their own request needs it, and a refused copy's records are kept (s22A) | everything; don't choose this basis |
 | `content_delivery` | not active in C0 | the step that makes it active fills this row | n/a |
 | `access_logs` | not active in C0 | as above | n/a |
 | `presence_receipts` | not active in C0 | as above | n/a |
@@ -39,14 +40,14 @@ The pinned purposes (`accounts`, `service_operation`) never rest on consent; the
 
 Once a purpose's row says how to stop it:
 
-1. The DPO logs it with the day it was received. It is due within 10 business days.
+1. A withdrawal or objection sent from Settings › Privacy is already a case on Requests; one that came another way, the DPO logs as a case with "Log a request", with the day it was received. It is due within the target, 10 business days unless the DPO has set fewer, and the case shows the day.
 2. The DPO checks the person's identity, as for an access request ([A request for a copy of someone's personal data](access-request.md)).
-3. The DPO finds the purposes it touches in the published notice and the processing register. Those on deemed consent by conduct stop for them; the others continue, and the DPO tells them so and why (the notice's "If you withdraw consent").
+3. The DPO opens the case, whose "A reply you can copy" says, from the published notice, which purposes stop for them and which continue, and on what basis. The DPO checks it against the processing register: those on deemed consent by conduct stop for them; the others continue, and the DPO tells them so and why (the notice's "If you withdraw consent").
 4. The DPO tells them in writing what withdrawing changes for them, before it takes effect (PDPA s16).
 5. The DPO, with the person on call where data must be deleted, carries it out as the purpose's row says.
 6. The DPO confirms to them in writing once it has taken effect.
 7. For an objection, the DPO weighs it against the purpose's documented legitimate-interests assessment, decides, and replies with the reason.
-8. The DPO replies within the target.
+8. The DPO replies within the target, by the channel the case records or one the organisation already holds for a current member, quoting the reference, records "Replied" with its day, and closes the case once the withdrawal has taken effect or the objection is decided.
 
 ## Check it worked
 
@@ -54,7 +55,7 @@ Once a purpose's row says how to stop it:
 
 ## Afterwards
 
-- Until C2.11 the DPO's log is the record. From C2.11 the restriction is recorded in Hearth, and from C0.9 PR 3b the request is a case in the queue.
+- The case in the queue is the record of the request. From C2.11 the restriction is recorded in Hearth too.
 
 ## Code paths
 
@@ -66,3 +67,4 @@ Once a purpose's row says how to stop it:
 - `apps/web/src/dpo/PurposesScreen.tsx`
 - `packages/shared/src/notice-text.ts`
 - `/dpo/purposes`
+- `/dpo/requests`

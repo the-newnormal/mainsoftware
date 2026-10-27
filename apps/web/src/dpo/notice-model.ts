@@ -62,12 +62,14 @@ export interface ChangeGroup {
 
 // What the next version changes since the published one: the purposes and providers it adds,
 // changes or no longer lists, each group in the registries' order, purposes first, the providers by
-// the notice's own names; the DPO's contact, given for the first time or changed (C0.9 PD-67); and
-// whether the notice's own wording changes. Undefined when it changes nothing it can name.
+// the notice's own names; the DPO's contact, given for the first time or changed (C0.9 PD-67); the
+// DPO's reply targets, likewise (C0.9 PD-95); and whether the notice's own wording changes.
+// Undefined when it changes nothing it can name.
 export function changeGroups(changes: NoticeChangesForClient | null):
   | {
       readonly groups: readonly ChangeGroup[]
       readonly contact: string | undefined
+      readonly targets: string | undefined
       readonly wording: boolean
     }
   | undefined {
@@ -82,8 +84,9 @@ export function changeGroups(changes: NoticeChangesForClient | null):
     { title: NOTICE_TAB.draft.removed, lines: lines('removed') },
   ].filter(group => group.lines.length > 0)
   const contact = CONTACT_CHANGE_LINES[changes.contact]
-  return groups.length > 0 || contact !== undefined || changes.wording
-    ? { groups, contact, wording: changes.wording }
+  const targets = TARGET_CHANGE_LINES[changes.targets]
+  return groups.length > 0 || contact !== undefined || targets !== undefined || changes.wording
+    ? { groups, contact, targets, wording: changes.wording }
     : undefined
 }
 
@@ -91,6 +94,12 @@ const CONTACT_CHANGE_LINES: Readonly<Record<NoticeChangesForClient['contact'], s
   same: undefined,
   added: NOTICE_TAB.draft.contactAdded,
   changed: NOTICE_TAB.draft.contact,
+}
+
+const TARGET_CHANGE_LINES: Readonly<Record<NoticeChangesForClient['targets'], string | undefined>> = {
+  same: undefined,
+  added: NOTICE_TAB.draft.targetsAdded,
+  changed: NOTICE_TAB.draft.targets,
 }
 
 // What holds publishing back, under the purpose or provider each names, or the DPO's contact (C0.9

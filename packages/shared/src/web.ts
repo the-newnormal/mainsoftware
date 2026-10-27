@@ -7,7 +7,7 @@
 // Node types, so it uses neither the URL global nor anything else outside the language.
 import { z } from 'zod'
 import { FLAG_KEY, FLAG_KEY_MAX, isFlagKey } from './flags.ts'
-import { LowerUuid } from './ids.ts'
+import { IDS_NUMBER_MAX, LowerUuid } from './ids.ts'
 
 // The zone a time is shown in when the session answer names none the client can use (OD-10): the
 // pilot org's. The server always sends one (the profile's, else the org's, which is NOT NULL).
@@ -25,6 +25,12 @@ export const PersonName = z
   .min(1)
   .refine(name => codePoints(name) <= NAME_MAX, { message: `at most ${NAME_MAX} characters` })
 
+// A day, YYYY-MM-DD, in the org's zone, from year 1: Postgres's date has no year 0, and a body's day
+// is cast to one (22008, which nothing answers, so it would be a 500). The answers give days, never
+// times, where a day is what the screen shows. From C0.9 PR 3b the requests to the DPO read their
+// days with it (cases.ts); the registers and the notice keep their own copies of the same rule.
+export const Day = z.iso.date().refine(day => day >= '0001-01-01', { message: 'a day from year 1' })
+
 // Where someone stands with their org's privacy notice (PDPA-03, ACC-12; C0.9 PD-43, TECH-SPEC
 // T22 item 28), read from the latest published version and their acknowledgements of it:
 //   acknowledged  they acknowledged the latest version
@@ -40,7 +46,11 @@ export type NoticeStanding = (typeof NOTICE_STANDINGS)[number]
 //   registers  can() allows register.read: the DPO pages and their avatar-menu entry (C0.9 PD-26).
 // C0.16 adds more as its screens need them. notice is the person's standing with the current
 // privacy notice (C0.9 PD-46): the shell starts the gateway only once it is acknowledged, and sends
-// the person to /notice otherwise.
+// the person to /notice otherwise. requests (C0.9 PR 3b, OD-22, PD-99) is the DPO's alone: how many
+// requests to the DPO need attention (new, due within 2 business days, or overdue), as
+// case_attention() counts them, and null for everyone else. A number and no names, kinds or
+// references, so the shell can badge the avatar button and "Data protection" the moment the DPO
+// opens Hearth; nothing pushes it.
 export const SessionResponse = z.strictObject({
   personId: LowerUuid,
   name: PersonName,
@@ -48,6 +58,7 @@ export const SessionResponse = z.strictObject({
   timeZone: z.string().min(1).max(64),
   capabilities: z.strictObject({ registers: z.boolean() }),
   notice: z.enum(NOTICE_STANDINGS),
+  requests: z.int().min(0).max(IDS_NUMBER_MAX).nullable(),
 })
 export type SessionJSON = z.infer<typeof SessionResponse>
 
@@ -56,13 +67,15 @@ export type SessionJSON = z.infer<typeof SessionResponse>
 // only when the answer says true; missing, of another type or under an unreadable capabilities
 // field, it reads false, so the shell offers nothing the server didn't (P6). A standing it can't
 // read reads as required, so the shell sends the person to /notice, whose own answer decides
-// (C0.9 PD-46).
+// (C0.9 PD-46). A count it can't read, or none, shows no badge (C0.9 PD-99): missing, it stays
+// missing, so a session the web's tests build needs no count.
 export const SessionResponseForClient = z.object({
   personId: z.string().min(1),
   name: z.string().min(1),
   timeZone: z.string().min(1).catch(DEFAULT_TIME_ZONE),
   capabilities: z.object({ registers: z.boolean().catch(false) }).catch({ registers: false }),
   notice: z.enum(NOTICE_STANDINGS).catch('required'),
+  requests: z.int().min(0).max(IDS_NUMBER_MAX).nullable().optional().catch(null),
 })
 export type SessionForClient = z.infer<typeof SessionResponseForClient>
 

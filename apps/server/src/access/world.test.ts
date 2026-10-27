@@ -299,6 +299,8 @@ describe('C0.9 PD-43 PD-44 T22 items 28 and 29 the acknowledgement gate on REST 
       'notice.read',
       'notice.publish',
       'notice.contact.set',
+      // C0.9 PR 3b OD-08: the reply targets, which the notice prints.
+      'notice.targets.set',
       'reauth',
     ] as const) {
       expect(await asks(DPO, use, 'unpublished'), use).toBe('passed')
@@ -311,7 +313,16 @@ describe('C0.9 PD-43 PD-44 T22 items 28 and 29 the acknowledgement gate on REST 
     expect(await asks(ADMIN, 'person.deactivate', 'acknowledged')).toBe('passed')
     // C0.9 OD-19 PD-44 PD-76: listing the people and recording an acknowledgement aren't setup
     // uses: before v0 there is nothing to record, and afterwards the DPO acknowledges first.
-    for (const use of ['notice.people.read', 'notice.acknowledgement.record'] as const) {
+    // C0.9 PR 3b OD-13 PD-98: nor are requests to the DPO, the requester's or the DPO's.
+    for (const use of [
+      'notice.people.read',
+      'notice.acknowledgement.record',
+      'case.read',
+      'case.log',
+      'case.step',
+      'case.send_own',
+      'case.list_own',
+    ] as const) {
       expect(await asks(DPO, use, 'unpublished'), use).toBe('notice_required')
       expect(await asks(DPO, use, 'required'), use).toBe('notice_required')
       expect(await asks(DPO, use, 'acknowledged'), use).toBe('passed')

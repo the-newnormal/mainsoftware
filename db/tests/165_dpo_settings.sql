@@ -7,8 +7,12 @@
 -- PD-64), and the table's checks back them (DCD-06); a version never changes (DCD-07); a publish
 -- needs a contact, names the one its draft printed and links the one it locked (DCD-08, PD-66,
 -- PD-67), never another org's (DCD-09); and a version 0010 published, which printed no contact, is
--- followed by one that does (DCD-10). Every case runs as hearth_app (act_as), the owner or the role
--- it tests unless it says it arranges data as the superuser. The contacts are made up, on .example.
+-- followed by one that does (DCD-10). From 0012 (C0.9 PR 3b, OD-08, PD-94): the reply targets'
+-- defaults and checks (DCD-11); only the DPO records them, after a contact, within 5 to 10 business
+-- days and 14 to 30 days, copying the contact (DCD-12); a contact change copies them (DCD-13); a
+-- targets-only change makes the notice out of date (DCD-14); and a c09.2 version stated none
+-- (DCD-15, PD-93). Every case runs as hearth_app (act_as), the owner or the role it tests unless it
+-- says it arranges data as the superuser. The contacts are made up, on .example.
 \ir fixtures/two_orgs.sql
 
 -- Today in the transaction's org's time zone.
@@ -480,4 +484,179 @@ select pg_temp.check(array_agg(format('%s:%s:%s', version, generator, coalesce(d
                      = '{0:c09.1:-,1:c09.1:1}',
                      format('org 5''s versions are %s', array_agg(format('%s:%s:%s', version, generator, dpo_settings_version) order by version)))
 from public.notice_versions where org_id = pg_temp.id('5', '00');
+select set_config('app.org_id', '', true), set_config('app.user_id', '', true);
+
+-- From here, C0.9 PR 3b (0012; OD-08, PD-93, PD-94): the DPO's reply targets, kept beside the
+-- contact in each settings version. set_reply_targets() as the api's route calls it.
+create function pg_temp.targets(seen integer, business integer, calendar integer)
+returns table (version integer, changed boolean) language sql as $$
+  select * from public.set_reply_targets(seen, business, calendar, 'req-targets',
+                                         'd0000000-0000-4000-8000-0000000000d2', '192.0.2.50')
+$$;
+
+-- DCD-11 (OD-08, OD-26, PD-94; RQD-11): the targets' defaults are OD-08's 10 business days and 30
+-- days, read from pg_attrdef, on a version recorded before 0012 (the fixture's e6) and on a new
+-- one; the checks refuse 4 and 11 business days and 13 and 31 days (23514 naming the constraint),
+-- whoever writes (a superuser's insert here, in a savepoint).
+select pg_temp.check(
+  (select string_agg(format('%s=%s', a.attname, pg_get_expr(d.adbin, d.adrelid)), ',' order by a.attname)
+   from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+   where d.adrelid = 'public.dpo_settings'::regclass and a.attname in ('target_business_days', 'target_calendar_days'))
+  = 'target_business_days=10,target_calendar_days=30', 'the reply targets'' defaults are not 10 and 30 (DCD-11)');
+select pg_temp.check(target_business_days = 10 and target_calendar_days = 30, 'e6, recorded before 0012, does not read 10 and 30')
+from public.dpo_settings where id = pg_temp.id('1', 'e6');
+savepoint dcd_11;
+insert into public.dpo_settings (id, org_id, version, contact_title, contact_email, recorded_by)
+values ('d1100000-0000-4000-8000-000000000001', pg_temp.id('2', '00'), 9, 'Data Protection Officer', 'dpo@fixture.example',
+        pg_temp.id('2', 'a5'));
+select pg_temp.check(target_business_days = 10 and target_calendar_days = 30, 'a new version does not read 10 and 30')
+from public.dpo_settings where id = 'd1100000-0000-4000-8000-000000000001';
+rollback to savepoint dcd_11;
+select pg_temp.expect_error(format($f$insert into public.dpo_settings (org_id, version, contact_title, contact_email, recorded_by,
+                                      target_business_days) values (%L, 9, 'Data Protection Officer', 'dpo@fixture.example', %L, %s)$f$,
+                                   pg_temp.id('2', '00'), pg_temp.id('2', 'a5'), n), '23514', '%dpo_settings_target_business_days%')
+from unnest(array[4, 11]) n;
+select pg_temp.expect_error(format($f$insert into public.dpo_settings (org_id, version, contact_title, contact_email, recorded_by,
+                                      target_calendar_days) values (%L, 9, 'Data Protection Officer', 'dpo@fixture.example', %L, %s)$f$,
+                                   pg_temp.id('2', '00'), pg_temp.id('2', 'a5'), n), '23514', '%dpo_settings_target_calendar_days%')
+from unnest(array[13, 31]) n;
+
+-- DCD-12 (PDPA-13, ACC-10, OD-08, OD-26, PD-94): only the DPO who is still at the org records the
+-- targets. Refused (42501, registers_check_dpo()'s message, as for the contact): every other role,
+-- a DPO who has left (a9), a DPO whose role was revoked (org 2's a5, in DCD-03), no acting person;
+-- the worker's roles can't run it at all. With no contact recorded (a fresh org 6) it is refused
+-- (HF006); then a stale seen (HF005); each figure out of range (HF006), the edges 5, 10, 14 and 30
+-- passing; the same figures again write nothing; a change records the next version with the
+-- contact copied, and one audit row, notice.targets_set, with each figure from and to.
+select set_config('test.audit_max', (select coalesce(max(id), 0)::text from public.audit_events), true);
+do $$
+declare
+  who text;
+begin
+  foreach who in array array['a1', 'a2', 'a3', 'a4', 'a6', 'a7', 'a8', 'a9', 'aa', 'ab', 'ac', 'a0'] loop
+    perform pg_temp.act_as('1', who);
+    perform pg_temp.expect_error($f$select * from pg_temp.targets(2, 7, 21)$f$, '42501',
+                                 'Only the Data Protection Officer can change the registers.');
+    perform set_config('role', 'none', true);
+  end loop;
+  foreach who in array array['hearth_queue', 'hearth_job_offboarding', 'hearth_job_partitions', 'hearth_job_purge',
+                             'hearth_job_revocation', 'hearth_worker'] loop
+    perform pg_temp.act_as_job('1', who);
+    perform pg_temp.expect_error($f$select * from public.set_reply_targets(2, 7, 21, null, null, null)$f$, '42501',
+                                 'permission denied%');
+    perform set_config('role', 'none', true);
+  end loop;
+end
+$$;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.expect_error($$select * from pg_temp.targets(1, 7, 21)$$, '42501',
+                            'Only the Data Protection Officer can change the registers.');
+reset role;
+select set_config('app.org_id', pg_temp.id('1', '00')::text, true), set_config('app.user_id', '', true);
+set local role hearth_app;
+select pg_temp.expect_error($$select * from pg_temp.targets(2, 7, 21)$$, '42501', 'No org or user is set for this transaction');
+reset role;
+select pg_temp.small_org('6');
+select pg_temp.act_as('6', 'a5');
+select pg_temp.expect_error($$select * from pg_temp.targets(null, 7, 21)$$, 'HF006',
+                            'Record your contact details first: the reply targets are kept with them.');
+reset role;
+select pg_temp.check(count(*) = 0, 'a refused targets change wrote to the audit log')
+from public.audit_events where id > current_setting('test.audit_max')::bigint;
+select pg_temp.act_as('1', 'a5');
+select pg_temp.expect_error($$select * from pg_temp.targets(1, 7, 21)$$, 'HF005',
+                            'Your reply targets changed since you opened them. Reload them and try again.');
+select pg_temp.expect_error($$select * from pg_temp.targets(null, 7, 21)$$, 'HF005', 'Your reply targets changed%');
+select pg_temp.expect_error(format($f$select * from pg_temp.targets(2, %s, 21)$f$, coalesce(n::text, 'null')), 'HF006',
+                            'Give from 5 to 10 business days for questions, complaints, withdrawals and objections.')
+from unnest(array[4, 11, null]) n;
+select pg_temp.expect_error(format($f$select * from pg_temp.targets(2, 7, %s)$f$, coalesce(n::text, 'null')), 'HF006',
+                            'Give from 14 to 30 days for copies of data and corrections.')
+from unnest(array[13, 31, null]) n;
+select pg_temp.check(version = 2 and not changed, 'the same targets again (10 and 30) wrote a version')
+from pg_temp.targets(2, 10, 30);
+select pg_temp.check(version = 3 and changed, 'the edges 5 and 14 were refused') from pg_temp.targets(2, 5, 14);
+select pg_temp.check(version = 4 and changed, 'the edges 10 and 30 were refused') from pg_temp.targets(3, 10, 30);
+select pg_temp.check(version = 5 and changed, 'org 1''s DPO could not set 7 and 21') from pg_temp.targets(4, 7, 21);
+reset role;
+select pg_temp.check(
+  array_agg(format('%s:%s:%s:%s', s.version, s.target_business_days, s.target_calendar_days, s.contact_email) order by s.version)
+  = '{1:10:30:dpo-1@fixture.example,2:10:30:privacy@fixture.example,3:5:14:privacy@fixture.example,4:10:30:privacy@fixture.example,5:7:21:privacy@fixture.example}'
+  and bool_and(s.contact_title = 'Data Protection Officer' and s.contact_phone is null and s.contact_postal is null),
+  format('org 1''s settings versions are %s',
+         array_agg(format('%s:%s:%s:%s', s.version, s.target_business_days, s.target_calendar_days, s.contact_email) order by s.version)))
+from public.dpo_settings s where s.org_id = pg_temp.id('1', '00');
+select pg_temp.check(count(*) = 3 and bool_and(
+                       a.org_id = pg_temp.id('1', '00') and a.actor_id = pg_temp.id('1', 'a5') and a.action = 'notice.targets_set'
+                       and a.target_type = 'dpo_settings' and a.request_id = 'req-targets'
+                       and a.device_id = 'd0000000-0000-4000-8000-0000000000d2' and a.ip = '192.0.2.50' and a.case_id is null)
+                     and array_agg(a.details order by a.id) = array[
+                       '{"version": 3, "was_version": 2, "business_days": [10, 5], "calendar_days": [30, 14]}'::jsonb,
+                       '{"version": 4, "was_version": 3, "business_days": [5, 10], "calendar_days": [14, 30]}'::jsonb,
+                       '{"version": 5, "was_version": 4, "business_days": [10, 7], "calendar_days": [30, 21]}'::jsonb]
+                     and array_agg(a.target_id order by a.id) = (select array_agg(s.id::text order by s.version) from public.dpo_settings s
+                                                                 where s.org_id = pg_temp.id('1', '00') and s.version >= 3),
+                     format('the targets'' audit rows are %s', array_agg(a.details order by a.id)))
+from public.audit_events a where a.id > current_setting('test.audit_max')::bigint;
+
+-- DCD-13 (PD-94): a contact change copies the targets (org 1's 7 and 21 stay); its no-op still
+-- compares the contact's four fields alone, whatever the targets are; and a first record takes
+-- OD-08's figures, the columns' defaults (org 6).
+select pg_temp.act_as('1', 'a5');
+select pg_temp.check(version = 5 and not changed, 'the same contact under new targets wrote a version')
+from pg_temp.contact(5, 'Data Protection Officer', 'privacy@fixture.example');
+select pg_temp.check(version = 6 and changed, 'org 1''s DPO could not change the contact')
+from pg_temp.contact(5, 'Data Protection Officer', 'dpo-office@fixture.example');
+reset role;
+select pg_temp.check(target_business_days = 7 and target_calendar_days = 21 and contact_email = 'dpo-office@fixture.example',
+                     'a contact change did not copy the targets (DCD-13)')
+from public.dpo_settings where org_id = pg_temp.id('1', '00') and version = 6;
+select pg_temp.act_as('6', 'a5');
+select pg_temp.check(version = 1 and changed, 'org 6''s DPO could not record a first contact')
+from pg_temp.contact(null, 'Data Protection Officer', 'dpo@org6.example');
+reset role;
+select pg_temp.check(target_business_days = 10 and target_calendar_days = 30, 'a first contact did not take 10 and 30 (DCD-13)')
+from public.dpo_settings where org_id = pg_temp.id('6', '00') and version = 1;
+
+-- DCD-14 (OD-08, PD-66, PD-94; T22 item 49): a targets-only change makes the notice out of date.
+-- Org 5's latest version (c09.1, DCD-10) links settings version 1; after a targets change
+-- (version 2, the same contact) a publish naming version 1 is stale (HF007), and the same body,
+-- generator and sources naming version 2 isn't "already says this": it links version 2.
+select pg_temp.act_as('5', 'a5');
+select pg_temp.check(version = 2 and changed, 'org 5''s DPO could not change the targets') from pg_temp.targets(1, 8, 28);
+select pg_temp.expect_error($$select * from public.publish_notice(1, 'Privacy notice', 'c09.1', (pg_temp.sources()).keys,
+                                (pg_temp.sources()).versions, '{}', 1, 'req-contact', null, null)$$, 'HF007',
+                            'The Data Protection Officer''s contact changed since this notice was prepared.%');
+select pg_temp.check(p.version = 2, 'the same words under a targets-only change were refused (DCD-14)')
+from public.publish_notice(1, 'Privacy notice', 'c09.1', (pg_temp.sources()).keys, (pg_temp.sources()).versions, '{}', 2,
+                           'req-contact', null, null) p;
+reset role;
+select pg_temp.check(array_agg(format('%s:%s', version, coalesce(dpo_settings_version::text, '-')) order by version)
+                     = '{0:-,1:1,2:2}',
+                     format('org 5''s versions link %s', array_agg(format('%s:%s', version, dpo_settings_version) order by version)))
+from public.notice_versions where org_id = pg_temp.id('5', '00');
+
+-- DCD-15 (PD-93, PD-95; RQU-07's shape): a c09.2 version that links a settings version (0011's
+-- publish_notice() leaves one) never stated the targets. In org 4, the DPO sets 7 and 21 (settings
+-- version 4), and a c09.2 version linking it is inserted as the owner would have left it; it still
+-- links version 4 after a request, and a request a8 sends under it stores no stated version, so its
+-- due day is 7 business days on, from the current targets alone (case_due()).
+select pg_temp.act_as('4', 'a5');
+select pg_temp.check(version = 4 and changed, 'org 4''s DPO could not change the targets') from pg_temp.targets(3, 7, 21);
+reset role;
+insert into public.notice_versions (id, org_id, version, body, published_by, generator, dpo_settings_version)
+values (pg_temp.id('4', 'e4'), pg_temp.id('4', '00'), 2, 'Privacy notice', pg_temp.id('4', 'a5'), 'c09.2', 4);
+select pg_temp.act_as('4', 'a8');
+select set_config('test.case', format('%s %s %s', c.id, c.received_on, c.due_on), true)
+from public.submit_case('question', 'How long are the rota sheets kept?', gen_random_uuid(), 'req-case', pg_temp.id('4', 'e1'),
+                        '192.0.2.51') c
+where c.changed;
+reset role;
+select pg_temp.check(split_part(current_setting('test.case'), ' ', 3)::date
+                       = public.case_add_business_days(split_part(current_setting('test.case'), ' ', 2)::date, 7),
+                     format('a request under c09.2 is not due 7 business days on: %s (DCD-15)', current_setting('test.case')));
+select pg_temp.check(c.stated_settings_version is null, 'a request under c09.2 stored a stated settings version (DCD-15)')
+from public.cases c where c.id = split_part(current_setting('test.case'), ' ', 1)::uuid;
+select pg_temp.check(dpo_settings_version = 4, 'the c09.2 version no longer links settings version 4')
+from public.notice_versions where id = pg_temp.id('4', 'e4');
 select set_config('app.org_id', '', true), set_config('app.user_id', '', true);

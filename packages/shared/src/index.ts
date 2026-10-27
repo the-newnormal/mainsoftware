@@ -7,12 +7,14 @@
 // shell's answers and document headers, its Content Security Policy included (T21). From C0.9: the
 // processing and transfer registers' vocabulary, shared rules, bodies and answers (T22), from its
 // PR 2 the privacy notice's (notice.ts), its generator (notice-text.ts, which only the server runs)
-// and the words no screen holds before the AI stages (ai-copy.ts), and from its PR 3a the DPO's
-// business contact (dpo-contact.ts).
+// and the words no screen holds before the AI stages (ai-copy.ts), from its PR 3a the DPO's
+// business contact (dpo-contact.ts), and from its PR 3b the requests to the DPO (cases.ts) and the
+// DPO's reply targets (dpo-contact.ts).
 
 export * from './ai-copy.ts'
 export * from './api-errors.ts'
 export * from './auth.ts'
+export * from './cases.ts'
 export * from './dpo-contact.ts'
 export * from './events.ts'
 export * from './flags.ts'

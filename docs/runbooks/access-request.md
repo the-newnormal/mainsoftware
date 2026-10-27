@@ -13,35 +13,40 @@ Someone asks for a copy of their personal data, or how it has been used or discl
 
 ## Before you start
 
-- The DPO logs it with the day it was received. The 30 calendar days run from receipt (C0.9 OD-08).
-- The DPO checks the requester's identity without relying on an old Hearth number or PIN (in person, by video, or against HR records), and notes how, never copying an ID document (C0.9 OD-16).
+- A request sent from Settings › Privacy is already a case on Requests. One that came another way, the DPO logs with "Log a request", with the day it was received, and gives the requester its reference. The 30 calendar days run from receipt, unless the DPO has set a shorter target (C0.9 OD-08); the case shows the due day.
+- The DPO checks the requester's identity without relying on an old Hearth number, a PIN or the reference (in person, by video, or against HR records), and records it on the case as "Checked who they are", with how and the day it was checked, never copying an ID document or noting an ID number (C0.9 OD-16). Hearth won't close a copy as answered without that step.
 
 ## Steps
 
-1. The DPO lists what C0 holds about a person: their roster facts (name, department, manager, roles); their number; their devices and sessions (labels and times); their sign-in and code audit rows; whether they set a PIN (never the PIN); their notice acknowledgements; and the registers' general description of how data is used and who receives it.
-2. The DPO gathers what the DPO's own pages show: the published notice, the contact, and the registers' general description (the processing register and Transfers). The DPO sees no one person's Settings, devices or acknowledgements in C0: the Notice tab shows counts only. A requester who still has a session may choose to show their own Settings › Privacy (the contact, the notice and their acknowledgements, with the day and how for any the DPO recorded) and their own devices (`GET /api/devices`, from their own tab; see [Before C0.16's console](README.md#before-c016s-console-what-exists)). Someone who has left, or has no account, has neither.
-3. Until C6.1's console replaces this procedure, the person on call gathers the rest of step 1's records (the roster facts, the number, the devices and sessions, the sign-in and code audit rows, whether a PIN is set, the acknowledgements) only through a read-only production query for that one requester, under the logged break-glass role, citing the request in the break-glass log, and a second person reviews it. Never content: chat, direct messages and, later, recordings, transcripts and docs are read only through C1.11's Rule 9 service, never under this step. Never through the Rule 9 module's credential, and never by a coding agent. This is CLAUDE.md's one exception to "never one person's rows" (Security and privacy). The output goes only under `local-data/`. Once the organisation chooses its audit-log readers (C0.16), the DPO reads the sign-in and code audit rows through `read_audit_events()` instead.
+1. The DPO lists what C0 holds about a person: their roster facts (name, department, manager, roles); their number; their devices and sessions (labels and times); their sign-in and code audit rows; whether they set a PIN (never the PIN); their notice acknowledgements; their own requests to the DPO, listed under "Their other requests" on the case, in every state; and the registers' general description of how data is used and who receives it. A request someone else made that names the requester is disclosed only as PDPA s21(3) allows, never who made it.
+2. The DPO gathers what the DPO's own pages show: the published notice, the contact, and the registers' general description (the processing register and Transfers). The DPO sees no one person's Settings, devices or acknowledgements in C0: the Notice tab shows counts only. A requester who still has a session may choose to show their own Settings › Privacy (the contact, their requests, the notice and their acknowledgements, with the day and how for any the DPO recorded) and their own devices (`GET /api/devices`, from their own tab; see [Before C0.16's console](README.md#before-c016s-console-what-exists)). Someone who has left, or has no account, has neither.
+3. Until C6.1's console replaces this procedure, the person on call gathers the rest of step 1's records (the roster facts, the number, the devices and sessions, the sign-in and code audit rows, whether a PIN is set, the acknowledgements) only through a read-only production query for that one requester, under the logged break-glass role, and a second person reviews it. The break-glass log cites "PDPA access request" and the case's reference, never the requester's name or number. The DPO gives the person on call the requester's person id, which the case shows as "Person id (for a break-glass citation)". Never content: chat, direct messages and, later, recordings, transcripts and docs are read only through C1.11's Rule 9 service, never under this step. Never through the Rule 9 module's credential, and never by a coding agent. This is CLAUDE.md's one exception to "never one person's rows" (Security and privacy). The output goes only under `local-data/`. Once the organisation chooses its audit-log readers (C0.16), the DPO reads the sign-in and code audit rows through `read_audit_events()` instead.
 4. The DPO reviews every item before it is released, and withholds other people's data (PDPA-05a).
-5. The DPO replies in writing, by a channel outside Hearth.
-6. If the DPO needs more than 30 days, the DPO tells the requester in writing, within the 30 days, when they will have it.
-7. If the DPO refuses, the DPO records why. The data the request covers is then kept for at least 30 days after the refusal and, if the requester applies to the Personal Data Protection Commission (PDPC) for a review, until the review and any appeal end (PDPA s22A; PDPA-09), so nothing deletes it meanwhile. The DPO records the hold and the day it ends in the request log.
+5. The DPO replies in writing, by a channel outside Hearth: the one the case records, or one the organisation already holds for a current member. The reply quotes the reference. The DPO records "Replied" on the case with its day.
+6. If the DPO needs more time, the DPO tells the requester in writing, on or before the due day, when they will have it, and records "More time needed" with the new date and the day they told them. Told any later, it is only a note, and the case stays overdue.
+7. If the DPO refuses, the DPO closes the case as refused, with why. The data the request covers is then kept for at least 30 days after the refusal and, if the requester applies to the Personal Data Protection Commission (PDPC) for a review, until that review, any reconsideration and any appeal have all ended, whichever is later (PDPA s22A and regulation 8 of the Personal Data Protection Regulations 2021; PDPA-09), so nothing deletes it meanwhile. The hold runs from the closure's day. The DPO records "They applied to the PDPC for a review" on the case when the requester applies. The hold's end is read from "The PDPC review ended", so the DPO records that step only once the review, any reconsideration and any appeal have all ended.
 
 ## Check it worked
 
-- The reply went within 30 days, or the requester was told in writing within 30 days when it would come.
-- The DPO's log records what was sent and what was withheld.
+- The case shows "Replied" on or before its due day, or "More time needed" recorded on or before it.
+- The case's notes record what was sent and what was withheld.
 
 ## Afterwards
 
 - The person on call deletes every working copy under `local-data/` once the reply is sent.
-- The DPO closes the log entry.
+- The DPO closes the case: as answered, after "Checked who they are", or as refused, with why.
 
 ## Code paths
 
 - `read_audit_events()`
+- `log_case()`
+- `add_case_step()`
+- `case.log`
 - `apps/web/src/settings/PrivacySettings.tsx`
 - `devices.list_own`
 - `/api/devices`
+- `/api/admin/requests/log`
+- `/dpo/requests`
 - `/dpo/purposes`
 - `/dpo/transfers`
 - `/settings/privacy`

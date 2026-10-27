@@ -166,6 +166,8 @@ describe('C0.8 T21 item 10 T17 item 11 GET /api/session and GET /api/flags on th
       capabilities: { registers: false },
       // Their standing with the org's notice (C0.9 PD-46): the harness acknowledges its stand-in.
       notice: 'acknowledged',
+      // Not the DPO: no count of requests (C0.9 PD-99).
+      requests: null,
     })
     const without = await (await s.signIn(other)).get('/api/session')
     expect(without.status).toBe(200)
@@ -175,6 +177,7 @@ describe('C0.8 T21 item 10 T17 item 11 GET /api/session and GET /api/flags on th
       timeZone: 'Asia/Jakarta',
       capabilities: { registers: false },
       notice: 'acknowledged',
+      requests: null,
     })
     // Someone who hasn't acknowledged the latest version is asked to (NTS-03).
     const unacknowledged = await s.person({ org, acknowledged: false })
@@ -186,8 +189,11 @@ describe('C0.8 T21 item 10 T17 item 11 GET /api/session and GET /api/flags on th
     const owner = await s.person({ org, roles: ['owner'] })
     const asDpo = await (await s.signIn(dpo)).get('/api/session')
     expect(SessionResponse.parse(asDpo.body).capabilities).toEqual({ registers: true })
+    // The DPO's count of requests needing attention, a number with no names (C0.9 OD-22, PD-99).
+    expect(SessionResponse.parse(asDpo.body).requests).toBe(0)
     const asOwner = await (await s.signIn(owner)).get('/api/session')
     expect(SessionResponse.parse(asOwner.body).capabilities).toEqual({ registers: false })
+    expect(SessionResponse.parse(asOwner.body).requests).toBeNull()
     // No phone number, no roles.
     for (const reply of [withProfile, without, asDpo, asOwner]) {
       for (const person of [ahmad, other, dpo, owner]) expect(reply.text).not.toContain(person.local)

@@ -6,7 +6,11 @@
 // 38 to 49): the DPO's business contact, recorded through its route before v0 too and printed by
 // every generated version, the acknowledgements the DPO records for someone who acknowledged
 // outside Hearth, and deemed consent by conduct held back until its withdrawal can be carried out
-// (NTI-03, NTI-08 to NTI-12). Each test that publishes makes its own org (B-08), so `-t` on one
+// (NTI-03, NTI-08 to NTI-12). From C0.9 PR 3b (OD-08, OD-13; PD-94, PD-95, PD-98): the routes of
+// requests to the DPO, none of them free of the gate or a setup use, and the DPO's reply targets,
+// set before v0 too and printed by generator c09.3 (NTI-01, NTI-03, NTI-13, NTI-14); the requests
+// themselves are the cases suite's (cases.integration.test.ts). Each test that publishes makes its
+// own org (B-08), so `-t` on one
 // test works and no publish sends another test's people to /notice. The stack's realtime app, and
 // those the tests start, run production's admission (admissionForTests: 'notice'; the other suites
 // run none, C-07). `npm run test:integration` runs it with the stack up (`docker compose up -d
@@ -257,6 +261,45 @@ const ROUTES: Readonly<Record<string, Sample>> = {
       note: 'Signed a printed copy',
     }),
   },
+  // C0.9 PR 3b (OD-08, OD-13, OD-14): requests to the DPO and the reply targets, none free of the
+  // gate. A request's id in the path is a fresh uuid, which the gate refuses before any lookup.
+  'POST /api/requests/send': {
+    class: 'gated',
+    body: () => ({ kind: 'question', details: 'A fictional question.', key: randomUUID() }),
+  },
+  'GET /api/requests': { class: 'gated' },
+  'GET /api/requests/': { class: 'gated' },
+  'GET /api/admin/requests': { class: 'gated' },
+  'GET /api/admin/requests/people': { class: 'gated' },
+  'GET /api/admin/requests/:case': { class: 'gated', path: () => `/api/admin/requests/${randomUUID()}` },
+  'POST /api/admin/requests/log': {
+    class: 'gated',
+    body: () => ({
+      kind: 'question',
+      cameBy: 'email',
+      receivedOn: new Date().toISOString().slice(0, 10),
+      requester: { type: 'outside', name: 'Sam Example', channel: 'email', contact: 'sam@requests.example' },
+      details: 'Asks a fictional question.',
+      key: randomUUID(),
+    }),
+  },
+  'POST /api/admin/requests/step': {
+    class: 'gated',
+    body: () => ({
+      case: randomUUID(),
+      seen: 0,
+      step: 'note',
+      onDay: new Date().toISOString().slice(0, 10),
+      note: 'A note',
+      extendedTo: null,
+      kind: null,
+      outcome: null,
+    }),
+  },
+  'POST /api/admin/notice/targets/set': {
+    class: 'gated',
+    body: () => ({ seen: 1, businessDays: 7, calendarDays: 21 }),
+  },
 }
 
 // One sample request of a route, by its key.
@@ -438,7 +481,13 @@ describe('C0.9 PR 2 the privacy notice and the acknowledgement gate (PDPA-02, PD
     })
     const held = await dpoClient.post('/api/admin/notice/publish', { seen: null, digest: DIGEST })
     expect([held.status, held.error]).toEqual([400, 'notice_invalid'])
-    expect(await contactOf(dpoClient)).toEqual({ notice: 'none', contact: null, stated: 'unpublished' })
+    expect(await contactOf(dpoClient)).toEqual({
+      notice: 'none',
+      contact: null,
+      stated: 'unpublished',
+      targets: null,
+      targetsStated: 'unpublished',
+    })
 
     // Not setup uses (PD-44): nothing to record before v0, whatever can() would say.
     const people = await dpoClient.get('/api/admin/notice/people')
@@ -478,13 +527,35 @@ describe('C0.9 PR 2 the privacy notice and the acknowledgement gate (PDPA-02, PD
     await s.reauth(dpoClient, dpo)
     const set = await dpoClient.post('/api/admin/notice/contact/set', { seen: null, ...HARNESS_CONTACT })
     expect([set.status, ContactWriteResponse.parse(set.body)]).toEqual([200, { version: 1, changed: true }])
+    // C0.9 PR 3b OD-08 PD-94: the reply targets are a setup use too, with the contact recorded.
+    const targets = await dpoClient.post('/api/admin/notice/targets/set', {
+      seen: 1,
+      businessDays: 7,
+      calendarDays: 30,
+    })
+    expect([targets.status, ContactWriteResponse.parse(targets.body)]).toEqual([200, { version: 2, changed: true }])
+    // Requests aren't setup uses (PD-98): the queue waits for v0 and the DPO's acknowledgement.
+    expect((await dpoClient.get('/api/admin/requests')).error).toBe('notice_required')
+    // request_handling is active from the start (OD-17), so recordActivePurposes() gave it a basis.
+    expect(
+      RegistersResponse.parse((await dpoClient.get('/api/admin/registers')).body).purposes.find(
+        row => row.purpose === 'request_handling',
+      ),
+    ).toMatchObject({ status: 'active', basis: 'employment' })
 
-    // Production's first publish can't deadlock: it goes through, and links the settings version.
+    // Production's first publish can't deadlock: it goes through, under c09.3, and links the
+    // settings version, whose targets it prints.
     const { notice, version } = await publishDraft(dpoClient)
     expect(version).toBe(0)
     expect(
-      await s.query('select dpo_settings_version from notice_versions where org_id = $1 and id = $2', [org.id, notice]),
-    ).toEqual([{ dpo_settings_version: 1 }])
+      await s.query('select dpo_settings_version, generator from notice_versions where org_id = $1 and id = $2', [
+        org.id,
+        notice,
+      ]),
+    ).toEqual([{ dpo_settings_version: 2, generator: NOTICE_GENERATOR }])
+    expect(await acknowledgeCurrent(dpoClient)).toEqual({ version: 0, changed: true })
+    expect((await noticeOf(dpoClient)).targets).toEqual({ businessDays: 7, calendarDays: 30 })
+    expect((await dpoClient.get('/api/admin/requests')).status).toBe(200)
   })
 
   it('NTI-04 PD-36 PD-37 PD-40 PD-50: the DPO previews, is held back by problems, publishes with a fresh PIN the draft previewed (its words, links, audit row and event), a stale digest is refused, and the worker sees it notified', async () => {
@@ -646,6 +717,7 @@ describe('C0.9 PR 2 the privacy notice and the acknowledgement gate (PDPA-02, PD
       standing: 'unpublished',
       current: null,
       contact: null,
+      targets: null,
       changes: null,
       mine: [],
     })
@@ -775,7 +847,7 @@ describe('C0.9 PR 2 the privacy notice and the acknowledgement gate (PDPA-02, PD
     // The draft prints it under "Your rights", and the version publishes what was previewed.
     const draft = await adminNotice(dpoClient)
     expect(draft.draft.body).toMatch(
-      /## Your rights\n[\s\S]*\n- Role: Data Protection Officer\n- Email: dpo@harness\.example\n\nIf something has gone wrong, [^\n]+ wants to hear about it and to put it right\. If you're unhappy with how it's handled, or would rather not raise it with [^\n]+, you can contact the Personal Data Protection Commission \(PDPC\), Singapore's data protection regulator\.$/,
+      /## Your rights\n[\s\S]*\n- Role: Data Protection Officer\n- Email: dpo@harness\.example\n\nThe Data Protection Officer aims to reply [^\n]+\n\nIf something has gone wrong, [^\n]+ wants to hear about it and to put it right\. If you're unhappy with how it's handled, or would rather not raise it with [^\n]+, you can contact the Personal Data Protection Commission \(PDPC\), Singapore's data protection regulator\.$/,
     )
     expect(await contactOf(dpoClient)).toMatchObject({ notice: 'none', contact: { version: 1 }, stated: 'unpublished' })
     const { notice } = await publishDraft(dpoClient)
@@ -1153,5 +1225,55 @@ describe('C0.9 PR 2 the privacy notice and the acknowledgement gate (PDPA-02, PD
     expect(draft.draft.body).toBeNull()
     const held = await dpoClient.post('/api/admin/notice/publish', { seen: null, digest: DIGEST })
     expect([held.status, held.error]).toEqual([400, 'notice_invalid'])
+  })
+
+  it('NTI-13 C0.9 PR 3b OD-08 PD-95: the c09.3 draft’s “Your rights” names the form in Settings › Privacy and states both reply targets, and the withdraw branch no longer says Hearth can’t take one', async () => {
+    const org = await s.newOrg({ notice: 'none' })
+    const dpo = await s.person({ org, roles: ['dpo'] })
+    const dpoClient = await s.signIn(dpo)
+    await recordActivePurposes(dpoClient)
+    expect((await setContact(dpoClient)).status).toBe(200)
+    const body = (await adminNotice(dpoClient)).draft.body ?? ''
+    expect(body).toContain(
+      'use the form in Settings › Privacy in Hearth, where you can follow what happens to it, or contact the Data Protection Officer',
+    )
+    expect(body).toContain(
+      'within 10 business days, counting Monday to Friday from the day after it reaches them, and to a request for a copy of your data or to have it corrected within 30 calendar days, weekends and public holidays included.',
+    )
+    expect(body).not.toContain("can't take a withdrawal in the app")
+    // The targets the DPO records are the ones printed.
+    const set = await dpoClient.post('/api/admin/notice/targets/set', { seen: 1, businessDays: 5, calendarDays: 14 })
+    expect(set.status).toBe(200)
+    const changed = (await adminNotice(dpoClient)).draft.body ?? ''
+    expect(changed).toContain('within 5 business days')
+    expect(changed).toContain('within 14 calendar days')
+  })
+
+  it('NTI-14 C0.9 PR 3b PD-93 PD-95: under a c09.2 latest, GET /api/notice answers no targets, whatever its settings row reads; publishing c09.3 then makes a member’s changes.targets added', async () => {
+    const org = await s.newOrg({ notice: 'none' })
+    const dpo = await s.person({ org, roles: ['dpo'] })
+    const m = await s.person({ org })
+    const settings = await s.recordContact(org, dpo)
+    // A version from the generator before PR 3b, written as production's would read after 0012.
+    await s.query(
+      `insert into notice_versions (org_id, version, body, generator, published_by, dpo_settings_version)
+       values ($1, 0, 'A version from the generator before PR 3b.', 'c09.2', $2, $3)`,
+      [org.id, dpo.id, settings],
+    )
+    await s.acknowledge(dpo)
+    await s.acknowledge(m)
+    const mc = await s.signIn(m)
+    expect(await noticeOf(mc)).toMatchObject({
+      standing: 'acknowledged',
+      targets: null,
+      contact: { title: HARNESS_CONTACT.title },
+    })
+    await s.publishNotice(org, dpo, { acknowledge: [dpo] })
+    const read = await noticeOf(mc)
+    expect(read).toMatchObject({
+      standing: 'required',
+      targets: { businessDays: 10, calendarDays: 30 },
+      changes: { since: 0, contact: 'same', targets: 'added' },
+    })
   })
 })

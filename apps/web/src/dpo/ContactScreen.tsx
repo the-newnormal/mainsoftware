@@ -13,6 +13,14 @@
 // didn't catch (400 register_invalid), or asks for the PIN when the session's re-authentication is
 // stale (the PIN step, then the same save once more). Nothing is kept outside the dialog's state:
 // a reload loses an unsaved edit (WS-01). The router loads this module lazily (router/router.tsx).
+//
+// From C0.9 PR 3b (OD-08, OD-09, PD-94) a "Reply targets" card sits below the contact: the business
+// days for questions, complaints, withdrawals and objections and the calendar days for copies and
+// corrections, whether the published notice gives them, and "Change reply targets", a dialog with
+// both figures in their range (targetsEditor), saved with the settings version the page read, the
+// same way the contact is. A change makes the notice out of date; a due day already promised never
+// moves later (the database's due function). With no contact recorded the card says to record it
+// first, since the targets are kept with it, and offers no change.
 import {
   CONTACT_EMAIL_MAX,
   CONTACT_PHONE_MAX,
@@ -20,6 +28,7 @@ import {
   CONTACT_TITLE_MAX,
   type ContactAdminForClient,
   type SetContactJSON,
+  type SetTargetsJSON,
 } from '@hearth/shared'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -41,11 +50,17 @@ import {
   contactRefusalOf,
   contactSavedText,
   contactView,
+  type TargetsForm,
+  targetsEditor,
+  targetsFormOf,
+  targetsRefusalOf,
+  targetsSavedText,
+  targetsView,
 } from './contact-model.ts'
 import { type Refusal, refusalOfError } from './model.ts'
 import { NoticeBadge, SaveStopsNote } from './notice-markers.tsx'
 import { Facts, Note, Pill, TextField } from './parts.tsx'
-import { CONTACT_SAVE_MOVES, contactQuery, saveContact } from './queries.ts'
+import { CONTACT_SAVE_MOVES, contactQuery, saveContact, setTargets, TARGETS_SAVE_MOVES } from './queries.ts'
 import { ReadRefusal, RegisterLinks, WriteRefusal } from './RegisterPage.tsx'
 
 export function ContactScreen() {
@@ -151,12 +166,13 @@ export function ContactContent({ answer }: { answer: ContactAdminForClient }) {
         )}
       </section>
       {editing && <ContactDialog answer={answer} onClose={() => setEditing(false)} onSaved={saved} />}
+      <TargetsCard answer={answer} />
     </>
   )
 }
 
-interface ContactWriter {
-  send(body: SetContactJSON): void
+interface SettingsWriter<B> {
+  send(body: B): void
   readonly pending: boolean
   readonly refusal: Refusal | undefined
   // The PIN was confirmed: the refused save once more.
@@ -165,28 +181,50 @@ interface ContactWriter {
   reload(): void
 }
 
+// What one kind of save on this page needs: the call, what it moves, its toast and its refusals.
+interface SettingsSave<B> {
+  send(body: B): Promise<{ changed: boolean }>
+  moves: readonly (readonly unknown[])[]
+  savedText(result: { readonly changed: boolean }): string
+  refusalOf(error: unknown): Refusal
+}
+
+const CONTACT_SAVE: SettingsSave<SetContactJSON> = {
+  send: saveContact,
+  moves: CONTACT_SAVE_MOVES,
+  savedText: contactSavedText,
+  refusalOf: contactRefusalOf,
+}
+
+const TARGETS_SAVE: SettingsSave<SetTargetsJSON> = {
+  send: setTargets,
+  moves: TARGETS_SAVE_MOVES,
+  savedText: targetsSavedText,
+  refusalOf: targetsRefusalOf,
+}
+
 // One save, as useRegisterWrite() sends a register's: its effects live on the mutation, so the
 // contact, the registers and the Notice tab are read again and the toast shown even if the dialog
 // has gone by the time it lands; done() closes the dialog once they have been.
-function useContactWrite(done: () => void): ContactWriter {
+function useSettingsWrite<B>(save: SettingsSave<B>, done: () => void): SettingsWriter<B> {
   const queryClient = useQueryClient()
-  const last = useRef<SetContactJSON | undefined>(undefined)
+  const last = useRef<B | undefined>(undefined)
   const [refusal, setRefusal] = useState<Refusal | undefined>()
   const mutation = useMutation({
-    mutationFn: saveContact,
+    mutationFn: save.send,
     onSuccess: async result => {
-      await Promise.all(CONTACT_SAVE_MOVES.map(queryKey => queryClient.invalidateQueries({ queryKey })))
-      toast({ text: contactSavedText(result) })
+      await Promise.all(save.moves.map(queryKey => queryClient.invalidateQueries({ queryKey })))
+      toast({ text: save.savedText(result) })
     },
   })
 
-  const run = (body: SetContactJSON) => {
+  const run = (body: B) => {
     if (mutation.isPending) return
     last.current = body
     setRefusal(undefined)
     mutation.mutate(body, {
       onSuccess: () => done(),
-      onError: error => setRefusal(contactRefusalOf(error)),
+      onError: error => setRefusal(save.refusalOf(error)),
     })
   }
 
@@ -218,7 +256,7 @@ export function ContactDialog({
   const row = answer.contact
   const [form, setForm] = useState<ContactForm>(() => contactFormOf(row))
   const editor = contactEditor(form, answer)
-  const writer = useContactWrite(onSaved)
+  const writer = useSettingsWrite(CONTACT_SAVE, onSaved)
   const formId = useId()
   const problemId = useId()
   const set = (change: Partial<ContactForm>) => setForm(before => ({ ...before, ...change }))
@@ -319,6 +357,151 @@ export function ContactDialog({
               </ul>
             </Note>
           )}
+          {editor.stale && <SaveStopsNote text={CONTACT.dialog.staleWarning} />}
+        </form>
+      </div>
+    </Dialog>
+  )
+}
+
+// The reply targets (C0.9 OD-08, PD-94), below the contact. Exported for its markup test
+// (dpo/dpo.markup.test.tsx).
+export function TargetsCard({ answer }: { answer: ContactAdminForClient }) {
+  const [editing, setEditing] = useState(false)
+  const view = targetsView(answer)
+  const titleId = useId()
+  // A save closes the dialog outside any React event; focus goes back to Change reply targets once
+  // the dialog has gone (as ContactContent does for its own button).
+  const action = useRef<HTMLButtonElement>(null)
+  const refocus = useRef(false)
+  useEffect(() => {
+    if (editing || !refocus.current) return
+    refocus.current = false
+    focusAfter(() => action.current)
+  }, [editing])
+  return (
+    <section
+      aria-labelledby={titleId}
+      className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4 sm:p-5"
+    >
+      <div className="flex flex-wrap items-start gap-2">
+        <h2 id={titleId} className="min-w-0 flex-1 break-words font-semibold">
+          {CONTACT.targets.title}
+        </h2>
+        {view.kind === 'targets' && view.pill !== undefined && <Pill tone={view.pill.tone}>{view.pill.text}</Pill>}
+      </div>
+      {view.kind === 'first_contact' && <p>{CONTACT.targets.firstContact}</p>}
+      {view.kind === 'unreadable' && <p className="text-muted">{CONTACT.targets.unreadable}</p>}
+      {view.kind === 'targets' && (
+        <>
+          <ul className="flex flex-col gap-1">
+            <li>{view.business}</li>
+            <li>{view.calendar}</li>
+          </ul>
+          {view.line !== undefined && (
+            <>
+              <p>{view.line}</p>
+              <Link
+                to="/dpo/notice"
+                activeOptions={{ exact: true }}
+                activeProps={{}}
+                className={cx(buttonClass(), 'self-start')}
+              >
+                {CONTACT.toNotice}
+              </Link>
+            </>
+          )}
+          <Button ref={action} icon={Pencil} className="self-start" onClick={() => setEditing(true)}>
+            {CONTACT.targets.edit}
+          </Button>
+        </>
+      )}
+      {editing && answer.targets !== null && (
+        <TargetsDialog
+          answer={answer}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            refocus.current = true
+            setEditing(false)
+          }}
+        />
+      )}
+    </section>
+  )
+}
+
+// Exported for its markup test (dpo/dpo.markup.test.tsx). Opened only with targets read.
+export function TargetsDialog({
+  answer,
+  onClose,
+  onSaved = onClose,
+}: {
+  answer: ContactAdminForClient
+  onClose(): void
+  onSaved?: () => void
+}) {
+  const [form, setForm] = useState<TargetsForm>(() =>
+    targetsFormOf(answer.targets ?? { businessDays: Number.NaN, calendarDays: Number.NaN }),
+  )
+  const editor = targetsEditor(form, answer)
+  const writer = useSettingsWrite(TARGETS_SAVE, onSaved)
+  const formId = useId()
+  const set = (change: Partial<TargetsForm>) => setForm(before => ({ ...before, ...change }))
+  const held = writer.pending
+    ? DPO.saving
+    : editor.problems.length > 0
+      ? DPO.fixFirst
+      : editor.unchanged
+        ? CONTACT.targets.unchanged
+        : undefined
+  const submit = () => {
+    if (held === undefined && editor.body !== undefined) writer.send(editor.body)
+  }
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title={CONTACT.targets.dialogTitle}
+      footer={
+        <>
+          <Button onClick={onClose}>{DPO.cancel}</Button>
+          <Button type="submit" form={formId} variant="primary" disabledReason={held}>
+            {DPO.save}
+          </Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <WriteRefusal writer={writer} />
+        <form
+          id={formId}
+          method="post"
+          noValidate
+          onSubmit={event => {
+            event.preventDefault()
+            submit()
+          }}
+          className="flex flex-col gap-4"
+        >
+          <TextField
+            label={CONTACT.targets.businessField}
+            name="business-days"
+            inputMode="numeric"
+            hint={CONTACT.targets.businessHint}
+            maxLength={2}
+            value={form.businessDays}
+            onChange={businessDays => set({ businessDays })}
+          />
+          <TextField
+            label={CONTACT.targets.calendarField}
+            name="calendar-days"
+            inputMode="numeric"
+            hint={CONTACT.targets.calendarHint}
+            maxLength={2}
+            value={form.calendarDays}
+            onChange={calendarDays => set({ calendarDays })}
+          />
+          {editor.problems.length > 0 && <Note tone="info" title={DPO.beforeSaving} items={editor.problems} />}
           {editor.stale && <SaveStopsNote text={CONTACT.dialog.staleWarning} />}
         </form>
       </div>
