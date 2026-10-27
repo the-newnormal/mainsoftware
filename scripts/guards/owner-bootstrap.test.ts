@@ -2464,9 +2464,10 @@ const VARIABLE_SHAPE =
   /^(?:OWNER_BOOTSTRAP_[A-Z0-9_]+|DEPLOY_ENV|PG[A-Z]+|NODE_[A-Z0-9_]+|CLAUDECODE|CLAUDE_CODE_[A-Z_]+|AI_AGENT|GITHUB_ACTIONS|CI)$/
 
 // Section 2.1's three ways to load the input, each for one command and never kept: from the secret,
-// pasted with echo off, or (the recovery document alone) typed with echo on.
+// at the version id read before the plan, so the commit runs on the document the plan checked;
+// pasted with echo off; or (the recovery document alone) typed with echo on.
 const LOADS = [
-  /^OWNER_BOOTSTRAP_INPUT="\$\(aws secretsmanager get-secret-value --secret-id <[^>]+> --query SecretString --output text\)" node scripts\/owner-bootstrap\.ts /,
+  /^OWNER_BOOTSTRAP_INPUT="\$\(aws secretsmanager get-secret-value --secret-id <[^>]+> --version-id <[^>]+> --query SecretString --output text\)" node scripts\/owner-bootstrap\.ts /,
   /^OWNER_BOOTSTRAP_INPUT="\$\(stty -echo; cat; stty echo\)" node scripts\/owner-bootstrap\.ts /,
   /^OWNER_BOOTSTRAP_INPUT="\$\(cat\)" node scripts\/owner-bootstrap\.ts recover\b/,
 ]
@@ -2715,7 +2716,7 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
 
   it('passes planted runbooks and fails each slip', () => {
     const fromSecret =
-      'OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>'
+      'OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --version-id <the version id> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>'
     const pasted =
       'OWNER_BOOTSTRAP_INPUT="$(stty -echo; cat; stty echo)" node scripts/owner-bootstrap.ts set-up --database <the database>'
     const typed = 'OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>'
@@ -2776,6 +2777,10 @@ describe('BSG-09 (PD-133): CI runs the check, no workflow runs the script, and t
         "OWNER_BOOTSTRAP_INPUT='{…}' node scripts/owner-bootstrap.ts set-up --database <the database>",
       ),
     ).toEqual([`${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`])
+    // The secret is loaded at the version the plan read, never its current value.
+    expect(slip(RUNBOOK, ' --version-id <the version id>', '')).toEqual([
+      `${RUNBOOK}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`,
+    ])
     // Echo on is for the recovery document alone.
     expect(slip(WITHDRAWN, 'owner-bootstrap.ts recover', 'owner-bootstrap.ts set-up')).toEqual([
       `${WITHDRAWN}: loads OWNER_BOOTSTRAP_INPUT other than by section 2.1's three commands`,

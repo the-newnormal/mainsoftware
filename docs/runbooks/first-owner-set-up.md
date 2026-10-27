@@ -56,10 +56,16 @@ Every mode is prepared the same way. The recovery runbook ([Twilio withdrawn, an
 - The input set for each command on its own, never kept in the shell.
 - For `set-up` and `correct-number`, which load the input from the secret, the AWS CLI keeps no history for the profile in use: `aws configure get cli_history` prints nothing or `disabled`. If it prints `enabled`, run `aws configure set cli_history disabled` first: the CLI's history would keep the secret's value, the founder's name and number, in `~/.aws/cli/history`. Never add the debug option (`aws --debug`): it prints the secret's value.
 
-Load the input from the secret, for `set-up` and `correct-number`:
+Load the input from the secret, for `set-up` and `correct-number`. Before the plan, the person on call writes down the current version id of the secret, an id that says nothing of what it holds:
 
 ```
-OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>
+aws secretsmanager list-secret-version-ids --secret-id <the secret> --query "Versions[?contains(VersionStages, 'AWSCURRENT')].VersionId" --output text
+```
+
+The plan and the commit both load that version, so the commit runs on exactly the document the plan checked: Secrets Manager never changes a version once it is written. If the DPO changes the secret after the plan, read the new version id and run the plan again before the commit.
+
+```
+OWNER_BOOTSTRAP_INPUT="$(aws secretsmanager get-secret-value --secret-id <the secret> --version-id <the version id> --query SecretString --output text)" node scripts/owner-bootstrap.ts <mode> --database <the database>
 ```
 
 Only if the secret can't be read, the DPO pastes the document at the person on call's terminal, with echo off, so nobody else holds the founder's whole number: the person on call runs the command below, and the DPO pastes the document over several lines, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line). Lay the document out with one fact to a line, each line under 1,000 characters: a terminal cuts a longer line without showing it (at 1,024 bytes on macOS), and the script then answers that the input is not valid JSON. If the DPO is there only by video, the run waits until the secret can be read. After a Ctrl-C, type `stty echo` to see your typing again.
@@ -73,6 +79,8 @@ The recovery document holds no name or number, so it is typed the same way with 
 ```
 OWNER_BOOTSTRAP_INPUT="$(cat)" node scripts/owner-bootstrap.ts recover --database <the database>
 ```
+
+A pasted or typed document is pasted or typed again for the commit. The commit prints the same lines as its plan before its `committing` line, so the person on call compares them with the plan's. If one differs, the commit ran on a different document: they tell the DPO, who corrects it (a number with `correct-number` below, a review date with their own Save in Hearth).
 
 Never `read` it into a variable, and never `export` it: a one-line `read` takes only the first line and runs the rest of a pasted document as shell commands, which land in the history.
 
