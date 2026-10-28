@@ -7,7 +7,9 @@
 --          row's tables, and every name there is such a table (LH-04);
 --   LCD-03 exactly cases, case_steps and legal_holds carry both guard triggers, enabled the default
 --          way, each guard's argument its own table's name; deletion_log carries
---          lifecycle_no_truncate and deletion_log_kept; no other table carries either (LH-11, LH-12);
+--          lifecycle_no_truncate and deletion_log_kept; no other table carries either; none of the
+--          four guard functions' triggers has a WHEN condition or an UPDATE OF list (LH-11, LH-12,
+--          GUARD-04);
 --   LCD-04 no runtime role, nor hearth_worker, holds any privilege on deletion_log or legal_holds,
 --          or may run any function 0013 adds (LH-30);
 --   LCD-05 retention_period_days() answers each days class's default and raises 22023 for an unknown
@@ -115,6 +117,14 @@ select pg_temp.check(
    from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_proc f on f.oid = t.tgfoid
    where f.proname = 'legal_holds_kept') = 'legal_holds 19 O',
   'legal_holds_kept is not the BEFORE UPDATE row trigger on legal_holds (LCD-03)');
+select pg_temp.check(
+  (select count(*) from pg_trigger t join pg_proc f on f.oid = t.tgfoid
+   where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')) = 9
+  and not exists (
+    select 1 from pg_trigger t join pg_proc f on f.oid = t.tgfoid
+    where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
+      and (t.tgqual is not null or cardinality(t.tgattr::int2[]) <> 0)),
+  'a guard trigger fires only under a WHEN condition or for an UPDATE OF list (LCD-03, GUARD-04)');
 
 -- LCD-04: no runtime role, nor hearth_worker, touches C0.10's tables or runs its functions.
 do $$

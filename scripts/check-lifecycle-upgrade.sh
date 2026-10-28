@@ -38,7 +38,8 @@
 #   days), and deleted for b7's complaint, with one log row and one audit row; the superuser's direct
 #   delete of a held request is refused without a log row (HF010) and with one (HF009); no table but
 #   cases, case_steps and legal_holds carries the guard, each named by its argument (deletion_log
-#   carries its own two), and no runtime role holds a DELETE grant but hearth_app's on working_hours;
+#   carries its own two), no guard trigger has a WHEN condition or an UPDATE OF list (GUARD-04), and
+#   no runtime role holds a DELETE grant but hearth_app's on working_hours;
 # - LCU-05 (OD-27, LH-27): both job roles read every column of the outbox but actor_id and
 #   actor_kind, which are refused to each; readBatch()'s, startOf()'s and futureRows()' statements,
 #   and the sockets job's for the revocation role, run as each over the events already there;
@@ -281,6 +282,10 @@ sql -d "$db" -o /dev/null -c begin -c "$(refused_like HF010 'Rows here are delet
          and t.tgenabled = 'O'")" = \
   'case_steps lifecycle_guard case_steps\000,case_steps lifecycle_no_truncate ,cases lifecycle_guard cases\000,cases lifecycle_no_truncate ,deletion_log deletion_log_kept ,deletion_log lifecycle_no_truncate ,legal_holds lifecycle_guard legal_holds\000,legal_holds lifecycle_no_truncate ' ] ||
   { echo "LCU-04: the guard isn't on exactly cases, case_steps and legal_holds, each named by its argument and enabled" >&2; exit 1; }
+[ "$(sql -d "$db" -Atc "select count(*) from pg_trigger t join pg_proc f on f.oid = t.tgfoid
+       where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
+         and (t.tgqual is not null or cardinality(t.tgattr::int2[]) <> 0)")" = 0 ] ||
+  { echo "LCU-04: a guard trigger fires only under a WHEN condition or for an UPDATE OF list (GUARD-04)" >&2; exit 1; }
 deletes=$(sql -d "$db" -Atc "select coalesce(string_agg(distinct format('%s %s', r.rolname, c.relname), ','), '')
   from pg_class c join pg_namespace n on n.oid = c.relnamespace cross join pg_roles r
   where n.nspname = 'public' and c.relkind in ('r', 'p') and r.rolname like 'hearth\_%' and r.rolname <> 'hearth_owner'
