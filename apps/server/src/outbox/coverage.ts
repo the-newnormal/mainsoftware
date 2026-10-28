@@ -47,6 +47,10 @@ const DPO_SETTINGS =
 // Requests to the DPO (C0.9 PR 3b, OD-06, OD-14, OD-15): the reads write nothing.
 const CASE_READ = 'a read of requests to the DPO, for the DPO or the requester (OD-14, OD-15), which writes nothing'
 const STAMP = 'stamps the row being written with the database clock; that write is covered by its own entry'
+// C0.10 (TECH-SPEC T23 items 7 and 13; LH-10, LH-23): the deletion log, and a request's deletion.
+const DELETION_LOG = 'the deletion log is itself the record of each deletion, written in its transaction (PDPA-09)'
+const CASE_DELETED =
+  "a request is never indexed, derived from or retrieved (RQS-11, T22 item 62), so no consumer holds a copy to delete, and C0.14's alert re-reads the case and passes over one that is gone (T16 item 9); its deletion_log row and audit row are the record"
 
 const deactivation: Coverage = { events: ['person.deactivated'] }
 // The registers (C0.9, TECH-SPEC T22 item 13): their functions are their only writers.
@@ -422,6 +426,26 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
     exempt: 'the clean-up of finished schedule runs, which writes one audit row per batch',
     writes: ['schedule_runs:DELETE', 'audit_events:INSERT'],
   },
+  // C0.10 (0013; TECH-SPEC T23; LH-10 to LH-13, LH-22, LH-23, LH-30): the deletion code and its
+  // guard. Each is granted to nobody until the step that calls it (C1.2, C2.9), so check-catalogues
+  // reads them as SECURITY DEFINER or trigger functions. log_deletion() writes the log in the
+  // deleting transaction; delete_case() deletes a request and its steps, logs it (through
+  // log_deletion()) and audits it as Hearth, with no outbox event (LH-23); is_held() and the
+  // triggers decide and write nothing. The plain helpers (lifecycle_held() and the rest) are neither
+  // definers nor runnable by any runtime role, so they have no entry.
+  'log_deletion(text, text, text, text, uuid, bigint, text, text, boolean)': {
+    exempt: DELETION_LOG,
+    writes: ['deletion_log:INSERT'],
+  },
+  'delete_case(uuid, text, boolean)': {
+    exempt: CASE_DELETED,
+    writes: ['deletion_log:INSERT', 'cases:DELETE', 'case_steps:DELETE', 'audit_events:INSERT'],
+  },
+  'is_held(text, uuid)': { exempt: 'reads only, and answers a boolean', writes: [] },
+  'lifecycle_guard()': { exempt: CHECK, writes: [] },
+  'lifecycle_no_truncate()': { exempt: CHECK, writes: [] },
+  'deletion_log_kept()': { exempt: CHECK, writes: [] },
+  'legal_holds_kept()': { exempt: CHECK, writes: [] },
   // Lookups, fences and checks.
   'session_by_token(bytea, interval)': { exempt: 'a sign-in lookup before the org is known', writes: [] },
   'person_by_phone(text)': { exempt: 'a sign-in lookup before the org is known', writes: [] },

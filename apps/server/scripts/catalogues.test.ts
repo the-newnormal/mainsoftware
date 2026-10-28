@@ -1,24 +1,43 @@
 import {
   ACTIVE_FROM_START,
   AI_PROVIDERS,
+  DELETION_CAUSES,
   FLAGS,
+  HOLD_KINDS,
+  HOLD_TARGET_KINDS,
   NOTICE_TRANSFER_FACTS,
   PINNED_PURPOSES,
   PROVIDERS,
   PURPOSES,
+  REFUSED_COPY_HOLD,
+  RETENTION_CLASSES,
+  type RetentionClass,
+  retentionClassDefaults,
 } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
+import { DELETE_PATHS, type DeletePath, GUARDED_TABLES } from '#src/lifecycle/deletes.ts'
 import type { Coverage } from '#src/outbox/coverage.ts'
 import {
+  aiClassProblems,
   bindingProblems,
   bodyProblems,
   bodyWrites,
+  type ClassDefault,
   checkpointBindings,
+  classTableProblems,
   contentProblems,
   coverageProblems,
+  dayIntervals,
+  deletePathProblems,
+  deletePathsOf,
   eventProblems,
   type Fn,
+  type ForeignKey,
+  fixedAgeProblems,
   flagProblems,
+  type Grant,
+  guardProblems,
+  holdsTables,
   matchProblems,
   noticeFactProbe,
   noticeFactProblems,
@@ -26,8 +45,17 @@ import {
   type ProviderDefault,
   type PurposeDefault,
   type RegisterCode,
+  type Relation,
+  recordedDecisions,
   registerProblems,
+  resolverProblems,
+  retentionDefaultProblems,
   roleProblems,
+  stringLiterals,
+  stripComments,
+  type TriggerRow,
+  type Vocabularies,
+  vocabularyProblems,
 } from './catalogues.ts'
 
 const writes: Record<string, Coverage> = {
@@ -702,5 +730,524 @@ describe('C0.9 PD-41 T22 item 18 check 6: NOTICE_TRANSFER_FACTS equals what noti
     ).toEqual(['notice_facts() states training from another fact of the snapshot'])
     expect(noticeFactProblems(NOTICE_TRANSFER_FACTS, undefined)).toEqual(['notice_facts() returned no object'])
     expect(noticeFactProblems(NOTICE_TRANSFER_FACTS, ['services'])).toEqual(['notice_facts() returned no object'])
+  })
+})
+
+// --- C0.10: checks 7 and 8 on planted input (TECH-SPEC T23 item 19) -----------------------------
+
+const classes: Readonly<Record<string, RetentionClass>> = RETENTION_CLASSES
+// retention_class_defaults() as migration 0013 writes it: the registry's own rows.
+const classRows: ClassDefault[] = retentionClassDefaults()
+// Every table of public as 0001 to 0013 make them, each its own root.
+const TABLES = Object.values(classes).flatMap(spec => spec.tables)
+const relations: Relation[] = TABLES.map(name => ({ name, root: name }))
+const changingClass = (key: string, change: Partial<ClassDefault>) =>
+  classRows.map(row => (row.key === key ? { ...row, ...change } : row))
+
+// The guard's triggers as 0013 creates them.
+const guardTrigger = (table: string): TriggerRow => ({
+  relation: table,
+  root: table,
+  name: 'lifecycle_guard',
+  fn: 'lifecycle_guard',
+  type: 11,
+  enabled: 'O',
+  args: [table],
+})
+const truncateTrigger = (table: string): TriggerRow => ({
+  relation: table,
+  root: table,
+  name: 'lifecycle_no_truncate',
+  fn: 'lifecycle_no_truncate',
+  type: 34,
+  enabled: 'O',
+  args: [],
+})
+const TRIGGERS: TriggerRow[] = [
+  ...GUARDED_TABLES.flatMap(table => [guardTrigger(table), truncateTrigger(table)]),
+  truncateTrigger('deletion_log'),
+  { ...truncateTrigger('deletion_log'), name: 'deletion_log_kept', fn: 'deletion_log_kept', type: 27 },
+  { ...truncateTrigger('legal_holds'), name: 'legal_holds_kept', fn: 'legal_holds_kept', type: 19 },
+]
+const APPLY = holdsTables(classes).apply
+
+describe('LCV-03 C0.10 T23 items 3 and 4 check 7: the retention registry against the database', () => {
+  it('7a LH-04: passes when retention_class_defaults() lists exactly the registry’s Postgres and S3 classes, and names each difference both ways', () => {
+    expect(retentionDefaultProblems(classRows, classRows)).toEqual([])
+    expect(retentionDefaultProblems(classRows, changingClass('cases', { days: 365, tables: ['cases'] }))).toEqual([
+      'cases: packages/shared RETENTION_CLASSES says days 731, tables [case_steps, cases]; retention_class_defaults() says days 365, tables [cases]',
+    ])
+    // Tables compare as sets: their order is no one's.
+    expect(retentionDefaultProblems(classRows, changingClass('cases', { tables: ['case_steps', 'cases'] }))).toEqual([])
+    expect(
+      retentionDefaultProblems(classRows, [
+        ...classRows.filter(row => row.key !== 'legal_holds'),
+        { ...(classRows[0] as ClassDefault), key: 'extra' },
+      ]),
+    ).toEqual([
+      'legal_holds is a Postgres or S3 class in packages/shared RETENTION_CLASSES but not in retention_class_defaults(): a migration replaces the function with it',
+      'extra is in retention_class_defaults() but not a Postgres or S3 class in packages/shared RETENTION_CLASSES: add it there',
+    ])
+    expect(retentionDefaultProblems(classRows, [...classRows, classRows[0] as ClassDefault])).toEqual([
+      'retention_class_defaults() lists org_settings twice',
+    ])
+    // Valkey's, the logs' and the backups' classes are code's and infra/'s alone (LH-07).
+    expect(classRows.map(row => row.key)).not.toContain('valkey_sign_in')
+  })
+
+  it('7b LH-04: every table of public is in exactly one class, and every listed table exists', () => {
+    expect(classTableProblems(classes, TABLES)).toEqual([])
+    expect(classTableProblems(classes, [...TABLES, 'messages'])).toEqual([
+      "public.messages is in no retention class: add it to one class's tables in packages/shared RETENTION_CLASSES, and to retention_class_defaults()",
+    ])
+    const twice = { ...classes, other: { ...classes.audit_log, tables: ['audit_events'] } } as Record<
+      string,
+      RetentionClass
+    >
+    expect(classTableProblems(twice, TABLES)).toEqual([
+      'public.audit_events is in more than one retention class (audit_log, other): keep it in one',
+    ])
+    expect(
+      classTableProblems(
+        classes,
+        TABLES.filter(table => table !== 'legal_holds'),
+      ),
+    ).toEqual(["the retention class legal_holds lists legal_holds, which isn't a table of public"])
+  })
+
+  it('7e LH-06: every AI class has a finite period through its chain, and none is kept', () => {
+    expect(aiClassProblems(classRows)).toEqual([])
+    expect(aiClassProblems(changingClass('ai_notes', { period_kind: 'while', days: null, anchor: null }))).toEqual([
+      'the AI retention class ai_notes has no finite period: give it a day count, or a follows chain that ends at one or at its source (LH-06)',
+    ])
+    // A follows chain ends at a finite class or at its source, never in a loop or at a while class.
+    expect(
+      aiClassProblems(changingClass('transcripts', { period_kind: 'follows', days: null, follows: 'machine_output' })),
+    ).toEqual([
+      expect.stringContaining('transcripts has no finite period'),
+      expect.stringContaining('machine_output has no finite period'),
+    ])
+    expect(aiClassProblems(changingClass('machine_output', { follows: 'roster' }))).toEqual([
+      expect.stringContaining('machine_output has no finite period'),
+    ])
+    expect(aiClassProblems(changingClass('personal_memory', { days: null }))).toEqual([
+      expect.stringContaining('personal_memory has no finite period'),
+    ])
+    expect(aiClassProblems(changingClass('ai_feedback', { holds: 'kept' }))).toEqual([
+      'the AI retention class ai_feedback is kept: every AI class is deleted (LH-06)',
+    ])
+  })
+
+  it('7f LH-09 LH-15 LH-18 LH-19: the hold and deletion vocabularies, the refused-copy figures and each days class’s period equal the database’s', () => {
+    const periods = Object.fromEntries(
+      classRows.flatMap(row => (row.period_kind === 'days' && row.days !== null ? [[row.key, row.days]] : [])),
+    )
+    const code: Vocabularies = {
+      holdTargetKinds: HOLD_TARGET_KINDS,
+      deletionCauses: DELETION_CAUSES,
+      holdKinds: HOLD_KINDS,
+      refusedCopyHold: REFUSED_COPY_HOLD,
+      periods,
+    }
+    expect(periods.cases).toBe(731)
+    expect(vocabularyProblems(code, { ...code })).toEqual([])
+    expect(
+      vocabularyProblems(code, {
+        ...code,
+        holdTargetKinds: [...HOLD_TARGET_KINDS.filter(kind => kind !== 'room'), 'meeting'],
+        deletionCauses: [...DELETION_CAUSES, 'replay'],
+        holdKinds: HOLD_KINDS.filter(kind => kind !== 'case'),
+        refusedCopyHold: { days: 30, noticeMarginDays: 7 },
+        periods: { ...periods, cases: 365, audit_log: null },
+      }),
+    ).toEqual([
+      'room is in packages/shared HOLD_TARGET_KINDS but not in legal_holds_target_kind',
+      'meeting is in legal_holds_target_kind but not in packages/shared HOLD_TARGET_KINDS',
+      'replay is in deletion_causes() but not in packages/shared DELETION_CAUSES',
+      'case is in packages/shared HOLD_KINDS but not in lifecycle_kinds()',
+      'packages/shared REFUSED_COPY_HOLD says 30 days and a 14-day margin; refused_copy_hold() says 30 and 7',
+      'retention_period_days() gave no period for audit_log, whose default is 731 days',
+      'retention_period_days() answers 365 days for cases; its default is 731',
+    ])
+    expect(vocabularyProblems(code, { ...code, refusedCopyHold: undefined })).toEqual([
+      'refused_copy_hold() answered no row',
+    ])
+  })
+})
+
+describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and the resolvers', () => {
+  it('7c DB-10: reads interval literals with comments stripped and strings kept, so an interval in a comment never counts', () => {
+    const body = `
+      -- interval '7 days' was the old age
+      /* and interval '9 days' /* nested */ before that */
+      delete from public.jobs j where (j.state = 'dead' and j.finished_at < now() - interval '30 days')
+        or j.finished_at < now() - INTERVAL  '14 days' or j.finished_at < now() - interval '14 days';
+      raise exception 'never -- a comment inside a string';`
+    expect(dayIntervals(body)).toEqual(['14 days', '30 days'])
+    expect(stripComments(body)).toContain("'never -- a comment inside a string'")
+    expect(stripComments(body)).not.toContain('7 days')
+    expect(stringLiterals("execute format('create table %I', n); -- 'drop'\n select $q$x$q$, E'it''s'")).toEqual([
+      'create table %I',
+      'x',
+      "it''s",
+    ])
+    const bodies = new Map([
+      ['purge_outbox', ["where e.at < pg_catalog.now() - interval '14 days'"]],
+      ['purge_jobs', [body]],
+      ['purge_schedule_runs', ["interval '90 days' -- interval '1 day'"]],
+      ['deletion_log_kept', ["if old.at > pg_catalog.now() - interval '731 days' then"]],
+    ])
+    expect(fixedAgeProblems(classes, bodies)).toEqual([])
+    // The age lives only in a comment: it doesn't count.
+    expect(
+      fixedAgeProblems(
+        classes,
+        new Map([...bodies, ['deletion_log_kept', ["-- interval '731 days'\n interval '365 days'"]]]),
+      ),
+    ).toEqual([
+      "the retention class deletion_log says public.deletion_log_kept() fixes '731 days'; its body holds interval '365 days'",
+    ])
+    expect(fixedAgeProblems(classes, new Map([...bodies, ['purge_outbox', []]]))).toEqual([
+      'the retention class outbox says public.purge_outbox() fixes its age, but there is no such function',
+    ])
+  })
+
+  it('7d LH-11 LH-12 C010-SPEC-09: passes the guard as 0013 puts it, and names a guard missing, disabled, enabled ALWAYS, misnamed, mis-typed or naming another table, and one on a table GUARDED_TABLES doesn’t list', () => {
+    expect(guardProblems(GUARDED_TABLES, relations, TRIGGERS, APPLY)).toEqual([])
+    const changing = (table: string, fn: string, change: Partial<TriggerRow>) =>
+      TRIGGERS.map(t => (t.relation === table && t.fn === fn ? { ...t, ...change } : t))
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('cases', 'lifecycle_guard', { enabled: 'A' }), APPLY),
+    ).toEqual([
+      "public.cases's lifecycle_guard is enabled ALWAYS; it must be enabled the default way (O), so it fires for every writer and not in a replica's apply (LH-11)",
+    ])
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('legal_holds', 'lifecycle_guard', { enabled: 'D' }), APPLY),
+    ).toEqual([expect.stringContaining("public.legal_holds's lifecycle_guard is enabled nowhere (disabled)")])
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('case_steps', 'lifecycle_guard', { args: ['cases'] }), APPLY),
+    ).toEqual(["public.case_steps's lifecycle_guard names 'cases'; it must name its own table, 'case_steps'"])
+    expect(guardProblems(GUARDED_TABLES, relations, changing('cases', 'lifecycle_guard', { type: 9 }), APPLY)).toEqual([
+      "public.cases's lifecycle_guard fires AFTER DELETE FOR EACH ROW; it must fire BEFORE DELETE FOR EACH ROW",
+    ])
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('cases', 'lifecycle_guard', { name: 'guard' }), APPLY),
+    ).toEqual(["public.cases's trigger executing lifecycle_guard() is named guard: name it lifecycle_guard"])
+    expect(
+      guardProblems(
+        GUARDED_TABLES,
+        relations,
+        TRIGGERS.filter(t => !(t.relation === 'deletion_log' && t.fn === 'lifecycle_no_truncate')),
+        APPLY,
+      ),
+    ).toEqual([
+      'public.deletion_log has no trigger executing lifecycle_no_truncate(): the migration that adds it creates "lifecycle_no_truncate" BEFORE TRUNCATE FOR EACH STATEMENT',
+    ])
+    // A guard on a table GUARDED_TABLES doesn't list, and a trigger named as a guard that runs
+    // another function.
+    expect(
+      guardProblems(
+        GUARDED_TABLES,
+        relations,
+        [...TRIGGERS, guardTrigger('devices'), { ...truncateTrigger('sessions'), fn: 'keep_history' }],
+        APPLY,
+      ),
+    ).toEqual([
+      "public.devices carries lifecycle_guard(), but GUARDED_TABLES in apps/server/src/lifecycle/deletes.ts doesn't list it: add the table with its first delete path, or drop the trigger",
+      "public.sessions's trigger lifecycle_no_truncate executes keep_history(), not lifecycle_no_truncate(): a guard's trigger is named as its function",
+    ])
+    // A guarded table must be a table whose class's holds apply.
+    expect(
+      guardProblems(
+        [...GUARDED_TABLES, 'orgs'],
+        relations,
+        [...TRIGGERS, guardTrigger('orgs'), truncateTrigger('orgs')],
+        APPLY,
+      ),
+    ).toEqual([
+      "GUARDED_TABLES lists orgs, whose retention class's holds don't apply: the guard belongs only on tables the deletion code deletes held-checked",
+    ])
+  })
+
+  it('7d C010-SPEC-09: every partition of a guarded table carries the guard naming its parent', () => {
+    const parted: Relation[] = [...relations, { name: 'legal_holds_2026', root: 'legal_holds' }]
+    const clone: TriggerRow = { ...guardTrigger('legal_holds'), relation: 'legal_holds_2026' }
+    expect(guardProblems(GUARDED_TABLES, parted, [...TRIGGERS, clone], APPLY)).toEqual([])
+    expect(guardProblems(GUARDED_TABLES, parted, TRIGGERS, APPLY)).toEqual([
+      expect.stringContaining('public.legal_holds_2026 has no trigger executing lifecycle_guard()'),
+    ])
+    expect(
+      guardProblems(GUARDED_TABLES, parted, [...TRIGGERS, { ...clone, args: ['legal_holds_2026'] }], APPLY),
+    ).toEqual([
+      "public.legal_holds_2026's lifecycle_guard names 'legal_holds_2026'; it must name its parent, 'legal_holds'",
+    ])
+  })
+
+  it('7g LH-12 LH-18 LH-56: names a resolver that raised, and a holds-apply table with no anchors or more than one row', () => {
+    expect(
+      resolverProblems([
+        { call: "lifecycle_persons_of(org, 'device', <random id>)" },
+        { call: "lifecycle_row_anchors(org, 'cases', <a row with a random id>)", wantRows: 1, rows: 1 },
+      ]),
+    ).toEqual([])
+    expect(
+      resolverProblems([
+        {
+          call: "lifecycle_row_anchors(org, 'messages', <a row with a random id>)",
+          wantRows: 1,
+          error: '22023 (lifecycle_row_anchors() has no anchors for that table.)',
+        },
+        {
+          call: "lifecycle_lock_target(org, 'channel', <random id>, 'share')",
+          error: '22023 (Hearth can’t lock that kind of record yet.)',
+        },
+        { call: "lifecycle_row_anchors(org, 'devices', <a row with a random id>)", wantRows: 1, rows: 2 },
+      ]),
+    ).toEqual([
+      "lifecycle_row_anchors(org, 'messages', <a row with a random id>) raised 22023 (lifecycle_row_anchors() has no anchors for that table.): the step that adds that kind or table replaces the resolver to know it",
+      "lifecycle_lock_target(org, 'channel', <random id>, 'share') raised 22023 (Hearth can’t lock that kind of record yet.): the step that adds that kind or table replaces the resolver to know it",
+      "lifecycle_row_anchors(org, 'devices', <a row with a random id>) returned 2 rows; the guard reads exactly 1",
+    ])
+  })
+})
+
+describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows is decided', () => {
+  // LH ids T23 never records, built so that scripts/guards/design-ids.test.ts (LCG-01) doesn't read
+  // them as citations.
+  const UNRECORDED = `LH-${99}`
+  const OUTSIDE_T23 = `LH-${77}`
+  // The delete paths as 0001 to 0013 build them.
+  const fns: Fn[] = [
+    {
+      key: 'purge_outbox(integer)',
+      definer: true,
+      trigger: false,
+      source: 'delete from public.outbox_events e where e.org_id = org;',
+    },
+    {
+      key: 'purge_jobs(integer)',
+      definer: true,
+      trigger: false,
+      source: 'delete from public.jobs j where j.org_id = org;',
+    },
+    {
+      key: 'purge_schedule_runs(integer)',
+      definer: true,
+      trigger: false,
+      source:
+        'with gone as (delete from public.schedule_runs r using doomed d where r.id = d.id returning 1) select 1;',
+    },
+    {
+      key: 'delete_case(uuid, text, boolean)',
+      definer: true,
+      trigger: false,
+      source:
+        'perform public.lifecycle_held(org, a, k, i); delete from public.cases x where x.id = c; delete from public.case_steps s where s.case_id = c;',
+    },
+    {
+      key: 'create_data_access_partitions(integer)',
+      definer: true,
+      trigger: false,
+      source:
+        "execute pg_catalog.format('create table public.%I partition of public.data_access_events for values from (%L) to (%L)', n, m, m); execute pg_catalog.format('alter table public.%I enable row level security', n);",
+    },
+    {
+      key: 'lifecycle_guard()',
+      definer: true,
+      trigger: true,
+      source: 'if exists (select 1 from public.deletion_log) then return old; end if;',
+    },
+  ]
+  const deleteGrants: Grant[] = [
+    { role: 'hearth_app', table: 'working_hours', op: 'DELETE' },
+    { role: 'hearth_app', table: 'working_hours', op: 'INSERT' },
+  ]
+  const keys: ForeignKey[] = [
+    { table: 'jobs', name: 'jobs_org_id_schedule_run_id_fkey', action: 'n', parent: 'schedule_runs' },
+    { table: 'schedule_runs', name: 'schedule_runs_org_id_resumed_from_fkey', action: 'n', parent: 'schedule_runs' },
+    {
+      table: 'notice_acknowledgments',
+      name: 'notice_acknowledgments_org_id_person_id_device_id_fkey',
+      action: 'n',
+      parent: 'devices',
+    },
+    { table: 'passkeys', name: 'passkeys_org_id_user_id_created_device_id_fkey', action: 'n', parent: 'devices' },
+  ]
+  const holds = holdsTables(classes)
+  const recorded = (decision: string) => ['LH-26', 'LH-48', 'LH-58', 'T15 item 16'].includes(decision)
+  const found = deletePathsOf(deleteGrants, fns, keys)
+  const problemsOf = (
+    paths = found,
+    entries: Readonly<Record<string, DeletePath>> = DELETE_PATHS,
+    guarded: readonly string[] = GUARDED_TABLES,
+  ) => deletePathProblems(entries, guarded, paths, holds, recorded)
+
+  it('finds each path as check 1 finds writes, and passes DELETE_PATHS as it stands', () => {
+    expect(found.map(path => [path.key, path.deletes])).toEqual([
+      ['ddl create_data_access_partitions(integer)', []],
+      ['delete_case(uuid, text, boolean)', ['cases', 'case_steps']],
+      ['fk jobs.jobs_org_id_schedule_run_id_fkey', []],
+      ['fk notice_acknowledgments.notice_acknowledgments_org_id_person_id_device_id_fkey', []],
+      ['fk passkeys.passkeys_org_id_user_id_created_device_id_fkey', []],
+      ['fk schedule_runs.schedule_runs_org_id_resumed_from_fkey', []],
+      ['hearth_app working_hours:DELETE', ['working_hours']],
+      ['purge_jobs(integer)', ['jobs']],
+      ['purge_outbox(integer)', ['outbox_events']],
+      ['purge_schedule_runs(integer)', ['schedule_runs']],
+    ])
+    expect(problemsOf()).toEqual([])
+  })
+
+  it('names an unlisted DELETE grant, an unlisted definer delete and an unlisted ON DELETE CASCADE, and a stale entry', () => {
+    const more = deletePathsOf(
+      [...deleteGrants, { role: 'hearth_app', table: 'sessions', op: 'DELETE' }],
+      [
+        ...fns,
+        {
+          key: 'forget_device(uuid)',
+          definer: true,
+          trigger: false,
+          source: 'delete from public.devices d where d.id = x;',
+        },
+      ],
+      [...keys, { table: 'case_steps', name: 'case_steps_org_id_case_id_fkey', action: 'c', parent: 'cases' }],
+    )
+    expect(problemsOf(more)).toEqual([
+      "fk case_steps.case_steps_org_id_case_id_fkey deletes from public.case_steps, but DELETE_PATHS in apps/server/src/lifecycle/deletes.ts doesn't decide it: add 'fk case_steps.case_steps_org_id_case_id_fkey' as guarded, checked or exempt with its decision",
+      "forget_device(uuid) deletes from public.devices, but DELETE_PATHS in apps/server/src/lifecycle/deletes.ts doesn't decide it: add 'forget_device(uuid)' as guarded, checked or exempt with its decision",
+      "hearth_app sessions:DELETE deletes from public.sessions, but DELETE_PATHS in apps/server/src/lifecycle/deletes.ts doesn't decide it: add 'hearth_app sessions:DELETE' as guarded, checked or exempt with its decision",
+    ])
+    expect(problemsOf(found.filter(path => path.key !== 'purge_jobs(integer)'))).toEqual([
+      "DELETE_PATHS in apps/server/src/lifecycle/deletes.ts decides 'purge_jobs(integer)', which no delete path the database allows matches: remove it",
+    ])
+  })
+
+  it('DB-10: a SET NULL key into a holds-apply child passes as exempt, while a CASCADE key with the same child fails, and a cascade from a guarded table into an unguarded child names both', () => {
+    const into = (action: 'c' | 'n') =>
+      deletePathsOf([], [], [{ table: 'sessions', name: 'sessions_device_fkey', action, parent: 'devices' }], {})
+    const exempt = { 'fk sessions.sessions_device_fkey': { exempt: 'the link only', decision: 'LH-48' } }
+    expect(problemsOf(into('n'), exempt)).toEqual([])
+    expect(problemsOf(into('c'), exempt)).toEqual([
+      "fk sessions.sessions_device_fkey is exempt in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.sessions, whose retention class's holds apply: make it guarded or checked",
+    ])
+    const fromGuarded = deletePathsOf(
+      [],
+      [],
+      [{ table: 'phone_numbers', name: 'phone_numbers_case_fkey', action: 'c', parent: 'cases' }],
+      {},
+    )
+    expect(problemsOf(fromGuarded, {})).toEqual([
+      'fk phone_numbers.phone_numbers_case_fkey cascades a delete of guarded public.cases into unguarded public.phone_numbers: guard the child, or list the key in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts with why',
+    ])
+  })
+
+  it('LH-12: names a guarded path to an unguarded table, an exempt path to a holds-apply table, and any path to a kept table', () => {
+    const paths = deletePathsOf(
+      [],
+      [
+        { key: 'sweep_devices(integer)', definer: true, trigger: false, source: 'delete from public.devices;' },
+        { key: 'purge_audit(integer)', definer: true, trigger: false, source: 'delete from public.audit_events;' },
+        { key: 'drop_person(uuid)', definer: true, trigger: false, source: 'delete from public.people;' },
+      ],
+      [],
+      {},
+    )
+    expect(
+      problemsOf(paths, {
+        'sweep_devices(integer)': { guarded: true },
+        'purge_audit(integer)': { exempt: 'old rows', decision: 'LH-26' },
+        'drop_person(uuid)': { exempt: 'a leaver', decision: 'LH-48' },
+      }),
+    ).toEqual([
+      'drop_person(uuid) deletes from public.people, whose retention class keeps every row as history',
+      "purge_audit(integer) is exempt in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.audit_events, whose retention class's holds apply: make it guarded or checked",
+      "sweep_devices(integer) is guarded in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.devices, which GUARDED_TABLES doesn't list: a table gets lifecycle_guard() with its first delete path (LH-12)",
+    ])
+    // With the guard on devices, the same path passes.
+    expect(
+      problemsOf(paths.slice(2), { 'sweep_devices(integer)': { guarded: true } }, [...GUARDED_TABLES, 'devices']),
+    ).toEqual([])
+  })
+
+  it('LH-58: a checked path must ask lifecycle_held() or is_held() in its body, comments and strings aside, delete from no guarded or kept table, and cite a recorded decision', () => {
+    const reduce = (source: string): Fn => ({ key: 'reduce_leaver(uuid)', definer: true, trigger: false, source })
+    const entry = { 'reduce_leaver(uuid)': { checked: true, decision: 'LH-58' } } as const
+    const asks =
+      'if public.lifecycle_held(org, array[p], $$person$$, p) then return; end if; delete from public.working_hours w where w.person_id = p;'
+    expect(problemsOf(deletePathsOf([], [reduce(asks)], [], {}), entry)).toEqual([])
+    expect(
+      problemsOf(
+        deletePathsOf([], [reduce('select public.is_held(k, i); delete from public.working_hours;')], [], {}),
+        entry,
+      ),
+    ).toEqual([])
+    const never =
+      "-- lifecycle_held(org) is asked elsewhere\n raise notice 'is_held(x)'; delete from public.working_hours;"
+    expect(problemsOf(deletePathsOf([], [reduce(never)], [], {}), entry)).toEqual([
+      'reduce_leaver(uuid) is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but its body never calls lifecycle_held() or is_held(): ask it and skip a held row, or guard its tables (LH-58)',
+    ])
+    expect(
+      problemsOf(
+        deletePathsOf([], [reduce(`${asks} delete from public.cases; delete from public.people;`)], [], {}),
+        entry,
+      ),
+    ).toEqual([
+      'reduce_leaver(uuid) deletes from public.people, whose retention class keeps every row as history',
+      "reduce_leaver(uuid) is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.cases, public.people: a guarded table's path is guarded, and a kept table has none",
+    ])
+    expect(
+      problemsOf(deletePathsOf([], [reduce(asks)], [], {}), {
+        'reduce_leaver(uuid)': { checked: true, decision: UNRECORDED },
+      }),
+    ).toEqual([
+      `'reduce_leaver(uuid)' in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts cites ${UNRECORDED}, which isn't an LH id docs/TECH-SPEC.md T23 records or a TECH-SPEC item (T<n> item <m>)`,
+    ])
+    // A grant can't ask anything itself.
+    expect(
+      problemsOf(deletePathsOf(deleteGrants, [], [], {}), {
+        'hearth_app working_hours:DELETE': { checked: true, decision: 'LH-58' },
+      }),
+    ).toEqual([
+      'hearth_app working_hours:DELETE is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but only a function can ask lifecycle_held() itself',
+    ])
+  })
+
+  it('names a DYNAMIC_DDL function whose format strings drop, truncate, detach or delete, and passes one that only creates', () => {
+    const ddl = (source: string) =>
+      deletePathsOf([], [{ key: 'make_parts(integer)', definer: true, trigger: false, source }], [], {
+        'make_parts(integer)': 'x',
+      })
+    const entry = { 'ddl make_parts(integer)': { exempt: 'creates', decision: 'T15 item 16' } }
+    expect(problemsOf(ddl("execute format('create table public.%I ()', n); -- drop it later"), entry)).toEqual([])
+    expect(problemsOf(ddl("execute format('DROP TABLE public.%I', n);"), entry)).toEqual([
+      'public.make_parts(integer) is in DYNAMIC_DDL, which only creates, but a string it runs names drop: a deletion goes through the deletion code, never dynamic DDL',
+    ])
+    expect(problemsOf(ddl('execute $$alter table public.data_access_events detach partition p$$;'), entry)).toEqual([
+      expect.stringContaining('names detach'),
+    ])
+  })
+
+  it('reads which decisions TECH-SPEC records: an LH id T23 names, or an item of a section', () => {
+    const spec = [
+      '# TECH-SPEC',
+      '## T15: the queue',
+      '16. **Partitions.** daily',
+      '## T23: retention (C0.10)',
+      '1. **Scope (LH-01, LH-29).**',
+      '15. **The clean-up (LH-26, LH-48/49).**',
+      '## T24: later',
+      OUTSIDE_T23,
+    ].join('\n')
+    const isRecorded = recordedDecisions(spec)
+    expect(['LH-01', 'LH-26', 'LH-48', 'LH-49', 'T15 item 16', 'T23 item 15'].filter(isRecorded)).toEqual([
+      'LH-01',
+      'LH-26',
+      'LH-48',
+      'LH-49',
+      'T15 item 16',
+      'T23 item 15',
+    ])
+    // Outside T23, an item a section doesn't have, a section that doesn't exist, or any other shape.
+    expect([OUTSIDE_T23, 'LH-02', 'T15 item 17', 'T99 item 1', 'D18', 'lh-26'].filter(isRecorded)).toEqual([])
   })
 })

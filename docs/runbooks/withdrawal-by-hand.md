@@ -11,7 +11,7 @@ C0.9 OD-18, PDPA s16 and PDPA-04: withdrawing deemed consent, or objecting to pr
 ## Who does what
 
 - The DPO decides and carries it out.
-- The person on call for production helps where data must be deleted.
+- Data is deleted only through Hearth's deletion code (TECH-SPEC T23), which keeps anything a hold covers. Nobody deletes by hand in production.
 
 ## Before you start
 
@@ -22,7 +22,7 @@ C0.9 OD-18, PDPA s16 and PDPA-04: withdrawing deemed consent, or objecting to pr
 | Purpose | What stops for the person | How you stop it for one person | What continues |
 |---|---|---|---|
 | `security_audit` | nothing yet | it can't be: the audit log is append-only and must cover every account | everything; don't choose this basis |
-| `backups` | nothing yet | it can't be: backups can't be changed until C0.10's retention | everything; don't choose this basis |
+| `backups` | nothing yet | it can't be: backups can't be changed; after a restore the deletion log is replayed (C0.17) | everything; don't choose this basis |
 | `request_handling` | nothing | it can't be: handling their own request needs it, and a refused copy's records are kept (s22A) | everything; don't choose this basis |
 | `content_delivery` | not active in C0 | the step that makes it active fills this row | n/a |
 | `access_logs` | not active in C0 | as above | n/a |
@@ -44,7 +44,7 @@ Once a purpose's row says how to stop it:
 2. The DPO checks the person's identity, as for an access request ([A request for a copy of someone's personal data](access-request.md)).
 3. The DPO opens the case, whose "A reply you can copy" says, from the published notice, which purposes stop for them and which continue, and on what basis. The DPO checks it against the processing register: those on deemed consent by conduct stop for them; the others continue, and the DPO tells them so and why (the notice's "If you withdraw consent").
 4. The DPO tells them in writing what withdrawing changes for them, before it takes effect (PDPA s16).
-5. The DPO, with the person on call where data must be deleted, carries it out as the purpose's row says.
+5. The DPO carries it out as the purpose's row says. Where data must be deleted, the purpose's row names the deletion function its step builds; until that function exists, the DPO stops the processing as the row says and the data is deleted when it does. Where the person's records are kept because a request of their own is being handled or was refused, the DPO says so and gives no other reason.
 6. The DPO confirms to them in writing once it has taken effect.
 7. For an objection, the DPO weighs it against the purpose's documented legitimate-interests assessment, decides, and replies with the reason.
 8. The DPO replies within the target, by the channel the case records or one the organisation already holds for a current member, quoting the reference, records "Replied" with its day, and closes the case once the withdrawal has taken effect or the objection is decided.

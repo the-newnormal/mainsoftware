@@ -1,5 +1,6 @@
 -- T18, CLAUDE.md Database: the worker's roles (0007, 0008; 0009 lets hearth_queue read the registers,
--- and 0010 the notice's versions and links, T22 item 9; 0011 and 0012 give them nothing). The worker logs
+-- and 0010 the notice's versions and links, T22 item 9; 0011 and 0012 give them nothing; 0013 narrows
+-- the two consumers' outbox read to every column but the actor, OD-27). The worker logs
 -- in as hearth_worker, which holds nothing itself and takes one job role per transaction; each job
 -- role gets only the grants its jobs need. This pins every privilege each job role can use on every
 -- table, column, sequence and function, however it got it, as 030 does hearth_app's, so any new
@@ -152,24 +153,31 @@ $$;
 
 -- C0.9 DB-02, OD-27: who may read an outbox event's actor. A request sent from the form appends
 -- case.opened with its requester as the actor (the outbox's own rule, 0007), kept 14 days, which
--- OD-14 keeps from everyone but the DPO. Exactly the offboarding and revocation roles still can,
--- through their table-wide outbox grants (0007, 0008), and neither consumer reads it from PR 3b
--- (readBatch(), PD-111); never hearth_queue, hearth_app or hearth_worker itself. OD-27 (accepted)
--- has the first migration after PR 3b's worker is deployed revoke the column from both, and that
--- migration empties this set. The owner, superusers, Postgres's own roles and anyone who can act
--- as the owner aside.
+-- OD-14 keeps from everyone but the DPO. No consumer reads it from PR 3b (readBatch(), PD-111), and
+-- OD-27's revoke landed in 0013 (C0.10 LH-27, LH-49, LCD-31): the offboarding and revocation roles
+-- read every column of the outbox but actor_id and actor_kind, so nobody may read either; never
+-- hearth_queue, hearth_app or hearth_worker itself. The owner, superusers, Postgres's own roles and
+-- anyone who can act as the owner aside.
 select pg_temp.check(
   coalesce((select array_agg(r.rolname::text order by r.rolname)
             from pg_roles r
             where not r.rolsuper and r.rolname <> 'hearth_owner' and r.rolname not like 'pg\_%'
               and not pg_has_role(r.oid, 'hearth_owner', 'USAGE') and not pg_has_role(r.oid, 'hearth_owner', 'SET')
-              and has_column_privilege(r.oid, 'public.outbox_events', 'actor_id', 'SELECT')), '{}')
-  = array['hearth_job_offboarding', 'hearth_job_revocation'],
-  'the roles that may read an outbox event''s actor are not exactly the offboarding and revocation roles');
+              and (has_column_privilege(r.oid, 'public.outbox_events', 'actor_id', 'SELECT')
+                   or has_column_privilege(r.oid, 'public.outbox_events', 'actor_kind', 'SELECT'))), '{}')
+  = '{}',
+  'a role may read an outbox event''s actor (OD-27, LCD-31)');
 
 select pg_temp.expect_privileges('hearth_job_offboarding', array[
-  -- The offboarding consumer: read the outbox, start and move its own checkpoint, read the floors.
-  'outbox_events: SELECT', 'outbox_floors: SELECT', 'outbox_checkpoints: SELECT',
+  -- The offboarding consumer: read the outbox (every column but the actor, OD-27, from 0013), start
+  -- and move its own checkpoint, read the floors.
+  'outbox_events.acl_epoch: SELECT', 'outbox_events.acl_more: SELECT', 'outbox_events.acl_tokens: SELECT',
+  'outbox_events.at: SELECT', 'outbox_events.container_id: SELECT', 'outbox_events.container_type: SELECT',
+  'outbox_events.entity_id: SELECT', 'outbox_events.entity_type: SELECT', 'outbox_events.id: SELECT',
+  'outbox_events.ids: SELECT', 'outbox_events.index_class: SELECT', 'outbox_events.org_id: SELECT',
+  'outbox_events.purpose: SELECT', 'outbox_events.subject_ids: SELECT', 'outbox_events.tombstone: SELECT',
+  'outbox_events.tx_id: SELECT', 'outbox_events.type: SELECT', 'outbox_events.version: SELECT',
+  'outbox_floors: SELECT', 'outbox_checkpoints: SELECT',
   'outbox_checkpoints.consumer: INSERT', 'outbox_checkpoints.last_id: INSERT', 'outbox_checkpoints.last_tx: INSERT',
   'outbox_checkpoints.org_id: INSERT', 'outbox_checkpoints.role_name: INSERT',
   'outbox_checkpoints.last_id: UPDATE', 'outbox_checkpoints.last_tx: UPDATE', 'outbox_checkpoints.processed: UPDATE',
@@ -191,8 +199,15 @@ select pg_temp.expect_privileges('hearth_job_offboarding', array[
 -- The revocation consumer and its jobs (0008, T19). Offboarding's read of sessions above stays
 -- until a later migration contracts it (T3): a C0.6 worker may still run its sockets job.
 select pg_temp.expect_privileges('hearth_job_revocation', array[
-  -- The revocation consumer: read the outbox, start and move its own checkpoint, read the floors.
-  'outbox_events: SELECT', 'outbox_floors: SELECT', 'outbox_checkpoints: SELECT',
+  -- The revocation consumer: read the outbox (every column but the actor, OD-27, from 0013), start
+  -- and move its own checkpoint, read the floors.
+  'outbox_events.acl_epoch: SELECT', 'outbox_events.acl_more: SELECT', 'outbox_events.acl_tokens: SELECT',
+  'outbox_events.at: SELECT', 'outbox_events.container_id: SELECT', 'outbox_events.container_type: SELECT',
+  'outbox_events.entity_id: SELECT', 'outbox_events.entity_type: SELECT', 'outbox_events.id: SELECT',
+  'outbox_events.ids: SELECT', 'outbox_events.index_class: SELECT', 'outbox_events.org_id: SELECT',
+  'outbox_events.purpose: SELECT', 'outbox_events.subject_ids: SELECT', 'outbox_events.tombstone: SELECT',
+  'outbox_events.tx_id: SELECT', 'outbox_events.type: SELECT', 'outbox_events.version: SELECT',
+  'outbox_floors: SELECT', 'outbox_checkpoints: SELECT',
   'outbox_checkpoints.consumer: INSERT', 'outbox_checkpoints.last_id: INSERT', 'outbox_checkpoints.last_tx: INSERT',
   'outbox_checkpoints.org_id: INSERT', 'outbox_checkpoints.role_name: INSERT',
   'outbox_checkpoints.last_id: UPDATE', 'outbox_checkpoints.last_tx: UPDATE', 'outbox_checkpoints.processed: UPDATE',
@@ -209,6 +224,51 @@ select pg_temp.expect_privileges('hearth_job_revocation', array[
   'function job_fence(uuid,uuid,bigint[]): EXECUTE',
   'function job_finish(uuid,uuid,bigint[]): EXECUTE'
 ]);
+
+-- LCD-31 (C0.9 OD-27, PD-111; C0.10 LH-27, LH-49): as either consumer's role, acting in an org,
+-- the statements each one runs over the outbox still run under the column grants 0013 left them:
+-- readBatch()'s select list (here without its horizon, since the fixture's event is this
+-- transaction's own), startOf()'s and futureRows()' reads (apps/server/src/outbox/positions.ts)
+-- and, for the revocation role, the sockets job's read (apps/server/src/revocation/registry.ts);
+-- count(*) and select 1 work under column grants too. Reading the actor, or every column, is refused
+-- (42501).
+do $$
+declare
+  r text;
+  n bigint;
+begin
+  foreach r in array array['hearth_job_offboarding', 'hearth_job_revocation'] loop
+    perform pg_temp.act_as_job('1', r);
+    select count(*) into n from (
+      select id, tx_id, at, type, version, entity_type, entity_id, container_type, container_id, acl_tokens,
+             acl_more, index_class, acl_epoch, subject_ids, purpose, tombstone, ids
+      from public.outbox_events
+      where org_id = pg_temp.id('1', '00') and (tx_id, id) > ('0'::xid8, 0::bigint)
+      order by tx_id, id limit 100) b;
+    perform pg_temp.check(n = 1, format('%s read %s of org 1''s one fixture event (LCD-31)', r, n));
+    perform 1 from (select) one
+      left join lateral (select e.tx_id, e.id from public.outbox_events e
+                         where e.org_id = pg_temp.id('1', '00') and e.tx_id < pg_snapshot_xmin(pg_current_snapshot())
+                         order by e.tx_id desc, e.id desc limit 1) h on true
+      left join public.outbox_floors f on f.org_id = pg_temp.id('1', '00');
+    perform greatest((select max(tx_id) from public.outbox_events where org_id = pg_temp.id('1', '00')),
+                     (select max(last_tx) from public.outbox_checkpoints where org_id = pg_temp.id('1', '00')),
+                     (select last_tx from public.outbox_floors where org_id = pg_temp.id('1', '00')))
+              >= pg_snapshot_xmax(pg_current_snapshot());
+    perform count(*) from public.outbox_events;
+    if r = 'hearth_job_revocation' then
+      perform s.id, (select min(e.at) from public.outbox_events e
+                     where e.org_id = s.org_id and e.type = 'signin.ended' and e.entity_type = 'person'
+                       and e.entity_id = s.user_id and e.ids -> 'sessions' ? s.id::text)
+      from public.sessions s where s.org_id = pg_temp.id('1', '00') and s.revoked_at is null;
+    end if;
+    perform pg_temp.expect_error('select actor_id from public.outbox_events', '42501');
+    perform pg_temp.expect_error('select actor_kind from public.outbox_events', '42501');
+    perform pg_temp.expect_error('select * from public.outbox_events', '42501');
+    perform set_config('role', 'none', true);
+  end loop;
+end
+$$;
 
 select pg_temp.expect_privileges('hearth_job_partitions', array[
   'principals.id: SELECT', 'principals.kind: SELECT', 'principals.org_id: SELECT', 'principals.system_key: SELECT',

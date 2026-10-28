@@ -9,7 +9,8 @@
 // Names are <noun>.<past-tense verb> (person.deactivated), apart from audit codes' imperative
 // person.deactivate. Sign-in sessions are signin.*, never session.*, which C2.4 keeps for recorded
 // room sessions (T14 item 17). A later stage's namespace (RESERVED_NAMESPACES) holds only names of
-// that stage, so nobody takes one early (catalogues.test.ts).
+// that stage, so nobody takes one early, and a forbidden namespace (FORBIDDEN_NAMESPACES) holds no
+// name at all (catalogues.test.ts).
 //
 //   entity    the entity_type of what the event is about.
 //   acl       content events carry aclOf's row and the container's acl_epoch ('snapshot'); every
@@ -288,3 +289,9 @@ export const RESERVED_NAMESPACES = {
   'assistant.': 'A4',
   'agent.': 'A5',
 } as const satisfies Record<string, string>
+
+// Namespaces no catalogue name may ever take, emitted or reserved (C0.10 LH-17; TECH-SPEC T23 item
+// 10): a legal hold is confidential (ADM-08, Rule 9's need to know), and every outbox consumer, A2's
+// indexers included, reads every event, so a hold is never an event. Its record is the audit log
+// (C1.11's writers), which only hold readers see. A step may not reserve one either.
+export const FORBIDDEN_NAMESPACES = ['hold.', 'legal_hold.'] as const

@@ -1,12 +1,19 @@
 // C0.6's registries (TECH-SPEC T15-T17): the outbox catalogue, the flag registry and the purpose
 // keys, and the ids-only rule their schemas follow; from C0.9, the provider keys, the pinned
-// purposes and the tripwires G1 and G2 (T22), and from its PR 3b the case events (PD-101). That the
-// catalogue's names, the registry's defaults and the registers' defaults equal the database's lists
-// (migrations 0007, 0009 and 0012) is checked against the database by
-// apps/server/scripts/check-catalogues.ts.
+// purposes and the tripwires G1 and G2 (T22), and from its PR 3b the case events (PD-101); from
+// C0.10, the namespaces no event may take (LCS-09, LH-17). That the catalogue's names, the registry's
+// defaults and the registers' defaults equal the database's lists (migrations 0007, 0009 and 0012) is
+// checked against the database by apps/server/scripts/check-catalogues.ts.
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { CONTENT_TABLES, EVENTS, type EventSpec, isEmitted, RESERVED_NAMESPACES } from './events.ts'
+import {
+  CONTENT_TABLES,
+  EVENTS,
+  type EventSpec,
+  FORBIDDEN_NAMESPACES,
+  isEmitted,
+  RESERVED_NAMESPACES,
+} from './events.ts'
 import {
   COHORT_LIMIT,
   COHORT_ROLES,
@@ -60,6 +67,22 @@ function namespaceProblems(events: Readonly<Record<string, Pick<EventSpec, 'stag
   )
 }
 
+// LCS-09 (C0.10 LH-17): a catalogue name in a forbidden namespace, emitted or reserved, and a
+// reserved namespace that is, holds or sits inside a forbidden one.
+function forbiddenProblems(names: readonly string[], reserved: readonly string[]): string[] {
+  const found = (name: string) => FORBIDDEN_NAMESPACES.find(prefix => name.startsWith(prefix))
+  return [
+    ...names.flatMap(name => {
+      const prefix = found(name)
+      return prefix === undefined ? [] : [`${name} is in ${prefix}*, which no event may take`]
+    }),
+    ...reserved.flatMap(namespace => {
+      const prefix = found(namespace) ?? FORBIDDEN_NAMESPACES.find(p => p.startsWith(namespace))
+      return prefix === undefined ? [] : [`${namespace}* is reserved, but ${prefix}* is forbidden`]
+    }),
+  ]
+}
+
 // A flag that names an AI purpose outside ai.*, where the table's lock doesn't reach it.
 function aiPurposeProblems(flags: Readonly<Record<string, Pick<FlagSpec, 'purposes'>>>): string[] {
   return Object.entries(flags)
@@ -108,6 +131,24 @@ describe('T16 the outbox catalogue', () => {
     expect(namespaceProblems({ 'message.created': { stage: 'C0.6' } })).toHaveLength(1)
     expect(namespaceProblems({ 'session.started': { stage: 'C0.6' } })).toHaveLength(1)
     expect(namespaceProblems({ 'file.created': { stage: 'C4.1' }, 'signin.started': { stage: 'C0.6' } })).toEqual([])
+  })
+
+  it('LCS-09 LH-17 ADM-08: no catalogue name, emitted or reserved, is in hold.* or legal_hold.*, and no reserved namespace is forbidden', () => {
+    expect([...FORBIDDEN_NAMESPACES]).toEqual(['hold.', 'legal_hold.'])
+    expect(forbiddenProblems(Object.keys(EVENTS), Object.keys(RESERVED_NAMESPACES))).toEqual([])
+    // The rule itself: a planted hold event of either kind, emitted or reserved, fails, and so does a
+    // reservation of either namespace; a name that merely ends in "hold" doesn't.
+    expect(forbiddenProblems(['hold.placed', 'legal_hold.released', 'threshold.changed'], [])).toEqual([
+      'hold.placed is in hold.*, which no event may take',
+      'legal_hold.released is in legal_hold.*, which no event may take',
+    ])
+    expect(forbiddenProblems([], ['hold.', 'legal_hold.', 'hold.review.', 'legal.', 'message.'])).toEqual([
+      'hold.* is reserved, but hold.* is forbidden',
+      'legal_hold.* is reserved, but legal_hold.* is forbidden',
+      'hold.review.* is reserved, but hold.* is forbidden',
+    ])
+    // C0.10 adds no event: a deletion appends none (LH-23), and a hold never will.
+    expect(Object.keys(EVENTS).some(name => /hold|deletion|retention/.test(name))).toBe(false)
   })
 
   it('T14 item 17: nothing emitted is session.*, which C2.4 keeps for recorded room sessions', () => {

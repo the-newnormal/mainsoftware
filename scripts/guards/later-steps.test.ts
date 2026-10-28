@@ -6,7 +6,8 @@
 // (SHEET-12) has a row in docs/BUILD-PLAN.md that names C0.9 PR 3b, so planning that step meets
 // what it inherits. A deferral item 50 gives no step (attachments) names none, so neither case
 // asks for one. The guard checks that each step's row carries PR 3b's part, not every word of it;
-// review still reads the part itself. Both cases are first proved on planted text.
+// review still reads the part itself. Both cases are first proved on planted text. LS-03 and LS-04
+// (C0.10, LCG-06) hold the same for T23 items 1 and 20, below.
 import { describe, expect, it } from 'vitest'
 import { readRepoFile } from './repo-files'
 
@@ -14,7 +15,7 @@ import { readRepoFile } from './repo-files'
 const STEP_ID = /^(?:C\d+\.\d+|[A-Z]+-\d+[a-z]?)$/
 const STEP_IDS = /\b(?:C\d+\.\d+|[A-Z]+-\d+[a-z]?)\b/g
 
-// A section of TECH-SPEC (T22), from its heading to the next.
+// A section of TECH-SPEC (T22, T23), from its heading to the next.
 function sectionOf(spec: string, id: string): string {
   const start = spec.indexOf(`\n## ${id}:`)
   if (start === -1) throw new Error(`docs/TECH-SPEC.md has no ${id} section`)
@@ -25,7 +26,7 @@ function sectionOf(spec: string, id: string): string {
 // A numbered item of a section ("50. **…"), up to the next numbered item.
 function itemOf(section: string, n: number): string {
   const start = section.indexOf(`\n${n}. **`)
-  if (start === -1) throw new Error(`T22 has no item ${n}`)
+  if (start === -1) throw new Error(`the section has no item ${n}`)
   const next = section.slice(start + 1).search(/\n\d+\. \*\*/)
   return section.slice(start, next === -1 ? undefined : start + 1 + next)
 }
@@ -114,5 +115,93 @@ describe('C0.9 PR 3b T22 items 50 and 62: what PR 3b defers is in each later ste
     const inherited = inheritedBy(itemOf(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T22'), 62))
     expect(inherited.has('C0.10')).toBe(true)
     expect(unwritten(readRepoFile('docs/BUILD-PLAN.md'), inherited)).toEqual([])
+  })
+})
+
+// LS-03 and LS-04 (C0.10, LCG-06; LH-33): the same for C0.10's T23. Item 1 lists what C0.10 leaves
+// to later steps, "each in its BUILD-PLAN row (item 20)", and item 20's "What later steps inherit"
+// names each step in bold. C0.10 hands work to C stages and to A stages (A0.1, A2.3, A3.3), so a
+// step here is a dotted stage id of either kind; T23 defers to no requirement row. So LS-03: every
+// step item 1 sends something to has a bullet in item 20's list; and LS-04: every step with a
+// bullet there has a BUILD-PLAN row that names C0.10. LS-02 above still holds, since the C0.10 row
+// keeps naming C0.9 PR 3b.
+const T23_STEP_ID = /^[CA]\d+\.\d+$/
+const T23_STEP_IDS = /\b[CA]\d+\.\d+\b/g
+
+// The steps T23 item 1's "It leaves out" sentence sends something to: the step ids in its brackets.
+function t23DeferredTo(item1: string): Set<string> {
+  const sentence = item1.match(/It leaves out[\s\S]*?\)\.(?=\s|$)/)?.[0]
+  if (sentence === undefined) throw new Error('T23 item 1 has no "It leaves out" sentence')
+  const ids = new Set<string>()
+  for (const [, inside = ''] of sentence.matchAll(/\(([^()]*)\)/g)) {
+    for (const [id] of inside.matchAll(T23_STEP_IDS)) ids.add(id)
+  }
+  return ids
+}
+
+// The steps T23 item 20's "What later steps inherit" names in bold ("**C2.9:**", "**A0.1:**").
+function t23InheritedBy(item20: string): Set<string> {
+  const start = item20.indexOf('**What later steps inherit')
+  if (start === -1) throw new Error('T23 item 20 has no "What later steps inherit" list')
+  const ids = new Set<string>()
+  for (const [, name = ''] of item20.slice(start).matchAll(/\*\*([^*]+?):\*\*/g)) {
+    const id = name.split(' ')[0] ?? ''
+    if (T23_STEP_ID.test(id)) ids.add(id)
+  }
+  return ids
+}
+
+// LS-04: each step item 20 lists whose BUILD-PLAN row is missing or doesn't name C0.10.
+const unwrittenT23 = (plan: string, inherited: ReadonlySet<string>): string[] =>
+  [...inherited].filter(id => !rowOf(plan, id)?.includes('C0.10'))
+
+const T23_SPEC = [
+  '',
+  '## T23: x',
+  '1. **Scope.** It adds things.',
+  '',
+  '    It leaves out, each in its BUILD-PLAN row (item 20): the shipper (C0.17); holds on rooms (C2.4); who sets the AI classes (A0.1); PDPA-09 retention (C2.9, LH-12); people inferences (A3.3, A3.4). Nothing for (C9.9).',
+  '2. **Next.** (C7.7)',
+  '20. **Open points.**',
+  '    - **LH-44 (a):** not a step.',
+  '    - **What later steps inherit,** each also in its BUILD-PLAN row:',
+  '      - **C0.17:** the shipper.',
+  '      - **C2.4:** rooms.',
+  '      - **A0.1:** the AI classes. **A3.3:** inferences.',
+  '      - **Never:** an AI feature reads holds.',
+  '## T24: y',
+  '1. **Not T23’s.** It leaves out more (C8.8).',
+].join('\n')
+
+const T23_PLAN = [
+  '| **C0.17** Backup | From C0.10: the shipper. | C0.10 |  |',
+  '| **C2.4** Sessions | Rooms, from nothing. | C2.2 |  |',
+  '| **A0.1** Clearance | From C0.10 (TECH-SPEC T23 item 20): who sets them. | C6.9 |  |',
+].join('\n')
+
+describe('C0.10 T23 items 1 and 20: what C0.10 defers is in each later step’s BUILD-PLAN row', () => {
+  it('finds an unlisted deferral and an unwritten row on planted text, and passes written ones', () => {
+    const t23 = sectionOf(T23_SPEC, 'T23')
+    const deferred = t23DeferredTo(itemOf(t23, 1))
+    expect([...deferred].sort()).toEqual(['A0.1', 'A3.3', 'A3.4', 'C0.17', 'C2.4', 'C2.9'])
+    const inherited = t23InheritedBy(itemOf(t23, 20))
+    expect([...inherited].sort()).toEqual(['A0.1', 'A3.3', 'C0.17', 'C2.4'])
+    expect(unlisted(deferred, inherited).sort()).toEqual(['A3.4', 'C2.9'])
+    expect(unwrittenT23(T23_PLAN, inherited).sort()).toEqual(['A3.3', 'C2.4'])
+  })
+
+  it('LS-03 (LCG-06): every step T23 item 1 leaves something to has a bullet in item 20’s inherit list', () => {
+    const t23 = sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T23')
+    const deferred = t23DeferredTo(itemOf(t23, 1))
+    // Item 1 does defer to later steps, so an empty match would mean the guard reads nothing.
+    expect(deferred.has('C2.9')).toBe(true)
+    expect(deferred.has('A0.1')).toBe(true)
+    expect(unlisted(deferred, t23InheritedBy(itemOf(t23, 20)))).toEqual([])
+  })
+
+  it('LS-04 (LCG-06): every step in T23 item 20’s inherit list has a BUILD-PLAN row naming C0.10', () => {
+    const inherited = t23InheritedBy(itemOf(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T23'), 20))
+    expect(inherited.has('C2.9')).toBe(true)
+    expect(unwrittenT23(readRepoFile('docs/BUILD-PLAN.md'), inherited)).toEqual([])
   })
 })

@@ -812,11 +812,13 @@ export const RETENTION_CLASSES = {
   valkey_limits: {
     store: 'valkey',
     tables: [],
-    covers: 'The sliding windows’ counters, kept under twice the longest window',
+    // limiter.ts expires each window's key after the window itself, so the longest life is the
+    // longest window in LIMITS (apps/server/src/auth/policy.ts), a day.
+    covers: 'The sliding windows’ counters, each kept for its own window, a day at most',
     purposes: ['accounts'],
     ai: false,
     stage: 'C0.5',
-    period: { kind: 'ttl', families: { limit: 172_800_000 } },
+    period: { kind: 'ttl', families: { limit: 86_400_000 } },
     status: 'fixed',
     setBy: { who: 'code' },
     indefinite: 'never',
@@ -991,7 +993,7 @@ export function retentionClassDefaults(): RetentionClassDefaultsRow[] {
   })
 }
 
-// --- Holds (TECH-SPEC T23 items 8 to 13) --------------------------------------------------------
+// --- Holds and deletions (TECH-SPEC T23 items 7 and 10 to 12) ----------------------------------
 
 // A refused copy's hold (s22A; regulation 8 of the PDP Regulations 2021): at least 30 days after the
 // refusal, plus a margin for a review the PDPC tells the organisation of late (LH-19, LH-46).
@@ -1001,8 +1003,8 @@ export const REFUSED_COPY_HOLD = { days: 30, noticeMarginDays: 14 } as const
 // The kinds of record the database's hold decision can judge (lifecycle_kinds() lists the same;
 // check 7f). Sign-in sessions are signin_session, never session, which C2.4 keeps for recorded room
 // sessions (T14 item 17). PR 2 adds 'derived'; each later step adds its kinds (C1.1 message, channel,
-// dm and group_dm; C2.4 room and session; C4.1 folder and file). A kind not listed is held: the
-// database refuses to read "not held" for a kind nobody taught it (LH-18).
+// dm and group_dm; C2.4 room and session; C4.1 folder and file). A kind not listed never reads as not
+// held: is_held() refuses it, and a source of such a kind keeps what was made from it (LH-18).
 export const HOLD_KINDS = [
   'person',
   'phone_number',

@@ -33,7 +33,10 @@
 # equal once it has row level security off or a grant. The months come from BASE_DB's partitions,
 # so these hold however long ago it was built.
 #
-# These cover each respect the digest was widened for, not every field it prints.
+# These cover each respect the digest was widened for, not every field it prints. Last, from C0.10
+# (LH-32), three probes of check-migrations.sh's composite-key check, which runs on a planted
+# database with CHECKS_ONLY=1: a key with org_id on both sides at the same place passes, and one that
+# leaves org_id out or names it at another place is refused.
 #
 # Usage, after a full scratch build (BASE_DB, default hearth_check):
 #   scripts/check-migrations.sh && scripts/check-schema-digest.sh
@@ -375,6 +378,38 @@ probe 'real migrations: the older month with row level security off' differs '^t
   "" "$older; alter table $older_name disable row level security" "$newest"
 probe 'real migrations: the older month granted to hearth_app' differs '^table data_access_events_yyyy_mm: .*hearth_app=r/' \
   "" "$older; grant select on $older_name to hearth_app" "$newest"
+
+# 10. C0.10 (LH-32): check-migrations.sh's composite-key check, run as it stands (CHECKS_ONLY=1) on a
+# throwaway database with two org-scoped tables. A foreign key between them must name org_id on both
+# sides, at the same place: one that leaves org_id out, or names it at another place, is refused,
+# naming the key; its composite twin passes every check.
+composite() { # what, pass or refused, the child's foreign key clause
+  local what=$1 expect=$2 key=$3 out status=0
+  sql -d postgres -c "set client_min_messages = warning" -c "drop database if exists $a" \
+    -c "create database $a owner $owner template template0"
+  sql -d "$a" -c "set role $owner" -c "create table public.parent (id uuid primary key, org_id uuid not null, unique (org_id, id));
+    alter table public.parent enable row level security;
+    create table public.child (id uuid primary key, org_id uuid not null, parent_id uuid, constraint child_parent $key);
+    alter table public.child enable row level security;"
+  out=$(CHECK_DB=$a CHECKS_ONLY=1 scripts/check-migrations.sh 2>&1) || status=$?
+  count=$((count + 1))
+  if [ "$expect" = pass ] && [ "$status" -eq 0 ]; then
+    echo "ok    $what (passes)"
+  elif [ "$expect" = refused ] && [ "$status" -ne 0 ] && grep -q '^Foreign key without org_id' <<<"$out" &&
+       grep -q 'public.child: child_parent$' <<<"$out"; then
+    echo "ok    $what (refused)"
+  else
+    failures=$((failures + 1))
+    echo "FAIL  $what: check-migrations.sh should have $( [ "$expect" = pass ] && echo passed || echo refused it), and said:" >&2
+    sed 's/^/        /' <<<"$out" >&2
+  fi
+}
+composite 'composite keys: a foreign key with org_id on both sides' pass \
+  'foreign key (org_id, parent_id) references public.parent (org_id, id)'
+composite 'composite keys: a foreign key that leaves org_id out' refused \
+  'foreign key (parent_id) references public.parent (id)'
+composite 'composite keys: a foreign key that names org_id at another place' refused \
+  'foreign key (parent_id, org_id) references public.parent (org_id, id)'
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures of $count digest probes failed (scripts/schema-digest.sql)." >&2

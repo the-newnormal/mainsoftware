@@ -1,9 +1,9 @@
 // The Postgres error codes (SQLSTATE) the server acts on, Hearth's own among them, and what a
 // failure may write to the logs (TECH-SPEC T15, T16, T17).
 //
-// Hearth's own codes are raised by migration 0007's, 0009's, 0010's, 0011's and 0012's functions,
-// so the server can tell a refusal it expects from a failure (0012 adds none of its own, C0.9
-// PD-103):
+// Hearth's own codes are raised by migration 0007's, 0009's, 0010's, 0011's, 0012's and 0013's
+// functions, so the server can tell a refusal it expects from a failure (0012 adds none of its own,
+// C0.9 PD-103):
 //   HF001  a fence refused: the feature is off, or its flags changed since the server checked them
 //          (feature_fence, job_fence, job_finish). The caller reloads the flags and decides again.
 //   HF002  a job's lease has gone to another worker or the sweeper (job_fence, job_finish).
@@ -31,6 +31,14 @@
 //          basis or retention, or from 0011 no contact for the DPO; and
 //          record_notice_acknowledgement() (0011): a day or a note it can't take (400
 //          notice_invalid; the page lists what it needs, PD-52).
+//   HF009  lifecycle_guard() (0013): a row being deleted is held, by a legal hold or an access
+//          request's hold (C0.10 LH-11, LH-25; TECH-SPEC T23 item 8).
+//   HF010  lifecycle_guard() (0013): a row deleted without its deletion_log row in the same
+//          transaction, or a request's step deleted before its request; and lifecycle_no_truncate():
+//          a TRUNCATE of a guarded table or of the deletion log (LH-11, LH-13, LH-25).
+// HF009 and HF010 map to no api code in any refusal map (LCV-06): the deletion code answers 'held'
+// before it deletes, so meeting either is a fault, a logged 500 whose words never mention a hold
+// (LH-37), and C2.9's sweeps count HF009 inside their one kept count (TECH-SPEC T23 item 18).
 import { z } from 'zod'
 
 export const FEATURE_OFF = 'HF001'
@@ -41,6 +49,11 @@ export const REGISTER_CHANGED = 'HF005'
 export const REGISTER_INVALID = 'HF006'
 export const NOTICE_CHANGED = 'HF007'
 export const NOTICE_INVALID = 'HF008'
+// C0.10 (0013): a held row's deletion, refused by the guard.
+export const HELD = 'HF009'
+// C0.10 (0013): a deletion the guard refused because it wasn't logged in its transaction or came
+// before its parent's, or a TRUNCATE of a guarded table or the deletion log.
+export const UNLOGGED_DELETE = 'HF010'
 // invalid_parameter_value: set_feature_flag()'s unknown flag, a register's unknown key, a clean-up
 // batch out of range, from 0011 a notice version or person record_notice_acknowledgement()
 // doesn't find in the org, and from 0012 a request (a case) that is none or another org's, or a

@@ -124,3 +124,35 @@ select pg_temp.check(count(*) = 2 * (select count(*) from public.processing_regi
 from public.processing_register where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'));
 select pg_temp.check(count(*) = 2 and bool_and(withdrawn_at is null), 'a clearance changed with no org set')
 from public.transfer_clearances where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'));
+
+-- The deletion log and legal holds (0013, C0.10 LH-10, LH-15; LCD-33). No runtime role holds a grant
+-- on either, so the discovery above passes them over: none of them, nor hearth_worker, reads them at
+-- all (42501). The org policy is the second line, binding any future grantee: hearth_app, granted
+-- SELECT here for this transaction alone, sees no row of either with no org set, and writes none.
+do $$
+declare
+  t text;
+  r text;
+begin
+  perform set_config('app.org_id', '', true);
+  foreach t in array array['deletion_log', 'legal_holds'] loop
+    foreach r in array pg_temp.runtime_roles() || array['hearth_worker'] loop
+      perform set_config('role', r, true);
+      perform pg_temp.expect_error(format('select count(*) from public.%I', t), '42501');
+      perform set_config('role', 'none', true);
+    end loop;
+  end loop;
+end
+$$;
+grant select, insert on public.deletion_log, public.legal_holds to hearth_app;
+select set_config('app.org_id', '', true), set_config('app.user_id', pg_temp.id('1', 'a5')::text, true);
+set local role hearth_app;
+select pg_temp.check((select count(*) from public.deletion_log) = 0 and (select count(*) from public.legal_holds) = 0,
+                     'a future grantee saw the deletion log or legal holds with no org set (LCD-33)');
+select pg_temp.expect_error($$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+  values ('f1000000-0000-4000-8000-000000000000', 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention')$$, '42501');
+select pg_temp.expect_error($$insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+  values ('f1000000-0000-4000-8000-000000000000', gen_random_uuid(), 'person', 'f1000000-0000-4000-8000-0000000000a8',
+          'No org set', 'f1000000-0000-4000-8000-0000000000a6')$$, '42501');
+reset role;
+revoke select, insert on public.deletion_log, public.legal_holds from hearth_app;

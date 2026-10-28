@@ -28,6 +28,11 @@
 --   ea a copy of data a5 logged for someone without an account (Sam Example, by email), received
 --      three days ago in the org's zone, with its case.logged audit row (0012)
 --   eb ea's first step: how a5 checked who they are
+--   ec an active legal hold on a9 (the DPO who has left), placed by a6 (0013, C0.10)
+--   ed a legal hold on aa (the former Admin), placed by a6 and released by a5 (0013)
+-- and a deletion_log row naming a device that was deleted (class sign_in_records, cause retention,
+-- a fresh id; 0013), written in the test's own transaction. a8, whose device 070 and 100 delete, is
+-- held by nothing: e8 is an open complaint, which holds nothing (LH-20).
 -- Each org also has every feature flag (the orgs trigger, 0007), one outbox event (flag.changed for
 -- core.system, Hearth acting), the offboarding consumer's checkpoint (at the start), a floor
 -- (nothing purged yet), and every purpose's and provider's register entry (the orgs trigger, 0009).
@@ -236,6 +241,19 @@ begin
   insert into public.audit_events (org_id, actor_id, action, target_type, target_id, device_id) values
     (org, pg_temp.id(o, 'a8'), 'case.submitted', 'case', pg_temp.id(o, 'e8')::text, pg_temp.id(o, 'e1')),
     (org, pg_temp.id(o, 'a5'), 'case.logged', 'case', pg_temp.id(o, 'ea')::text, null);
+
+  -- Legal holds and the deletion log (0013, C0.10 LH-15, LH-10), written as the owner writes them in
+  -- C0.10 (C1.11 brings the hold writers): an active hold on a9 placed by a6 (ec), a hold on aa
+  -- placed by a6 and released by a5 (ed), with made-up reasons, and one logged deletion of a device.
+  insert into public.legal_holds (id, org_id, client_key, target_kind, target_id, reason, placed_by) values
+    (pg_temp.id(o, 'ec'), org, gen_random_uuid(), 'person', pg_temp.id(o, 'a9'),
+     'Fixture investigation into a records request', pg_temp.id(o, 'a6'));
+  insert into public.legal_holds (id, org_id, client_key, target_kind, target_id, reason, placed_by, released_at,
+                                  released_by, release_reason) values
+    (pg_temp.id(o, 'ed'), org, gen_random_uuid(), 'person', pg_temp.id(o, 'aa'), 'Fixture matter, now closed',
+     pg_temp.id(o, 'a6'), now(), pg_temp.id(o, 'a5'), 'The fixture matter ended');
+  insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+    values (org, 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention');
 end
 $$;
 

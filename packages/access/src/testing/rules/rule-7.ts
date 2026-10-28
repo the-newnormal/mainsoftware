@@ -239,9 +239,10 @@ export const RULE_7: readonly RuleCase[] = [
       }
     },
   ),
+  // C0.10 delivered its part, is_held() and the guard (TECH-SPEC T23 item 20; LH-35).
   core(
     'R7-02b',
-    'C0.10, C1.2',
+    'C1.2',
     'Rule 7 CHAT-05 ADM-08: editing or deleting a held message keeps the original and every earlier version out of view until the hold ends',
   ),
   c0(
@@ -532,9 +533,10 @@ export const RULE_7: readonly RuleCase[] = [
       }
     },
   ),
+  // C0.10 delivered its part, is_held() and the guard (TECH-SPEC T23 item 20; LH-35).
   core(
     'R7-05h',
-    'C0.10, C4.1',
+    'C4.1',
     'Rule 7 FILE-02 ADM-08 DRV-57: purge and the Trash clean-up are refused while the item, a folder above it, its owner or its container is on legal hold (isHeld)',
   ),
   core(
@@ -564,10 +566,13 @@ export const RULE_7: readonly RuleCase[] = [
     'C2.9',
     'Rule 7 REC-23 PDPA-09: recordings, transcripts, notes and slide copies are deleted only by the retention engine, the DPO on a request or redaction, each deletion logged',
   ),
+  // C0.10's PR 2 runs it (the provenance registry and its cascade; LH-35, LH-41).
+  core('R7-11', 'C0.10', 'Rule 7 PDPA-09 BRAIN-08: deleting a source deletes or marks stale what was made from it'),
+  // C0.10 wrote the deletion log a restore replays; C0.17 builds the replay (LH-35, LH-51).
   core(
-    'R7-11',
-    'C0.10',
-    'Rule 7 PDPA-09 BRAIN-08: deleting a source deletes or marks stale what was made from it, and the deletion log replays after a restore',
+    'R7-11b',
+    'C0.17',
+    'Rule 7 PDPA-09: the deletion log replays after a restore, through the deletion code, which keeps each row’s original cause and checks holds again',
   ),
   c0(
     'R7-12',

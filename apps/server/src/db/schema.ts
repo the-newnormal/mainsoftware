@@ -104,6 +104,23 @@ export interface DataAccessEvents {
   details: Generated<Json>
 }
 
+export interface DeletionLog {
+  id: GeneratedAlways<Int8>
+  org_id: string
+  tx_id: Generated<string>
+  at: Generated<Timestamp>
+  class_key: string
+  object_table: string
+  object_id: string
+  cause: string
+  replayed: Generated<boolean>
+  case_id: string | null
+  parent_id: Int8 | null
+  s3_class: string | null
+  s3_key: string | null
+  s3_done_at: Timestamp | null
+}
+
 export interface Departments {
   id: Generated<string>
   org_id: string
@@ -176,6 +193,21 @@ export interface Jobs {
   created_by: Generated<string>
   started_at: Timestamp | null
   finished_at: Timestamp | null
+}
+
+export interface LegalHolds {
+  id: Generated<string>
+  org_id: string
+  client_key: string
+  target_kind: 'person' | 'channel' | 'dm' | 'group_dm' | 'room' | 'session' | 'folder' | 'file'
+  target_id: string
+  reason: string
+  case_id: string | null
+  placed_at: Generated<Timestamp>
+  placed_by: string
+  released_at: Timestamp | null
+  released_by: string | null
+  release_reason: string | null
 }
 
 export interface NoticeAcknowledgments {
@@ -553,11 +585,13 @@ export interface DB {
   case_steps: CaseSteps
   cases: Cases
   data_access_events: DataAccessEvents
+  deletion_log: DeletionLog
   departments: Departments
   devices: Devices
   dpo_settings: DpoSettings
   feature_flags: FeatureFlags
   jobs: Jobs
+  legal_holds: LegalHolds
   notice_acknowledgments: NoticeAcknowledgments
   notice_version_providers: NoticeVersionProviders
   notice_version_purposes: NoticeVersionPurposes
