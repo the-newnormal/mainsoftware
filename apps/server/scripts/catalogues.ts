@@ -251,11 +251,47 @@ export function bodyWrites(source: string): Array<{ table: string; op: Grant['op
   return [...seen.values()]
 }
 
-// Functions whose body runs dynamic SQL (EXECUTE) that only changes the schema and writes no row,
-// with why; bodyProblems refuses EXECUTE in any other. Adding one is a reviewed change.
-export const DYNAMIC_DDL: Readonly<Record<string, string>> = {
-  'create_data_access_partitions(integer)':
-    "creates data_access_events' month partitions and turns on their row level security",
+// A function whose body runs dynamic SQL (EXECUTE) that only changes the schema and writes no row:
+// why, and its body as the latest migration that defines it writes it. bodyProblems refuses EXECUTE
+// in any other function. check 8 (bodyDdlProblems) compares the database's body with `body`, comments
+// and runs of whitespace aside, because no check can read what a string built at run time, or a verb
+// passed to format() as an argument, will run: a migration that replaces the function fails until
+// its new body is pinned here, a reviewed change, read for anything that deletes or turns the guard
+// off or replaces it (LH-33, R2CODE-01). Adding one is a reviewed change too.
+export interface DynamicDdl {
+  why: string
+  body: string
+}
+
+export const DYNAMIC_DDL: Readonly<Record<string, DynamicDdl>> = {
+  // 0005.
+  'create_data_access_partitions(integer)': {
+    why: "creates data_access_events' month partitions and turns on their row level security",
+    body: `
+declare
+  month timestamptz;
+  name text;
+begin
+  if months_ahead is null or months_ahead not between 0 and 24 then
+    raise exception 'months_ahead must be between 0 and 24' using errcode = 'invalid_parameter_value';
+  end if;
+  for month in
+    select pg_catalog.generate_series(
+      pg_catalog.date_trunc('month', pg_catalog.now()),
+      pg_catalog.date_trunc('month', pg_catalog.now()) + pg_catalog.make_interval(months => months_ahead),
+      interval '1 month')
+  loop
+    name := 'data_access_events_' || pg_catalog.to_char(month, 'YYYY_MM');
+    if pg_catalog.to_regclass('public.' || name) is null then
+      execute pg_catalog.format(
+        'create table public.%I partition of public.data_access_events for values from (%L) to (%L)',
+        name, month, month + interval '1 month');
+      execute pg_catalog.format('alter table public.%I enable row level security', name);
+    end if;
+  end loop;
+end
+`,
+  },
 }
 
 const verbOf = (op: Grant['op'], table: string, column?: string): string =>
@@ -278,7 +314,7 @@ export function bodyProblems(
   writes: Readonly<Record<string, Coverage>>,
   functions: readonly Fn[],
   grants: readonly Grant[],
-  dynamic: Readonly<Record<string, string>> = DYNAMIC_DDL,
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
 ): string[] {
   const problems: string[] = []
   for (const fn of functions) {
@@ -806,9 +842,10 @@ export interface ClassDefault {
   follows: string | null
   holds: string
   tables: readonly string[]
+  objects: boolean
 }
 
-const CLASS_COLUMNS = ['store', 'ai', 'period_kind', 'days', 'anchor', 'follows', 'holds', 'tables'] as const
+const CLASS_COLUMNS = ['store', 'ai', 'period_kind', 'days', 'anchor', 'follows', 'holds', 'tables', 'objects'] as const
 const columnText = (row: ClassDefault, column: (typeof CLASS_COLUMNS)[number]): string =>
   column === 'tables' ? `[${[...row.tables].sort().join(', ')}]` : String(row[column])
 
@@ -943,21 +980,23 @@ export interface TriggerRow {
 // pg_trigger.tgtype's bits.
 const ROW = 1
 const BEFORE = 2
+const INSERT = 4
 const DELETE = 8
 const UPDATE = 16
 const TRUNCATE = 32
 // The guard's triggers and the two history triggers, each with the tgtype it must have: the guard
 // BEFORE DELETE FOR EACH ROW, the TRUNCATE refusal BEFORE TRUNCATE FOR EACH STATEMENT,
-// deletion_log_kept() BEFORE UPDATE OR DELETE and legal_holds_kept() BEFORE UPDATE, each row by row.
+// deletion_log_kept() BEFORE INSERT OR UPDATE OR DELETE (GUARD-01) and legal_holds_kept() BEFORE UPDATE,
+// each row by row.
 const GUARD_TYPES: Readonly<Record<string, number>> = {
   lifecycle_guard: ROW | BEFORE | DELETE,
   lifecycle_no_truncate: BEFORE | TRUNCATE,
-  deletion_log_kept: ROW | BEFORE | UPDATE | DELETE,
+  deletion_log_kept: ROW | BEFORE | INSERT | UPDATE | DELETE,
   legal_holds_kept: ROW | BEFORE | UPDATE,
 }
 
 function triggerTypeText(type: number): string {
-  const events = [type & 4 ? 'INSERT' : '', type & DELETE ? 'DELETE' : '', type & UPDATE ? 'UPDATE' : '']
+  const events = [type & INSERT ? 'INSERT' : '', type & DELETE ? 'DELETE' : '', type & UPDATE ? 'UPDATE' : '']
   if (type & TRUNCATE) events.push('TRUNCATE')
   const when = type & BEFORE ? 'BEFORE' : type & 64 ? 'INSTEAD OF' : 'AFTER'
   return `${when} ${events.filter(e => e !== '').join(' OR ')} FOR EACH ${type & ROW ? 'ROW' : 'STATEMENT'}`
@@ -1215,15 +1254,17 @@ export interface FoundPath {
 }
 
 // Every delete path, found as check 1 finds writes (DB-10): a runtime role's DELETE grant (its
-// table); a reachable function whose body deletes (the tables its DELETEs name); a foreign key that
+// table); a function of public whose body deletes (the tables its DELETEs name); a foreign key that
 // cascades (its child) or sets null or a default (nothing: an UPDATE of the child, whose firing delete
 // is its parent's own path); and every DYNAMIC_DDL function (nothing, if its format strings keep to
-// creating).
+// creating). check-catalogues passes every function of public, not only the ones check 1 reaches (a
+// definer, a trigger function or one a runtime role may execute): a plain helper no runtime role may
+// run still deletes when a definer calls it, so it is a path of its own (GUARD-03).
 export function deletePathsOf(
   grants: readonly Grant[],
   functions: readonly Fn[],
   foreignKeys: readonly ForeignKey[],
-  dynamic: Readonly<Record<string, string>> = DYNAMIC_DDL,
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
 ): FoundPath[] {
   const found: FoundPath[] = []
   for (const grant of grants) {
@@ -1272,28 +1313,41 @@ export function recordedDecisions(spec: string): (decision: string) => boolean {
   }
 }
 
-// What the registry says of each table's holds: the tables of classes whose holds apply, and of
-// classes kept as history (packages/shared RETENTION_CLASSES).
-export function holdsTables(classes: Readonly<Record<string, Pick<RetentionClass, 'tables' | 'holds'>>>): {
+// What the registry says of each table's holds: the tables of classes whose holds apply, of classes
+// kept as history, and of classes a leaver's reduction deletes from or changes, rows a person also
+// edits (`reduction: 'apply'`, LH-58; packages/shared RETENTION_CLASSES).
+export interface HoldsTables {
   apply: ReadonlySet<string>
   kept: ReadonlySet<string>
-} {
+  reduction: ReadonlySet<string>
+}
+
+export function holdsTables(
+  classes: Readonly<Record<string, Pick<RetentionClass, 'tables' | 'holds' | 'reduction'>>>,
+): HoldsTables {
   const apply = new Set<string>()
   const kept = new Set<string>()
+  const reduction = new Set<string>()
   for (const spec of Object.values(classes)) {
     const holds = holdsOf(spec.holds)
     for (const table of spec.tables) {
       if (holds === 'apply') apply.add(table)
       if (holds === 'kept') kept.add(table)
+      if (spec.reduction === 'apply') reduction.add(table)
     }
   }
-  return { apply, kept }
+  return { apply, kept, reduction }
 }
 
-// The verbs a DYNAMIC_DDL function's format strings may not name: it only creates (check 8).
-const DESTRUCTIVE = /\b(drop|truncate|detach|delete)\b/i
+// The verbs a DYNAMIC_DDL function's format strings may not name: it only creates (check 8). A
+// TRUNCATE in a trigger's event list (BEFORE TRUNCATE, OR TRUNCATE) empties nothing, so the
+// per-partition lifecycle_no_truncate() trigger C2.9 may create passes (R2CODE-01).
+const DESTRUCTIVE = /\b(drop|detach|delete)\b|(?<!\b(?:before|after|or)\s+)\b(truncate)\b/i
 // A checked path's own hold decision, comments and strings aside.
 const ASKS_HELD = /\b(?:lifecycle_held|is_held)\s*\(/
+// A checked path's own log row: it deletes unguarded, so no trigger requires one (LH-10). The leaver
+// reduction logs a row for each working-hours row it deletes (design 4.5), so no reduction is exempt.
+const LOGS_DELETION = /\blog_deletion\s*\(/
 
 const deletesText = (tables: readonly string[]) =>
   tables.length === 0 ? 'nothing' : tables.map(table => `public.${table}`).join(', ')
@@ -1301,18 +1355,22 @@ const deletesText = (tables: readonly string[]) =>
 // 8. Every delete path the database allows is decided in apps/server/src/lifecycle/deletes.ts
 // DELETE_PATHS, and no entry is stale (LH-12, LH-14, LH-26, LH-48, LH-58): a guarded path deletes
 // only from GUARDED_TABLES, so a step's first delete path brings the guard; a checked path is a
-// function whose body asks lifecycle_held() or is_held() and deletes from no guarded or kept table;
+// function whose body asks lifecycle_held() or is_held() and calls log_deletion(), and that deletes
+// only from tables a leaver's reduction marks (`reduction: 'apply'`, rows a person also edits, where
+// a trigger would refuse their own edit or reveal a hold: today working_hours alone), never a guarded
+// or kept one, so any other holds-apply table's first path is guarded and brings its guard (GUARD-02);
 // an exempt path deletes from no table whose holds apply; an exempt or checked path cites a decision
 // TECH-SPEC records; no path deletes from a table kept as history; a CASCADE key into a guarded table
 // cascades into a guarded or listed child; and a DYNAMIC_DDL function's format strings name no drop,
-// truncate, detach or delete, so "only changes the schema and writes no row" is checked, not trusted.
-// What a body does without a DELETE (TRUNCATE, DROP TABLE, DETACH PARTITION, triggers off) is
+// truncate (but in a trigger's event list), detach or delete, so "only changes the schema and writes
+// no row" is checked, not trusted. What a body does without a DELETE (TRUNCATE, DROP TABLE, DETACH
+// PARTITION, the guard off or replaced), and a DYNAMIC_DDL body other than the one pinned, are
 // bodyDdlProblems'.
 export function deletePathProblems(
   entries: Readonly<Record<string, DeletePath>>,
   guarded: readonly string[],
   found: readonly FoundPath[],
-  holds: { apply: ReadonlySet<string>; kept: ReadonlySet<string> },
+  holds: HoldsTables,
   recorded: (decision: string) => boolean,
 ): string[] {
   const problems: string[] = []
@@ -1322,7 +1380,8 @@ export function deletePathProblems(
     const entry = entries[path.key]
     if (path.ddl !== undefined) {
       for (const literal of stringLiterals(path.ddl)) {
-        const verb = DESTRUCTIVE.exec(literal)?.[1]
+        const match = DESTRUCTIVE.exec(literal)
+        const verb = match?.[1] ?? match?.[2]
         if (verb !== undefined) {
           problems.push(
             `public.${path.key.slice(4)} is in DYNAMIC_DDL, which only creates, but a string it runs names ${verb.toLowerCase()}: a deletion goes through the deletion code, never dynamic DDL`,
@@ -1359,15 +1418,29 @@ export function deletePathProblems(
     if ('checked' in entry) {
       if (path.body === undefined) {
         problems.push(`${path.key} is checked in ${where}, but only a function can ask lifecycle_held() itself`)
-      } else if (!ASKS_HELD.test(stripSql(path.body))) {
-        problems.push(
-          `${path.key} is checked in ${where}, but its body never calls lifecycle_held() or is_held(): ask it and skip a held row, or guard its tables (LH-58)`,
-        )
+      } else {
+        const code = stripSql(path.body)
+        if (!ASKS_HELD.test(code)) {
+          problems.push(
+            `${path.key} is checked in ${where}, but its body never calls lifecycle_held() or is_held(): ask it and skip a held row, or guard its tables (LH-58)`,
+          )
+        }
+        if (!LOGS_DELETION.test(code)) {
+          problems.push(
+            `${path.key} is checked in ${where}, but its body never calls log_deletion(): no guard requires its log row, so it writes one for each row it deletes (LH-10, LH-58, GUARD-02)`,
+          )
+        }
       }
       const barred = path.deletes.filter(table => guardedSet.has(table) || holds.kept.has(table))
       if (barred.length > 0) {
         problems.push(
           `${path.key} is checked in ${where}, but deletes from ${deletesText(barred)}: a guarded table's path is guarded, and a kept table has none`,
+        )
+      }
+      const unreduced = path.deletes.filter(table => !barred.includes(table) && !holds.reduction.has(table))
+      if (unreduced.length > 0) {
+        problems.push(
+          `${path.key} is checked in ${where}, but deletes from ${deletesText(unreduced)}, whose retention class marks no leaver's reduction of rows a person also edits: make the path guarded, and the table gets lifecycle_guard() with it (LH-12, LH-58, GUARD-02)`,
         )
       }
       continue
@@ -1389,20 +1462,40 @@ export function deletePathProblems(
 
 // The guard's functions, and the hold decision every guard and definer asks (DB-07).
 const GUARD_FUNCTION = '(?:lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept|lifecycle_held)'
+// The guard's triggers, each named as its function (check 7d).
+const GUARD_TRIGGER = '(?:lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept)'
 
 // What no function body may run, read from its text with comments and strings stripped (stripSql,
 // which folds code to lower case): each empties rows or partitions with no row trigger, so neither
 // the guard nor the hold decision sees it, or turns the guard off or replaces it. TRUNCATE also
 // empties every org's rows, which no definer function, filtering by its org, may do. Set by
 // set_config(), session_replication_role's name is a string, so that form is read with only the
-// comments stripped (stripComments).
+// comments stripped (stripComments). A guard's trigger replaced (CREATE OR REPLACE TRIGGER naming a
+// guard's trigger or function anywhere in its statement), or created with a WHEN condition or an
+// UPDATE OF list, is named as LCG-03 names it in a migration, so the refusal never rests on the
+// EXECUTE FUNCTION in it tripping check 1's dynamic-SQL rule; a plain CREATE TRIGGER of a guard's
+// function, as C2.9 may add for each new partition, passes (R2CODE-01, LH-11). A DYNAMIC_DDL
+// function's string literals are read against every rule too (bodyDdlProblems).
 const BODY_DDL: ReadonlyArray<[string, RegExp, 'code' | 'strings']> = [
-  ['TRUNCATE', /\btruncate\b/, 'code'],
+  // Not in a trigger's event list (BEFORE TRUNCATE, OR TRUNCATE), which empties nothing.
+  ['TRUNCATE', /(?<!\b(?:before|after|or)\s+)\btruncate\b/, 'code'],
   ['DROP TABLE', /\bdrop\s+table\b/, 'code'],
   ['DETACH PARTITION', /\bdetach\s+partition\b/, 'code'],
   ['DISABLE TRIGGER', /\bdisable\s+trigger\b/, 'code'],
   ['DROP TRIGGER', /\bdrop\s+trigger\b/, 'code'],
   ['ENABLE ALWAYS or REPLICA TRIGGER', /\benable\s+(?:always|replica)\s+trigger\b/, 'code'],
+  [
+    'CREATE OR REPLACE TRIGGER of a guard trigger',
+    new RegExp(String.raw`\bcreate\s+or\s+replace\s+(?:constraint\s+)?trigger\b(?=[^;]*\b${GUARD_TRIGGER}\b)`),
+    'code',
+  ],
+  [
+    'CREATE TRIGGER of a guard function with a WHEN condition or an UPDATE OF list',
+    new RegExp(
+      String.raw`\bcreate\s+(?:constraint\s+)?trigger\b(?=[^;]*\bexecute\s+(?:function|procedure)\s+(?:(?:public|"public")\s*\.\s*)?"?${GUARD_TRIGGER}\b)(?=[^;]*(?:\bwhen\s*\(|\bupdate\s+of\b))`,
+    ),
+    'code',
+  ],
   ['SET session_replication_role', /\bset\s+(?:local\s+|session\s+)?"?session_replication_role\b/, 'code'],
   ['SET session_replication_role', /\bset_config\s*\(\s*'session_replication_role'/i, 'strings'],
   [
@@ -1414,14 +1507,25 @@ const BODY_DDL: ReadonlyArray<[string, RegExp, 'code' | 'strings']> = [
   ],
 ]
 
-// 8, function bodies. No function check-catalogues reads (a definer, a trigger function or one a
-// runtime role may execute) runs, as a plain statement, TRUNCATE, DROP TABLE, DETACH PARTITION,
-// DISABLE, DROP or ENABLE ALWAYS or REPLICA TRIGGER, a setting of session_replication_role, or a
-// replacement, drop or change of the guard's functions or lifecycle_held(): none is a DELETE, so
-// deletePathsOf finds no path for it, and DESTRUCTIVE reads only a DYNAMIC_DDL function's format
-// strings (LH-12, LH-33). A DYNAMIC_DDL function's own plain statements are held to it too. A step
-// that needs one changes this check, a reviewed change.
-export function bodyDdlProblems(functions: readonly Fn[]): string[] {
+// A body as DYNAMIC_DDL pins it: comments gone and runs of whitespace folded.
+const pinnedText = (source: string): string => stripComments(source).replace(/\s+/g, ' ').trim()
+
+// 8, function bodies. No function of public (check-catalogues passes every one, helpers no runtime
+// role may run included, GUARD-03) runs, as a plain statement, TRUNCATE, DROP TABLE, DETACH
+// PARTITION, DISABLE, DROP or ENABLE ALWAYS or REPLICA TRIGGER, a setting of
+// session_replication_role, a replacement, drop or change of the guard's functions or
+// lifecycle_held(), or a guard's trigger replaced or created with a WHEN condition or an UPDATE OF
+// list: none is a DELETE, so deletePathsOf finds no path for it, and DESTRUCTIVE reads only a
+// DYNAMIC_DDL function's format strings, for drop, truncate, detach or delete (LH-12, LH-33). A
+// DYNAMIC_DDL function's own plain statements are held to it too, and so is each of its string
+// literals (folded, its doubled quotes read as one), so a string that turns the guard off or
+// replaces it is named. What a string built at run time or a verb passed to format() as an argument
+// will run, no reading can see, so a DYNAMIC_DDL function's body must also be the one DYNAMIC_DDL
+// pins (R2CODE-01). A step that needs any of these changes this check, a reviewed change.
+export function bodyDdlProblems(
+  functions: readonly Fn[],
+  dynamic: Readonly<Record<string, DynamicDdl>> = DYNAMIC_DDL,
+): string[] {
   const problems: string[] = []
   for (const fn of functions) {
     if (fn.source === undefined) continue
@@ -1434,6 +1538,47 @@ export function bodyDdlProblems(functions: readonly Fn[]): string[] {
     for (const what of named) {
       problems.push(
         `public.${fn.key} runs ${what} in its body, which deletes or turns the guard off with no DELETE for check 8 to decide: a deletion goes through the deletion code, never DDL in a function (LH-12, LH-33)`,
+      )
+    }
+    const ddl = dynamic[fn.key]
+    if (ddl === undefined) continue
+    const held = new Set<string>()
+    for (const literal of stringLiterals(fn.source)) {
+      const text = literal.replace(/''/g, "'").replace(/\s+/g, ' ').toLowerCase()
+      for (const [what, pattern] of BODY_DDL) if (pattern.test(text)) held.add(what)
+    }
+    for (const what of held) {
+      problems.push(
+        `public.${fn.key} is in DYNAMIC_DDL, but a string it runs holds ${what}, which deletes or turns the guard off with no DELETE for check 8 to decide: dynamic DDL only creates (LH-12, LH-33, R2CODE-01)`,
+      )
+    }
+    if (pinnedText(fn.source) !== pinnedText(ddl.body)) {
+      problems.push(
+        `public.${fn.key} is in DYNAMIC_DDL, but its body isn't the one pinned there, and what a string built at run time or a verb passed as an argument runs, no check can read: read the new body for anything that deletes, or turns the guard off or replaces it, then pin it in DYNAMIC_DDL in apps/server/scripts/catalogues.ts, a reviewed change (LH-33, R2CODE-01)`,
+      )
+    }
+  }
+  return problems
+}
+
+// 8, helpers' bodies. check 1 refuses a body check-catalogues can't read (BEGIN ATOMIC, whose source
+// Postgres doesn't keep, or EXECUTE outside DYNAMIC_DDL) only in a function it reaches (bodyProblems).
+// A helper no runtime role may run deletes just as well when a definer calls it, and what such a
+// body deletes can't be read, so check 8 refuses either in every other function of public too; the
+// caller passes the functions check 1 doesn't reach (GUARD-03).
+export function helperBodyProblems(
+  functions: readonly Fn[],
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
+): string[] {
+  const problems: string[] = []
+  for (const fn of functions) {
+    if (fn.atomic === true) {
+      problems.push(
+        `public.${fn.key} is written with BEGIN ATOMIC, whose deletes check 8 can't read, though a function that may be run can call it: write its body as a quoted string (as $$ ... $$) (GUARD-03)`,
+      )
+    } else if (fn.source !== undefined && /\bexecute\b/.test(stripSql(fn.source)) && dynamic[fn.key] === undefined) {
+      problems.push(
+        `public.${fn.key} runs dynamic SQL (EXECUTE), whose deletes check 8 can't read, though a function that may be run can call it: write them as plain statements (GUARD-03)`,
       )
     }
   }

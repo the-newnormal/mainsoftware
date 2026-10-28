@@ -226,9 +226,11 @@ jobs:
       # lists; from C0.7, every consumer the worker runs is bound in outbox_checkpoints_own_row()
       # to exactly its role, and every bound name is one of them (0008); from C0.10, check 7 (the
       # retention classes equal retention_class_defaults(), every table in one, the guard on exactly
-      # GUARDED_TABLES, enabled O, with no WHEN or UPDATE OF) and check 8 (every delete path decided
-      # in apps/server/src/lifecycle/deletes.ts, and no TRUNCATE, DROP TABLE, DETACH PARTITION or
-      # guard switched off in a function body; TECH-SPEC T23 items 9 and 19).
+      # GUARDED_TABLES, enabled O, with no WHEN or UPDATE OF) and check 8 (every delete path, plain
+      # helpers included, decided in apps/server/src/lifecycle/deletes.ts, and no TRUNCATE, DROP
+      # TABLE, DETACH PARTITION or guard switched off or replaced in a function body or a
+      # DYNAMIC_DDL function's strings, and every DYNAMIC_DDL body the one pinned in
+      # apps/server/scripts/catalogues.ts; TECH-SPEC T23 items 9 and 19).
       - run: node apps/server/scripts/check-catalogues.ts
       # The SQL access filter (sqlReadableBy, @hearth/access/sql) selects exactly what the
       # in-memory rule allows, for every person, both assistants and the system principal in the

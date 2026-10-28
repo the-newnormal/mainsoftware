@@ -5,9 +5,11 @@
 --   LCD-27 every persona a1 to ac is refused (42501) and only Hearth (a0) proceeds; a cause other than
 --          retention, or a null replay, is refused (22023); an unknown case answers gone; an open one
 --          open; one closed 731 days ago (in its org's zone) not_due and one closed 732 days ago past
---          it; held for a refused copy in its window, a legal hold on the requester, the requester's
---          other refused copy, the requester's open correction and an active legal hold citing the
---          case, and not for a released one citing it; cited for a case a restriction names;
+--          it; with retention_period_days() replaced to answer null, as C2.9's replacement could,
+--          a refusal (22023) that deletes nothing, never a due test read as passed (HOLDS-02); held
+--          for a refused copy in its window, a legal hold on the requester, the requester's other
+--          refused copy, the requester's open correction and an active legal hold citing the case,
+--          and not for a released one citing it; cited for a case a restriction names;
 --   LCD-28 an answered complaint and an outsider's answered copy, both past the period, answer
 --          deleted: one log row, the case and its steps gone, one case.deleted audit row with
 --          {class, cause, replayed, steps}, which read_audit_events() returns to a DPO reader alone;
@@ -128,6 +130,26 @@ select pg_temp.check(pg_temp.delete_case(o, pg_temp.request(o, 'a7', 'question',
                      and pg_temp.delete_case(o, pg_temp.request(o, null, 'complaint', -732, 'answered')) = 'deleted',
                      format('org %s: open, day 731 and day 732 don''t answer open, not_due and deleted (LCD-27)', o))
 from unnest(array['1', '2']) o;
+-- HOLDS-02: the due test fails closed. retention_period_days() replaced, as C2.9 will replace it to
+-- read the DPO's setting, with one that answers null: a request closed yesterday, which the default
+-- keeps, and one closed 800 days ago are each refused (22023), never read as due, and nothing is
+-- deleted or logged.
+savepoint lcd_27_null_period;
+select set_config('test.recent', pg_temp.request('1', null, 'complaint', -1, 'answered')::text, true);
+select set_config('test.old', pg_temp.request('1', null, 'complaint', -800, 'answered')::text, true);
+create or replace function public.retention_period_days(org uuid, class text) returns integer
+language sql stable set search_path = '' as $f$ select null::integer $f$;
+select set_config('test.written', pg_temp.written(), true);
+select pg_temp.expect_error(format('select pg_temp.delete_case(%L, %L)', '1', current_setting(t)), '22023',
+                            'A request''s retention period can''t be read, so nothing is deleted.')
+from unnest(array['test.recent', 'test.old']) t;
+select pg_temp.check(pg_temp.written() = current_setting('test.written')
+                     and (select count(*) from public.cases
+                          where id in (current_setting('test.recent')::uuid, current_setting('test.old')::uuid)) = 2,
+                     'a request whose period reads as null was deleted or logged (LCD-27, HOLDS-02)');
+rollback to savepoint lcd_27_null_period;
+select pg_temp.check(public.retention_period_days(pg_temp.id('1', '00'), 'cases') = 731,
+                     'the replaced retention_period_days() outlived its savepoint (LCD-27, HOLDS-02)');
 -- held: a refused copy in its window (a review open, or one ended today, past the period);
 savepoint lcd_27_held;
 select pg_temp.check(pg_temp.delete_case('1', pg_temp.request('1', null, 'access', -800, 'refused',

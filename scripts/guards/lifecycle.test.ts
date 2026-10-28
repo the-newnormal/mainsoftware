@@ -1,10 +1,15 @@
 // What the database's guard can't see, kept from deleting held data (C0.10 LH-33; TECH-SPEC T23
 // items 8 and 19). The guard (lifecycle_guard() and lifecycle_no_truncate(), 0013) refuses any
 // role's DELETE of a guarded row that isn't logged or is held, and check 8 decides every delete path
-// the database allows and refuses TRUNCATE, DROP TABLE, DETACH PARTITION and the guard turned off or
-// replaced in any function body (bodyDdlProblems, apps/server/scripts/catalogues.ts), so LCG-03
-// leaves function bodies to it. Neither sees S3, a migration's top-level DDL, a table the guard isn't
-// on yet, or code a superuser runs with triggers off. Each case is first proved on planted files:
+// the database allows and refuses, in any function body, TRUNCATE, DROP TABLE, DETACH PARTITION and
+// the guard turned off, its functions replaced or its triggers replaced or conditioned, each as a
+// plain statement, and in a DYNAMIC_DDL function's string literals too, and a DYNAMIC_DDL function
+// whose body isn't the one pinned with it, since a string built at run time or a verb passed to
+// format() as an argument is read by no check (bodyDdlProblems, apps/server/scripts/catalogues.ts);
+// check 1 and helperBodyProblems refuse EXECUTE outside DYNAMIC_DDL. So LCG-03 leaves function
+// bodies to check 8, and a changed DYNAMIC_DDL body to the reviewed change that pins it (R2CODE-01).
+// Neither sees S3, a migration's top-level DDL, a table the guard isn't on yet, or code a superuser
+// runs with triggers off. Each case is first proved on planted files:
 // - LCG-02, S3: no script in apps/, packages/, infra/ or scripts/ names an S3 call that deletes an
 //   object or changes how objects expire or are locked (DeleteObject, DeleteObjects, the bucket
 //   lifecycle and versioning calls, Object Lock's legal hold, retention and configuration), as a
@@ -27,7 +32,11 @@
 // - LCG-05, replica mode: no file in apps/, scripts/ or db/tests/ that sets session_replication_role
 //   to replica, which turns the guard off, deletes from or truncates a guarded table before it sets
 //   it back to origin (or resets it), or, for a transaction-local setting (SET LOCAL, set_config()
-//   with true), its transaction ends, or the file ends. A session-level setting outlives a COMMIT.
+//   with true) outside db/tests/, a COMMIT or ROLLBACK ends its transaction, or the file ends. A
+//   session-level setting outlives a COMMIT; a ROLLBACK TO SAVEPOINT ends neither the transaction
+//   nor the setting, so it ends nothing here; and a db/tests/ file's transaction never ends
+//   (scripts/test-db.sh refuses a test that ends it), so there a COMMIT or ROLLBACK ends nothing
+//   either (R2CODE-02, TESTS-06).
 // The tables come from the code and the migrations themselves: holds-apply and kept tables from
 // packages/shared RETENTION_CLASSES, guarded ones from the triggers the migrations create. Comments
 // are stripped first, so a comment that names something proves nothing.
@@ -483,8 +492,14 @@ const BACK =
   /session_replication_role['"]?\s*(?:=|\bto\b|,)\s*['"]?(?:origin|default)\b|\breset\s+(?:session_replication_role|all)\b/i
 // The end of a transaction, which ends only a transaction-local setting: a session-level one (a
 // plain SET, or set_config() with false or an is_local it can't read) outlives a COMMIT, and a
-// ROLLBACK undoes it only if it ran in that transaction, which the text can't show.
-const TX_END = /\b(?:commit|rollback)\b/i
+// ROLLBACK undoes it only if it ran in that transaction, which the text can't show. A ROLLBACK TO
+// SAVEPOINT (with or without WORK or TRANSACTION) ends neither the transaction nor a setting made
+// before the savepoint. One made after it is undone by it, but the text can't show which, so the
+// guard reads on, as it does past a session-level ROLLBACK; where that over-reports, set the role
+// back to origin explicitly. A rollback on an error path can't be told apart in the text either.
+// END and ABORT aren't read: as bare words they would stop the reading at an END IF, a CASE's END or
+// client.end(), and hide a later delete (R2CODE-02, TESTS-06, LH-33).
+const TX_END = /\b(?:commit|rollback)\b(?!\s+(?:work\s+|transaction\s+)?to\b)/i
 
 // Whether the setting to replica that the match at..end is lasts only for its transaction: SET LOCAL,
 // or set_config() whose is_local is true.
@@ -500,15 +515,19 @@ function codeText(path: string, text: string): string {
 }
 
 // Each delete of a guarded table between a setting to replica and the next return to origin (or, for
-// a transaction-local setting, its transaction's end, or the file's end), as "path: delete <table>".
+// a transaction-local setting outside db/tests/, its transaction's end, or the file's end), as
+// "path: delete <table>". scripts/test-db.sh refuses a db/tests/ file that ends its own transaction,
+// so any COMMIT or ROLLBACK there is a savepoint's or text in a string, and never ends the setting
+// (R2CODE-02).
 function replicaDeletes(files: ReadonlyMap<string, string>, guarded: ReadonlySet<string>): string[] {
   const found: string[] = []
   for (const [path, text] of files) {
     const code = codeText(path, text)
+    const txEnds = !path.startsWith('db/tests/')
     for (const match of code.matchAll(TO_REPLICA)) {
       const from = match.index + match[0].length
       const rest = code.slice(from)
-      const ends = [rest.search(BACK), isLocal(code, match.index, from) ? rest.search(TX_END) : -1].filter(
+      const ends = [rest.search(BACK), txEnds && isLocal(code, match.index, from) ? rest.search(TX_END) : -1].filter(
         at => at !== -1,
       )
       const segment = ends.length === 0 ? rest : rest.slice(0, Math.min(...ends))
@@ -558,6 +577,25 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
         'scripts/g.ts',
         "await q('set session_replication_role to replica')\nawait q('rollback')\nawait q('reset session_replication_role')\nawait q('delete from public.cases')",
       ],
+      // R2CODE-02, TESTS-06, LH-33: a ROLLBACK TO SAVEPOINT ends neither the transaction nor a
+      // transaction-local setting made before the savepoint, and a db/tests/ file's transaction never
+      // ends (scripts/test-db.sh), so a COMMIT there, even in a string, ends nothing.
+      [
+        'db/tests/903_savepoint.sql',
+        'set local session_replication_role = replica;\nsavepoint s;\nrollback to savepoint s;\ndelete from public.cases;',
+      ],
+      [
+        'db/tests/904_string.sql',
+        "set local session_replication_role = replica;\nselect 'commit';\ndelete from public.case_steps;",
+      ],
+      [
+        'apps/server/src/testing/h.ts',
+        "await q('set local session_replication_role = replica')\nawait q('savepoint a')\nawait q('rollback to savepoint a')\nawait q('delete from public.legal_holds')",
+      ],
+      [
+        'scripts/i.ts',
+        "await q(\"select set_config('session_replication_role', 'replica', true)\")\nawait q('rollback work to savepoint s')\nawait q('ROLLBACK TRANSACTION TO s')\nawait q('truncate public.legal_holds')",
+      ],
     ])
     expect(replicaDeletes(files, guarded)).toEqual([
       'db/tests/900_a.sql: delete from case_steps',
@@ -565,6 +603,10 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
       'apps/server/src/testing/c.ts: delete from deletion_log',
       'apps/server/src/testing/e.ts: delete from cases',
       'db/tests/902_f.sql: truncate legal_holds',
+      'db/tests/903_savepoint.sql: delete from cases',
+      'db/tests/904_string.sql: delete from case_steps',
+      'apps/server/src/testing/h.ts: delete from legal_holds',
+      'scripts/i.ts: truncate legal_holds',
     ])
   })
 
@@ -585,7 +627,8 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
   })
 })
 
-// --- What the docs say C0.10 built (review DOCS-02, DOCS-03, DOCS-05, DOCS-06) ------------------
+// --- What the docs say C0.10 built (review DOCS-02, DOCS-03, DOCS-05, DOCS-06, R2DOCS-01, R2DOCS-02,
+// R2DOCS-05) ---
 // Text pins on the sentences the review corrected, each beside the code fact it describes, so the
 // old wording can't come back while the code says otherwise. A comment's line breaks in ci.yml are
 // folded first, so a pin reads a wrapped sentence whole.
@@ -634,5 +677,76 @@ describe('C0.10 review: CLAUDE.md, TECH-SPEC and ci.yml say what 0013 and its ch
         "'",
       ),
     )
+  })
+
+  it('R2DOCS-01: a checked path deletes only from a table a leaver’s reduction marks, neither guarded nor kept, and T23 says so', () => {
+    // The code fact: check 8 refuses a checked path into a guarded or kept table, or one whose class
+    // marks no leaver's reduction (catalogues.ts, GUARD-02), and today only working_hours is left.
+    expect(readRepoFile('apps/server/scripts/catalogues.ts')).toContain('!holds.reduction.has(table)')
+    const guarded = guardedTablesIn(migrationFiles().map(path => readRepoFile(path)))
+    const checkable = Object.values(RETENTION_CLASSES)
+      .filter(cls => 'reduction' in cls && cls.reduction === 'apply' && cls.holds !== 'kept')
+      .flatMap(cls => cls.tables)
+      .filter(table => !guarded.has(table))
+    expect(checkable).toEqual(['working_hours'])
+    const spec = folded(readRepoFile('docs/TECH-SPEC.md'))
+    expect(spec).toContain("only for a table whose class marks a leaver's reduction (`reduction: 'apply'`)")
+    expect(spec).toContain('today `working_hours` alone; LH-58, GUARD-02')
+    // CLAUDE.md's matching sentences (Database, the guard bullet; Testing and CI, check 8).
+    expect(claude).toContain(
+      "Check 8 lets a `checked` path delete only from a table whose class marks a leaver's reduction (`reduction: 'apply'`)",
+    )
+    expect(claude).toContain(
+      'a checked one only to a table a leaver’s reduction marks and logging each row'.replace('’', "'"),
+    )
+    expect(claude).not.toMatch(/check 8 refuses a `checked` path into a guarded table\./)
+  })
+
+  it('R2CODE-01, HOLDS-03: CLAUDE.md names the pinned DYNAMIC_DDL bodies and READ COMMITTED for hold decisions', () => {
+    expect(readRepoFile('apps/server/scripts/catalogues.ts')).toContain('export const DYNAMIC_DDL')
+    expect(claude).toContain(
+      "in a function body or a `DYNAMIC_DDL` function's strings, each `DYNAMIC_DDL` body being the one",
+    )
+    expect(readRepoFile('db/migrations/0013_lifecycle_holds.sql')).toMatch(/transaction_isolation/)
+    expect(claude).toContain(
+      'every hold decision (`lifecycle_held()` refuses any other level, 25000), under READ COMMITTED',
+    )
+  })
+
+  it('R2DOCS-02: T23 records no DPO confirmation of Q13, whose periods the registry still proposes, and LH-53 has one status', () => {
+    expect(RETENTION_CLASSES.messages.status).toBe('proposed')
+    const raw = readRepoFile('docs/TECH-SPEC.md')
+    const spec = folded(raw)
+    expect(spec).not.toMatch(/the retention defaults \([^)]*Q13/)
+    expect(spec).toContain("the retention defaults (the cases default, LH-47, and LH-53's figures)")
+    expect(spec).toContain('**LH-53, confirmed:**')
+    // T23's own "Still open" sentence: T22 has one too.
+    const start = raw.indexOf('## T23:')
+    const t23 = folded(raw.slice(start, raw.indexOf('\n## ', start + 1)))
+    const open = t23.match(/Still open, for the DPO or a later step: .*?\.(?:\s|$)/)?.[0]
+    expect(open).toBeDefined()
+    expect(open).not.toContain('LH-53')
+    expect(open).toContain('PRD Q13')
+  })
+
+  it('R2DOCS-05: TECH-SPEC’s summaries name what C0.10 built and the review added', () => {
+    const spec = readRepoFile('docs/TECH-SPEC.md')
+    const index = spec.match(/^\| T23 \|[^\n]*/m)?.[0] ?? ''
+    expect(index).not.toContain('every table the deletion code deletes from')
+    expect(index).toContain('a guard on every table a `guarded` delete path deletes from')
+    const ci = spec.match(/^- CI's `migrations` job:[^\n]*/m)?.[0] ?? ''
+    const t23Tests = spec.match(/^- \*\*DB tests:\*\* `db\/tests\/180_[^\n]*/m)?.[0] ?? ''
+    // C0.10's DB tests, 180 onwards, from the folder itself.
+    const dbTests = repoFiles()
+      .map(path => path.match(/^db\/tests\/(\d{3}_[^/]+\.sql)$/)?.[1])
+      .filter((name): name is string => name !== undefined && Number(name.slice(0, 3)) >= 180)
+    expect(dbTests).toContain('198_lifecycle_isolation.sql')
+    for (const file of dbTests) {
+      expect(ci, file).toContain(file)
+      expect(t23Tests, file).toContain(file)
+    }
+    for (const line of [index, ci]) expect(line).not.toMatch(/every table of `public` in exactly one/)
+    const guards = spec.match(/^- \*\*Guards:\*\* `scripts\/guards\/design-ids[^\n]*/m)?.[0] ?? ''
+    for (const id of ['LCG-01', 'LCG-02 to LCG-05', 'LCG-06', 'LCG-07', 'RB-06']) expect(guards, id).toContain(id)
   })
 })

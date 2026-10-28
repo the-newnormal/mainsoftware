@@ -65,9 +65,9 @@ export interface RetentionClass {
   // The step whose data it is (BUILD-PLAN), or the steps, comma-separated.
   stage: string
   period: RetentionPeriod
-  // decided (D36, FILE-02), proposed (PDPA-09's defaults and LH-53's, for the DPO to confirm: Q13),
-  // fixed (in SQL or code: changing it is a migration or a reviewed code change), or dpo (as set by
-  // the DPO, with a default until then).
+  // decided (D36, FILE-02), proposed (PDPA-09's defaults, for the DPO to confirm: Q13; and LH-53's,
+  // confirmed as declarations until their steps), fixed (in SQL or code: changing it is a migration
+  // or a reviewed code change), or dpo (as set by the DPO, with a default until then).
   status: 'decided' | 'proposed' | 'fixed' | 'dpo'
   // Who may change the period, and from which step: Owners and Admins within the range (ADM-07), the
   // DPO alone, a migration, a code change, AWS itself, or nobody (LH-38).
@@ -81,6 +81,8 @@ export interface RetentionClass {
   holds: 'apply' | 'kept' | { exempt: string; decision: string }
   // A leaver's in-place reduction (C2.9: profile fields, PIN hash, working hours) is deletion code
   // that asks lifecycle_held() and skips a held person, whatever `holds` says of other changes (LH-58).
+  // Only a table of a class marked so may take a `checked` delete path, which logs each row it
+  // deletes; every other holds-apply table's path is `guarded` (check 8, GUARD-02).
   reduction?: 'apply'
   // The step whose code deletes it.
   deletedBy: string
@@ -949,6 +951,8 @@ export const CLOUDWATCH_RETENTION_DAYS = [
 //   days, anchor a days period's, or an until period's when it has a day count; else null
 //   follows      a follows period's class key or 'source'; else null
 //   holds        apply, exempt or kept
+//   objects      whether the class has S3 objects (RETENTION_CLASSES' objects): every s3 class, and
+//                Drive's two Postgres classes, whose rows log_deletion() logs with their keys (R2DB-01)
 export interface RetentionClassDefaultsRow {
   key: RetentionClassKey
   store: (typeof RETENTION_DB_STORES)[number]
@@ -959,6 +963,7 @@ export interface RetentionClassDefaultsRow {
   follows: string | null
   holds: 'apply' | 'exempt' | 'kept'
   tables: readonly string[]
+  objects: boolean
 }
 
 // What a class's holds come to in the database's vocabulary.
@@ -988,6 +993,7 @@ export function retentionClassDefaults(): RetentionClassDefaultsRow[] {
         follows: period.kind === 'follows' ? period.of : null,
         holds: holdsOf(spec.holds),
         tables: spec.tables,
+        objects: spec.objects !== undefined,
       },
     ]
   })

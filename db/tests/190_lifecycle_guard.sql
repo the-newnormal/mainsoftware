@@ -2,18 +2,21 @@
 -- DB-03, C010-SPEC-09): the guard and isHeld()'s front door. The cases:
 --   LCD-09 a delete of cases or legal_holds with no log row is refused (HF010), as the owner and as
 --          the superuser; one with a log row for that entity in the same transaction, and nothing
---          held, passes; a log row naming another entity, or written in another transaction, doesn't
---          count; a held row is refused even logged (HF009). A partitioned table carrying the guard
---          with legal_holds as its argument refuses a delete from its partition unless the log row
---          names legal_holds, not the partition (C010-SPEC-09);
+--          held, passes; a log row naming another entity, or written in another transaction (which
+--          no writer can give it, nor a backdated time: GUARD-01), doesn't count; a held row is
+--          refused even logged (HF009). A partitioned table carrying the guard with legal_holds as
+--          its argument refuses a delete from its partition unless the log row names legal_holds,
+--          not the partition (C010-SPEC-09);
 --   LCD-10 a plain TRUNCATE of cases fails on Postgres's own foreign-key check (0A000); TRUNCATE ...
 --          CASCADE reaches the triggers (HF010); plain TRUNCATE of case_steps and legal_holds, which
 --          nothing references, fails with HF010 (DB-03);
 --   LCD-11 a request's steps before the request are refused (HF010); after it, in the same
 --          transaction with its log row, they pass, and the deferred key passes once checked (LH-13);
 --   LCD-12 lifecycle_row_anchors() for every holds-apply table returns exactly one row with its kind
---          and people, an audit row's including the DPO who decided a clearance (details.decided_by),
---          so a hold on that DPO keeps the row (HOLDS-01); an unknown table raises 22023;
+--          and people, an audit row's including the DPO who decided a clearance (details.decided_by)
+--          and the people a flag's cohort change added or removed (details.people_added and
+--          people_removed), so a hold on any of them keeps the row (HOLDS-01, R2DB-02); an unknown
+--          table raises 22023;
 --   LCD-13 is_held(): no org set (42501); an unknown kind (22023); a read-only transaction (25006);
 --          another org's hold on the same id answers false; the answer is a boolean only;
 --   DB-06  every SECURITY DEFINER of public reads its org from app.org_id but the named exceptions,
@@ -46,13 +49,26 @@ begin
     perform pg_temp.expect_error(format('delete from public.legal_holds where id = %L', pg_temp.id('1', 'ed')), 'HF010',
                                  'Rows here are deleted only through Hearth''s deletion code, which logs each one.');
     -- A log row for another entity, and one for this entity from another transaction (a tx_id the
-    -- database didn't give this one), don't count.
+    -- database didn't give this one), don't count. No writer can give a log row another
+    -- transaction's id, or a backdated time that would let it go with the row it logged (GUARD-01,
+    -- 185's LCD-07), so the other transaction's rows are planted as the superuser with the log's
+    -- trigger off for that insert alone, nothing guarded deleted meanwhile (LCG-05).
     begin
       perform pg_temp.log('1', 'cases', 'cases', pg_temp.id('1', 'ea'));
       perform pg_temp.log('1', 'legal_holds', 'legal_holds', pg_temp.id('1', 'ec'));
+      perform pg_temp.expect_error(format($i$insert into public.deletion_log (org_id, tx_id, class_key, object_table, object_id, cause)
+        values (%L, '3', 'cases', 'cases', %L, 'retention')$i$, pg_temp.id('1', '00'), pg_temp.id('1', 'e8')), '23514',
+        'A deletion log row takes its time and transaction from the database.');
+      perform pg_temp.expect_error(format($i$insert into public.deletion_log (org_id, at, class_key, object_table, object_id, cause)
+        values (%L, now() - interval '800 days', 'legal_holds', 'legal_holds', %L, 'retention')$i$, pg_temp.id('1', '00'),
+        pg_temp.id('1', 'ed')), '23514', 'A deletion log row takes its time and transaction from the database.');
+      perform set_config('role', 'none', true);
+      perform set_config('session_replication_role', 'replica', true);
       insert into public.deletion_log (org_id, tx_id, class_key, object_table, object_id, cause) values
         (pg_temp.id('1', '00'), '3'::xid8, 'cases', 'cases', pg_temp.id('1', 'e8')::text, 'retention'),
         (pg_temp.id('1', '00'), '3'::xid8, 'legal_holds', 'legal_holds', pg_temp.id('1', 'ed')::text, 'retention');
+      perform set_config('session_replication_role', 'origin', true);
+      perform set_config('role', who, true);
       -- Another org's log row for the same id doesn't count either.
       insert into public.deletion_log (org_id, class_key, object_table, object_id, cause) values
         (pg_temp.id('2', '00'), 'cases', 'cases', pg_temp.id('1', 'e8')::text, 'retention');
@@ -281,6 +297,55 @@ end
 $$;
 select pg_temp.check(not exists (select 1 from public.legal_holds h where h.org_id = pg_temp.id('1', '00') and h.target_id = pg_temp.id('1', 'a5')),
                      'the hold on the DPO leaked out of its block (LCD-12)');
+-- The people a flag's cohort change added or removed, whom set_feature_flag() (0007) names only in
+-- details.people_added and details.people_removed, with the Owner as the actor and the flag as the
+-- target (R2DB-02, HOLDS-01): every uuid element of either array, an upper-case one included; a
+-- string that isn't a uuid, a nested array, a number, JSON null, and either key holding a string,
+-- an object or JSON null rather than an array, or details that aren't an object, add nobody.
+create function pg_temp.flag_row(added jsonb, removed jsonb) returns jsonb language sql as $$
+  select jsonb_build_object('id', 14, 'org_id', pg_temp.id('1', '00'), 'actor_id', pg_temp.id('1', 'a1'),
+                            'action', 'flag.set', 'target_type', 'feature_flag', 'target_id', 'chat.voice_notes',
+                            'details', jsonb_build_object('enabled', true, 'was_enabled', true, 'audience', 'cohort', 'revision', 3,
+                                                          'people_added', added, 'people_removed', removed,
+                                                          'roles_added', '[]'::jsonb, 'roles_removed', '[]'::jsonb))
+$$;
+select pg_temp.check(pg_temp.anchors('audit_events', pg_temp.flag_row(
+                       jsonb_build_array(pg_temp.id('1', 'a4'), 'Mo', jsonb_build_array(pg_temp.id('1', 'a2')), 7, null),
+                       jsonb_build_array(upper(pg_temp.id('1', 'a7')::text))))
+                       = format('audit_event - {%s,%s,%s}', pg_temp.id('1', 'a1'), pg_temp.id('1', 'a4'), pg_temp.id('1', 'a7')),
+                     'an audit row doesn''t anchor the people a flag''s cohort change added or removed (LCD-12, R2DB-02)');
+select pg_temp.check(pg_temp.anchors('audit_events', pg_temp.flag_row(to_jsonb(pg_temp.id('1', 'a4')), 'null'))
+                       = format('audit_event - {%s}', pg_temp.id('1', 'a1'))
+                     and pg_temp.anchors('audit_events', pg_temp.flag_row(jsonb_build_object('id', pg_temp.id('1', 'a4')), null))
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a1'))
+                     and pg_temp.anchors('audit_events', pg_temp.flag_row('null', to_jsonb(pg_temp.id('1', 'a7'))))
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a1'))
+                     and pg_temp.anchors('audit_events', pg_temp.flag_row('{}', '{}')
+                                                         || jsonb_build_object('details', jsonb_build_array(pg_temp.id('1', 'a4'))))
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a1')),
+                     'a cohort list that isn''t an array of uuids anchored someone (LCD-12, R2DB-02)');
+-- And the guard's decision over them: the row isn't held while nothing holds the person the change
+-- added, and is once a legal hold on them is placed, in a block that undoes the hold.
+do $$
+declare
+  a record;
+begin
+  select * into a from public.lifecycle_row_anchors(pg_temp.id('1', '00'), 'audit_events',
+                                                    pg_temp.flag_row(jsonb_build_array(pg_temp.id('1', 'a4')), '[]'));
+  perform pg_temp.check(not public.lifecycle_held(pg_temp.id('1', '00'), a.persons, a.kind, a.item),
+                        'a cohort change''s audit row is held while nothing holds the person it added (LCD-12, R2DB-02)');
+  insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+  values (pg_temp.id('1', '00'), gen_random_uuid(), 'person', pg_temp.id('1', 'a4'), 'Fixture review of a cohort change',
+          pg_temp.id('1', 'a6'));
+  perform pg_temp.check(public.lifecycle_held(pg_temp.id('1', '00'), a.persons, a.kind, a.item),
+                        'a hold on a person a cohort change added doesn''t keep its audit row (LCD-12, R2DB-02)');
+  raise exception 'undo' using errcode = 'P0001';
+exception when sqlstate 'P0001' then
+  if sqlerrm <> 'undo' then raise; end if;
+end
+$$;
+select pg_temp.check(not exists (select 1 from public.legal_holds h where h.org_id = pg_temp.id('1', '00') and h.target_id = pg_temp.id('1', 'a4')),
+                     'the hold on the cohort''s person leaked out of its block (LCD-12, R2DB-02)');
 -- Targets that aren't a uuid, another org's case, and nobody at all: still one row.
 select pg_temp.check(pg_temp.anchors('audit_events', jsonb_build_object('id', 10, 'target_type', 'person', 'target_id', 'all'))
                      = 'audit_event - {}'

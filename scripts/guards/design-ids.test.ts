@@ -20,6 +20,11 @@
 // LH ids and kept only in the design's own record. LH- ends in neither PD- nor AQ-, so neither of
 // the regexes above reads an LH id; RT-PD-nn would have been read as PD-nn, which is why the prefix
 // is LH (both proved on planted text below).
+//
+// And LCG-07 (C0.10 review DOCS-07, LH-45, LH-46): every line of TECH-SPEC that names LH-45 or LH-46
+// with the DPO's confirmation gives it one deadline, before PR 1 merges (or in PR 1's "Before
+// merging" steps), and no other ("before a case records", "before Hearth holds", before a later
+// step).
 import { describe, expect, it } from 'vitest'
 import { readRepoFile, repoFiles } from './repo-files'
 
@@ -247,5 +252,45 @@ describe('C0.10 T23 (LCG-01, LH-02): the LH ids code cites are recorded in TECH-
     expect(missingLh(lhIdsIn(t23), last ?? 0)).toEqual([])
     expect(t23).toMatch(/\bLH-28\b[^\n]*retired/)
     expect(t23).toMatch(/\bLH-52\b[^\n]*retired/)
+  })
+})
+
+// Each line that names LH-45 or LH-46 with the DPO's confirming, but gives it a deadline other
+// than PR 1's merge in PR 1's "Before merging" steps, as "line n: why" (LCG-07, DOCS-07).
+const DEADLINE = /\bbefore PR 1 merges\b|\bPR 1['’]s "Before merging" steps\b/
+const OTHER_DEADLINE = /\bbefore (?:a case records|Hearth holds|C\d\.\d+|PR 2)\b/
+function legalDeadlineProblems(text: string): string[] {
+  const found: string[] = []
+  for (const [index, line] of text.split('\n').entries()) {
+    if (!/\bLH-4[56]\b/.test(line) || !/\bconfirm/.test(line)) continue
+    if (!DEADLINE.test(line)) found.push(`line ${index + 1}: no "before PR 1 merges"`)
+    if (OTHER_DEADLINE.test(line)) found.push(`line ${index + 1}: another deadline`)
+  }
+  return found
+}
+
+describe('LCG-07 (C0.10 review DOCS-07, LH-45, LH-46): T23 gives the DPO’s legal confirmation one deadline', () => {
+  it('finds a line with none or another, on planted text', () => {
+    const planted = [
+      '- LH-45 (a): holds; stays for the DPO to confirm before PR 1 merges, in its "Before merging" steps;',
+      '- LH-46 (a): the margin; regulation 8 stays for the DPO to confirm before a case records the hold;',
+      '- LH-45 (a): holds. The DPO confirms whether the offence applies.',
+      '- LH-46 (a): the margin (item 11).',
+      '- confirmed in PR 1’s "Before merging" steps: the margin (LH-46).',
+    ].join('\n')
+    expect(legalDeadlineProblems(planted)).toEqual([
+      'line 2: no "before PR 1 merges"',
+      'line 2: another deadline',
+      'line 3: no "before PR 1 merges"',
+    ])
+  })
+
+  it('every line of TECH-SPEC naming LH-45’s or LH-46’s confirmation says before PR 1 merges, and the index row does', () => {
+    const spec = readRepoFile('docs/TECH-SPEC.md')
+    const t23 = sectionOf(spec, 'T23')
+    const named = t23.split('\n').filter(line => /\bLH-4[56]\b/.test(line) && /\bconfirm/.test(line))
+    // T23 does name the confirmation, so an empty match would mean the guard reads nothing.
+    expect(named.length).toBeGreaterThan(3)
+    expect(legalDeadlineProblems(spec)).toEqual([])
   })
 })

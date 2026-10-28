@@ -95,7 +95,7 @@ Only the DPO reads requests (C0.9 OD-14). If the sole DPO leaves, nobody reads o
 Until C0.15, nothing deletes anyone's data. The only deletions are the C0.6 clean-up's of the outbox, the job queue and its runs, which hold ids only (TECH-SPEC T16 item 6); the DPO confirmed that exemption from holds (TECH-SPEC T23 item 15).
 
 - A refused request for a copy keeps the requester's records for at least 30 days after the refusal, plus a 14-day margin for a review the PDPC tells the organisation of late, and through any PDPC review; an open request for a copy or a correction keeps them until it is closed (TECH-SPEC T23 item 11). Hearth works this out from the case, so the DPO records closures and review steps on the day they happen.
-- A request from someone who has left keeps their records only when it is logged against their former person ([A request for a copy of someone's personal data](access-request.md)).
+- A request from someone who has left keeps their records only when it is logged against their former person ([A request for a copy of someone's personal data](access-request.md)). A request is never linked after it is logged, so one the log dialog says to log as someone without a Hearth account, because it can't tell two people apart, keeps only the case: the DPO notes that on the case, keeps who it is in the DPO's own files, and, once C1.11's console exists, places a legal hold on their person, and releases it once the request's own hold would have ended.
 - Legal holds arrive with C1.11's console. Until then the DPO places none by hand, and nobody writes a hold or deletes anything in production by hand.
 - The retention defaults the DPO confirms are TECH-SPEC T23 item 2's.
 

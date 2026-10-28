@@ -38,8 +38,8 @@
 #   days), and deleted for b7's complaint, with one log row and one audit row; the superuser's direct
 #   delete of a held request is refused without a log row (HF010) and with one (HF009); no table but
 #   cases, case_steps and legal_holds carries the guard, each named by its argument (deletion_log
-#   carries its own two), no guard trigger has a WHEN condition or an UPDATE OF list (GUARD-04), and
-#   no runtime role holds a DELETE grant but hearth_app's on working_hours;
+#   carries its own two), no guard trigger has a WHEN condition or an UPDATE OF list (GUARD-04,
+#   TESTS-03), and no runtime role holds a DELETE grant but hearth_app's on working_hours;
 # - LCU-05 (OD-27, LH-27): both job roles read every column of the outbox but actor_id and
 #   actor_kind, which are refused to each; readBatch()'s, startOf()'s and futureRows()' statements,
 #   and the sockets job's for the revocation role, run as each over the events already there;
@@ -47,7 +47,7 @@
 #   a register, flag or settings row (the Owner bootstrap's write set is untouched);
 # - LCU-08 (LH-03, LH-04): retention_class_defaults() equals the database classes of
 #   packages/shared RETENTION_CLASSES (retentionClassDefaults()), as check-catalogues.ts check 7a
-#   holds them on a fresh build.
+#   holds them on a fresh build, objects included (RETENTION_CLASSES' objects; R2DB-01).
 # LCU-06 is C1.11's (0013 doesn't replace read_audit_events()). LCU-09 is the other upgrade checks'
 # own: each applies 0013 too, over its own data, and stays green. The data is made up; none of it is
 # anyone's.
@@ -285,7 +285,7 @@ sql -d "$db" -o /dev/null -c begin -c "$(refused_like HF010 'Rows here are delet
 [ "$(sql -d "$db" -Atc "select count(*) from pg_trigger t join pg_proc f on f.oid = t.tgfoid
        where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
          and (t.tgqual is not null or cardinality(t.tgattr::int2[]) <> 0)")" = 0 ] ||
-  { echo "LCU-04: a guard trigger fires only under a WHEN condition or for an UPDATE OF list (GUARD-04)" >&2; exit 1; }
+  { echo "LCU-04: a guard trigger fires only under a WHEN condition or for an UPDATE OF list (GUARD-04, TESTS-03)" >&2; exit 1; }
 deletes=$(sql -d "$db" -Atc "select coalesce(string_agg(distinct format('%s %s', r.rolname, c.relname), ','), '')
   from pg_class c join pg_namespace n on n.oid = c.relnamespace cross join pg_roles r
   where n.nspname = 'public' and c.relkind in ('r', 'p') and r.rolname like 'hearth\_%' and r.rolname <> 'hearth_owner'
@@ -331,14 +331,16 @@ done
 [ "$(sql -d "$db" -Atc "$per_org")" = "$kept_per_org" ] ||
   { echo "LCU-07: an org gained or lost a register, flag or settings row" >&2; exit 1; }
 
-# LCU-08: the registry's SQL side equals packages/shared's database classes, row by row.
+# LCU-08: the registry's SQL side equals packages/shared's database classes, row by row, objects
+# included: true where RETENTION_CLASSES gives the class S3 objects (R2DB-01).
 from_code=$(node --input-type=module -e "
-  const { retentionClassDefaults } = await import('@hearth/shared')
+  const { retentionClassDefaults, RETENTION_CLASSES } = await import('@hearth/shared')
   const rows = retentionClassDefaults().map(r =>
-    [r.key, r.store, r.ai ? 't' : 'f', r.period_kind, r.days ?? '', r.anchor ?? '', r.follows ?? '', r.holds, '{' + r.tables.join(',') + '}'].join('|'))
+    [r.key, r.store, r.ai ? 't' : 'f', r.period_kind, r.days ?? '', r.anchor ?? '', r.follows ?? '', r.holds, '{' + r.tables.join(',') + '}',
+     RETENTION_CLASSES[r.key].objects === undefined ? 'f' : 't'].join('|'))
   console.log(rows.sort().join('\n'))")
 from_sql=$(sql -d "$db" -At -F '|' -c "select key, store, ai, period_kind, coalesce(days::text, ''), coalesce(anchor, ''),
-  coalesce(follows, ''), holds, tables::text from public.retention_class_defaults() order by 1" | LC_ALL=C sort)
+  coalesce(follows, ''), holds, tables::text, objects from public.retention_class_defaults() order by 1" | LC_ALL=C sort)
 from_code=$(LC_ALL=C sort <<<"$from_code")
 if [ "$from_sql" != "$from_code" ]; then
   echo "LCU-08: retention_class_defaults() differs from packages/shared RETENTION_CLASSES' database classes:" >&2

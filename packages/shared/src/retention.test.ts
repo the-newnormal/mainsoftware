@@ -348,6 +348,7 @@ describe('LH-03 check 7a: retention_class_defaults()’s rows', () => {
       expect(row.follows !== null, row.key).toBe(spec.period.kind === 'follows')
       expect(row.holds, row.key).toBe(holdsOf(spec.holds))
       expect(row.tables, row.key).toEqual(spec.tables)
+      expect(row.objects, row.key).toBe(spec.objects !== undefined)
     }
     expect(rows.find(r => r.key === 'cases')).toEqual({
       key: 'cases',
@@ -359,6 +360,7 @@ describe('LH-03 check 7a: retention_class_defaults()’s rows', () => {
       follows: null,
       holds: 'apply',
       tables: ['cases', 'case_steps'],
+      objects: false,
     })
     expect(rows.find(r => r.key === 'upload_quarantine')).toMatchObject({
       store: 's3',
@@ -380,6 +382,18 @@ describe('LH-03 check 7a: retention_class_defaults()’s rows', () => {
       holds: 'exempt',
     })
     expect(rows.find(r => r.key === 'roster')).toMatchObject({ period_kind: 'while', holds: 'kept' })
+  })
+
+  it('R2DB-01: gives objects to exactly the classes with S3 objects, every s3 class and Drive’s two Postgres classes, whose rows log_deletion() logs with their keys', () => {
+    expect(rows.filter(r => r.objects).map(r => r.key)).toEqual([
+      'profile_photos',
+      'upload_quarantine',
+      'voice_message_audio',
+      'session_media',
+      'drive_items',
+      'drive_trash',
+    ])
+    for (const row of rows.filter(r => r.store === 's3')) expect(row.objects, row.key).toBe(true)
   })
 })
 

@@ -81,7 +81,10 @@
 -- (deleted when something happens, and at most days after the anchor meanwhile, where set); holds is
 -- apply (deleted only through the deletion code, which checks holds), exempt (outside holds, with
 -- the decision code records) or kept (history, never deleted); tables lists the tables of public the
--- class covers, each in exactly one class (check 7b), empty for a later step's class. Ranges,
+-- class covers, each in exactly one class (check 7b), empty for a later step's class; objects is
+-- true for a class with S3 objects (RETENTION_CLASSES' objects): every s3 class, and Drive's two
+-- Postgres classes, whose rows and their files in S3 go together, so log_deletion() takes a key
+-- with them (R2DB-01). Ranges,
 -- setters and statuses are code's (CLAUDE.md, AI and LLM features: every setting's range lives in
 -- code). A step that adds a class or moves a table into one replaces this function with the same
 -- signature; it holds no org's rows, so no trigger on orgs and no backfill. A class key is never
@@ -89,67 +92,67 @@
 -- backups' and pub/sub's classes are code's and infra/'s alone (LH-07), so they aren't here.
 create function public.retention_class_defaults()
   returns table (key text, store text, ai boolean, period_kind text, days integer, anchor text, follows text,
-                 holds text, tables text[])
+                 holds text, tables text[], objects boolean)
 language sql immutable set search_path = '' as $$
   values
     -- C0's own data: every table of public, the migrator's ledger aside.
-    ('org_settings', 'postgres', false, 'while', null, null, null, 'kept', array['orgs', 'audit_log_readers']),
+    ('org_settings', 'postgres', false, 'while', null, null, null, 'kept', array['orgs', 'audit_log_readers'], false),
     ('roster', 'postgres', false, 'while', null, null, null, 'kept',
-     array['principals', 'people', 'users', 'departments', 'teams', 'team_memberships', 'role_assignments', 'profiles']),
+     array['principals', 'people', 'users', 'departments', 'teams', 'team_memberships', 'role_assignments', 'profiles'], false),
     -- Replaced whole by the person's own edit (exempt, LH-48); a leaver's go with C2.9's profile
     -- reduction, deletion code that asks lifecycle_held() and skips a held person (LH-58).
-    ('working_hours', 'postgres', false, 'until', null, null, null, 'exempt', array['working_hours']),
+    ('working_hours', 'postgres', false, 'until', null, null, null, 'exempt', array['working_hours'], false),
     ('sign_in_records', 'postgres', false, 'days', 731, 'ended', null, 'apply',
-     array['phone_numbers', 'devices', 'sessions', 'passkeys']),
-    ('acknowledgements', 'postgres', false, 'while', null, null, null, 'apply', array['notice_acknowledgments']),
-    ('audit_log', 'postgres', false, 'days', 731, 'at', null, 'apply', array['audit_events']),
-    ('access_log', 'postgres', false, 'days', 731, 'at', null, 'apply', array['data_access_events']),
+     array['phone_numbers', 'devices', 'sessions', 'passkeys'], false),
+    ('acknowledgements', 'postgres', false, 'while', null, null, null, 'apply', array['notice_acknowledgments'], false),
+    ('audit_log', 'postgres', false, 'days', 731, 'at', null, 'apply', array['audit_events'], false),
+    ('access_log', 'postgres', false, 'days', 731, 'at', null, 'apply', array['data_access_events'], false),
     -- The clean-up's (0007; T15 item 17): ages fixed in purge_outbox(), purge_jobs() and
     -- purge_schedule_runs(), exempt from holds (T16 item 6, LH-26).
-    ('outbox', 'postgres', false, 'days', 14, 'at', null, 'exempt', array['outbox_events']),
-    ('jobs', 'postgres', false, 'days', 14, 'finished', null, 'exempt', array['jobs']),
-    ('schedule_runs', 'postgres', false, 'days', 90, 'finished', null, 'exempt', array['schedule_runs']),
+    ('outbox', 'postgres', false, 'days', 14, 'at', null, 'exempt', array['outbox_events'], false),
+    ('jobs', 'postgres', false, 'days', 14, 'finished', null, 'exempt', array['jobs'], false),
+    ('schedule_runs', 'postgres', false, 'days', 90, 'finished', null, 'exempt', array['schedule_runs'], false),
     ('service_config', 'postgres', false, 'while', null, null, null, 'kept',
-     array['feature_flags', 'schedules', 'outbox_checkpoints', 'outbox_floors']),
+     array['feature_flags', 'schedules', 'outbox_checkpoints', 'outbox_floors'], false),
     ('compliance_records', 'postgres', false, 'while', null, null, null, 'kept',
      array['processing_register', 'transfer_register', 'transfer_clearances', 'processing_restrictions', 'notice_versions',
-           'notice_version_purposes', 'notice_version_providers', 'dpo_settings']),
+           'notice_version_purposes', 'notice_version_providers', 'dpo_settings'], false),
     -- The DPO's requests: 731 days after the closure, the DPO's to change from C2.9 (LH-08, LH-47).
-    ('cases', 'postgres', false, 'days', 731, 'closed_on', null, 'apply', array['cases', 'case_steps']),
-    ('legal_holds', 'postgres', false, 'days', 731, 'released', null, 'apply', array['legal_holds']),
+    ('cases', 'postgres', false, 'days', 731, 'closed_on', null, 'apply', array['cases', 'case_steps'], false),
+    ('legal_holds', 'postgres', false, 'days', 731, 'released', null, 'apply', array['legal_holds'], false),
     -- The deletion log's own age is fixed in deletion_log_kept() (check 7c).
-    ('deletion_log', 'postgres', false, 'days', 731, 'at', null, 'exempt', array['deletion_log']),
-    ('provenance', 'postgres', false, 'follows', null, null, 'source', 'apply', array[]::text[]),
+    ('deletion_log', 'postgres', false, 'days', 731, 'at', null, 'exempt', array['deletion_log'], false),
+    ('provenance', 'postgres', false, 'follows', null, null, 'source', 'apply', array[]::text[], false),
     -- Later content: each step moves its tables in.
-    ('profile_photos', 's3', false, 'follows', null, null, 'roster', 'apply', array[]::text[]),
-    ('upload_quarantine', 's3', false, 'until', 1, 'created', null, 'exempt', array[]::text[]),
-    ('messages', 'postgres', false, 'days', 1095, 'created', null, 'apply', array[]::text[]),
-    ('held_versions', 'postgres', false, 'while', null, null, null, 'apply', array[]::text[]),
-    ('derived_caches', 'postgres', false, 'follows', null, null, 'source', 'apply', array[]::text[]),
-    ('voice_message_audio', 's3', false, 'days', 360, 'created', null, 'apply', array[]::text[]),
-    ('tasks', 'postgres', false, 'days', 1095, 'created', null, 'apply', array[]::text[]),
-    ('session_records', 'postgres', false, 'days', 1095, 'ended', null, 'apply', array[]::text[]),
-    ('session_media', 's3', false, 'days', 120, 'ended', null, 'apply', array[]::text[]),
-    ('calendar_events', 'postgres', false, 'days', 1095, 'ended', null, 'apply', array[]::text[]),
-    ('drive_items', 'postgres', false, 'days', 1095, 'last_edit', null, 'apply', array[]::text[]),
-    ('drive_trash', 'postgres', false, 'days', 30, 'trashed', null, 'apply', array[]::text[]),
-    ('slide_copies', 'postgres', false, 'follows', null, null, 'session_records', 'apply', array[]::text[]),
-    ('people_insights', 'postgres', false, 'days', 731, 'created', null, 'apply', array[]::text[]),
-    ('breach_register', 'postgres', false, 'days', 731, 'closed_on', null, 'apply', array[]::text[]),
+    ('profile_photos', 's3', false, 'follows', null, null, 'roster', 'apply', array[]::text[], true),
+    ('upload_quarantine', 's3', false, 'until', 1, 'created', null, 'exempt', array[]::text[], true),
+    ('messages', 'postgres', false, 'days', 1095, 'created', null, 'apply', array[]::text[], false),
+    ('held_versions', 'postgres', false, 'while', null, null, null, 'apply', array[]::text[], false),
+    ('derived_caches', 'postgres', false, 'follows', null, null, 'source', 'apply', array[]::text[], false),
+    ('voice_message_audio', 's3', false, 'days', 360, 'created', null, 'apply', array[]::text[], true),
+    ('tasks', 'postgres', false, 'days', 1095, 'created', null, 'apply', array[]::text[], false),
+    ('session_records', 'postgres', false, 'days', 1095, 'ended', null, 'apply', array[]::text[], false),
+    ('session_media', 's3', false, 'days', 120, 'ended', null, 'apply', array[]::text[], true),
+    ('calendar_events', 'postgres', false, 'days', 1095, 'ended', null, 'apply', array[]::text[], false),
+    ('drive_items', 'postgres', false, 'days', 1095, 'last_edit', null, 'apply', array[]::text[], true),
+    ('drive_trash', 'postgres', false, 'days', 30, 'trashed', null, 'apply', array[]::text[], true),
+    ('slide_copies', 'postgres', false, 'follows', null, null, 'session_records', 'apply', array[]::text[], false),
+    ('people_insights', 'postgres', false, 'days', 731, 'created', null, 'apply', array[]::text[], false),
+    ('breach_register', 'postgres', false, 'days', 731, 'closed_on', null, 'apply', array[]::text[], false),
     -- The AI classes (LH-06, D41): declared with finite defaults and nothing more; none has a table,
     -- a per-org value or a setter before A0.
-    ('transcripts', 'postgres', true, 'days', 1095, 'ended', null, 'apply', array[]::text[]),
-    ('voice_message_transcripts', 'postgres', true, 'days', 1095, 'created', null, 'apply', array[]::text[]),
-    ('machine_output', 'postgres', true, 'follows', null, null, 'transcripts', 'apply', array[]::text[]),
-    ('ai_notes', 'postgres', true, 'days', 1095, 'created', null, 'apply', array[]::text[]),
-    ('brain_index', 'postgres', true, 'follows', null, null, 'source', 'apply', array[]::text[]),
-    ('ai_conversations', 'postgres', true, 'days', 365, 'last_edit', null, 'apply', array[]::text[]),
-    ('agent_memory', 'postgres', true, 'days', 365, 'last_edit', null, 'apply', array[]::text[]),
-    ('personal_memory', 'postgres', true, 'until', 365, 'last_edit', null, 'apply', array[]::text[]),
-    ('ai_cost_records', 'postgres', true, 'days', 731, 'created', null, 'apply', array[]::text[]),
-    ('transcription_test_set', 'postgres', true, 'until', 731, 'consent', null, 'apply', array[]::text[]),
-    ('ai_feedback', 'postgres', true, 'days', 365, 'created', null, 'apply', array[]::text[]),
-    ('people_inferences', 'postgres', true, 'days', 365, 'created', null, 'apply', array[]::text[])
+    ('transcripts', 'postgres', true, 'days', 1095, 'ended', null, 'apply', array[]::text[], false),
+    ('voice_message_transcripts', 'postgres', true, 'days', 1095, 'created', null, 'apply', array[]::text[], false),
+    ('machine_output', 'postgres', true, 'follows', null, null, 'transcripts', 'apply', array[]::text[], false),
+    ('ai_notes', 'postgres', true, 'days', 1095, 'created', null, 'apply', array[]::text[], false),
+    ('brain_index', 'postgres', true, 'follows', null, null, 'source', 'apply', array[]::text[], false),
+    ('ai_conversations', 'postgres', true, 'days', 365, 'last_edit', null, 'apply', array[]::text[], false),
+    ('agent_memory', 'postgres', true, 'days', 365, 'last_edit', null, 'apply', array[]::text[], false),
+    ('personal_memory', 'postgres', true, 'until', 365, 'last_edit', null, 'apply', array[]::text[], false),
+    ('ai_cost_records', 'postgres', true, 'days', 731, 'created', null, 'apply', array[]::text[], false),
+    ('transcription_test_set', 'postgres', true, 'until', 731, 'consent', null, 'apply', array[]::text[], false),
+    ('ai_feedback', 'postgres', true, 'days', 365, 'created', null, 'apply', array[]::text[], false),
+    ('people_inferences', 'postgres', true, 'days', 365, 'created', null, 'apply', array[]::text[], false)
 $$;
 revoke execute on function public.retention_class_defaults() from public;
 
@@ -216,11 +219,13 @@ create table public.deletion_log (
   tx_id xid8 not null default pg_catalog.pg_current_xact_id(),
   at timestamptz not null default now(),
   class_key text not null constraint deletion_log_class check (class_key ~ '^[a-z][a-z0-9_]{0,62}$'),
-  -- The entity deleted: its table of public and its id, a uuid or a whole number (audit_events'
-  -- ids are bigint, 0004), so C2.9 logs an audit row without changing this table.
+  -- The entity deleted: its table of public and its id, a lower-case uuid, or a whole number for
+  -- audit_events alone, whose ids are bigint (0004), so C2.9 logs an audit row without changing
+  -- this table (deletion_log_object, below). Every other table of public is keyed by a uuid, so a
+  -- number, name or reference can't stand in for an id (PRIVACY-01, R11); a later table keyed
+  -- otherwise widens the check in its own migration, with review.
   object_table text not null constraint deletion_log_table check (object_table ~ '^[a-z][a-z0-9_]{0,62}$'),
-  object_id text not null constraint deletion_log_object check (object_id ~
-    '^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[1-9][0-9]{0,18})$'),
+  object_id text not null,
   -- Why, from deletion_causes(), which log_deletion() checks: a shape here, so a new cause is a
   -- function replacement, never a table change (C010-SPEC-02).
   cause text not null constraint deletion_log_cause check (cause ~ '^[a-z][a-z0-9_]{0,62}$'),
@@ -231,13 +236,16 @@ create table public.deletion_log (
   -- For 'cascade': the log row of the deletion it followed from, a plain id.
   parent_id bigint,
   -- For an object in S3 (from C0.15): its data class and key, and when the server confirmed that
-  -- every version and delete marker of that key is gone (CLAUDE.md, Database, S3). Set once.
+  -- every version and delete marker of that key is gone (CLAUDE.md, Database, S3). Set once. Only
+  -- a class with S3 objects carries a key, which log_deletion() checks (PRIVACY-01, R2DB-01).
   s3_class text constraint deletion_log_s3_class check (s3_class ~ '^[a-z][a-z0-9_]{0,62}$'),
   s3_key text,
   s3_done_at timestamptz,
   unique (org_id, id),
   -- One row per entity per transaction: the guard's lookup, and no double count.
   constraint deletion_log_entity unique (org_id, tx_id, object_table, object_id),
+  constraint deletion_log_object check (object_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    or (object_table = 'audit_events' and object_id ~ '^[1-9][0-9]{0,18}$')),
   constraint deletion_log_request check ((cause = 'request') = (case_id is not null)),
   constraint deletion_log_cascade check ((cause = 'cascade') = (parent_id is not null)),
   constraint deletion_log_s3 check ((s3_class is null) = (s3_key is null) and (s3_done_at is null or s3_key is not null)),
@@ -256,11 +264,21 @@ create index deletion_log_unstamped on public.deletion_log (org_id, id) where s3
 -- server removes only those files and stamps the log row"). A row goes only once it is 731 days
 -- old, the deletion_log class's fixed age: at least the 35-day backup window plus a restore, and as
 -- long as the audit log by default (check 7c compares the interval below with the class). C2.9 adds
--- the purge of older rows, one audit row per batch, and check 8 records its exemption. The messages
--- can be shown as they are.
+-- the purge of older rows, one audit row per batch, and check 8 records its exemption. A new row
+-- takes its time and transaction from the database (GUARD-01): a writer that chose an older at
+-- could log a deletion, delete a guarded row and then the log row too, and one that chose another
+-- transaction's tx_id could log for a deletion it isn't making. The columns' defaults give both and
+-- log_deletion() sets neither. A logical replica's apply doesn't fire it (enabled O, LH-11), so a
+-- row copied from the publisher keeps the publisher's. The messages can be shown as they are.
 create function public.deletion_log_kept() returns trigger
 language plpgsql set search_path = '' as $$
 begin
+  if tg_op = 'INSERT' then
+    if new.at is distinct from pg_catalog.now() or new.tx_id is distinct from pg_catalog.pg_current_xact_id() then
+      raise exception 'A deletion log row takes its time and transaction from the database.' using errcode = 'check_violation';
+    end if;
+    return new;
+  end if;
   if tg_op = 'UPDATE' then
     if old.s3_key is null or old.s3_done_at is not null or new.s3_done_at is null
        or (pg_catalog.to_jsonb(new) - 's3_done_at') is distinct from (pg_catalog.to_jsonb(old) - 's3_done_at') then
@@ -275,7 +293,7 @@ begin
 end
 $$;
 revoke execute on function public.deletion_log_kept() from public;
-create trigger deletion_log_kept before update or delete on public.deletion_log
+create trigger deletion_log_kept before insert or update or delete on public.deletion_log
   for each row execute function public.deletion_log_kept();
 
 -- C0.10 LH-15 (TECH-SPEC T23 items 9 and 10; ADM-08): legal holds. A person, current or former
@@ -533,11 +551,16 @@ revoke execute on function public.lifecycle_lock_target(uuid, text, uuid, text) 
 -- its request's log row, after the request has gone). An audit row's item is null (its id is a whole
 -- number); its people are its actor, the person acted for, a target person, the DPO who decided a
 -- clearance (details.decided_by, which bootstrap_transfer_clearance() writes with Hearth as the
--- actor: 0009, 0011), and the requester of the case it names by target or by case_id (0004). An
--- audit writer that later names a person only in details adds its key here, or a hold on them won't
--- keep the row. Containers come from lifecycle_containers_of() inside lifecycle_held(), never from
--- here. Any other table raises. PR 2 adds provenance_items and provenance_sources. Run by no role
--- but its owner.
+-- actor: 0009, 0011), the people a flag's cohort change added or removed (details.people_added and
+-- details.people_removed, arrays set_feature_flag() writes with the flag as the target: 0007;
+-- R2DB-02), and the requester of the case it names by target or by case_id (0004). decided_by,
+-- people_added and people_removed are every key of details in which an audit writer merged so far
+-- (0004 to 0013, and apps/server's writeAudit(), whose target is always the person) names a person;
+-- a writer that adds such a key adds it here, or a hold on them won't keep the row. A key is read
+-- only for a uuid (an array's text elements, when it is an array), so anything else adds nobody.
+-- Containers come from lifecycle_containers_of() inside lifecycle_held(), never from here. Any
+-- other table raises. PR 2 adds provenance_items and provenance_sources. Run by no role but its
+-- owner.
 create function public.lifecycle_row_anchors(org uuid, tbl text, r jsonb)
   returns table (kind text, item uuid, persons uuid[])
 language plpgsql stable set search_path = '' as $$
@@ -592,7 +615,14 @@ begin
                                then (r ->> 'target_id')::uuid end,
                           case when pg_catalog.lower(r -> 'details' ->> 'decided_by') ~ uuid_shape
                                then (r -> 'details' ->> 'decided_by')::uuid end,
-                          target_case, named_case], null);
+                          target_case, named_case]
+                          -- A flag's cohort change: the people added and removed (0007; R2DB-02).
+                          || array(select e.v::uuid
+                                   from (values ('people_added'), ('people_removed')) k (name)
+                                   cross join lateral pg_catalog.jsonb_array_elements_text(
+                                     case when pg_catalog.jsonb_typeof(r -> 'details' -> k.name) = 'array'
+                                          then r -> 'details' -> k.name else '[]'::jsonb end) e (v)
+                                   where pg_catalog.lower(e.v) ~ uuid_shape), null);
   else
     raise exception 'lifecycle_row_anchors() has no anchors for that table.' using errcode = 'invalid_parameter_value';
   end if;
@@ -623,7 +653,10 @@ revoke execute on function public.lifecycle_sources_of(uuid, text, uuid) from pu
 -- placed on one (LH-56); then their requests that hold or may come to, FOR SHARE, by id, and a case
 -- itself, which a closure, reclassification or review step holds FOR NO KEY UPDATE. The reads come
 -- in statements after the locks: in READ COMMITTED each statement of a VOLATILE function takes a new
--- snapshot, so each sees what committed while the locks waited. A release in progress reads as
+-- snapshot, so each sees what committed while the locks waited. Under any other level the reads
+-- would see the transaction's first snapshot and miss a request or hold that committed behind the
+-- locks, so it refuses first (25000; HOLDS-03), as the reporting-line trigger does (0002), and so
+-- do is_held(), delete_case() and the guard, which ask it. A release in progress reads as
 -- still active (its update hasn't committed), so a deletion that meets one refuses, which fails safe
 -- and needs no lock (R2). Only the deletion code's definers and the guard call it, as the owner; a
 -- later migration replaces it only with review (LCG-03).
@@ -635,6 +668,10 @@ declare
   s record;
   ct record;
 begin
+  -- 0. READ COMMITTED only, or the reads after the locks could miss what committed behind them.
+  if pg_catalog.current_setting('transaction_isolation') <> 'read committed' then
+    raise exception 'Whether something is held is decided only under READ COMMITTED.' using errcode = 'invalid_transaction_state';
+  end if;
   -- 1. The item's sources (PR 2; none in PR 1). Each source's people join the anchors.
   for s in select x.source_kind, x.source_id
            from public.lifecycle_sources_of(org, lifecycle_held.kind, lifecycle_held.item) x loop
@@ -712,10 +749,13 @@ revoke execute on function public.is_held(text, uuid) from public;
 -- C0.10 LH-10 (TECH-SPEC T23 item 7): logs one deletion, in the deleting transaction, for the org the
 -- server set (app.org_id; 42501 when none), never one an argument names, so no future grantee can
 -- log for another org (DB-06). The class must be one of retention_class_defaults() whose tables hold
--- the entity's table, or, for an object in S3, one whose store is s3; the cause one of
--- deletion_causes() (22023 otherwise): the writer validates them, never a check calling a function
--- later migrations replace. The table's checks hold the rest (a request's case, a cascade's parent,
--- the S3 trio and key). It takes no actor and checks none: only deletion functions that checked
+-- the entity's table, or, for an object in S3, one whose store is s3; an S3 class or key only with a
+-- class with S3 objects (objects: every s3 class, and drive_items and drive_trash, whose row and
+-- its file are one entity, logged as one row carrying the key, so deletion_log_entity never meets
+-- a second; PRIVACY-01, R2DB-01); the cause one of deletion_causes() (22023 otherwise): the
+-- writer validates them, never a check calling a function later migrations replace. The table's
+-- checks hold the rest (the object id's shape, a request's case, a cascade's parent, the S3 trio and
+-- the key's shape and org). It takes no actor and checks none: only deletion functions that checked
 -- their own call it. Returns the row's id (a cascade's children name it as their parent). Granted to
 -- nobody; the deletion code runs it as the owner.
 create function public.log_deletion(
@@ -740,7 +780,8 @@ begin
   if log_deletion.replayed is null
      or not exists (select 1 from public.retention_class_defaults() c
                     where c.key = log_deletion.class_key
-                      and (log_deletion.object_table = any (c.tables) or (c.store = 's3' and log_deletion.s3_key is not null)))
+                      and (log_deletion.object_table = any (c.tables) or (c.store = 's3' and log_deletion.s3_key is not null))
+                      and (c.store = 's3' or c.objects or (log_deletion.s3_class is null and log_deletion.s3_key is null)))
      or not exists (select 1 from public.deletion_causes() x where x = log_deletion.cause) then
     raise exception 'That deletion can''t be logged.' using errcode = 'invalid_parameter_value';
   end if;
@@ -845,7 +886,8 @@ create trigger lifecycle_no_truncate before truncate on public.deletion_log
 -- each answer and never fails a batch on one: 'gone' (none, idempotent for a replay), 'open',
 -- 'not_due' (closed_on plus the class's period not yet passed, in the org's zone, computed here
 -- whatever a sweep selected: T15 item 17's "no worker bug can delete early"; a replay obeys it too,
--- since a request's only cause is retention), 'held', 'cited' (a processing restriction names it,
+-- since a request's only cause is retention; a period or day it can't read refuses, 22023, never
+-- reading as due: HOLDS-02), 'held', 'cited' (a processing restriction names it,
 -- lifted or not; C2.11 decides whether a lifted one lets go) or 'deleted'. Only a retention deletion
 -- exists for requests; a later cause is added here by replacement, with the same signature. The
 -- request goes first, its guard deciding with every step present, then its steps, whose guard needs
@@ -861,6 +903,8 @@ declare
   actor uuid := nullif(pg_catalog.current_setting('app.user_id', true), '')::uuid;
   requester uuid;
   c public.cases;
+  today date;
+  period integer;
   steps integer;
 begin
   if org is null or actor is null then
@@ -886,7 +930,16 @@ begin
     return 'gone';
   elsif c.closed_at is null then
     return 'open';
-  elsif public.lifecycle_today(org) <= c.closed_on + public.retention_period_days(org, 'cases') then
+  end if;
+  -- The due test fails closed (HOLDS-02): a null today, period or closure day would make the
+  -- comparison null and read as due, so it refuses instead. retention_period_days() raises for a
+  -- class with no days today, but C2.9 replaces it to read the DPO's setting first.
+  today := public.lifecycle_today(org);
+  period := public.retention_period_days(org, 'cases');
+  if today is null or period is null or c.closed_on is null then
+    raise exception 'A request''s retention period can''t be read, so nothing is deleted.' using errcode = 'invalid_parameter_value';
+  end if;
+  if today <= c.closed_on + period then
     return 'not_due';
   elsif public.lifecycle_held(org, pg_catalog.array_remove(array[requester], null), 'case', c.id) then
     return 'held';

@@ -1091,7 +1091,9 @@ const deleteCase = (caseSuffix: string, answers?: string, replay = false): Step 
 })
 // A fixture placement (C010-SPEC-06): as the owner, the target's person row FOR NO KEY UPDATE, then
 // the cited case FOR KEY SHARE (none of the org's: "There is no such request.", 22023), then the
-// hold, as C1.11's place_legal_hold() will.
+// hold, as C1.11's place_legal_hold() will. Both locks are lifecycle_lock_target()'s, so LCR-16
+// proves its case branch against delete_case()'s FOR UPDATE (TESTS-05); whether the case is still
+// there is read in a statement after the lock, which sees a deletion it waited for.
 const placeHold = (target: string, citing?: string): Step => ({
   as: 'owner',
   sql: `do $$ begin
@@ -1099,8 +1101,10 @@ const placeHold = (target: string, citing?: string): Step => ({
           ${
             citing === undefined
               ? ''
-              : `perform 1 from public.cases where org_id = '${LIFECYCLE_ORG}' and id = '${h(citing)}' for key share;
-          if not found then raise exception 'There is no such request.' using errcode = 'invalid_parameter_value'; end if;`
+              : `perform public.lifecycle_lock_target('${LIFECYCLE_ORG}', 'case', '${h(citing)}', 'key share');
+          if not exists (select 1 from public.cases where org_id = '${LIFECYCLE_ORG}' and id = '${h(citing)}') then
+            raise exception 'There is no such request.' using errcode = 'invalid_parameter_value';
+          end if;`
           }
           insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, case_id, placed_by)
           values ('${LIFECYCLE_ORG}', gen_random_uuid(), 'person', '${h(target)}', 'A made-up matter',

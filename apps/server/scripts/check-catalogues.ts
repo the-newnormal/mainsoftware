@@ -35,20 +35,26 @@
 //      class (b); each fixed age is the interval in its function's body, comments aside (c); the
 //      guard (lifecycle_guard() and lifecycle_no_truncate()) is on exactly the tables
 //      apps/server/src/lifecycle/deletes.ts GUARDED_TABLES lists, each naming its own table, enabled
-//      the default way, with no WHEN condition or UPDATE OF list, with deletion_log_kept() and
-//      legal_holds_kept() on theirs (d); every AI class
+//      the default way, with no WHEN condition or UPDATE OF list, with deletion_log_kept() (before
+//      every insert, update and delete: GUARD-01) and legal_holds_kept() on theirs (d); every AI class
 //      has a finite period and none is kept (e); HOLD_TARGET_KINDS, DELETION_CAUSES, HOLD_KINDS and
 //      REFUSED_COPY_HOLD equal the database's, and retention_period_days() answers every days class's
 //      default (f); and the hold decision's resolvers know every kind and every holds-apply table,
 //      tried in a transaction it rolls back (g). None of these functions is a runtime role's, so this
 //      superuser calls them;
 //   8. from C0.10 (T23 item 9; LH-14), every delete path the database allows (a runtime role's DELETE
-//      grant, a reachable function whose body deletes, a foreign key that cascades or sets null or a
-//      default, a DYNAMIC_DDL function) is decided in apps/server/src/lifecycle/deletes.ts
-//      DELETE_PATHS as guarded, checked or exempt, each decision one docs/TECH-SPEC.md records, and no
-//      entry is stale; and no function body runs TRUNCATE, DROP TABLE, DETACH PARTITION, a trigger
-//      disabled, dropped or enabled ALWAYS or REPLICA, a setting of session_replication_role, or a
-//      change to the guard's functions, none of which is a DELETE a path could decide.
+//      grant, a function of public whose body deletes, a plain helper no runtime role may run
+//      included, since a definer can call it (GUARD-03), a foreign key that cascades or sets null or
+//      a default, a DYNAMIC_DDL function) is decided in apps/server/src/lifecycle/deletes.ts
+//      DELETE_PATHS as guarded, checked (only into a table a leaver's reduction marks, logging each
+//      row: GUARD-02) or exempt, each decision one docs/TECH-SPEC.md records, and no entry is stale;
+//      no function body of public runs TRUNCATE, DROP TABLE, DETACH PARTITION, a trigger disabled,
+//      dropped or enabled ALWAYS or REPLICA, a setting of session_replication_role, a change to
+//      the guard's functions, or a guard's trigger replaced or made with a WHEN condition or an
+//      UPDATE OF list, none of which is a DELETE a path could decide, as a plain statement or in a
+//      DYNAMIC_DDL function's strings; every DYNAMIC_DDL function's body is the one pinned with it
+//      (R2CODE-01); and no function check 1 doesn't reach has a body this can't read (BEGIN ATOMIC,
+//      or EXECUTE outside DYNAMIC_DDL).
 // The runtime roles are found as scripts/check-migrations.sh finds them: every role granted
 // something in the database (the owner aside), and every role that can use one of them by SET or
 // INHERIT. The integration suites' sweep (apps/server/src/testing/writes.ts) checks the writes the
@@ -102,6 +108,7 @@ import {
   flagProblems,
   type Grant,
   guardProblems,
+  helperBodyProblems,
   holdsTables,
   matchProblems,
   noticeFactProbe,
@@ -180,20 +187,22 @@ const GRANTS = `
   from runtime r join tables t on has_table_privilege(r.oid, t.oid, 'DELETE')
   order by 1, 2, 3, 4`
 
-// Every function a runtime transaction can reach: executable by a runtime role, SECURITY DEFINER,
-// or a trigger function. Functions that belong to an extension aren't the schema's own.
+// Every function of public, each marked whether a runtime transaction can reach it (executable by a
+// runtime role, SECURITY DEFINER, or a trigger function): check 1 reads the reachable ones, and check
+// 8 every one, since a plain helper deletes just as well when a definer calls it (GUARD-03).
+// Functions that belong to an extension aren't the schema's own.
 const FUNCTIONS = `
   with runtime as (${RUNTIME})
   select p.proname || '(' || oidvectortypes(p.proargtypes) || ')' as key, p.prosecdef as definer,
          p.prorettype = 'trigger'::regtype as trigger, p.prosrc as source,
          p.prosqlbody is not null as atomic,
          array(select r.rolname::text from runtime r where has_function_privilege(r.oid, p.oid, 'EXECUTE') order by 1)
-           as executors
+           as executors,
+         (p.prosecdef or p.prorettype = 'trigger'::regtype
+          or exists (select 1 from runtime r where has_function_privilege(r.oid, p.oid, 'EXECUTE'))) as reachable
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
   where n.nspname = 'public'
     and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
-    and (p.prosecdef or p.prorettype = 'trigger'::regtype
-         or exists (select 1 from runtime r where has_function_privilege(r.oid, p.oid, 'EXECUTE')))
   order by 1`
 
 const client = new Client({
@@ -215,7 +224,8 @@ try {
   const grants = (await client.query<Grant & { column: string | null }>(GRANTS)).rows.map(row =>
     row.column === null ? { role: row.role, table: row.table, op: row.op } : row,
   ) as Grant[]
-  const functions = (await client.query<Fn>(FUNCTIONS)).rows
+  const everyFunction = (await client.query<Fn & { reachable: boolean }>(FUNCTIONS)).rows
+  const functions = everyFunction.filter(fn => fn.reachable)
   const columns = new Set(
     (
       await client.query<{ name: string }>(`
@@ -278,7 +288,7 @@ try {
   const classes: Readonly<Record<string, RetentionClass>> = RETENTION_CLASSES
   const classRows = (
     await client.query<ClassDefault>(
-      'select key, store, ai, period_kind, days, anchor, follows, holds, tables from public.retention_class_defaults()',
+      'select key, store, ai, period_kind, days, anchor, follows, holds, tables, objects from public.retention_class_defaults()',
     )
   ).rows
   // Every table of public with the root of its partition tree, the migrator's ledger aside.
@@ -362,7 +372,7 @@ try {
       where n.nspname = 'public' and k.contype = 'f' and k.conparentid = 0 and k.confdeltype in ('c', 'n', 'd')
       order by 1, 2`)
   ).rows
-  const deletePaths = deletePathsOf(grants, functions, foreignKeys)
+  const deletePaths = deletePathsOf(grants, everyFunction, foreignKeys)
   const spec = readFileSync(new URL('../../../docs/TECH-SPEC.md', import.meta.url), 'utf8')
 
   const problems = [
@@ -408,14 +418,15 @@ try {
     ),
     ...resolverProblems(resolverProbes),
     ...deletePathProblems(DELETE_PATHS, GUARDED_TABLES, deletePaths, holdsTables(classes), recordedDecisions(spec)),
-    ...bodyDdlProblems(functions),
+    ...bodyDdlProblems(everyFunction),
+    ...helperBodyProblems(everyFunction.filter(fn => !fn.reachable)),
   ]
   if (problems.length > 0) {
     process.stderr.write(`The catalogues and the database disagree:\n${problems.map(p => `  - ${p}`).join('\n')}\n`)
     process.exitCode = 1
   } else {
     process.stdout.write(
-      `OK: ${grants.length} write grants and ${functions.length} functions covered; ${types.length} event types, ${defaults.length} flags, ${settable.length} job roles, ${consumers.length} consumers' checkpoint bindings, ${purposeDefaults.length} purposes and ${providerDefaults.length} providers in ${orgs.length} orgs' registers, ${NOTICE_TRANSFER_FACTS.length} stated notice facts, ${classRows.length} retention classes over ${relations.filter(r => r.name === r.root).length} tables, the guard on ${GUARDED_TABLES.length} tables, ${resolverProbes.length} resolver calls and ${deletePaths.length} delete paths match.\n`,
+      `OK: ${grants.length} write grants and ${functions.length} functions covered; ${types.length} event types, ${defaults.length} flags, ${settable.length} job roles, ${consumers.length} consumers' checkpoint bindings, ${purposeDefaults.length} purposes and ${providerDefaults.length} providers in ${orgs.length} orgs' registers, ${NOTICE_TRANSFER_FACTS.length} stated notice facts, ${classRows.length} retention classes over ${relations.filter(r => r.name === r.root).length} tables, the guard on ${GUARDED_TABLES.length} tables, ${resolverProbes.length} resolver calls and ${deletePaths.length} delete paths over ${everyFunction.length} functions match.\n`,
     )
   }
 } finally {

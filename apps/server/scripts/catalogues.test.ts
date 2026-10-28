@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import {
   ACTIVE_FROM_START,
   AI_PROVIDERS,
@@ -38,6 +39,7 @@ import {
   flagProblems,
   type Grant,
   guardProblems,
+  helperBodyProblems,
   holdsTables,
   matchProblems,
   noticeFactProbe,
@@ -771,19 +773,26 @@ const truncateTrigger = (table: string): TriggerRow => ({
 const TRIGGERS: TriggerRow[] = [
   ...GUARDED_TABLES.flatMap(table => [guardTrigger(table), truncateTrigger(table)]),
   truncateTrigger('deletion_log'),
-  { ...truncateTrigger('deletion_log'), name: 'deletion_log_kept', fn: 'deletion_log_kept', type: 27 },
+  { ...truncateTrigger('deletion_log'), name: 'deletion_log_kept', fn: 'deletion_log_kept', type: 31 },
   { ...truncateTrigger('legal_holds'), name: 'legal_holds_kept', fn: 'legal_holds_kept', type: 19 },
 ]
 const APPLY = holdsTables(classes).apply
 
 describe('LCV-03 C0.10 T23 items 3 and 4 check 7: the retention registry against the database', () => {
-  it('7a LH-04: passes when retention_class_defaults() lists exactly the registry’s Postgres and S3 classes, and names each difference both ways', () => {
+  it('7a LH-04 R2DB-01: passes when retention_class_defaults() lists exactly the registry’s Postgres and S3 classes, and names each difference both ways', () => {
     expect(retentionDefaultProblems(classRows, classRows)).toEqual([])
     expect(retentionDefaultProblems(classRows, changingClass('cases', { days: 365, tables: ['cases'] }))).toEqual([
       'cases: packages/shared RETENTION_CLASSES says days 731, tables [case_steps, cases]; retention_class_defaults() says days 365, tables [cases]',
     ])
     // Tables compare as sets: their order is no one's.
     expect(retentionDefaultProblems(classRows, changingClass('cases', { tables: ['case_steps', 'cases'] }))).toEqual([])
+    // objects too (R2DB-01): a class with S3 objects that the function says has none, and the reverse.
+    expect(retentionDefaultProblems(classRows, changingClass('drive_trash', { objects: false }))).toEqual([
+      'drive_trash: packages/shared RETENTION_CLASSES says objects true; retention_class_defaults() says objects false',
+    ])
+    expect(retentionDefaultProblems(classRows, changingClass('cases', { objects: true }))).toEqual([
+      'cases: packages/shared RETENTION_CLASSES says objects false; retention_class_defaults() says objects true',
+    ])
     expect(
       retentionDefaultProblems(classRows, [
         ...classRows.filter(row => row.key !== 'legal_holds'),
@@ -1074,6 +1083,25 @@ describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and 
   })
 })
 
+// A function's body as the latest migration that defines it writes it, which is what DYNAMIC_DDL
+// pins for a DYNAMIC_DDL function (R2CODE-01).
+function latestMigrationBody(name: string): string {
+  const dir = new URL('../../../db/migrations/', import.meta.url)
+  let body: string | undefined
+  for (const file of readdirSync(dir).sort()) {
+    const sql = readFileSync(new URL(file, dir), 'utf8')
+    const defines = new RegExp(String.raw`\bcreate\s+(?:or\s+replace\s+)?function\s+public\.${name}\s*\(`, 'gi')
+    for (const match of sql.matchAll(defines)) {
+      const quote = /\bas\s+(\$[A-Za-z0-9_]*\$)/.exec(sql.slice(match.index))
+      if (quote === null) continue
+      const open = match.index + quote.index + quote[0].length
+      body = sql.slice(open, sql.indexOf(quote[1] ?? '$$', open))
+    }
+  }
+  if (body === undefined) throw new Error(`no migration defines public.${name}()`)
+  return body
+}
+
 // lifecycle_no_truncate()'s body as 0013 writes it: TRUNCATE only in its message.
 const NO_TRUNCATE = `begin
   raise exception 'Rows here are deleted only through Hearth''s deletion code, never TRUNCATE.' using errcode = 'HF010';
@@ -1116,8 +1144,8 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       key: 'create_data_access_partitions(integer)',
       definer: true,
       trigger: false,
-      source:
-        "execute pg_catalog.format('create table public.%I partition of public.data_access_events for values from (%L) to (%L)', n, m, m); execute pg_catalog.format('alter table public.%I enable row level security', n);",
+      // As 0005 writes it, which DYNAMIC_DDL pins (R2CODE-01).
+      source: latestMigrationBody('create_data_access_partitions'),
     },
     {
       key: 'lifecycle_guard()',
@@ -1240,17 +1268,17 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
   it('LH-58: a checked path must ask lifecycle_held() or is_held() in its body, comments and strings aside, delete from no guarded or kept table, and cite a recorded decision', () => {
     const reduce = (source: string): Fn => ({ key: 'reduce_leaver(uuid)', definer: true, trigger: false, source })
     const entry = { 'reduce_leaver(uuid)': { checked: true, decision: 'LH-58' } } as const
-    const asks =
-      'if public.lifecycle_held(org, array[p], $$person$$, p) then return; end if; delete from public.working_hours w where w.person_id = p;'
+    const logs =
+      "perform public.log_deletion('working_hours', 'working_hours', w.id::text, 'retention', null, null, null, null, false);"
+    const asks = `if public.lifecycle_held(org, array[p], $$person$$, p) then return; end if; ${logs} delete from public.working_hours w where w.person_id = p;`
     expect(problemsOf(deletePathsOf([], [reduce(asks)], [], {}), entry)).toEqual([])
     expect(
       problemsOf(
-        deletePathsOf([], [reduce('select public.is_held(k, i); delete from public.working_hours;')], [], {}),
+        deletePathsOf([], [reduce(`select public.is_held(k, i); ${logs} delete from public.working_hours;`)], [], {}),
         entry,
       ),
     ).toEqual([])
-    const never =
-      "-- lifecycle_held(org) is asked elsewhere\n raise notice 'is_held(x)'; delete from public.working_hours;"
+    const never = `-- lifecycle_held(org) is asked elsewhere\n raise notice 'is_held(x)'; ${logs} delete from public.working_hours;`
     expect(problemsOf(deletePathsOf([], [reduce(never)], [], {}), entry)).toEqual([
       'reduce_leaver(uuid) is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but its body never calls lifecycle_held() or is_held(): ask it and skip a held row, or guard its tables (LH-58)',
     ])
@@ -1280,7 +1308,104 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     ])
   })
 
-  it('names a DYNAMIC_DDL function whose format strings drop, truncate, detach or delete, and passes one that only creates', () => {
+  it('GUARD-02 LH-12 LH-58: a checked path deletes only from a table a leaver’s reduction marks, and logs each row it deletes', () => {
+    // Only working_hours: the roster's reduction marks kept tables, which no path deletes from.
+    expect([...holds.reduction].filter(table => !holds.kept.has(table))).toEqual(['working_hours'])
+    const sweep = (source: string): Fn => ({ key: 'c29_sweep_sign_ins(uuid)', definer: true, trigger: false, source })
+    const entry = { 'c29_sweep_sign_ins(uuid)': { checked: true, decision: 'LH-58' } } as const
+    const asks = 'if public.lifecycle_held(org, array[person], $$person$$, person) then return; end if;'
+    // The review's planted sweep: it asks the hold decision, then deletes sign-in sessions and audit
+    // rows (holds-apply tables the guard isn't on) unguarded and unlogged. Before GUARD-02 it passed.
+    const planted = `declare org uuid := nullif(pg_catalog.current_setting('app.org_id', true), '')::uuid;
+      begin
+        ${asks}
+        delete from public.sessions s where s.org_id = org and s.user_id = person;
+        delete from public.audit_events a where a.org_id = org and a.actor_id = person;
+      end`
+    expect(problemsOf(deletePathsOf([], [sweep(planted)], [], {}), entry)).toEqual([
+      'c29_sweep_sign_ins(uuid) is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but its body never calls log_deletion(): no guard requires its log row, so it writes one for each row it deletes (LH-10, LH-58, GUARD-02)',
+      "c29_sweep_sign_ins(uuid) is checked in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.sessions, public.audit_events, whose retention class marks no leaver's reduction of rows a person also edits: make the path guarded, and the table gets lifecycle_guard() with it (LH-12, LH-58, GUARD-02)",
+    ])
+    // Logging alone doesn't make an unmarked table checkable; guarding it does.
+    const logged = planted.replace(
+      'begin',
+      "begin perform public.log_deletion('sign_in_records', 'sessions', s, 'retention', null, null, null, null, false);",
+    )
+    expect(problemsOf(deletePathsOf([], [sweep(logged)], [], {}), entry)).toEqual([
+      expect.stringContaining('deletes from public.sessions, public.audit_events, whose retention class marks no'),
+    ])
+    expect(
+      problemsOf(deletePathsOf([], [sweep(logged)], [], {}), { 'c29_sweep_sign_ins(uuid)': { guarded: true } }, [
+        ...GUARDED_TABLES,
+        'sessions',
+        'audit_events',
+      ]),
+    ).toEqual([])
+    // log_deletion named only in a comment or a string isn't a call; one table marked and one not
+    // names only the unmarked one.
+    const unlogged = `${asks} -- public.log_deletion(x) runs later\n raise notice 'log_deletion(%)', x; delete from public.working_hours; delete from public.devices;`
+    expect(problemsOf(deletePathsOf([], [sweep(unlogged)], [], {}), entry)).toEqual([
+      expect.stringContaining('but its body never calls log_deletion()'),
+      expect.stringContaining('but deletes from public.devices, whose retention class marks no'),
+    ])
+  })
+
+  it('GUARD-03: a plain helper a definer calls is a delete path of its own, and check-catalogues reads every function of public for check 8', () => {
+    // No runtime role may run the helper and it is neither a definer nor a trigger function, so
+    // check 1 never reaches it; the definer that calls it deletes nothing in its own body.
+    const helper: Fn = {
+      key: 'forget_sessions(uuid, uuid)',
+      definer: false,
+      trigger: false,
+      source: 'begin delete from public.sessions s where s.org_id = org and s.user_id = person; end',
+      executors: [],
+    }
+    const caller: Fn = {
+      key: 'sweep_person(uuid)',
+      definer: true,
+      trigger: false,
+      source:
+        "declare org uuid := nullif(pg_catalog.current_setting('app.org_id', true), '')::uuid; begin perform public.forget_sessions(org, person); end",
+      executors: [],
+    }
+    expect(deletePathsOf([], [helper, caller], [], {}).map(path => [path.key, path.deletes])).toEqual([
+      ['forget_sessions(uuid, uuid)', ['sessions']],
+    ])
+    expect(problemsOf([...found, ...deletePathsOf([], [helper, caller], [], {})])).toEqual([
+      "forget_sessions(uuid, uuid) deletes from public.sessions, but DELETE_PATHS in apps/server/src/lifecycle/deletes.ts doesn't decide it: add 'forget_sessions(uuid, uuid)' as guarded, checked or exempt with its decision",
+    ])
+    // A helper whose deletes check 8 can't read is refused, as check 1 refuses one it reaches.
+    expect(
+      helperBodyProblems([
+        helper,
+        { ...helper, key: 'forget_atomic(uuid)', source: '', atomic: true },
+        { ...helper, key: 'forget_dynamic(uuid)', source: "execute format('delete from public.%I', t);" },
+        { ...helper, key: 'say(uuid)', source: "raise notice 'execute %', x; -- execute later" },
+      ]),
+    ).toEqual([
+      "public.forget_atomic(uuid) is written with BEGIN ATOMIC, whose deletes check 8 can't read, though a function that may be run can call it: write its body as a quoted string (as $$ ... $$) (GUARD-03)",
+      "public.forget_dynamic(uuid) runs dynamic SQL (EXECUTE), whose deletes check 8 can't read, though a function that may be run can call it: write them as plain statements (GUARD-03)",
+    ])
+    expect(
+      helperBodyProblems([{ ...helper, key: 'make_parts(integer)', source: 'execute x;' }], {
+        'make_parts(integer)': 'x',
+      }),
+    ).toEqual([])
+    // check-catalogues.ts: its function query keeps every function of public, marking which check 1
+    // reaches rather than leaving the others out, and check 8's three readings get every one.
+    const script = readFileSync(new URL('./check-catalogues.ts', import.meta.url), 'utf8')
+    const query = /const FUNCTIONS = `([\s\S]*?)`/.exec(script)?.[1] ?? ''
+    const where = query.slice(query.lastIndexOf('\n  where '))
+    expect(query).toContain(') as reachable')
+    expect(where).toContain("n.nspname = 'public'")
+    expect(where).not.toMatch(/prosecdef|has_function_privilege|regtype/)
+    expect(script).toContain('const functions = everyFunction.filter(fn => fn.reachable)')
+    expect(script).toContain('deletePathsOf(grants, everyFunction, foreignKeys)')
+    expect(script).toContain('...bodyDdlProblems(everyFunction),')
+    expect(script).toContain('...helperBodyProblems(everyFunction.filter(fn => !fn.reachable)),')
+  })
+
+  it('names a DYNAMIC_DDL function whose format strings drop, truncate, detach or delete, and passes one that only creates (R2CODE-01: a TRUNCATE trigger included)', () => {
     const ddl = (source: string) =>
       deletePathsOf([], [{ key: 'make_parts(integer)', definer: true, trigger: false, source }], [], {
         'make_parts(integer)': 'x',
@@ -1293,9 +1418,21 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     expect(problemsOf(ddl('execute $$alter table public.data_access_events detach partition p$$;'), entry)).toEqual([
       expect.stringContaining('names detach'),
     ])
+    // R2CODE-01: a TRUNCATE in a trigger's event list empties nothing; one that runs is still named.
+    expect(
+      problemsOf(
+        ddl(
+          "execute format('create trigger lifecycle_no_truncate before truncate on public.%I for each statement execute function public.lifecycle_no_truncate()', n);",
+        ),
+        entry,
+      ),
+    ).toEqual([])
+    expect(problemsOf(ddl("execute format('TRUNCATE public.%I', n);"), entry)).toEqual([
+      expect.stringContaining('names truncate'),
+    ])
   })
 
-  it('LH-12 LH-33 GUARD-05 TESTS-02: names a body that truncates, drops or detaches a table, or turns the guard off or replaces it, as a plain statement, and passes the bodies 0001 to 0013 make', () => {
+  it('LH-12 LH-33 GUARD-05 TESTS-02 R2CODE-01: names a body that truncates, drops or detaches a table, or turns the guard off or replaces it, as a plain statement or in a DYNAMIC_DDL function’s strings, and a DYNAMIC_DDL body other than the one pinned, and passes the bodies 0001 to 0013 make', () => {
     const fn = (key: string, source: string): Fn => ({ key, definer: true, trigger: false, source })
     // Built, so that scripts/guards/lifecycle.test.ts (LCG-05) doesn't read these planted bodies as
     // this file turning the guard off.
@@ -1327,6 +1464,20 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
           'rewrite()',
           'create or replace function public.lifecycle_held(o uuid) returns boolean as $b$ select false $b$;',
         ),
+        // R2CODE-01, LH-11: a guard's trigger replaced, or made to fire only sometimes, is named for
+        // what it is, never only for the EXECUTE FUNCTION in it.
+        fn(
+          'replaced()',
+          "create or replace trigger lifecycle_guard before delete on public.cases for each row when (false) execute function public.lifecycle_guard('cases');",
+        ),
+        fn(
+          'conditioned()',
+          "create trigger lifecycle_guard before delete on public.sessions for each row when (old.ended_at is not null) execute function public.lifecycle_guard('sessions');",
+        ),
+        fn(
+          'narrowed()',
+          'create trigger legal_holds_kept before update of released_at on public.legal_holds for each row execute function "public".legal_holds_kept();',
+        ),
       ]),
     ).toEqual([
       runs('TRUNCATE', 'wipe_devices()'),
@@ -1340,13 +1491,80 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       runs(`SET ${role}`, 'replica()'),
       runs(`SET ${role}`, 'replica_config()'),
       runs('CREATE OR REPLACE, DROP or ALTER FUNCTION of a guard function or lifecycle_held()', 'rewrite()'),
+      runs('CREATE OR REPLACE TRIGGER of a guard trigger', 'replaced()'),
+      runs('CREATE TRIGGER of a guard function with a WHEN condition or an UPDATE OF list', 'conditioned()'),
+      runs('CREATE TRIGGER of a guard function with a WHEN condition or an UPDATE OF list', 'narrowed()'),
     ])
+    // R2CODE-01: a TRUNCATE in a trigger's event list empties nothing; one that runs after it is named.
+    expect(
+      bodyDdlProblems([
+        fn(
+          'guard_then_wipe()',
+          'create trigger t before insert or truncate on public.p for each statement execute function public.x(); truncate public.cases;',
+        ),
+      ]),
+    ).toEqual([runs('TRUNCATE', 'guard_then_wipe()')])
     // A DYNAMIC_DDL function's own plain statements are held to it too, beside its format strings.
     expect(
       bodyDdlProblems([
         fn('make_parts(integer)', "execute format('create table public.%I ()', n); truncate public.jobs;"),
       ]),
     ).toEqual([runs('TRUNCATE', 'make_parts(integer)')])
+    // R2CODE-01 GUARD-05: a DYNAMIC_DDL function's strings, and its body itself. The partitions job's
+    // body as the latest migration writes it passes, and so does a plain CREATE TRIGGER of a guard's
+    // function on a partition, as C2.9 may add for each one, as a statement or as a string it runs.
+    const partitions = 'create_data_access_partitions(integer)'
+    expect(bodyDdlProblems([fn(partitions, latestMigrationBody('create_data_access_partitions'))])).toEqual([])
+    const pinnedAs = (body: string) => ({ [partitions]: { why: 'x', body } })
+    const perPartition =
+      'create trigger lifecycle_no_truncate before truncate on public.%I for each statement execute function public.lifecycle_no_truncate()'
+    const addsTrigger = `begin execute pg_catalog.format('${perPartition}', name); end`
+    expect(bodyDdlProblems([fn(partitions, addsTrigger)], pinnedAs(addsTrigger))).toEqual([])
+    expect(
+      deletePathProblems(
+        { [`ddl ${partitions}`]: { exempt: 'creates partitions', decision: 'T15 item 16' } },
+        GUARDED_TABLES,
+        deletePathsOf([], [fn(partitions, addsTrigger)], [], pinnedAs(addsTrigger)),
+        holdsTables(RETENTION_CLASSES),
+        () => true,
+      ),
+    ).toEqual([])
+    expect(bodyDdlProblems([fn('add_guard()', `begin ${perPartition.replace('%I', 'p')}; end`)])).toEqual([])
+    const planted = {
+      formatDisable: "begin execute format('alter table public.%I disable trigger lifecycle_guard', 'cases'); end",
+      formatReplica:
+        "begin execute format('alter table public.%I enable replica trigger lifecycle_guard', 'legal_holds'); end",
+      formatHeld:
+        "begin execute 'create or replace function public.lifecycle_held(o uuid, p uuid[], k text, i uuid) returns boolean language sql as ''select false'''; end",
+      plainReplace:
+        "begin execute format('create table if not exists public.%I partition of public.data_access_events for values from (%L) to (%L)', n, a, b);\n    create or replace trigger lifecycle_guard before delete on public.cases for each row when (false) execute function public.lifecycle_guard('cases'); end",
+      splitVerb: "begin execute format('alter table public.%I %s trigger lifecycle_guard', 'cases', 'disable'); end",
+    }
+    const unpinned = `public.${partitions} is in DYNAMIC_DDL, but its body isn't the one pinned there, and what a string built at run time or a verb passed as an argument runs, no check can read: read the new body for anything that deletes, or turns the guard off or replaces it, then pin it in DYNAMIC_DDL in apps/server/scripts/catalogues.ts, a reviewed change (LH-33, R2CODE-01)`
+    const holds = (what: string) =>
+      `public.${partitions} is in DYNAMIC_DDL, but a string it runs holds ${what}, which deletes or turns the guard off with no DELETE for check 8 to decide: dynamic DDL only creates (LH-12, LH-33, R2CODE-01)`
+    // Each differs from the body DYNAMIC_DDL pins, so each is refused for that alone.
+    for (const [name, body] of Object.entries(planted)) {
+      expect(bodyDdlProblems([fn(partitions, body)]), name).toContain(unpinned)
+    }
+    // Pinned as it is, each is still named for what its strings or statements hold, but for the verb
+    // passed to format() as an argument, which only the pin catches.
+    const named = (body: string) => bodyDdlProblems([fn(partitions, body)], pinnedAs(body))
+    expect(named(planted.formatDisable)).toEqual([holds('DISABLE TRIGGER')])
+    expect(named(planted.formatReplica)).toEqual([holds('ENABLE ALWAYS or REPLICA TRIGGER')])
+    expect(named(planted.formatHeld)).toEqual([
+      holds('CREATE OR REPLACE, DROP or ALTER FUNCTION of a guard function or lifecycle_held()'),
+    ])
+    expect(named(planted.plainReplace)).toEqual([runs('CREATE OR REPLACE TRIGGER of a guard trigger', partitions)])
+    expect(named(planted.splitVerb)).toEqual([])
+    // Comments and runs of whitespace aside, the body is compared as written.
+    const current = latestMigrationBody('create_data_access_partitions')
+    expect(bodyDdlProblems([fn(partitions, `-- the partitions job\n${current.replace(/\n\s*/g, '\n\t  ')}`)])).toEqual(
+      [],
+    )
+    expect(bodyDdlProblems([fn(partitions, current.replace('between 0 and 24', 'between 0 and 25'))])).toEqual([
+      unpinned,
+    ])
     // Named only in a comment, a string, a quoted message or a longer identifier: nothing runs.
     expect(
       bodyDdlProblems([

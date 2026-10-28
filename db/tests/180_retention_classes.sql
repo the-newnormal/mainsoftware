@@ -2,14 +2,16 @@
 -- 5, 7, 8 and 11): the retention-class registry's SQL side, the guard's place, and who may touch
 -- C0.10's tables and functions. The cases:
 --   LCD-01 retention_class_defaults() has unique keys, valid kinds, positive days, every follows
---          naming a row or source, and every AI row finite and never kept (LH-03, LH-06);
+--          naming a row or source, every AI row finite and never kept, and objects set for exactly
+--          the s3 classes and Drive's two (LH-03, LH-06, R2DB-01);
 --   LCD-02 every table of public (partitions and the migrator's ledger aside) is in exactly one
 --          row's tables, and every name there is such a table (LH-04);
 --   LCD-03 exactly cases, case_steps and legal_holds carry both guard triggers, enabled the default
 --          way, each guard's argument its own table's name; deletion_log carries
---          lifecycle_no_truncate and deletion_log_kept; no other table carries either; none of the
---          four guard functions' triggers has a WHEN condition or an UPDATE OF list (LH-11, LH-12,
---          GUARD-04);
+--          lifecycle_no_truncate and deletion_log_kept, the latter before every insert as well as
+--          every update and delete (GUARD-01); no other table carries either; none of the four guard
+--          functions' triggers has a WHEN condition or an UPDATE OF list (LH-11, LH-12, GUARD-04,
+--          TESTS-03);
 --   LCD-04 no runtime role, nor hearth_worker, holds any privilege on deletion_log or legal_holds,
 --          or may run any function 0013 adds (LH-30);
 --   LCD-05 retention_period_days() answers each days class's default and raises 22023 for an unknown
@@ -31,6 +33,8 @@ select pg_temp.check(not exists (
      or c.period_kind is null or c.period_kind not in ('days', 'follows', 'while', 'until')
      or c.holds is null or c.holds not in ('apply', 'exempt', 'kept')
      or c.tables is null
+     -- Every s3 class's data is objects (R2DB-01).
+     or c.objects is null or (c.store = 's3' and not c.objects)
      -- A day count is a positive whole number, with its anchor, for days; until may carry one.
      or (c.period_kind = 'days' and (c.days is null or c.days < 1 or c.anchor is null))
      or (c.period_kind = 'until' and (c.days is null) <> (c.anchor is null))
@@ -70,6 +74,14 @@ select pg_temp.check(
   = 'cases 731 closed_on apply,deletion_log 731 at exempt,jobs 14 finished exempt,legal_holds 731 released apply,outbox 14 at exempt,schedule_runs 90 finished exempt',
   'the fixed and C0.10 classes are not as 0013 declares them (LCD-01)');
 
+-- The classes with S3 objects, which alone may log an S3 class and key (log_deletion(), 185's
+-- LCD-08): the four s3 classes and Drive's two Postgres classes, whose rows and their files in S3
+-- go together (R2DB-01; check 7a holds objects to RETENTION_CLASSES' objects).
+select pg_temp.check(
+  (select string_agg(format('%s %s', c.key, c.store), ',' order by c.key) from public.retention_class_defaults() c where c.objects)
+  = 'drive_items postgres,drive_trash postgres,profile_photos s3,session_media s3,upload_quarantine s3,voice_message_audio s3',
+  'the classes with S3 objects are not as 0013 declares them (LCD-01, R2DB-01)');
+
 -- LCD-02: every table of public in exactly one class, and every name a table.
 select pg_temp.check(not exists (
   select 1 from pg_class t join pg_namespace n on n.oid = t.relnamespace
@@ -89,9 +101,9 @@ select pg_temp.check(not exists (
 select pg_temp.check((select count(*) from public.retention_class_defaults() c cross join unnest(c.tables)) = 37,
                      'the classes don''t cover exactly the 35 tables 0001 to 0012 create and 0013''s two (LCD-02)');
 
--- LCD-03: the guard on exactly the right tables. tgtype's bits: 1 row, 2 before, 8 delete, 16
--- update, 32 truncate. A trigger's argument is stored with a trailing NUL. A partition's clone is
--- named for its parent (none is guarded yet).
+-- LCD-03: the guard on exactly the right tables. tgtype's bits: 1 row, 2 before, 4 insert, 8
+-- delete, 16 update, 32 truncate. A trigger's argument is stored with a trailing NUL. A
+-- partition's clone is named for its parent (none is guarded yet).
 select pg_temp.check(
   coalesce((select string_agg(format('%s %s %s %s', coalesce(p.relname, c.relname), t.tgname, t.tgtype, t.tgenabled),
                               ',' order by coalesce(p.relname, c.relname), t.tgname)
@@ -101,7 +113,7 @@ select pg_temp.check(
             where not t.tgisinternal
               and f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept')), '')
   = 'case_steps lifecycle_guard 11 O,case_steps lifecycle_no_truncate 34 O,cases lifecycle_guard 11 O,'
-    'cases lifecycle_no_truncate 34 O,deletion_log deletion_log_kept 27 O,deletion_log lifecycle_no_truncate 34 O,'
+    'cases lifecycle_no_truncate 34 O,deletion_log deletion_log_kept 31 O,deletion_log lifecycle_no_truncate 34 O,'
     'legal_holds lifecycle_guard 11 O,legal_holds lifecycle_no_truncate 34 O',
   'the guard triggers are not exactly on cases, case_steps and legal_holds (and the log''s on deletion_log), enabled O (LCD-03)');
 select pg_temp.check(not exists (
@@ -124,7 +136,7 @@ select pg_temp.check(
     select 1 from pg_trigger t join pg_proc f on f.oid = t.tgfoid
     where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
       and (t.tgqual is not null or cardinality(t.tgattr::int2[]) <> 0)),
-  'a guard trigger fires only under a WHEN condition or for an UPDATE OF list (LCD-03, GUARD-04)');
+  'a guard trigger fires only under a WHEN condition or for an UPDATE OF list (LCD-03, GUARD-04, TESTS-03)');
 
 -- LCD-04: no runtime role, nor hearth_worker, touches C0.10's tables or runs its functions.
 do $$

@@ -5,8 +5,10 @@
 //   - guarded: the path deletes only from tables that carry lifecycle_guard(), the BEFORE DELETE row
 //     trigger that refuses any role's delete not logged in its transaction, or of a held row (HF010,
 //     HF009), with lifecycle_no_truncate() beside it;
-//   - checked: a definer that asks lifecycle_held() or is_held() itself and skips a held row, for a
-//     table whose rows a person also edits, where a trigger would reveal a hold to them (LH-58);
+//   - checked: a definer that asks lifecycle_held() or is_held() itself, skips a held row and logs
+//     each row it deletes with log_deletion(), for a table a leaver's reduction marks (`reduction:
+//     'apply'`, rows a person also edits, where a trigger would reveal a hold to them: today
+//     working_hours alone; LH-58, GUARD-02);
 //   - exempt: outside holds, with the decision (an LH id TECH-SPEC T23 records, or a TECH-SPEC item)
 //     that records why.
 //
@@ -14,25 +16,28 @@
 // database allows, as check 1 finds writes, and requires an entry here for each and no entry for
 // anything else:
 //   '<role> <table>:DELETE'      a runtime role's DELETE grant; it deletes from its table;
-//   '<function>(<arg types>)'    a function a runtime role may execute, or a SECURITY DEFINER or
-//                                trigger function, whose body deletes; it deletes from every table
-//                                its DELETEs name;
+//   '<function>(<arg types>)'    any function of public whose body deletes, a plain helper no
+//                                runtime role may run included, since a definer can call it
+//                                (GUARD-03); it deletes from every table its DELETEs name;
 //   'fk <table>.<constraint>'    a foreign key ON DELETE CASCADE (it deletes from its child table),
 //                                SET NULL or SET DEFAULT (an UPDATE of its child that deletes
 //                                nothing: the delete that fires it is its parent's own path, decided
 //                                under that path's entry; DB-10);
 //   'ddl <function>(<arg types>)' a DYNAMIC_DDL function (apps/server/scripts/catalogues.ts), whose
-//                                format strings may name no drop, truncate, detach or delete.
+//                                format strings may name no drop, truncate, detach or delete, and
+//                                whose body is the one pinned there (R2CODE-01).
 // It fails on a guarded path that deletes from a table not in GUARDED_TABLES (so a step's first
-// delete path brings the guard), a checked path whose body never asks lifecycle_held() or is_held(),
-// or that deletes from a guarded or kept table, an exempt path that deletes from a table of a class
-// whose holds apply, and any path to a table of a kept class (packages/shared RETENTION_CLASSES).
-// Adding an entry is a reviewed change.
+// delete path brings the guard), a checked path whose body never asks lifecycle_held() or is_held()
+// or never calls log_deletion(), or that deletes from a table a leaver's reduction doesn't mark or
+// from a guarded or kept one (so any other holds-apply table's first path is guarded: GUARD-02), an
+// exempt path that deletes from a table of a class whose holds apply, any path to a table of a kept
+// class (packages/shared RETENTION_CLASSES), and a function of public whose body it can't read
+// (BEGIN ATOMIC, or EXECUTE outside DYNAMIC_DDL). Adding an entry is a reviewed change.
 
 // guarded: the table carries lifecycle_guard(); checked: a definer that asks lifecycle_held() or
-// is_held() itself and skips a held row, for a table whose rows a person also edits, where a trigger
-// would reveal a hold (LH-58; check 8 reads its body for the call); exempt: outside holds, with the
-// decision that records why.
+// is_held() itself, skips a held row and calls log_deletion(), for a table a leaver's reduction
+// marks, whose rows a person also edits, where a trigger would reveal a hold (LH-58, GUARD-02; check
+// 8 reads its body for both calls); exempt: outside holds, with the decision that records why.
 export type DeletePath = { guarded: true } | { checked: true; decision: string } | { exempt: string; decision: string }
 
 // The tables carrying lifecycle_guard('<table>') and lifecycle_no_truncate() (check 7d), each in a
