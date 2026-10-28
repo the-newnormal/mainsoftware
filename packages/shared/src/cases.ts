@@ -216,9 +216,10 @@ export function contactInShape(channel: RequesterChannel, contact: string): bool
 const isChannel = (channel: string | null | undefined): channel is RequesterChannel =>
   channel !== null && channel !== undefined && (REQUESTER_CHANNELS as readonly string[]).includes(channel)
 
-// A day shifted by whole days, on the calendar (YYYY-MM-DD in, YYYY-MM-DD out).
-// setUTCFullYear() rather than Date.UTC(), which reads a year below 100 as 1900 and more.
-function shiftDay(day: string, days: number): string {
+// A day shifted by whole days, on the calendar (YYYY-MM-DD in, YYYY-MM-DD out), as Postgres adds
+// an integer to a date (retention.ts's heldUntil() uses it too). setUTCFullYear() rather than
+// Date.UTC(), which reads a year below 100 as 1900 and more.
+export function shiftDay(day: string, days: number): string {
   const [year = 1, month = 1, date = 1] = day.split('-').map(Number)
   const shifted = new Date(0)
   shifted.setUTCFullYear(year, month - 1, date + days)

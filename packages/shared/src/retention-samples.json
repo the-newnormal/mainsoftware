@@ -1,0 +1,234 @@
+[
+  {
+    "sample": "refused_copy_day_0",
+    "kind": "access",
+    "received": -20,
+    "steps": [{ "step": "acknowledged", "day": -19 }, { "step": "identity_checked", "day": -12 }],
+    "closed": { "day": 0, "kind": "access", "outcome": "refused" },
+    "until": 44,
+    "held": true
+  },
+  {
+    "sample": "refused_copy_day_30",
+    "kind": "access",
+    "received": -50,
+    "steps": [{ "step": "acknowledged", "day": -49 }],
+    "closed": { "day": -30, "kind": "access", "outcome": "refused" },
+    "until": 14,
+    "held": true
+  },
+  {
+    "sample": "refused_copy_day_44",
+    "kind": "access",
+    "received": -60,
+    "steps": [],
+    "closed": { "day": -44, "kind": "access", "outcome": "refused" },
+    "until": 0,
+    "held": true
+  },
+  {
+    "sample": "refused_copy_day_45",
+    "kind": "access",
+    "received": -60,
+    "steps": [],
+    "closed": { "day": -45, "kind": "access", "outcome": "refused" },
+    "until": -1,
+    "held": false
+  },
+  {
+    "sample": "review_open",
+    "kind": "access",
+    "received": -120,
+    "steps": [{ "step": "review_started", "day": -90 }],
+    "closed": { "day": -100, "kind": "access", "outcome": "refused" },
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "review_ended_before_day_44",
+    "kind": "access",
+    "received": -40,
+    "steps": [{ "step": "review_started", "day": -25 }, { "step": "review_ended", "day": -20 }],
+    "closed": { "day": -30, "kind": "access", "outcome": "refused" },
+    "until": 14,
+    "held": true
+  },
+  {
+    "sample": "review_ended_after_day_44_today",
+    "kind": "access",
+    "received": -130,
+    "steps": [{ "step": "review_started", "day": -90 }, { "step": "review_ended", "day": 0 }],
+    "closed": { "day": -100, "kind": "access", "outcome": "refused" },
+    "until": 0,
+    "held": true
+  },
+  {
+    "sample": "review_ended_after_day_44_yesterday",
+    "kind": "access",
+    "received": -130,
+    "steps": [
+      { "step": "review_started", "day": -90 },
+      { "step": "note", "day": -60 },
+      { "step": "review_ended", "day": -1 }
+    ],
+    "closed": { "day": -100, "kind": "access", "outcome": "refused" },
+    "until": -1,
+    "held": false
+  },
+  {
+    "sample": "fresh_application_open",
+    "kind": "access",
+    "received": -220,
+    "steps": [
+      { "step": "review_started", "day": -190 },
+      { "step": "review_ended", "day": -150 },
+      { "step": "review_started", "day": -20 }
+    ],
+    "closed": { "day": -200, "kind": "access", "outcome": "refused" },
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "fresh_application_ended",
+    "kind": "access",
+    "received": -220,
+    "steps": [
+      { "step": "review_started", "day": -190 },
+      { "step": "review_ended", "day": -150 },
+      { "step": "review_started", "day": -20 },
+      { "step": "review_ended", "day": -3 }
+    ],
+    "closed": { "day": -200, "kind": "access", "outcome": "refused" },
+    "until": -3,
+    "held": false
+  },
+  {
+    "sample": "answered_copy",
+    "kind": "access",
+    "received": -10,
+    "steps": [{ "step": "identity_checked", "day": -8 }, { "step": "replied", "day": -5 }],
+    "closed": { "day": -5, "kind": "access", "outcome": "answered" },
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "refused_correction",
+    "kind": "correction",
+    "received": -10,
+    "steps": [],
+    "closed": { "day": -5, "kind": "correction", "outcome": "refused" },
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "refused_objection",
+    "kind": "objection",
+    "received": -10,
+    "steps": [],
+    "closed": { "day": -5, "kind": "objection", "outcome": "refused" },
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "duplicate_copy",
+    "kind": "access",
+    "received": -10,
+    "steps": [],
+    "closed": { "day": -5, "kind": "access", "outcome": "duplicate" },
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "open_copy",
+    "kind": "access",
+    "received": -3,
+    "steps": [],
+    "closed": null,
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "open_correction",
+    "kind": "correction",
+    "received": -3,
+    "steps": [{ "step": "acknowledged", "day": -2 }],
+    "closed": null,
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "open_question",
+    "kind": "question",
+    "received": -3,
+    "steps": [],
+    "closed": null,
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "open_complaint",
+    "kind": "complaint",
+    "received": -3,
+    "steps": [],
+    "closed": null,
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "open_withdrawal",
+    "kind": "withdrawal",
+    "received": -3,
+    "steps": [],
+    "closed": null,
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "open_objection",
+    "kind": "objection",
+    "received": -3,
+    "steps": [],
+    "closed": null,
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "question_reclassified_to_copy",
+    "kind": "question",
+    "received": -10,
+    "steps": [{ "step": "reclassified", "day": -8, "kind": "access" }],
+    "closed": null,
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "copy_reclassified_to_question",
+    "kind": "access",
+    "received": -10,
+    "steps": [{ "step": "reclassified", "day": -8, "kind": "question" }],
+    "closed": null,
+    "until": null,
+    "held": false
+  },
+  {
+    "sample": "copy_reclassified_and_back",
+    "kind": "access",
+    "received": -10,
+    "steps": [
+      { "step": "reclassified", "day": -8, "kind": "question" },
+      { "step": "reclassified", "day": -4, "kind": "access" }
+    ],
+    "closed": null,
+    "until": "indefinite",
+    "held": true
+  },
+  {
+    "sample": "question_reclassified_to_copy_refused",
+    "kind": "question",
+    "received": -40,
+    "steps": [{ "step": "reclassified", "day": -35, "kind": "access" }],
+    "closed": { "day": -10, "kind": "access", "outcome": "refused" },
+    "until": 34,
+    "held": true
+  }
+]
