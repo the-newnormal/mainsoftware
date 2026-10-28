@@ -118,4 +118,26 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
     expect(reload).toHaveBeenCalledTimes(1)
     expect(events.map(event => event.defaultPrevented)).toEqual([true, true, true])
   })
+
+  it('PB-04 T21 item 2: once the page is leaving (beforeunload or pagehide), a preload error is a cancelled chunk: nothing reloads and the error goes on', () => {
+    for (const leave of ['beforeunload', 'pagehide']) {
+      const leaving = fakeWindow(() => memoryStorage({}))
+      const ask = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
+      preBoot(leaving.win, ask)
+      leaving.dispatch(leave, new Event(leave))
+      const event = preloadError()
+      leaving.dispatch('vite:preloadError', event)
+      expect(ask, leave).not.toHaveBeenCalled()
+      expect(event.defaultPrevented, leave).toBe(false)
+    }
+    // A reload already under way still stops the errors that follow it, leaving or not.
+    const reloading = fakeWindow(() => memoryStorage({}))
+    preBoot(reloading.win, () => 'reloaded')
+    const first = preloadError()
+    reloading.dispatch('vite:preloadError', first)
+    reloading.dispatch('beforeunload', new Event('beforeunload'))
+    const second = preloadError()
+    reloading.dispatch('vite:preloadError', second)
+    expect([first.defaultPrevented, second.defaultPrevented]).toEqual([true, true])
+  })
 })
