@@ -1,5 +1,7 @@
-# Qodo = the second PR reviewer. Claude merges only once Qodo's review of the latest commit
-# leaves no open "Action required" finding (CLAUDE.md, Git).
+# Qodo was the second PR reviewer until its trial ended. Since 27 Oct 2026 its review is no longer
+# a merge gate (CLAUDE.md, Git). This file stays while Qodo's app is installed, so any review it
+# still posts never rewrites the PR description, which holds the "Before merging" steps; delete it
+# once the app is uninstalled (C0.9 OD-30).
 [github_app]
 # Review only: Qodo's describe rewrites the PR description, which holds the "Before merging" steps.
 pr_commands = ["/agentic_review"]

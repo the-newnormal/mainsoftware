@@ -271,8 +271,11 @@ describe('T2 server runtime: the repo', () => {
   })
 
   it('runtime code never loads a test-only file, which the image leaves out', () => {
+    // apps/server/scripts/ holds CI's checks and development tools, which Dockerfile.dockerignore
+    // leaves out of the image too, so a check there may load testing/ (check-owner-bootstrap.ts
+    // loads the bootstrap harness and the write sweep, TECH-SPEC T22 item 70).
     const found = serverScripts
-      .filter(path => !isTest(path))
+      .filter(path => !isTest(path) && !path.startsWith('apps/server/scripts/'))
       .flatMap(path =>
         moduleImports(readRepoFile(path), path).flatMap(entry =>
           importedPaths(entry, path, workspaceOf(path), server)

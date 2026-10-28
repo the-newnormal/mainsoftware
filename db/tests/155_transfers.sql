@@ -927,10 +927,13 @@ $$;
 -- the superuser), and its DPO records Twilio's facts with a review date 30 days ahead, clears it in
 -- the app, publishes version 1 (stating that clearance, on the fixture's contact e6) and withdraws
 -- it. With the facts read as the recovery mode reads them, from the snapshot of the Twilio
--- clearance the latest version links, the revision stays and Twilio is cleared for every send.
--- With one stated fact changed (in a savepoint, first) the revision moves on, with Hearth as
--- updated_by, and sends wait for a version that states it (unstated). With no version at all (org
--- 3, in a savepoint) it is no_notice. One audit row (Hearth acting, the reason, the bootstrap's
+-- clearance the latest version links, with the review date the entry already holds, the revision
+-- stays and Twilio is cleared for every send; a new review date (in a savepoint, second) moves the
+-- revision on with Hearth as updated_by and changed holding review_on alone, and Twilio is still
+-- cleared, since review_on is no notice fact (the recovery mode's usual run, TECH-SPEC T22 items 44
+-- and 67). With one stated fact changed (in a savepoint, first) the revision moves on, with Hearth
+-- as updated_by, and sends wait for a version that states it (unstated). With no version at all
+-- (org 3, in a savepoint) it is no_notice. One audit row (Hearth acting, the reason, the bootstrap's
 -- details with the clearance that ended and why) and one register.transfer_changed, Hearth acting.
 insert into public.processing_register (org_id, purpose, ai, pinned, needs_switch, version, status, basis, retention, providers,
                                         recorded_by)
@@ -976,6 +979,29 @@ begin
   perform pg_temp.act_as('2', 'a0');
   perform pg_temp.check(public.transfer_send_state('twilio') = 'unstated',
                         format('twilio re-cleared on facts version 1 doesn''t state is %s', public.transfer_send_state('twilio')));
+  raise exception 'roll the re-clear back' using errcode = 'HT001';
+exception when sqlstate 'HT001' then
+  null;
+end
+$$;
+-- The stated facts with a new review date, 60 days ahead where the entry holds 30.
+do $$
+begin
+  perform pg_temp.act_as_owner('2', 'a0');
+  perform pg_temp.reclear(pg_temp.id('2', 'a5'),
+                          current_setting('test.stated')::jsonb || jsonb_build_object('review_on', pg_temp.today() + 60));
+  perform set_config('role', 'none', true);
+  perform pg_temp.check(t.revision = current_setting('test.revision')::bigint + 1 and t.updated_by = pg_temp.id('2', 'a0')
+                        and t.review_on = pg_temp.today() + 60,
+                        'a re-clear with a new review date did not move the revision on, as Hearth''s')
+  from public.transfer_register t where t.org_id = pg_temp.id('2', '00') and t.provider = 'twilio';
+  perform pg_temp.check(a.details -> 'changed' = jsonb_build_object('review_on', jsonb_build_object('from', pg_temp.today() + 30,
+                                                                                                     'to', pg_temp.today() + 60)),
+                        format('the re-clear''s audit row does not record the review date alone: %s', a.details))
+  from public.audit_events a where a.id = (select max(id) from public.audit_events);
+  perform pg_temp.act_as('2', 'a0');
+  perform pg_temp.check(public.transfer_send_state('twilio') = 'cleared',
+                        format('twilio re-cleared with a new review date is %s', public.transfer_send_state('twilio')));
   raise exception 'roll the re-clear back' using errcode = 'HT001';
 exception when sqlstate 'HT001' then
   null;

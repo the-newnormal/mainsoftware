@@ -324,6 +324,8 @@ describe('D41 AI-free guard: the repo', () => {
     expect(files.filter(path => /(^|\/)(yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(path))).toEqual([])
   })
 
+  // It parses every script and page in the repo, about 4 s alone, so Vitest's 5 s default is too
+  // close when every workspace's tests share the machine, as in CI's check job.
   it('no script or page imports one', () => {
     const found = codeFiles.flatMap(path => {
       // A page's inline scripts are read as code too.
@@ -336,7 +338,7 @@ describe('D41 AI-free guard: the repo', () => {
         })
     })
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it("no script or page uses the browser's speech recognition or built-in AI", () => {
     expect(textChecked.filter(path => BROWSER_AI.test(codeOf(path, readRepoFile(path))))).toEqual([])

@@ -224,7 +224,8 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
   // can() allows the change and append the event in the same transaction, naming the new version's
   // row or the transfer entry. Their audit rows are covered by hearth_app's audit grant, as for
   // set_feature_flag(). The first-Owner bootstrap's function (bootstrap_transfer_clearance()), and
-  // its break-glass re-clear (C0.9 OD-20), is no runtime role's and appends its own event (PD-23).
+  // its break-glass re-clear (C0.9 OD-20), is no runtime role's and appends its own event (PD-23),
+  // and the bootstrap script's own inserts, the owner's, append none (TECH-SPEC T22 item 66).
   'set_register_purpose(text, integer, text, text, text, integer, text, text[], text, uuid, inet)': {
     events: ['register.purpose_changed'],
     writes: ['processing_register:INSERT'],

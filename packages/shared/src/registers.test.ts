@@ -34,6 +34,7 @@ import {
   statusesFor,
   TRANSFER_PROBLEMS,
   type TransferFacts,
+  TransferFactsBody,
   TransferWriteResponse,
   transferProblems,
   WithdrawTransferBody,
@@ -450,6 +451,49 @@ describe('C0.9 PD-20 PD-21: the bodies the routes take', () => {
       { ...body, extra: true },
     ]) {
       expect(RecordTransferBody.safeParse(bad).success, JSON.stringify(bad).slice(0, 80)).toBe(false)
+    }
+  })
+
+  it('RGS-14 PD-119 T22 item 64: TransferFactsBody reads the facts as RecordTransferBody does, and takes nothing else', () => {
+    const route = { provider: 'twilio', seen: 3, keepCleared: false }
+    const facts = {
+      ...FACTS,
+      services: '  Verify codes  ',
+      onwardRecipients: '   ',
+      processingCountries: ['us', 'SG', 'US'],
+    }
+    const parsed = TransferFactsBody.parse(facts)
+    expect({ ...parsed, ...route }).toEqual(RecordTransferBody.parse({ ...route, ...facts }))
+    expect(parsed).toMatchObject({
+      services: 'Verify codes',
+      onwardRecipients: null,
+      processingCountries: ['SG', 'US'],
+    })
+    expect(Object.keys(TransferFactsBody.shape).sort()).toEqual(
+      Object.keys(RecordTransferBody.shape)
+        .filter(key => !(key in route))
+        .sort(),
+    )
+    // A fact either body refuses, the other refuses too.
+    for (const bad of [
+      { processingCountries: ['USA'] },
+      { storageCountries: Array.from({ length: 61 }, () => 'SG') },
+      { reviewOn: '2027-02-30' },
+      { reviewOn: '0000-01-01' },
+      { certificateVerifiedOn: '0000-02-29' },
+      { safeguard: 'contract' },
+      { training: 'sometimes' },
+      { dpaTermsConfirmed: 'yes' },
+      { services: 'x'.repeat(501) },
+      { dataTypes: undefined },
+    ]) {
+      const label = JSON.stringify(bad).slice(0, 80)
+      expect(TransferFactsBody.safeParse({ ...facts, ...bad }).success, label).toBe(false)
+      expect(RecordTransferBody.safeParse({ ...route, ...facts, ...bad }).success, label).toBe(false)
+    }
+    // Strict: the route's own fields, a PIN or any other key is refused.
+    for (const extra of [{ provider: 'twilio' }, { seen: 3 }, { keepCleared: true }, { pin: null }]) {
+      expect(TransferFactsBody.safeParse({ ...facts, ...extra }).success, Object.keys(extra).join()).toBe(false)
     }
   })
 

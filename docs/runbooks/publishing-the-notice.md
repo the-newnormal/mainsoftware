@@ -13,7 +13,7 @@
 
 ## Before you start
 
-- For production's v0: the first-Owner bootstrap has run; production and its break-glass role exist (C0.11, C0.12); the push services are cleared on Transfers (before C0.15); and C0.9 PR 3b has merged: production's v0 waits for it, so everyone acknowledges the rights section's form and reply targets once (C0.9 PD-84, confirmed by the owner on 24 Oct 2026; TECH-SPEC T22 item 48).
+- For production's v0: the first-Owner bootstrap has run ([Setting up the organisation and its first Owner](first-owner-set-up.md)), and the founder has signed in; production and its break-glass role exist (C0.11, C0.12); the push services are cleared on Transfers (before C0.15); and C0.9 PR 3b has merged: production's v0 waits for it, so everyone acknowledges the rights section's form and reply targets once (C0.9 PD-84, confirmed by the owner on 24 Oct 2026; TECH-SPEC T22 item 48).
 - Have your contact details ready: a role title and a shared mailbox or business line, never your own name or mobile number, so they still work if someone else takes on the role.
 - Decide your reply targets: 10 business days and 30 calendar days unless you choose fewer (C0.9 OD-08). The notice prints them, and a change after v0 means everyone acknowledges a new version.
 - Have the legal basis and retention ready for "Handling questions, complaints and requests about personal data" (`request_handling`). It is active from the start and records nothing until you do; usually it is another exception or requirement in law, citing the provision (C0.9 OD-17).
