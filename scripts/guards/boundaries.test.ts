@@ -118,6 +118,8 @@ describe('INF-ARCHLINT import boundaries: the repo', () => {
     expect(links).toEqual([])
   })
 
+  // It parses every script in the repo, about 3.5 s alone and over 5 s when the guard suites share
+  // the machine, so Vitest's 5 s default is too close, as for ai-free.test.ts's scan.
   it('no workspace imports across a boundary', () => {
     const found = files.filter(isScript).flatMap(path => {
       const from = workspaces.find(w => path.startsWith(w.dir))
@@ -129,5 +131,5 @@ describe('INF-ARCHLINT import boundaries: the repo', () => {
       })
     })
     expect(found).toEqual([])
-  })
+  }, 30_000)
 })

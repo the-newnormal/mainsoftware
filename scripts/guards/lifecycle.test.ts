@@ -142,6 +142,8 @@ describe('LCG-02 (C0.10 LH-33): no S3 delete, lifecycle or Object Lock call outs
     ])
   })
 
+  // It reads every script in four folders, about 3 s alone, so Vitest's 5 s default is too close when
+  // every workspace's tests share the machine, as for ai-free.test.ts's scan.
   it('no script in apps/, packages/, infra/ or scripts/ names one, and no CDK lifecycle rule expires untagged', () => {
     const allowed = new Set(S3_ALLOWED.map(entry => entry.path))
     const scripts = repoFiles().filter(path => /^(?:apps|packages|infra|scripts)\//.test(path) && isScript(path))
@@ -163,7 +165,7 @@ describe('LCG-02 (C0.10 LH-33): no S3 delete, lifecycle or Object Lock call outs
       expect(entry.why.trim().length).toBeGreaterThan(0)
       expect(all.has(entry.path)).toBe(true)
     }
-  })
+  }, 30_000)
 })
 
 // --- The tables the guards protect ------------------------------------------------------------------
@@ -580,5 +582,57 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
     // Several files set replica mode today, so an empty map would mean the guard reads nothing.
     expect(files.size).toBeGreaterThan(0)
     expect(replicaDeletes(files, guarded)).toEqual([])
+  })
+})
+
+// --- What the docs say C0.10 built (review DOCS-02, DOCS-03, DOCS-05, DOCS-06) ------------------
+// Text pins on the sentences the review corrected, each beside the code fact it describes, so the
+// old wording can't come back while the code says otherwise. A comment's line breaks in ci.yml are
+// folded first, so a pin reads a wrapped sentence whole.
+const folded = (text: string): string => text.replace(/\n\s*#\s*/g, ' ').replace(/\s+/g, ' ')
+
+describe('C0.10 review: CLAUDE.md, TECH-SPEC and ci.yml say what 0013 and its checks do', () => {
+  const claude = folded(readRepoFile('CLAUDE.md'))
+
+  it('DOCS-02: OD-27’s revoke is described as carried, as 032 pins nobody reading the actor', () => {
+    expect(readRepoFile('db/tests/032_worker_roles.sql')).toContain(
+      "'a role may read an outbox event''s actor (OD-27, LCD-31)'",
+    )
+    expect(claude).not.toMatch(/until the revoke C0\.9 OD-27/)
+    expect(claude).toContain('since 0013 carried C0.9 OD-27’s revoke'.replace('’', "'"))
+    expect(claude).toMatch(/which 032 pins \(LCD-31\)/)
+  })
+
+  it('DOCS-03: only a guarded path’s tables carry the guard, beside checked and exempt paths', () => {
+    expect(readRepoFile('apps/server/src/lifecycle/deletes.ts')).toContain(
+      'export type DeletePath = { guarded: true } | { checked: true; decision: string } | { exempt: string; decision: string }',
+    )
+    expect(claude).toContain('Every table a `guarded` delete path deletes from carries')
+    expect(claude).toContain('as `guarded`, `checked` or `exempt`')
+  })
+
+  it('DOCS-05: LCR-15 is is_held() against a request being sent, never against a deletion', () => {
+    const concurrency = readRepoFile('apps/server/scripts/check-concurrency.ts')
+    expect(concurrency).toMatch(/'LCR-15 [^']*is_held\(\) of a person waits for a request for a copy they are sending/)
+    for (const [path, text] of [
+      ['CLAUDE.md', claude],
+      ['docs/TECH-SPEC.md', folded(readRepoFile('docs/TECH-SPEC.md'))],
+      ['.github/workflows/ci.yml', folded(readRepoFile('.github/workflows/ci.yml'))],
+    ] as const) {
+      expect(text, path).toMatch(/is_held\(\)`? against a request being sent/)
+      expect(text, path).not.toMatch(/a release, `?is_held\(\)/)
+    }
+  })
+
+  it('DOCS-06: the class rule leaves out the migrator’s ledger, as check 7 does', () => {
+    expect(readRepoFile('apps/server/scripts/check-catalogues.ts')).toContain(
+      "c.relname not in ('kysely_migration', 'kysely_migration_lock')",
+    )
+    expect(claude).toContain(
+      'Every table of `public` (the migrator’s ledger, `kysely_migration` and `kysely_migration_lock`, aside;'.replace(
+        '’',
+        "'",
+      ),
+    )
   })
 })
