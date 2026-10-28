@@ -926,7 +926,8 @@ export interface Relation {
 }
 
 // A trigger of public, as pg_trigger holds it: the relation it is on and that relation's root, its
-// name, the function it executes, tgtype, tgenabled and its arguments.
+// name, the function it executes, tgtype, tgenabled, its arguments, whether it has a WHEN condition
+// (tgqual) and how many columns its UPDATE OF list names (tgattr; 0 for none).
 export interface TriggerRow {
   relation: string
   root: string
@@ -935,6 +936,8 @@ export interface TriggerRow {
   type: number
   enabled: string
   args: readonly string[]
+  conditional: boolean
+  columns: number
 }
 
 // pg_trigger.tgtype's bits.
@@ -965,9 +968,12 @@ function triggerTypeText(type: number): string {
 // own name as the argument, and every partition of one carries its clone naming the parent; each
 // carries lifecycle_no_truncate(); deletion_log carries lifecycle_no_truncate() and
 // deletion_log_kept(), and legal_holds legal_holds_kept(); each enabled the default way (O), named as
-// its function, with its tgtype; and no other table carries any of them. A migration that disables,
-// drops, misnames or re-points one, or enables it ALWAYS, fails here, though the schema digest would
-// agree with a fresh build made the same way. applyTables: the tables of classes whose holds apply.
+// its function, with its tgtype, and with no WHEN condition and no UPDATE OF list, so it fires for
+// every row and every column; and no other table carries any of them. A migration that disables,
+// drops, misnames, re-points, conditions or column-limits one, or enables it ALWAYS, fails here,
+// though the schema digest would agree with a fresh build made the same way. (A BEFORE trigger
+// varies only in these: transition tables, constraint triggers and deferral are AFTER triggers'.)
+// applyTables: the tables of classes whose holds apply.
 export function guardProblems(
   guarded: readonly string[],
   relations: readonly Relation[],
@@ -1042,6 +1048,18 @@ export function guardProblems(
       )
     }
     if (!fnKnown) continue
+    // On a parent table and a partition's clone alike: a condition or a column list lets the rows or
+    // updates it leaves out past the guard.
+    if (trigger.conditional) {
+      problems.push(
+        `public.${trigger.relation}'s ${trigger.fn} fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)`,
+      )
+    }
+    if (trigger.columns > 0) {
+      problems.push(
+        `public.${trigger.relation}'s ${trigger.fn} fires only on UPDATE OF ${trigger.columns === 1 ? 'one column' : `${trigger.columns} columns`}; a guard has no column list, so it fires on every update, whatever it changes (LH-11)`,
+      )
+    }
     const wanted = want.get(trigger.relation)?.has(trigger.fn) ?? false
     // A TRUNCATE refusal on a partition of a guarded table is allowed: Postgres doesn't clone a
     // statement trigger, so a step guarding a partitioned table may add one to each partition.
@@ -1288,6 +1306,8 @@ const deletesText = (tables: readonly string[]) =>
 // TECH-SPEC records; no path deletes from a table kept as history; a CASCADE key into a guarded table
 // cascades into a guarded or listed child; and a DYNAMIC_DDL function's format strings name no drop,
 // truncate, detach or delete, so "only changes the schema and writes no row" is checked, not trusted.
+// What a body does without a DELETE (TRUNCATE, DROP TABLE, DETACH PARTITION, triggers off) is
+// bodyDdlProblems'.
 export function deletePathProblems(
   entries: Readonly<Record<string, DeletePath>>,
   guarded: readonly string[],
@@ -1363,6 +1383,59 @@ export function deletePathProblems(
   for (const key of Object.keys(entries)) {
     if (!keys.has(key))
       problems.push(`${where} decides '${key}', which no delete path the database allows matches: remove it`)
+  }
+  return problems
+}
+
+// The guard's functions, and the hold decision every guard and definer asks (DB-07).
+const GUARD_FUNCTION = '(?:lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept|lifecycle_held)'
+
+// What no function body may run, read from its text with comments and strings stripped (stripSql,
+// which folds code to lower case): each empties rows or partitions with no row trigger, so neither
+// the guard nor the hold decision sees it, or turns the guard off or replaces it. TRUNCATE also
+// empties every org's rows, which no definer function, filtering by its org, may do. Set by
+// set_config(), session_replication_role's name is a string, so that form is read with only the
+// comments stripped (stripComments).
+const BODY_DDL: ReadonlyArray<[string, RegExp, 'code' | 'strings']> = [
+  ['TRUNCATE', /\btruncate\b/, 'code'],
+  ['DROP TABLE', /\bdrop\s+table\b/, 'code'],
+  ['DETACH PARTITION', /\bdetach\s+partition\b/, 'code'],
+  ['DISABLE TRIGGER', /\bdisable\s+trigger\b/, 'code'],
+  ['DROP TRIGGER', /\bdrop\s+trigger\b/, 'code'],
+  ['ENABLE ALWAYS or REPLICA TRIGGER', /\benable\s+(?:always|replica)\s+trigger\b/, 'code'],
+  ['SET session_replication_role', /\bset\s+(?:local\s+|session\s+)?"?session_replication_role\b/, 'code'],
+  ['SET session_replication_role', /\bset_config\s*\(\s*'session_replication_role'/i, 'strings'],
+  [
+    'CREATE OR REPLACE, DROP or ALTER FUNCTION of a guard function or lifecycle_held()',
+    new RegExp(
+      String.raw`\b(?:create\s+or\s+replace|drop|alter)\s+function\s+(?:if\s+exists\s+)?(?:(?:public|"public")\s*\.\s*)?"?${GUARD_FUNCTION}\b`,
+    ),
+    'code',
+  ],
+]
+
+// 8, function bodies. No function check-catalogues reads (a definer, a trigger function or one a
+// runtime role may execute) runs, as a plain statement, TRUNCATE, DROP TABLE, DETACH PARTITION,
+// DISABLE, DROP or ENABLE ALWAYS or REPLICA TRIGGER, a setting of session_replication_role, or a
+// replacement, drop or change of the guard's functions or lifecycle_held(): none is a DELETE, so
+// deletePathsOf finds no path for it, and DESTRUCTIVE reads only a DYNAMIC_DDL function's format
+// strings (LH-12, LH-33). A DYNAMIC_DDL function's own plain statements are held to it too. A step
+// that needs one changes this check, a reviewed change.
+export function bodyDdlProblems(functions: readonly Fn[]): string[] {
+  const problems: string[] = []
+  for (const fn of functions) {
+    if (fn.source === undefined) continue
+    const code = stripSql(fn.source)
+    const strings = stripComments(fn.source)
+    const named = new Set<string>()
+    for (const [what, pattern, reads] of BODY_DDL) {
+      if (!named.has(what) && pattern.test(reads === 'code' ? code : strings)) named.add(what)
+    }
+    for (const what of named) {
+      problems.push(
+        `public.${fn.key} runs ${what} in its body, which deletes or turns the guard off with no DELETE for check 8 to decide: a deletion goes through the deletion code, never DDL in a function (LH-12, LH-33)`,
+      )
+    }
   }
   return problems
 }

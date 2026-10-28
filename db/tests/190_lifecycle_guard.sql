@@ -12,9 +12,12 @@
 --   LCD-11 a request's steps before the request are refused (HF010); after it, in the same
 --          transaction with its log row, they pass, and the deferred key passes once checked (LH-13);
 --   LCD-12 lifecycle_row_anchors() for every holds-apply table returns exactly one row with its kind
---          and people; an unknown table raises 22023;
+--          and people, an audit row's including the DPO who decided a clearance (details.decided_by),
+--          so a hold on that DPO keeps the row (HOLDS-01); an unknown table raises 22023;
 --   LCD-13 is_held(): no org set (42501); an unknown kind (22023); a read-only transaction (25006);
---          another org's hold on the same id answers false; the answer is a boolean only.
+--          another org's hold on the same id answers false; the answer is a boolean only;
+--   DB-06  every SECURITY DEFINER of public reads its org from app.org_id but the named exceptions,
+--          lifecycle_guard() among them, which CLAUDE.md's definer rule names (review DOCS-04).
 -- The owner deletes through `set role hearth_owner`, the superuser with no role set; app.org_id is set
 -- only where log_deletion() needs it, since the guard reads the org from the row.
 \ir fixtures/two_orgs.sql
@@ -232,6 +235,52 @@ select pg_temp.check(pg_temp.anchors('audit_events', jsonb_build_object(
                            'target_id', 'm-1', 'case_id', pg_temp.id('1', 'e8')))
                          = format('audit_event - {%s,%s}', pg_temp.id('1', 'a5'), pg_temp.id('1', 'a8')),
                      'an audit row doesn''t anchor the requester of the case it names (LCD-12)');
+-- The DPO who decided a clearance, whom the bootstrap and Twilio's break-glass re-clear name only in
+-- details.decided_by, with Hearth as the actor (0009, 0011; HOLDS-01), in either case; a decided_by
+-- that isn't a uuid, or details that aren't an object, add nobody.
+create function pg_temp.cleared_row(decided_by jsonb) returns jsonb language sql as $$
+  select jsonb_build_object('id', 13, 'org_id', pg_temp.id('1', '00'), 'actor_id', pg_temp.id('1', 'a0'),
+                            'action', 'register.transfer_cleared', 'target_type', 'transfer_entry', 'target_id', 'twilio',
+                            'details', jsonb_build_object('by', 'break_glass', 'decided_by', decided_by, 'revision', 2))
+$$;
+select pg_temp.check(pg_temp.anchors('audit_events', pg_temp.cleared_row(to_jsonb(pg_temp.id('1', 'a5'))))
+                       = format('audit_event - {%s,%s}', pg_temp.id('1', 'a0'), pg_temp.id('1', 'a5'))
+                     and pg_temp.anchors('audit_events', pg_temp.cleared_row(to_jsonb(upper(pg_temp.id('1', 'a5')::text))))
+                         = format('audit_event - {%s,%s}', pg_temp.id('1', 'a0'), pg_temp.id('1', 'a5')),
+                     'an audit row doesn''t anchor the DPO who decided a clearance (LCD-12, HOLDS-01)');
+select pg_temp.check(pg_temp.anchors('audit_events', pg_temp.cleared_row('"the DPO"')) = format('audit_event - {%s}', pg_temp.id('1', 'a0'))
+                     and pg_temp.anchors('audit_events', pg_temp.cleared_row('null')) = format('audit_event - {%s}', pg_temp.id('1', 'a0'))
+                     and pg_temp.anchors('audit_events', pg_temp.cleared_row(jsonb_build_array(pg_temp.id('1', 'a5'))))
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a0'))
+                     and pg_temp.anchors('audit_events', pg_temp.cleared_row('{}') || '{"details": "decided_by"}')
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a0'))
+                     and pg_temp.anchors('audit_events', pg_temp.cleared_row('{}')
+                                                         || jsonb_build_object('details', jsonb_build_array(pg_temp.id('1', 'a5'))))
+                         = format('audit_event - {%s}', pg_temp.id('1', 'a0')),
+                     'a decided_by that isn''t a uuid anchored someone (LCD-12, HOLDS-01)');
+-- And the guard's decision over those anchors (lifecycle_held(), as lifecycle_guard() asks it once
+-- C2.9 attaches the guard to audit_events): the row isn't held while nothing holds its DPO, and is
+-- once a legal hold on them is placed, in a block that undoes the hold.
+do $$
+declare
+  a record;
+begin
+  select * into a from public.lifecycle_row_anchors(pg_temp.id('1', '00'), 'audit_events',
+                                                    pg_temp.cleared_row(to_jsonb(pg_temp.id('1', 'a5'))));
+  perform pg_temp.check(not public.lifecycle_held(pg_temp.id('1', '00'), a.persons, a.kind, a.item),
+                        'a clearance''s audit row is held while nothing holds its DPO (LCD-12, HOLDS-01)');
+  insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+  values (pg_temp.id('1', '00'), gen_random_uuid(), 'person', pg_temp.id('1', 'a5'), 'Fixture review of an emergency re-clear',
+          pg_temp.id('1', 'a6'));
+  perform pg_temp.check(public.lifecycle_held(pg_temp.id('1', '00'), a.persons, a.kind, a.item),
+                        'a hold on the DPO who decided a clearance doesn''t keep its audit row (LCD-12, HOLDS-01)');
+  raise exception 'undo' using errcode = 'P0001';
+exception when sqlstate 'P0001' then
+  if sqlerrm <> 'undo' then raise; end if;
+end
+$$;
+select pg_temp.check(not exists (select 1 from public.legal_holds h where h.org_id = pg_temp.id('1', '00') and h.target_id = pg_temp.id('1', 'a5')),
+                     'the hold on the DPO leaked out of its block (LCD-12)');
 -- Targets that aren't a uuid, another org's case, and nobody at all: still one row.
 select pg_temp.check(pg_temp.anchors('audit_events', jsonb_build_object('id', 10, 'target_type', 'person', 'target_id', 'all'))
                      = 'audit_event - {}'
@@ -291,3 +340,17 @@ select pg_temp.check(not public.is_held('person', pg_temp.id('1', 'a9')),
 reset role;
 select pg_temp.check(pg_get_function_result('public.is_held(text,uuid)'::regprocedure) = 'boolean',
                      'is_held() answers more than a boolean (LCD-13)');
+
+-- DB-06 (C0.10 review DOCS-04): every SECURITY DEFINER of public reads its org from app.org_id in its
+-- own body, but these: the pre-org lookups (person_by_phone(), session_by_token()) and
+-- worker_org_ids(), before an org is known; create_data_access_partitions(), which acts in no org;
+-- transfer_cleared(), through transfer_send_state(), which reads it; and lifecycle_guard(), a
+-- trigger, which reads the deleted row's org, so a delete with no app.org_id is still checked
+-- (T23 item 8). A new one here names why in CLAUDE.md's definer rule.
+select pg_temp.check(
+  coalesce((select array_agg(p.proname::text order by p.proname)
+            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.prosecdef and p.prosrc not like '%app.org_id%'), '{}')
+  = array['create_data_access_partitions', 'lifecycle_guard', 'person_by_phone', 'session_by_token',
+          'transfer_cleared', 'worker_org_ids'],
+  'a SECURITY DEFINER takes its org other than from app.org_id: name why in CLAUDE.md''s definer rule (DB-06)');

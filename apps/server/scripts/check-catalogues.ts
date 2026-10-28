@@ -35,7 +35,8 @@
 //      class (b); each fixed age is the interval in its function's body, comments aside (c); the
 //      guard (lifecycle_guard() and lifecycle_no_truncate()) is on exactly the tables
 //      apps/server/src/lifecycle/deletes.ts GUARDED_TABLES lists, each naming its own table, enabled
-//      the default way, with deletion_log_kept() and legal_holds_kept() on theirs (d); every AI class
+//      the default way, with no WHEN condition or UPDATE OF list, with deletion_log_kept() and
+//      legal_holds_kept() on theirs (d); every AI class
 //      has a finite period and none is kept (e); HOLD_TARGET_KINDS, DELETION_CAUSES, HOLD_KINDS and
 //      REFUSED_COPY_HOLD equal the database's, and retention_period_days() answers every days class's
 //      default (f); and the hold decision's resolvers know every kind and every holds-apply table,
@@ -45,7 +46,9 @@
 //      grant, a reachable function whose body deletes, a foreign key that cascades or sets null or a
 //      default, a DYNAMIC_DDL function) is decided in apps/server/src/lifecycle/deletes.ts
 //      DELETE_PATHS as guarded, checked or exempt, each decision one docs/TECH-SPEC.md records, and no
-//      entry is stale.
+//      entry is stale; and no function body runs TRUNCATE, DROP TABLE, DETACH PARTITION, a trigger
+//      disabled, dropped or enabled ALWAYS or REPLICA, a setting of session_replication_role, or a
+//      change to the guard's functions, none of which is a DELETE a path could decide.
 // The runtime roles are found as scripts/check-migrations.sh finds them: every role granted
 // something in the database (the owner aside), and every role that can use one of them by SET or
 // INHERIT. The integration suites' sweep (apps/server/src/testing/writes.ts) checks the writes the
@@ -83,6 +86,7 @@ import {
   aiClassProblems,
   type BindingProbe,
   bindingProblems,
+  bodyDdlProblems,
   bodyProblems,
   type ClassDefault,
   checkpointBindings,
@@ -303,7 +307,8 @@ try {
       select c.relname as relation,
              coalesce((select r.relname from pg_class r where r.oid = pg_partition_root(c.oid)), c.relname) as root,
              t.tgname as name, p.proname as fn, t.tgtype::int as type, t.tgenabled as enabled,
-             t.tgargs, t.tgnargs::int as nargs
+             t.tgargs, t.tgnargs::int as nargs, t.tgqual is not null as conditional,
+             cardinality(t.tgattr::int2[]) as columns
       from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
       join pg_proc p on p.oid = t.tgfoid
       where n.nspname = 'public' and not t.tgisinternal
@@ -403,6 +408,7 @@ try {
     ),
     ...resolverProblems(resolverProbes),
     ...deletePathProblems(DELETE_PATHS, GUARDED_TABLES, deletePaths, holdsTables(classes), recordedDecisions(spec)),
+    ...bodyDdlProblems(functions),
   ]
   if (problems.length > 0) {
     process.stderr.write(`The catalogues and the database disagree:\n${problems.map(p => `  - ${p}`).join('\n')}\n`)

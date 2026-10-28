@@ -1,8 +1,10 @@
 // What the database's guard can't see, kept from deleting held data (C0.10 LH-33; TECH-SPEC T23
 // items 8 and 19). The guard (lifecycle_guard() and lifecycle_no_truncate(), 0013) refuses any
 // role's DELETE of a guarded row that isn't logged or is held, and check 8 decides every delete path
-// the database allows. Neither sees S3, a migration's top-level DDL, a table the guard isn't on yet,
-// or code a superuser runs with triggers off. Each case is first proved on planted files:
+// the database allows and refuses TRUNCATE, DROP TABLE, DETACH PARTITION and the guard turned off or
+// replaced in any function body (bodyDdlProblems, apps/server/scripts/catalogues.ts), so LCG-03
+// leaves function bodies to it. Neither sees S3, a migration's top-level DDL, a table the guard isn't
+// on yet, or code a superuser runs with triggers off. Each case is first proved on planted files:
 // - LCG-02, S3: no script in apps/, packages/, infra/ or scripts/ names an S3 call that deletes an
 //   object or changes how objects expire or are locked (DeleteObject, DeleteObjects, the bucket
 //   lifecycle and versioning calls, Object Lock's legal hold, retention and configuration), as a
@@ -13,8 +15,10 @@
 //   C0.12 the tag-filtered backstop, each with its reason;
 // - LCG-03, migrations: a migration numbered above 0013 holds, outside its function bodies (a DO
 //   block's body counts, since it runs in the migration), no TRUNCATE, DROP TABLE, DETACH PARTITION,
-//   DISABLE TRIGGER, DROP TRIGGER or ENABLE ALWAYS TRIGGER, no replacement, drop or change of the
-//   guard's functions or lifecycle_held() (DB-07), and no DELETE from a table of a class whose holds
+//   DISABLE TRIGGER, DROP TRIGGER, ENABLE ALWAYS TRIGGER or ENABLE REPLICA TRIGGER, no replacement,
+//   drop or change of the guard's functions or lifecycle_held() (DB-07), no CREATE OR REPLACE TRIGGER
+//   of a guard's trigger, no guard's trigger created with a WHEN condition or an UPDATE OF list
+//   (check 7d refuses both on the fresh build too), and no DELETE from a table of a class whose holds
 //   apply or that is kept, or from deletion_log, unless its file and statement are on the reviewed
 //   list below with why;
 // - LCG-04, server code: no runtime file under apps/server/src/ outside apps/server/src/lifecycle/
@@ -22,7 +26,8 @@
 //   through Kysely's deleteFrom();
 // - LCG-05, replica mode: no file in apps/, scripts/ or db/tests/ that sets session_replication_role
 //   to replica, which turns the guard off, deletes from or truncates a guarded table before it sets
-//   it back to origin, or its transaction or file ends.
+//   it back to origin (or resets it), or, for a transaction-local setting (SET LOCAL, set_config()
+//   with true), its transaction ends, or the file ends. A session-level setting outlives a COMMIT.
 // The tables come from the code and the migrations themselves: holds-apply and kept tables from
 // packages/shared RETENTION_CLASSES, guarded ones from the triggers the migrations create. Comments
 // are stripped first, so a comment that names something proves nothing.
@@ -269,6 +274,8 @@ function migrationTimeSql(sql: string, inDoBody = false): string {
 
 // The guard's functions, and the hold decision every guard and definer asks (DB-07).
 const GUARD_FUNCTIONS = 'lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept|lifecycle_held'
+// The guard's triggers, each named as its function (check 7d).
+const GUARD_TRIGGERS = 'lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept'
 
 // What LCG-03 refuses, by name.
 const DESTRUCTIVE: ReadonlyArray<[string, RegExp]> = [
@@ -278,6 +285,24 @@ const DESTRUCTIVE: ReadonlyArray<[string, RegExp]> = [
   ['disable trigger', /\bdisable\s+trigger\b/gi],
   ['drop trigger', /\bdrop\s+trigger\b/gi],
   ['enable always trigger', /\benable\s+always\s+trigger\b/gi],
+  ['enable replica trigger', /\benable\s+replica\s+trigger\b/gi],
+  // CREATE OR REPLACE TRIGGER swaps a guard's trigger for one check 7d must then catch, with no DROP
+  // TRIGGER for this to see: one that names a guard's trigger or function anywhere in its statement.
+  [
+    'a guard trigger replaced',
+    new RegExp(
+      String.raw`\bcreate\s+or\s+replace\s+(?:constraint\s+)?trigger\b(?=[^;]*\b(?:${GUARD_TRIGGERS})\b)`,
+      'gi',
+    ),
+  ],
+  // A guard fires for every row and every column: never with a WHEN or an UPDATE OF list (LH-11).
+  [
+    'a guard trigger with a WHEN condition or an UPDATE OF list',
+    new RegExp(
+      String.raw`\bcreate\s+(?:constraint\s+)?trigger\b(?=[^;]*\bexecute\s+(?:function|procedure)\s+(?:"?public"?\.)?"?(?:${GUARD_TRIGGERS})\b)(?=[^;]*(?:\bwhen\s*\(|\bupdate\s+of\b))`,
+      'gi',
+    ),
+  ],
   [
     'a guard function replaced, dropped or changed',
     new RegExp(
@@ -346,6 +371,13 @@ describe('LCG-03 (C0.10 LH-33, DB-07): later migrations hold no destructive or g
           'drop function public.lifecycle_held(uuid, uuid[], text, uuid);',
           'alter table public.data_access_events detach partition public.data_access_events_2026_01;',
           'drop table public.old_thing;',
+          'alter table public.cases enable replica trigger lifecycle_guard;',
+          "create or replace trigger lifecycle_guard before delete on public.cases for each row execute function public.lifecycle_guard('cases');",
+          "create trigger lifecycle_guard before delete on public.sessions for each row when (old.ended_at is not null) execute function public.lifecycle_guard('sessions');",
+          'create trigger legal_holds_kept before update of released_at on public.legal_holds for each row execute function public.legal_holds_kept();',
+          // A guard's trigger created plainly, and another trigger replaced, pass.
+          "create trigger lifecycle_guard before delete on public.devices for each row execute function public.lifecycle_guard('devices');",
+          'create or replace trigger touch before update on public.teams for each row when (old.name is distinct from new.name) execute function public.touch();',
         ].join('\n'),
       ],
       [
@@ -369,6 +401,10 @@ describe('LCG-03 (C0.10 LH-33, DB-07): later migrations hold no destructive or g
       'db/migrations/0014_a.sql: a guard function replaced, dropped or changed: drop function public.lifecycle_held(uuid, uuid[], text, uuid)',
       'db/migrations/0014_a.sql: detach partition: alter table public.data_access_events detach partition public.data_access_events_2026_01',
       'db/migrations/0014_a.sql: drop table: drop table public.old_thing',
+      'db/migrations/0014_a.sql: enable replica trigger: alter table public.cases enable replica trigger lifecycle_guard',
+      "db/migrations/0014_a.sql: a guard trigger replaced: create or replace trigger lifecycle_guard before delete on public.cases for each row execute function public.lifecycle_guard('cases')",
+      "db/migrations/0014_a.sql: a guard trigger with a WHEN condition or an UPDATE OF list: create trigger lifecycle_guard before delete on public.sessions for each row when (old.ended_at is not null) execute function public.lifecycle_guard('sessions')",
+      'db/migrations/0014_a.sql: a guard trigger with a WHEN condition or an UPDATE OF list: create trigger legal_holds_kept before update of released_at on public.legal_holds for each row execute function public.legal_holds_kept()',
       "db/migrations/0015_b.sql: delete from a table named at run time: do $$ begin execute format($q$delete from public.%i$q$, 'audit_events')",
       'db/migrations/0015_b.sql: delete from deletion_log: do language plpgsql $body$ begin delete from deletion_log',
       "db/migrations/0015_b.sql: truncate: comment on table public.cases is 'truncate never'",
@@ -438,10 +474,20 @@ describe('LCG-04 (C0.10 LH-33): no server code outside apps/server/src/lifecycle
 
 // --- LCG-05: deletes in replica mode ----------------------------------------------------------------
 
-// A setting of session_replication_role to replica, and back (SQL, set_config(), or SQL in a string).
+// A setting of session_replication_role to replica, and back to origin or the default, or reset (SQL,
+// set_config(), or SQL in a string), which ends either kind of setting.
 const TO_REPLICA = /session_replication_role['"]?\s*(?:=|\bto\b|,)\s*['"]?replica\b/gi
 const BACK =
-  /session_replication_role['"]?\s*(?:=|\bto\b|,)\s*['"]?(?:origin|default)\b|\breset\s+session_replication_role\b|\b(?:commit|rollback)\b/i
+  /session_replication_role['"]?\s*(?:=|\bto\b|,)\s*['"]?(?:origin|default)\b|\breset\s+(?:session_replication_role|all)\b/i
+// The end of a transaction, which ends only a transaction-local setting: a session-level one (a
+// plain SET, or set_config() with false or an is_local it can't read) outlives a COMMIT, and a
+// ROLLBACK undoes it only if it ran in that transaction, which the text can't show.
+const TX_END = /\b(?:commit|rollback)\b/i
+
+// Whether the setting to replica that the match at..end is lasts only for its transaction: SET LOCAL,
+// or set_config() whose is_local is true.
+const isLocal = (code: string, at: number, end: number): boolean =>
+  /\bset\s+local\s+["']?$/i.test(code.slice(0, at)) || /^['"]?\s*,\s*true\b/i.test(code.slice(end))
 
 // A file's text with its comments removed: SQL's line and block comments, a shell script's, or a
 // TypeScript or JavaScript file's.
@@ -451,16 +497,19 @@ function codeText(path: string, text: string): string {
   return withoutComments(path, text)
 }
 
-// Each delete of a guarded table between a setting to replica and the next return to origin (or the
-// transaction's or file's end), as "path: delete <table>".
+// Each delete of a guarded table between a setting to replica and the next return to origin (or, for
+// a transaction-local setting, its transaction's end, or the file's end), as "path: delete <table>".
 function replicaDeletes(files: ReadonlyMap<string, string>, guarded: ReadonlySet<string>): string[] {
   const found: string[] = []
   for (const [path, text] of files) {
     const code = codeText(path, text)
     for (const match of code.matchAll(TO_REPLICA)) {
       const from = match.index + match[0].length
-      const back = code.slice(from).search(BACK)
-      const segment = code.slice(from, back === -1 ? undefined : from + back)
+      const rest = code.slice(from)
+      const ends = [rest.search(BACK), isLocal(code, match.index, from) ? rest.search(TX_END) : -1].filter(
+        at => at !== -1,
+      )
+      const segment = ends.length === 0 ? rest : rest.slice(0, Math.min(...ends))
       for (const hit of deletesOf(segment, guarded)) found.push(`${path}: ${hit}`)
     }
   }
@@ -493,11 +542,27 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
         'scripts/d.ts',
         "await q('set local session_replication_role = replica')\nawait q('update public.cases set note = null')",
       ],
+      // TESTS-06: a session-level setting outlives a COMMIT or a ROLLBACK, so only a return to
+      // origin or a reset ends it.
+      [
+        'apps/server/src/testing/e.ts',
+        "await q('set session_replication_role = replica')\nawait q('commit')\nawait q('delete from public.cases')",
+      ],
+      [
+        'db/tests/902_f.sql',
+        "select set_config('session_replication_role', 'replica', false);\ncommit;\ntruncate public.legal_holds;",
+      ],
+      [
+        'scripts/g.ts',
+        "await q('set session_replication_role to replica')\nawait q('rollback')\nawait q('reset session_replication_role')\nawait q('delete from public.cases')",
+      ],
     ])
     expect(replicaDeletes(files, guarded)).toEqual([
       'db/tests/900_a.sql: delete from case_steps',
       'db/tests/901_b.sql: truncate legal_holds',
       'apps/server/src/testing/c.ts: delete from deletion_log',
+      'apps/server/src/testing/e.ts: delete from cases',
+      'db/tests/902_f.sql: truncate legal_holds',
     ])
   })
 

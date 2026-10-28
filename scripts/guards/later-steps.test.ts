@@ -6,7 +6,7 @@
 // (SHEET-12) has a row in docs/BUILD-PLAN.md that names C0.9 PR 3b, so planning that step meets
 // what it inherits. A deferral item 50 gives no step (attachments) names none, so neither case
 // asks for one. The guard checks that each step's row carries PR 3b's part, not every word of it;
-// review still reads the part itself. Both cases are first proved on planted text. LS-03 and LS-04
+// review still reads the part itself. Both cases are first proved on planted text. LS-03 to LS-05
 // (C0.10, LCG-06) hold the same for T23 items 1 and 20, below.
 import { describe, expect, it } from 'vitest'
 import { readRepoFile } from './repo-files'
@@ -124,7 +124,9 @@ describe('C0.9 PR 3b T22 items 50 and 62: what PR 3b defers is in each later ste
 // step here is a dotted stage id of either kind; T23 defers to no requirement row. So LS-03: every
 // step item 1 sends something to has a bullet in item 20's list; and LS-04: every step with a
 // bullet there has a BUILD-PLAN row that names C0.10. LS-02 above still holds, since the C0.10 row
-// keeps naming C0.9 PR 3b.
+// keeps naming C0.9 PR 3b. LS-05 (review DOCS-01) adds item 20's consumer-by-consumer interface
+// table: every step its Step column names has a bullet in the inherit list too, so a step the table
+// hands work to can't be missed when item 1 doesn't name it, and LS-04 then holds its row.
 const T23_STEP_ID = /^[CA]\d+\.\d+$/
 const T23_STEP_IDS = /\b[CA]\d+\.\d+\b/g
 
@@ -155,6 +157,20 @@ function t23InheritedBy(item20: string): Set<string> {
 const unwrittenT23 = (plan: string, inherited: ReadonlySet<string>): string[] =>
   [...inherited].filter(id => !rowOf(plan, id)?.includes('C0.10'))
 
+// LS-05: the steps T23 item 20's interface table names in its Step column ("| C2.4, C2.8 |"), read
+// from its header row to the first line that isn't a table row.
+function t23InterfaceSteps(item20: string): Set<string> {
+  const start = item20.indexOf('| Step |')
+  if (start === -1) throw new Error('T23 item 20 has no interface table')
+  const ids = new Set<string>()
+  for (const line of item20.slice(start).split('\n')) {
+    const cell = line.match(/^\s*\|([^|]*)\|/)?.[1]
+    if (cell === undefined) break
+    for (const [id] of cell.matchAll(T23_STEP_IDS)) ids.add(id)
+  }
+  return ids
+}
+
 const T23_SPEC = [
   '',
   '## T23: x',
@@ -164,6 +180,12 @@ const T23_SPEC = [
   '2. **Next.** (C7.7)',
   '20. **Open points.**',
   '    - **LH-44 (a):** not a step.',
+  '    - **The interface:**',
+  '      | Step | What | Seam | Adds |',
+  '      |---|---|---|---|',
+  '      | C0.17, C2.4 | a | b | c |',
+  '      | C6.1 | a | b | c |',
+  '',
   '    - **What later steps inherit,** each also in its BUILD-PLAN row:',
   '      - **C0.17:** the shipper.',
   '      - **C2.4:** rooms.',
@@ -188,6 +210,9 @@ describe('C0.10 T23 items 1 and 20: what C0.10 defers is in each later step’s 
     expect([...inherited].sort()).toEqual(['A0.1', 'A3.3', 'C0.17', 'C2.4'])
     expect(unlisted(deferred, inherited).sort()).toEqual(['A3.4', 'C2.9'])
     expect(unwrittenT23(T23_PLAN, inherited).sort()).toEqual(['A3.3', 'C2.4'])
+    const table = t23InterfaceSteps(itemOf(t23, 20))
+    expect([...table].sort()).toEqual(['C0.17', 'C2.4', 'C6.1'])
+    expect(unlisted(table, inherited)).toEqual(['C6.1'])
   })
 
   it('LS-03 (LCG-06): every step T23 item 1 leaves something to has a bullet in item 20’s inherit list', () => {
@@ -203,5 +228,14 @@ describe('C0.10 T23 items 1 and 20: what C0.10 defers is in each later step’s 
     const inherited = t23InheritedBy(itemOf(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T23'), 20))
     expect(inherited.has('C2.9')).toBe(true)
     expect(unwrittenT23(readRepoFile('docs/BUILD-PLAN.md'), inherited)).toEqual([])
+  })
+
+  it('LS-05 (DOCS-01): every step T23 item 20’s interface table names has a bullet in its inherit list', () => {
+    const item20 = itemOf(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T23'), 20)
+    const steps = t23InterfaceSteps(item20)
+    // The table names later steps, so an empty match would mean the guard reads nothing.
+    expect(steps.has('C6.1')).toBe(true)
+    expect(steps.has('A2.3')).toBe(true)
+    expect(unlisted(steps, t23InheritedBy(item20))).toEqual([])
   })
 })

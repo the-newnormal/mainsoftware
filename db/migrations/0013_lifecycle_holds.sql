@@ -531,10 +531,13 @@ revoke execute on function public.lifecycle_lock_target(uuid, text, uuid, text) 
 -- guarded yet, so the guard needs no new code when C2.9 attaches it (check 7g calls this for each).
 -- Exactly one row. A request's step anchors as its request (the guard itself decides a step only by
 -- its request's log row, after the request has gone). An audit row's item is null (its id is a whole
--- number); its people are its actor, the person acted for, a target person, and the requester of
--- the case it names by target or by case_id (0004). Containers come from lifecycle_containers_of()
--- inside lifecycle_held(), never from here. Any other table raises. PR 2 adds provenance_items and
--- provenance_sources. Run by no role but its owner.
+-- number); its people are its actor, the person acted for, a target person, the DPO who decided a
+-- clearance (details.decided_by, which bootstrap_transfer_clearance() writes with Hearth as the
+-- actor: 0009, 0011), and the requester of the case it names by target or by case_id (0004). An
+-- audit writer that later names a person only in details adds its key here, or a hold on them won't
+-- keep the row. Containers come from lifecycle_containers_of() inside lifecycle_held(), never from
+-- here. Any other table raises. PR 2 adds provenance_items and provenance_sources. Run by no role
+-- but its owner.
 create function public.lifecycle_row_anchors(org uuid, tbl text, r jsonb)
   returns table (kind text, item uuid, persons uuid[])
 language plpgsql stable set search_path = '' as $$
@@ -587,6 +590,8 @@ begin
                           (r ->> 'actor_id')::uuid, (r ->> 'on_behalf_of_id')::uuid,
                           case when r ->> 'target_type' = 'person' and pg_catalog.lower(r ->> 'target_id') ~ uuid_shape
                                then (r ->> 'target_id')::uuid end,
+                          case when pg_catalog.lower(r -> 'details' ->> 'decided_by') ~ uuid_shape
+                               then (r -> 'details' ->> 'decided_by')::uuid end,
                           target_case, named_case], null);
   else
     raise exception 'lifecycle_row_anchors() has no anchors for that table.' using errcode = 'invalid_parameter_value';
@@ -757,7 +762,8 @@ revoke execute on function public.log_deletion(text, text, text, text, uuid, big
 -- and fires with the partition's name, while the clone keeps the argument (C010-SPEC-09), so C2.9's
 -- first sweep of data_access_events' partitions needs no new guard code; check 7d holds each argument
 -- to its table's name (its parent's, for a partition). It reads the org from the row, so a delete
--- with no app.org_id (the owner by hand) is still checked. SECURITY DEFINER, so it reads
+-- with no app.org_id (the owner by hand) is still checked; its body never reads that setting, which
+-- db/tests/190's DB-06 pins. SECURITY DEFINER, so it reads
 -- deletion_log, cases and legal_holds whichever role deletes (a role with a future DELETE grant can
 -- read none of them). It takes no acting user and skips can(): it decides only whether a delete
 -- already under way may proceed, and writes nothing. A child goes only after its parent (LH-13): a

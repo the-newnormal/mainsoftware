@@ -20,6 +20,7 @@ import type { Coverage } from '#src/outbox/coverage.ts'
 import {
   aiClassProblems,
   bindingProblems,
+  bodyDdlProblems,
   bodyProblems,
   bodyWrites,
   type ClassDefault,
@@ -753,6 +754,8 @@ const guardTrigger = (table: string): TriggerRow => ({
   type: 11,
   enabled: 'O',
   args: [table],
+  conditional: false,
+  columns: 0,
 })
 const truncateTrigger = (table: string): TriggerRow => ({
   relation: table,
@@ -762,6 +765,8 @@ const truncateTrigger = (table: string): TriggerRow => ({
   type: 34,
   enabled: 'O',
   args: [],
+  conditional: false,
+  columns: 0,
 })
 const TRIGGERS: TriggerRow[] = [
   ...GUARDED_TABLES.flatMap(table => [guardTrigger(table), truncateTrigger(table)]),
@@ -969,6 +974,64 @@ describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and 
     ])
   })
 
+  it('7d LH-11 GUARD-04 TESTS-01: names a guard, a partition’s clone or a history trigger with a WHEN condition or an UPDATE OF list, which lets the rows or updates it leaves out past it', () => {
+    const changing = (table: string, fn: string, change: Partial<TriggerRow>) =>
+      TRIGGERS.map(t => (t.relation === table && t.fn === fn ? { ...t, ...change } : t))
+    // create trigger lifecycle_guard ... for each row when (false), or when (a setting is off).
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('cases', 'lifecycle_guard', { conditional: true }), APPLY),
+    ).toEqual([
+      "public.cases's lifecycle_guard fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)",
+    ])
+    expect(
+      guardProblems(
+        GUARDED_TABLES,
+        relations,
+        changing('deletion_log', 'lifecycle_no_truncate', { conditional: true }),
+        APPLY,
+      ),
+    ).toEqual([
+      "public.deletion_log's lifecycle_no_truncate fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)",
+    ])
+    // before update of s3_done_at or delete, and before update of released_at: the same tgtype.
+    expect(
+      guardProblems(GUARDED_TABLES, relations, changing('deletion_log', 'deletion_log_kept', { columns: 1 }), APPLY),
+    ).toEqual([
+      "public.deletion_log's deletion_log_kept fires only on UPDATE OF one column; a guard has no column list, so it fires on every update, whatever it changes (LH-11)",
+    ])
+    expect(
+      guardProblems(
+        GUARDED_TABLES,
+        relations,
+        changing('legal_holds', 'legal_holds_kept', { columns: 2, conditional: true }),
+        APPLY,
+      ),
+    ).toEqual([
+      "public.legal_holds's legal_holds_kept fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)",
+      "public.legal_holds's legal_holds_kept fires only on UPDATE OF 2 columns; a guard has no column list, so it fires on every update, whatever it changes (LH-11)",
+    ])
+    // A partition's clone, and the TRUNCATE refusal a step adds to a partition, are held to it too.
+    const parted: Relation[] = [...relations, { name: 'legal_holds_2026', root: 'legal_holds' }]
+    const clone: TriggerRow = { ...guardTrigger('legal_holds'), relation: 'legal_holds_2026', root: 'legal_holds' }
+    const partTruncate: TriggerRow = {
+      ...truncateTrigger('legal_holds'),
+      relation: 'legal_holds_2026',
+      root: 'legal_holds',
+    }
+    expect(guardProblems(GUARDED_TABLES, parted, [...TRIGGERS, clone, partTruncate], APPLY)).toEqual([])
+    expect(
+      guardProblems(
+        GUARDED_TABLES,
+        parted,
+        [...TRIGGERS, { ...clone, conditional: true }, { ...partTruncate, conditional: true }],
+        APPLY,
+      ),
+    ).toEqual([
+      "public.legal_holds_2026's lifecycle_guard fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)",
+      "public.legal_holds_2026's lifecycle_no_truncate fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)",
+    ])
+  })
+
   it('7d C010-SPEC-09: every partition of a guarded table carries the guard naming its parent', () => {
     const parted: Relation[] = [...relations, { name: 'legal_holds_2026', root: 'legal_holds' }]
     const clone: TriggerRow = { ...guardTrigger('legal_holds'), relation: 'legal_holds_2026' }
@@ -1010,6 +1073,11 @@ describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and 
     ])
   })
 })
+
+// lifecycle_no_truncate()'s body as 0013 writes it: TRUNCATE only in its message.
+const NO_TRUNCATE = `begin
+  raise exception 'Rows here are deleted only through Hearth''s deletion code, never TRUNCATE.' using errcode = 'HF010';
+end`
 
 describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows is decided', () => {
   // LH ids T23 never records, built so that scripts/guards/design-ids.test.ts (LCG-01) doesn't read
@@ -1225,6 +1293,73 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     expect(problemsOf(ddl('execute $$alter table public.data_access_events detach partition p$$;'), entry)).toEqual([
       expect.stringContaining('names detach'),
     ])
+  })
+
+  it('LH-12 LH-33 GUARD-05 TESTS-02: names a body that truncates, drops or detaches a table, or turns the guard off or replaces it, as a plain statement, and passes the bodies 0001 to 0013 make', () => {
+    const fn = (key: string, source: string): Fn => ({ key, definer: true, trigger: false, source })
+    // Built, so that scripts/guards/lifecycle.test.ts (LCG-05) doesn't read these planted bodies as
+    // this file turning the guard off.
+    const role = ['session', 'replication', 'role'].join('_')
+    // No DELETE, so deletePathsOf finds no path: only bodyDdlProblems sees these.
+    const wipe = fn('wipe_devices()', 'begin truncate public.devices; end')
+    expect(deletePathsOf([], [wipe], [], {})).toEqual([])
+    expect(
+      bodyDdlProblems([...fns, { key: 'lifecycle_no_truncate()', definer: true, trigger: true, source: NO_TRUNCATE }]),
+    ).toEqual([])
+    const runs = (what: string, key: string) =>
+      `public.${key} runs ${what} in its body, which deletes or turns the guard off with no DELETE for check 8 to decide: a deletion goes through the deletion code, never DDL in a function (LH-12, LH-33)`
+    expect(
+      bodyDdlProblems([
+        wipe,
+        fn('reset_sign_in()', 'truncate table only public.sessions, public.passkeys;'),
+        fn('reset_audit()', 'TRUNCATE "public"."audit_events" *, ONLY public.sessions CASCADE;'),
+        fn('drop_month()', 'drop table if exists public.data_access_events_2026_01;'),
+        fn(
+          'detach_month()',
+          'alter table public.data_access_events detach partition public.data_access_events_2026_01 concurrently;',
+        ),
+        fn('quiet()', 'alter table public.cases disable trigger lifecycle_guard;'),
+        fn('unguard()', 'drop trigger if exists lifecycle_guard on public.legal_holds;'),
+        fn('always()', 'alter table public.cases enable replica trigger lifecycle_guard;'),
+        fn('replica()', `set local ${role} = replica; delete from public.cases;`),
+        fn('replica_config()', `perform pg_catalog.set_config( '${role}', 'replica', true);`),
+        fn(
+          'rewrite()',
+          'create or replace function public.lifecycle_held(o uuid) returns boolean as $b$ select false $b$;',
+        ),
+      ]),
+    ).toEqual([
+      runs('TRUNCATE', 'wipe_devices()'),
+      runs('TRUNCATE', 'reset_sign_in()'),
+      runs('TRUNCATE', 'reset_audit()'),
+      runs('DROP TABLE', 'drop_month()'),
+      runs('DETACH PARTITION', 'detach_month()'),
+      runs('DISABLE TRIGGER', 'quiet()'),
+      runs('DROP TRIGGER', 'unguard()'),
+      runs('ENABLE ALWAYS or REPLICA TRIGGER', 'always()'),
+      runs(`SET ${role}`, 'replica()'),
+      runs(`SET ${role}`, 'replica_config()'),
+      runs('CREATE OR REPLACE, DROP or ALTER FUNCTION of a guard function or lifecycle_held()', 'rewrite()'),
+    ])
+    // A DYNAMIC_DDL function's own plain statements are held to it too, beside its format strings.
+    expect(
+      bodyDdlProblems([
+        fn('make_parts(integer)', "execute format('create table public.%I ()', n); truncate public.jobs;"),
+      ]),
+    ).toEqual([runs('TRUNCATE', 'make_parts(integer)')])
+    // Named only in a comment, a string, a quoted message or a longer identifier: nothing runs.
+    expect(
+      bodyDdlProblems([
+        fn(
+          'quiet_words()',
+          [
+            `-- truncate public.cases, drop table public.x, set ${role} = replica`,
+            "/* alter table public.cases disable trigger lifecycle_guard */ raise notice 'drop table %', truncate_at;",
+            `perform pg_catalog.current_setting('${role}'); select $q$detach partition$q$;`,
+          ].join('\n'),
+        ),
+      ]),
+    ).toEqual([])
   })
 
   it('reads which decisions TECH-SPEC records: an LH id T23 names, or an item of a section', () => {

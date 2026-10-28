@@ -213,17 +213,22 @@ jobs:
       # publish and a contact change, an audit read against the reader losing the dpo role, and
       # 0012 applied while a publish, a register write and the notice's read touch dpo_settings and
       # the outbox, RQR-01 to RQR-09; from C0.10 PR 1, holds and the deletion code: a legal hold
-      # placed, a PDPC review step, a request for a copy or a correction sent, a release, is_held()
-      # and a hold citing a request, each against a request's deletion, two deletions for one
-      # requester, and 0013 applied under load, locking none of the busy tables, LCR-01 to LCR-04,
-      # LCR-10, LCR-11, LCR-15 and LCR-16), in two connections to a throwaway database.
+      # placed, a PDPC review step, a request for a copy or a correction sent, a release and a hold
+      # citing a request, each against a request's deletion, is_held() against a request being
+      # sent, two deletions for one requester, and 0013 applied under load, locking none of the
+      # busy tables, LCR-01 to LCR-04, LCR-10, LCR-11, LCR-15 and LCR-16), in two connections to a
+      # throwaway database.
       - run: node apps/server/scripts/check-concurrency.ts
       # The catalogues in code match the database (C0.6): every write grant of every runtime role,
       # every function one can run and every SECURITY DEFINER and trigger function is covered by
       # an outbox event or a reasoned exemption (apps/server/src/outbox/coverage.ts), and the
       # event catalogue, the flag registry and the worker's job roles equal 0007's and 0008's
       # lists; from C0.7, every consumer the worker runs is bound in outbox_checkpoints_own_row()
-      # to exactly its role, and every bound name is one of them (0008).
+      # to exactly its role, and every bound name is one of them (0008); from C0.10, check 7 (the
+      # retention classes equal retention_class_defaults(), every table in one, the guard on exactly
+      # GUARDED_TABLES, enabled O, with no WHEN or UPDATE OF) and check 8 (every delete path decided
+      # in apps/server/src/lifecycle/deletes.ts, and no TRUNCATE, DROP TABLE, DETACH PARTITION or
+      # guard switched off in a function body; TECH-SPEC T23 items 9 and 19).
       - run: node apps/server/scripts/check-catalogues.ts
       # The SQL access filter (sqlReadableBy, @hearth/access/sql) selects exactly what the
       # in-memory rule allows, for every person, both assistants and the system principal in the
