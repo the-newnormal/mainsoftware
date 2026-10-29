@@ -6,7 +6,8 @@
 //     trigger that refuses any role's delete not logged in its transaction, or of a held row (HF010,
 //     HF009), with lifecycle_no_truncate() beside it, and says what it is to the provenance registry
 //     (T23 item 14, LH-41): its rows can be a source, so it calls provenance_forget(); they never
-//     are, with the decision or id that records why; or it is the registry's own deletion code;
+//     are, with the decision or id that records why; or it is the registry's own deletion code,
+//     lifecycle_cascade() or provenance_forget(), the only paths that delete from its tables;
 //   - checked: a definer that asks lifecycle_held() or is_held() itself, skips a held row and logs
 //     each row it deletes with log_deletion(), for a table a leaver's reduction marks (`reduction:
 //     'apply'`, rows a person also edits, where a trigger would reveal a hold to them: today
@@ -31,8 +32,10 @@
 // It fails on a guarded path that deletes from a table not in GUARDED_TABLES (so a step's first
 // delete path brings the guard), or that says nothing of the provenance registry, whose rows can be
 // a source but whose body never calls provenance_forget(), whose rows are never one but that cites
-// no decision TECH-SPEC records or id T23 cites, or that is the registry's own but deletes from any
-// other table (so every item's delete path forgets it, T23 item 14); a checked path whose body never
+// no decision TECH-SPEC records or id T23 cites, that deletes from the registry's tables but isn't
+// lifecycle_cascade() or provenance_forget(), whatever it says, that says registry but isn't one of
+// the two, or that is one of the two but says something else or deletes from any other table (so
+// every item's delete path forgets it, T23 item 14); a checked path whose body never
 // asks lifecycle_held() or is_held() or never calls log_deletion(), or that deletes from a table a
 // leaver's reduction doesn't mark or from a guarded or kept one (so any other holds-apply table's
 // first path is guarded: GUARD-02); an exempt path that deletes from a table of a class whose holds
@@ -46,7 +49,10 @@
 // forgets: its rows can be a source or an item, and its body calls provenance_forget() (check 8
 // reads it, comments and strings aside); notASource: its rows never are, with the decision or
 // requirement id that records why; registry: the registry's own deletion code, lifecycle_cascade()
-// and provenance_forget(), deleting from provenance_items and provenance_sources alone.
+// and provenance_forget() alone, by key (check 8's REGISTRY_PATHS), deleting from provenance_items
+// and provenance_sources alone. No other path deletes from either table, whatever it says: one that
+// deleted a record itself would skip the cascade to what was made from it and leave the edges naming
+// it live.
 export type Provenance = { forgets: true } | { notASource: string; decision: string } | { registry: true }
 
 // guarded: the table carries lifecycle_guard(), and the path says what it is to the provenance

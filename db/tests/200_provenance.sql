@@ -12,7 +12,8 @@
 --          was fired early), never from a derived item made in it (itself included), a withdrawn
 --          item or a derived item with no record, those two refused alike; a derived-mode record
 --          for something already used as a source, by a gone edge too, is refused, a cited one not,
---          the check reading the edges through provenance_sources_source; a cited item gains
+--          the check reading the edges through provenance_sources_source (pinned from the
+--          catalogue, and the planner's choice on analysed rows); a cited item gains
 --          sources later; the deferred completeness check, a definer, passes and refuses on
 --          substance at the commit with hearth_app active, never 42501, for fewer edges than the
 --          count and for more; an item's state moves only as LH-42 says (stale to withdrawn
@@ -290,10 +291,16 @@ select pg_temp.check(pg_temp.add_item('cited', jsonb_build_object('item_kind', '
                      'a cited record for something already cited was refused (LCD-35)');
 rollback to savepoint lcd_35_first;
 -- A gone edge counts too, and the check reads the edges by source through provenance_sources_source,
--- never by scanning them all: given 2,000 edges (of 400 cited records planted with the triggers off
--- for their inserts alone), sequential scans off and every plan made again, a derived item's insert
--- scans that index.
+-- never by scanning them all. The index is pinned from the catalogue: by org, kind and source, with
+-- no WHERE, so gone edges are in it. And given 2,000 edges (of 400 cited records planted with the
+-- triggers off for their inserts alone), analysed so the planner's choice doesn't hang on the
+-- table's vacuum history or the btrees' heights, sequential scans off and every plan made again, a
+-- derived item's insert scans that index. ANALYZE's row count in pg_class outlives the rollback,
+-- which is harmless in a scratch database; its statistics don't.
 savepoint lcd_35_gone;
+select pg_temp.check(pg_get_indexdef('public.provenance_sources_source'::regclass)
+                       = 'CREATE INDEX provenance_sources_source ON public.provenance_sources USING btree (org_id, source_kind, source_id)',
+                     'provenance_sources_source is not the whole index by org, kind and source, gone edges included (LCD-35)');
 select pg_temp.make('1', '4b', 'draft', 'cited', array['suggested_task'], array[pg_temp.pid('1', '23')]);
 update public.provenance_sources set gone_at = now() where item = pg_temp.pid('1', '4b');
 select pg_temp.expect_error(format('select pg_temp.add_item(%L, %L)', 'derived',
@@ -307,6 +314,7 @@ with made as (
 insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
 select m.org_id, m.id, n, 'message', gen_random_uuid() from made m cross join generate_series(1, 5) n;
 set local session_replication_role = origin;
+analyze public.provenance_sources;
 set local enable_seqscan = off;
 discard plans;
 select set_config('lcd.scans', pg_stat_get_xact_numscans('public.provenance_sources_source'::regclass)::text, true);

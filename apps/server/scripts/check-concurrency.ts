@@ -87,24 +87,31 @@
 // registry's cascade, in an org of its own built in two committed transactions (PROVENANCE_FIXTURE,
 // then PROVENANCE_ITEMS: a derived item's edges can't name a derived record made in its own
 // transaction), after LCR-16. Steps run as the owner with app.org_id set, as the deletion code will
-// run them, and a source's deletion is logged in the step. A "fixture producer" is a transaction that,
-// as the owner, reads a derived source's record FOR KEY SHARE and requires it live, then makes the new
-// item and its edge, and sets its role to hearth_app before it commits, as a producer's checked
-// writer leaves it, so the deferred completeness check fires with hearth_app active (LH-43). race()
-// runs its first step whole before the second starts, so it shows that a step waits but never the
-// order the step takes its locks in; where a case claims the lock-ahead's order (people before
-// items, items in id order, each round's people before its items), it drives the steps through
-// phased(): the second starts while the first is part done, then the first takes its next lock
-// under a 500 ms lock_timeout, or the watcher tries a row NOWAIT, so a lock taken out of order shows
-// as a timeout or a row held. A cascade against a legal hold placed on the person a derived item's
-// other source is about, each order, the cascade waiting on the person holding no item (LCR-12); a
-// derive from a derived item against that item's deletion, each order, and against a cascade, whose
-// next round waits on the new item's people before taking the new item (LCR-13); two cascades
-// sharing a dependant, and a producer reading two items in id order against their message's
-// cascade, with no deadlock (LCR-14); a person-scoped deletion against a cascade over an item made
-// from the person's device, each order, the deletion taking the item after the person while the
-// cascade waits (LCR-17); and an edge naming a derived item against that item's withdrawal, each
-// order, the withdrawal's next round holding the citing item (LCR-18). 0014 has no
+// run them, and a source's deletion is logged in the step. A "fixture producer" is a transaction
+// that, as the owner, reads a derived source's record FOR KEY SHARE and requires it live, then
+// makes the new item and its edge, and sets its role to hearth_app before it commits, as a
+// producer's checked writer leaves it, so the deferred completeness check fires with hearth_app
+// active (LH-43). race() runs its first step whole before the second starts, so it shows that a
+// step waits but never the order the step takes its locks in; where a case claims the lock-ahead's
+// order or strength (people before items, people in id order and FOR NO KEY UPDATE, items in id
+// order, each round's people before its items), it drives the steps through phased(): the second
+// starts while the first is part done, then the first takes its next lock under a 500 ms
+// lock_timeout, or the watcher tries a row NOWAIT, so a lock taken out of order or too weak shows
+// as a timeout, or as a row held that should be free or free that should be held. A cascade against
+// a legal hold placed on the person a derived item's other source is about, each order, the cascade
+// waiting on the person holding no item (LCR-12); a derive from a derived item against that item's
+// deletion, each order, and against a cascade, whose next round waits on the new item's people
+// before taking the new item (LCR-13); two cascades sharing a dependant, and a producer reading two
+// items in id order against their message's cascade, with no deadlock (LCR-14); a person-scoped
+// deletion against a cascade over an item made from the person's device, each order, the deletion
+// taking the item after the person while the cascade waits (LCR-17); an edge naming a derived item
+// against that item's withdrawal, each order, the withdrawal's next round holding the citing item
+// (LCR-18); two cascades over items made from one person's device, the first holding the person FOR
+// NO KEY UPDATE while a producer's read of its item holds it up, so the second waits on the person
+// holding nothing, with no deadlock (LCR-19); and a cascade over an item made from two people's
+// devices against a transaction that takes them in id order, as a hold decision does, the cascade
+// waiting on the lower holding nothing of the higher (LCR-20). An unsorted people lock can't be
+// told from the real one: people_org_id_id_key's scan returns them in id order anyway. 0014 has no
 // migration-under-load race (unlike 0013's LCR-10): it adds tables and functions only, its keys
 // lock orgs and principals, which nothing writes at run time in C0, and it replaces functions no
 // runtime role runs.
@@ -442,7 +449,7 @@ const LIFECYCLE_FIXTURE = `
 // C0.10 PR 2 (0014): the provenance org, as the owner, in two committed transactions, since a derived
 // item's edges can't name a derived record made in its own transaction (LH-40). Setup 1, with the
 // rest of the fixture: its Hearth principal v(a0); the Compliance Officer v(70), who places holds;
-// and people v(61) to v(67), each with an account and a device, v(e1) to v(e7), the anchors of the
+// and people v(61) to v(6a), each with an account and a device, v(e1) to v(ea), the anchors of the
 // items' device sources. Setup 2 (PROVENANCE_ITEMS): the items, each a record v(1x) or v(4x) whose
 // item is v(2x) or v(5x), from made-up messages v(31) to v(3c) and the devices:
 //   LCR-12 11 and 12, each from a message (31, 32) and a device (e1 of 61, e2 of 62);
@@ -453,10 +460,13 @@ const LIFECYCLE_FIXTURE = `
 //          from message 3c, whose items, 53 and 52, run the other way, so an index on items reads
 //          the two records against their id order (46 is the derive the case makes, from both);
 //   LCR-17 19 and 1a, each from a device (e5 of 65, e6 of 66) and a message (35, 36);
-//   LCR-18 1b and 1d, from messages 37 and 38, and the cited drafts 1c and 1e, citing 39 and 3a.
+//   LCR-18 1b and 1d, from messages 37 and 38, and the cited drafts 1c and 1e, citing 39 and 3a;
+//   LCR-19 47 and 48, from messages 3d and 3e, each also from the device e8 of 68, whom nothing holds;
+//   LCR-20 49, from the devices ea of 6a and e9 of 69 (nothing holds either) and message 3f, its
+//          edges naming the higher person's device first.
 const v = (suffix: string) => `c0000000-0000-4000-8000-0000000006${suffix}`
 const PROVENANCE_ORG = v('00')
-const PROVENANCE_PEOPLE = ['61', '62', '63', '64', '65', '66', '67']
+const PROVENANCE_PEOPLE = ['61', '62', '63', '64', '65', '66', '67', '68', '69', '6a']
 const vks = (suffixes: string[]) => suffixes.map(k => `'${k}'`).join(', ')
 const PROVENANCE_FIXTURE = `
   insert into public.orgs (id, name) values ('${PROVENANCE_ORG}', 'Concurrency check provenance');
@@ -532,6 +542,19 @@ const PROVENANCE_ITEMS = [
   provenanceItem('41', '51', 'derived', 'derived', [['message', '3b']]),
   provenanceItem('42', '53', 'derived', 'derived', [['message', '3c']]),
   provenanceItem('43', '52', 'derived', 'derived', [['message', '3c']]),
+  provenanceItem('47', '57', 'derived', 'derived', [
+    ['message', '3d'],
+    ['device', 'e8'],
+  ]),
+  provenanceItem('48', '58', 'derived', 'derived', [
+    ['message', '3e'],
+    ['device', 'e8'],
+  ]),
+  provenanceItem('49', '59', 'derived', 'derived', [
+    ['device', 'ea'],
+    ['device', 'e9'],
+    ['message', '3f'],
+  ]),
 ].join('')
 // A PIN hash in the one shape the server issues (0006; DB test 100 uses the same).
 const PIN_HASH = "'$argon2id$v=19$m=19456,t=2,p=1$' || repeat('A', 22) || '$' || repeat('B', 43)"
@@ -1440,6 +1463,15 @@ const lockNow = (watcher: Client, rec: string, mode: 'update' | 'key share') =>
     ])
     .then(
       result => (result.rowCount === 1 ? undefined : `no record ${rec}`),
+      (error: unknown) => message(error),
+    )
+// The same for person v(person)'s row: FOR SHARE conflicts with FOR NO KEY UPDATE and FOR UPDATE, not
+// with another FOR SHARE; FOR UPDATE with every row lock.
+const personNow = (watcher: Client, person: string, mode: 'share' | 'update') =>
+  watcher
+    .query(`select 1 from public.people where org_id = $1 and id = $2 for ${mode} nowait`, [PROVENANCE_ORG, v(person)])
+    .then(
+      result => (result.rowCount === 1 ? undefined : `no person ${person}`),
       (error: unknown) => message(error),
     )
 // A correction of a message: withdraw_dependants() (as the owner, the org set), which must answer as
@@ -3720,6 +3752,96 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
         states === 'withdrawn 1 withdrawn live 2',
         `the derived items aren't withdrawn, or the citing drafts' edges and states are wrong (${states})`,
       )
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; LH-21; CLAUDE.md, a hold decision takes its people FOR NO KEY UPDATE, never FOR
+    // SHARE): the lock-ahead takes the people FOR NO KEY UPDATE, the strength lifecycle_held() takes
+    // them in, so a second cascade over the same person waits at its lock-ahead holding nothing. Had it
+    // taken them FOR SHARE, both cascades would share the person, each would take its own item, and
+    // each lifecycle_held() would wait on the other's share lock to raise it: a deadlock (40P01).
+    'LCR-19 PDPA-09 C0.10 LH-21 DB-11: a cascade holds the person its item’s device is about FOR NO KEY UPDATE while it waits on a producer’s read of its item, so a second cascade over another item from that person waits on the person’s row holding nothing of its own item; once the producer commits, both delete their items, with no deadlock',
+    async watcher => {
+      const other = await connect(DB)
+      try {
+        const seen: { person?: string; row?: string | null; item?: string; waited?: boolean } = {}
+        let pending: Promise<string | undefined> = Promise.resolve(undefined)
+        const first = await phased(
+          watcher,
+          {
+            as: 'owner',
+            sql: `do $$ begin${readSource('57')}
+        end $$`,
+          },
+          cascadeStep('3d', 1),
+          {
+            meanwhile: async () => {
+              seen.person = await personNow(watcher, '68', 'share')
+              const step = cascadeStep('3e', 1)
+              const pid = (await other.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]?.pid ?? 0
+              await begin(other, step)
+              pending = other.query(step.sql).then(
+                () => undefined,
+                (error: unknown) => message(error),
+              )
+              seen.waited = await waitsOnLock(watcher, pid)
+              seen.row = await waitingRow(watcher, pid)
+              seen.item = await lockNow(watcher, '48', 'update')
+            },
+          },
+        )
+        const second = await pending
+        await other.query(second === undefined ? 'commit' : 'rollback')
+        expect(first.waited, 'the first cascade did not wait for the producer’s read of its item')
+        expect(
+          seen.person?.includes('could not obtain lock') === true,
+          `the first cascade did not hold the person FOR NO KEY UPDATE while it waited on its item (${seen.person ?? 'a FOR SHARE read of the person was let through'})`,
+        )
+        expect(seen.waited === true, 'the second cascade did not wait for the first')
+        expect(
+          seen.row === 'people',
+          `the second cascade waited on a row of ${seen.row ?? 'nothing'}, not on the person`,
+        )
+        expect(seen.item === undefined, `the second cascade held its item while it waited on the person: ${seen.item}`)
+        expect(first.firstError === undefined, `the producer failed: ${first.firstError}`)
+        expect(first.error === undefined, `the first cascade failed: ${first.error}`)
+        expect(second === undefined, `the second cascade failed: ${second}`)
+        expect(
+          (await recordState(watcher, '47')) === 'gone 1' && (await recordState(watcher, '48')) === 'gone 1',
+          'the two cascades did not each delete and log their item once',
+        )
+      } finally {
+        await other.end()
+      }
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; LH-21): the lock-ahead takes an item's people in id order, the order a hold
+    // decision (lifecycle_held(), is_held()) takes its anchors in, so the two take turns. Had it taken
+    // the higher person first, a hold decision holding the lower and then asking for the higher would
+    // wait on the cascade, which waits on it: a deadlock (40P01), here A's own lock timeout.
+    'LCR-20 PDPA-09 C0.10 LH-21 DB-11: a cascade over an item made from two people’s devices takes them in id order: while a transaction that takes them in id order, as a hold decision does, holds the lower, the cascade waits on the person’s row holding nothing of the higher, so that transaction then takes the higher, with no deadlock, and the cascade deletes the item',
+    async watcher => {
+      const seen: { row?: string | null; higher?: string; taken?: string } = {}
+      const first = await phased(watcher, { as: 'owner', sql: lockPerson('69') }, cascadeStep('3f', 1), {
+        meanwhile: async (then, pid) => {
+          seen.row = await waitingRow(watcher, pid)
+          seen.higher = await personNow(watcher, '6a', 'update')
+          seen.taken = await then(lockPerson('6a'))
+        },
+      })
+      expect(first.waited, 'the cascade did not wait on the lower person')
+      expect(seen.row === 'people', `the cascade waited on a row of ${seen.row ?? 'nothing'}, not on the person`)
+      expect(
+        seen.higher === undefined,
+        `the cascade held the higher person while it waited on the lower, so it took them out of id order: ${seen.higher}`,
+      )
+      expect(
+        seen.taken === undefined,
+        `the transaction holding the lower person could not then take the higher, which the cascade took first: ${seen.taken}`,
+      )
+      expect(first.error === undefined, `the cascade failed: ${first.error}`)
+      expect((await recordState(watcher, '49')) === 'gone 1', 'the cascade did not delete and log the item once')
     },
   ],
   [

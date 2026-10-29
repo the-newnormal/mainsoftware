@@ -27,8 +27,10 @@
 -- write made-up rows as the owner or the superuser (LH-43). The cascade and provenance_forget()'s
 -- leftover path delete only items of kind derived, which have no content of their own before A2.3; a
 -- derived-mode item of any other kind (C3.5's suggested tasks) stays withdrawn and kept until the step
--- that stores its content replaces both, with the same signatures, to delete it with its record. A
--- deleted source's edges are marked gone; a source redacted or corrected in place keeps them live.
+-- that stores its content replaces both, with the same signatures, to delete it with its record, and
+-- replaces provenance_sources_insert() too, so an edge naming that kind refuses a kept item and a
+-- deleted one alike (T23 item 14's producers' contract). A deleted source's edges are marked gone; a
+-- source redacted or corrected in place keeps them live.
 --
 -- The lock order (CLAUDE.md, Database), with this step's two slots: ... → cases → legal_holds →
 -- provenance_items → provenance_sources → processing_register → ... (LH-21). The cascade, a withdrawal
@@ -304,9 +306,12 @@ create constraint trigger provenance_items_complete after insert on public.prove
 -- and the access core's cycle rule as backstops (T23 item 20's residuals). Any edge's source, if it
 -- has a record of its own, is read FOR SHARE (a withdrawal holds it FOR UPDATE, so this waits for one
 -- in progress and then sees it; CLAUDE.md: a refusal because a row has ended reads it FOR SHARE).
--- A withdrawn source and a derived source with no record are refused alike, by one statement with
--- one message and SQLSTATE, since a hold may keep a withdrawn item that would otherwise be gone, and a
--- kept item must look like a deleted one (T23 items 10 and 14, LH-55). A cited item may gain sources
+-- A withdrawn source and a source of kind derived with no record are refused alike, by one statement
+-- with one message and SQLSTATE, since a hold may keep a withdrawn item that would otherwise be gone,
+-- and a kept item must look like a deleted one (T23 items 10 and 14, LH-55). Kind derived is the only
+-- kind whose withdrawn records are deleted here; the step that first deletes another derived-mode
+-- kind's records replaces this function, with the same signature, to refuse that kind's deleted and
+-- hidden items in the same statement (T23 item 14's producers' contract). A cited item may gain sources
 -- in a later transaction (a second AI insert into one draft). The messages can be shown as they are.
 create function public.provenance_sources_insert() returns trigger
 language plpgsql volatile set search_path = '' as $$
@@ -853,7 +858,8 @@ revoke execute on function public.provenance_mark_stale(text, uuid, text) from p
 -- withdrawn and kept (C2.9 sweeps them). A derived-mode item of any other kind (C3.5's suggested
 -- tasks) keeps content in its own table, so it is never deleted here: it stays withdrawn and kept until
 -- the step that stores that content replaces this function, with the same signature, to delete the
--- content first, in its own class with the same parent (T23 item 14). Each deletion is logged with
+-- content first, in its own class with the same parent, and provenance_forget() and
+-- provenance_sources_insert() with it (T23 item 14). Each deletion is logged with
 -- parent (log_deletion(), class provenance), then its record goes (its guard decides again, a
 -- backstop), then the edges naming it are marked gone, then its own edges go (their guard needs it
 -- gone and logged). Deepest first, a digest is decided while the summary it was made from exists, and
@@ -950,8 +956,8 @@ revoke execute on function public.lifecycle_cascade(text, uuid, bigint, integer)
 -- source_redacted, retention for source_deleted, any other cause refused (22023) before its kind or
 -- hold is read, so the log states why it went; it answers 0 while it is held and logs nothing, so a
 -- sweep counts it kept; 0 too for a leftover of another derived-mode kind, which keeps content of its
--- own until the step that stores that content replaces this function, with the same signature, and
--- for a record already gone. Causes: cascade with a parent; correction, redaction or retention
+-- own until the step that stores that content replaces this function, with the same signature (with
+-- lifecycle_cascade() and provenance_sources_insert(): T23 item 14), and for a record already gone. Causes: cascade with a parent; correction, redaction or retention
 -- without (22023 otherwise). The org is app.org_id's (DB-06); no acting user, no audit row of its
 -- own. Returns how many records it deleted. Granted to nobody.
 create function public.provenance_forget(item_kind text, item_id uuid, cause text, parent bigint) returns integer

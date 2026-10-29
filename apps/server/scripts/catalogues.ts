@@ -1379,8 +1379,16 @@ const LOGS_DELETION = /\blog_deletion\s*\(/
 // provenance_forget() cascades to what was made from or cites the row, then deletes the row's own
 // record (T23 item 14, LH-41). lifecycle_cascade() alone would leave that record.
 const FORGETS = /\bprovenance_forget\s*\(/
-// The provenance registry's own tables, the only ones a `registry` path deletes from.
+// The provenance registry's own tables, which only its own deletion code deletes from, and that code
+// alone: lifecycle_cascade() and provenance_forget() (0014), by key, the only paths that may say
+// `registry`. A later step replaces both with the same signatures (T23 item 14). Any other path that
+// deleted a record itself would skip what provenance_forget() does for it: the cascade to what was
+// made from it, and marking gone the edges that name it.
 const REGISTRY_TABLES: ReadonlySet<string> = new Set(['provenance_items', 'provenance_sources'])
+const REGISTRY_PATHS: ReadonlySet<string> = new Set([
+  'lifecycle_cascade(text, uuid, bigint, integer)',
+  'provenance_forget(text, uuid, text, bigint)',
+])
 
 const deletesText = (tables: readonly string[]) =>
   tables.length === 0 ? 'nothing' : tables.map(table => `public.${table}`).join(', ')
@@ -1390,7 +1398,9 @@ const deletesText = (tables: readonly string[]) =>
 // only from GUARDED_TABLES, so a step's first delete path brings the guard, and says what it is to
 // the provenance registry (T23 item 14, LH-41): `forgets`, its body calling provenance_forget(), so
 // every item's delete path forgets it; `notASource`, citing a decision check 8 reads or an id T23
-// cites (`reasons`, recordedReasons); or `registry`, deleting from the registry's two tables alone;
+// cites (`reasons`, recordedReasons); or `registry`, only lifecycle_cascade() and provenance_forget()
+// (REGISTRY_PATHS), each deleting from the registry's two tables alone, and no other path deleting
+// from either, whatever it says;
 // a checked path is a function whose body asks lifecycle_held() or is_held() and calls
 // log_deletion(), and that deletes only from tables a leaver's reduction marks (`reduction:
 // 'apply'`, rows a person also edits, where a trigger would refuse their own edit or reveal a hold:
@@ -1454,27 +1464,44 @@ export function deletePathProblems(
         problems.push(
           `${path.key} is guarded in ${where}, but doesn't say what it is to the provenance registry: forgets (its rows can be a source, and its body calls provenance_forget()), notASource with the decision that records why, or registry (T23 item 14)`,
         )
-      } else if ('forgets' in provenance) {
-        const source = `${path.key} is guarded in ${where} as deleting rows that can be a provenance source, but`
-        if (path.body === undefined) {
-          problems.push(`${source} only a function can call provenance_forget()`)
-        } else if (!FORGETS.test(stripSql(path.body))) {
-          problems.push(
-            `${source} its body never calls provenance_forget(): call it for each row it deletes, in its transaction, so what was made from or cites the row goes with it (T23 item 14, LH-41)`,
-          )
-        }
-      } else if ('notASource' in provenance) {
-        if (!reasons(provenance.decision)) {
-          problems.push(
-            `'${path.key}' in ${where} says its rows are never a provenance source, citing ${provenance.decision}, which isn't a decision check 8 reads from docs/TECH-SPEC.md or an id T23 cites`,
-          )
-        }
+      } else if (REGISTRY_PATHS.has(path.key) && !('registry' in provenance)) {
+        problems.push(
+          `${path.key} is the provenance registry's own deletion code, but ${where} doesn't say registry (T23 item 14)`,
+        )
       } else {
-        const other = path.deletes.filter(table => !REGISTRY_TABLES.has(table))
-        if (other.length > 0) {
+        const own = REGISTRY_PATHS.has(path.key)
+        const records = path.deletes.filter(table => REGISTRY_TABLES.has(table))
+        if (!own && records.length > 0) {
           problems.push(
-            `${path.key} is the provenance registry's own path in ${where}, but deletes from ${deletesText(other)}: the registry's own paths delete from provenance_items and provenance_sources alone, and every other guarded path says forgets or notASource (T23 item 14)`,
+            `${path.key} deletes from ${deletesText(records)}, which only the registry's own deletion code, lifecycle_cascade() and provenance_forget(), deletes from: call provenance_forget() for each item instead, so what was made from it goes too and the edges naming it are marked gone, and say forgets (T23 item 14, LH-41)`,
           )
+        }
+        if ('forgets' in provenance) {
+          const source = `${path.key} is guarded in ${where} as deleting rows that can be a provenance source, but`
+          if (path.body === undefined) {
+            problems.push(`${source} only a function can call provenance_forget()`)
+          } else if (!FORGETS.test(stripSql(path.body))) {
+            problems.push(
+              `${source} its body never calls provenance_forget(): call it for each row it deletes, in its transaction, so what was made from or cites the row goes with it (T23 item 14, LH-41)`,
+            )
+          }
+        } else if ('notASource' in provenance) {
+          if (!reasons(provenance.decision)) {
+            problems.push(
+              `'${path.key}' in ${where} says its rows are never a provenance source, citing ${provenance.decision}, which isn't a decision check 8 reads from docs/TECH-SPEC.md or an id T23 cites`,
+            )
+          }
+        } else if (!own) {
+          problems.push(
+            `${path.key} says in ${where} that it is the provenance registry's own deletion code, but only lifecycle_cascade() and provenance_forget() are: every other guarded path says forgets or notASource (T23 item 14)`,
+          )
+        } else {
+          const other = path.deletes.filter(table => !REGISTRY_TABLES.has(table))
+          if (other.length > 0) {
+            problems.push(
+              `${path.key} is the provenance registry's own path in ${where}, but deletes from ${deletesText(other)}: the registry's own paths delete from provenance_items and provenance_sources alone, and every other guarded path says forgets or notASource (T23 item 14)`,
+            )
+          }
         }
       }
       continue

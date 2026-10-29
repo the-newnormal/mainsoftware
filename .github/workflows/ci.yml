@@ -220,9 +220,13 @@ jobs:
       # provenance registry: a cascade against a hold on another source's person, a derive against
       # its source's deletion and against a cascade's next round, two cascades with a shared
       # dependant and a producer reading two items against a cascade, a person-scoped deletion
-      # against a cascade and an edge's insert against its source's withdrawal, LCR-12 to LCR-14,
-      # LCR-17 and LCR-18, each claim of the lock-ahead's order driven by hand so a lock taken out
-      # of order times out), in two connections to a throwaway database.
+      # against a cascade, an edge's insert against its source's withdrawal, two cascades over items
+      # about one person, and a cascade over an item about two people against a transaction taking
+      # them in id order, LCR-12 to LCR-14 and LCR-17 to LCR-20, each claim of the lock-ahead's
+      # order or strength driven by hand (phased()): the first step takes its next lock under a
+      # 500 ms lock_timeout, or the watcher tries a row NOWAIT, so a lock-ahead that breaks its
+      # order or strength shows as a timeout, or as a row held that should be free or free that
+      # should be held), in two connections to a throwaway database.
       - run: node apps/server/scripts/check-concurrency.ts
       # The catalogues in code match the database (C0.6): every write grant of every runtime role,
       # every function one can run and every SECURITY DEFINER and trigger function is covered by
@@ -233,8 +237,9 @@ jobs:
       # retention classes equal retention_class_defaults(), every table in one, the guard on exactly
       # GUARDED_TABLES, enabled O, with no WHEN or UPDATE OF) and check 8 (every delete path, plain
       # helpers included, decided in apps/server/src/lifecycle/deletes.ts, every guarded one saying
-      # what it is to the provenance registry and one whose rows can be a source calling
-      # provenance_forget(), and no TRUNCATE, DROP TABLE, DETACH PARTITION or guard switched off or
+      # what it is to the provenance registry, one whose rows can be a source calling
+      # provenance_forget(), and only lifecycle_cascade() and provenance_forget() deleting from the
+      # registry's tables, and no TRUNCATE, DROP TABLE, DETACH PARTITION or guard switched off or
       # replaced in a function body or a DYNAMIC_DDL function's strings, and every DYNAMIC_DDL body
       # the one pinned in apps/server/scripts/catalogues.ts; TECH-SPEC T23 items 9 and 19); from
       # C0.10 PR 2, no insert into the provenance registry is exempt (T23 item 14).

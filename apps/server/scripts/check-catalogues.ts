@@ -51,8 +51,9 @@
 //      row: GUARD-02) or exempt, each decision one docs/TECH-SPEC.md records, and no entry is stale;
 //      every guarded path says what it is to the provenance registry (T23 item 14): one whose rows
 //      can be a source calls provenance_forget() in its body, one whose rows never are cites a
-//      decision TECH-SPEC records or an id T23 cites, and the registry's own deletes from its two
-//      tables alone;
+//      decision TECH-SPEC records or an id T23 cites, and the registry's own, lifecycle_cascade()
+//      and provenance_forget() alone, by key, deletes from its two tables alone, which no other
+//      path deletes from;
 //      no function body of public runs TRUNCATE, DROP TABLE, DETACH PARTITION, a trigger disabled,
 //      dropped or enabled ALWAYS or REPLICA, a setting of session_replication_role, a change to
 //      the guard's functions, or a guard's trigger replaced or made with a WHEN condition or an

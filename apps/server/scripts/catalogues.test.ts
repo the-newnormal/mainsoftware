@@ -1327,9 +1327,10 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     expect(problemsOf(remove(''), as({ notASource: 'a planted reason', decision: UNRECORDED }), guarded)).toEqual([
       `'delete_message(uuid)' in ${where} says its rows are never a provenance source, citing ${UNRECORDED}, which isn't a decision check 8 reads from docs/TECH-SPEC.md or an id T23 cites`,
     ])
-    // The registry's own paths delete from its two tables alone, so no other path can claim to be one.
+    // Only lifecycle_cascade() and provenance_forget() are the registry's own, by key, so no other
+    // path can claim to be one (the next case plants more).
     expect(problemsOf(remove(''), as({ registry: true }), guarded)).toEqual([
-      `delete_message(uuid) is the provenance registry's own path in ${where}, but deletes from public.messages: the registry's own paths delete from provenance_items and provenance_sources alone, and every other guarded path says forgets or notASource (T23 item 14)`,
+      `delete_message(uuid) says in ${where} that it is the provenance registry's own deletion code, but only lifecycle_cascade() and provenance_forget() are: every other guarded path says forgets or notASource (T23 item 14)`,
     ])
     // A grant can't call anything.
     expect(
@@ -1349,6 +1350,107 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       ['delete_case(uuid, text, boolean)', { notASource: expect.any(String), decision: 'RQS-11' }],
       ['lifecycle_cascade(text, uuid, bigint, integer)', { registry: true }],
       ['provenance_forget(text, uuid, text, bigint)', { registry: true }],
+    ])
+  })
+
+  it('T23 item 14 LH-41: only lifecycle_cascade() and provenance_forget() delete from the provenance registry, and only they say registry', () => {
+    const where = 'DELETE_PATHS in apps/server/src/lifecycle/deletes.ts'
+    const guarded = [...GUARDED_TABLES, 'messages']
+    const cascade = 'lifecycle_cascade(text, uuid, bigint, integer)'
+    // A set-based sweep of withdrawn derived leftovers that deletes the records itself, after the hold
+    // decision and the log row, as C2.9 must not write it: it would skip what provenance_forget() does
+    // for each record, the cascade to what was made from it and marking gone the edges naming it.
+    const sweep = (also = '') =>
+      deletePathsOf(
+        [],
+        [
+          {
+            key: 'sweep_withdrawn(integer)',
+            definer: true,
+            trigger: false,
+            source: `begin
+              if public.lifecycle_held(org, '{}', 'derived', d) then return 0; end if;
+              parent := public.log_deletion('provenance', 'provenance_items', d::text, 'retention', null, null, null, null, false);
+              ${also}
+              delete from public.provenance_items p where p.org_id = org and p.state = 'withdrawn';
+              delete from public.provenance_sources e where e.org_id = org and e.item = d;
+            end`,
+          },
+        ],
+        [],
+        {},
+      )
+    const declared = (key: string, provenance: unknown) => ({ [key]: { guarded: true, provenance } as DeletePath })
+    const records = (key: string, tables = 'public.provenance_items, public.provenance_sources') =>
+      `${key} deletes from ${tables}, which only the registry's own deletion code, lifecycle_cascade() and provenance_forget(), deletes from: call provenance_forget() for each item instead, so what was made from it goes too and the edges naming it are marked gone, and say forgets (T23 item 14, LH-41)`
+    const notOwn = (key: string) =>
+      `${key} says in ${where} that it is the provenance registry's own deletion code, but only lifecycle_cascade() and provenance_forget() are: every other guarded path says forgets or notASource (T23 item 14)`
+    const fn = 'sweep_withdrawn(integer)'
+    // Another function, whatever it says: registry, never a source (citing an id T23 cites), or
+    // forgets, calling provenance_forget() beside its own DELETEs.
+    expect(problemsOf(sweep(), declared(fn, { registry: true }))).toEqual([records(fn), notOwn(fn)])
+    expect(problemsOf(sweep(), declared(fn, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      records(fn),
+    ])
+    expect(
+      problemsOf(
+        sweep("perform public.provenance_forget('derived', d, 'retention', parent);"),
+        declared(fn, { forgets: true }),
+      ),
+    ).toEqual([records(fn)])
+    // A runtime role's DELETE grant on the registry, and an ON DELETE CASCADE key into its edges.
+    const grant = 'hearth_app provenance_items:DELETE'
+    const grants = deletePathsOf([{ role: 'hearth_app', table: 'provenance_items', op: 'DELETE' }], [], [], {})
+    expect(problemsOf(grants, declared(grant, { registry: true }))).toEqual([
+      records(grant, 'public.provenance_items'),
+      notOwn(grant),
+    ])
+    expect(problemsOf(grants, declared(grant, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      records(grant, 'public.provenance_items'),
+    ])
+    const fk = 'fk provenance_sources.provenance_sources_planted_fkey'
+    const cascadeKey = deletePathsOf(
+      [],
+      [],
+      [
+        {
+          table: 'provenance_sources',
+          name: 'provenance_sources_planted_fkey',
+          action: 'c',
+          parent: 'provenance_items',
+        },
+      ],
+      {},
+    )
+    expect(problemsOf(cascadeKey, declared(fk, { registry: true }))).toEqual([
+      records(fk, 'public.provenance_sources'),
+      notOwn(fk),
+    ])
+    // The registry's own code says registry, never anything else.
+    const own = found.filter(path => path.key === cascade)
+    expect(problemsOf(own, declared(cascade, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      `${cascade} is the provenance registry's own deletion code, but ${where} doesn't say registry (T23 item 14)`,
+    ])
+    expect(problemsOf(own, declared(cascade, { forgets: true }))).toEqual([
+      `${cascade} is the provenance registry's own deletion code, but ${where} doesn't say registry (T23 item 14)`,
+    ])
+    // And deletes from the registry's two tables alone.
+    const wider = deletePathsOf(
+      [],
+      [
+        {
+          key: cascade,
+          definer: true,
+          trigger: false,
+          source:
+            'delete from public.messages m where m.id = i; delete from public.provenance_items p where p.id = c; delete from public.provenance_sources e where e.item = c;',
+        },
+      ],
+      [],
+      {},
+    )
+    expect(problemsOf(wider, declared(cascade, { registry: true }), guarded)).toEqual([
+      `${cascade} is the provenance registry's own path in ${where}, but deletes from public.messages: the registry's own paths delete from provenance_items and provenance_sources alone, and every other guarded path says forgets or notASource (T23 item 14)`,
     ])
   })
 
