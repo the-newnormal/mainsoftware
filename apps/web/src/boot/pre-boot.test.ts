@@ -128,7 +128,7 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
     expect(events.map(event => event.defaultPrevented)).toEqual([true, true, true])
   })
 
-  it('PB-04 T21 item 2: once the page is leaving (beforeunload or pagehide), a preload error reloads nothing while the page goes, and the error goes on', () => {
+  it('PB-04 T21 item 2: while the page is leaving (beforeunload or pagehide), a preload error is a cancelled chunk: it is stopped, nothing is asked and nothing reloads, however long the navigation takes', () => {
     for (const leave of ['beforeunload', 'pagehide']) {
       const leaving = fakeWindow(() => memoryStorage({}))
       const ask = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
@@ -136,17 +136,15 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
       leaving.dispatch(leave, new Event(leave))
       const events = [preloadError(), preloadError()]
       for (const event of events) leaving.dispatch('vite:preloadError', event)
-      // A navigation that replaces the page ends its timers: nothing was asked, nothing reloads.
+      // Stopped, so the import resolves to nothing and the router's own reload never sees a
+      // missing module; and nothing waits to ask later, so a slow navigation is never stopped.
       expect(ask, leave).not.toHaveBeenCalled()
       expect(
         events.map(event => event.defaultPrevented),
         leave,
-      ).toEqual([false, false])
-      // One wait for a burst of errors, of LEAVE_GRACE_MS.
-      expect(
-        leaving.timers.map(timer => timer.ms),
-        leave,
-      ).toEqual([LEAVE_GRACE_MS])
+      ).toEqual([true, true])
+      leaving.stillHere()
+      expect(ask, leave).not.toHaveBeenCalled()
     }
     // A reload already under way still stops the errors that follow it, leaving or not.
     const reloading = fakeWindow(() => memoryStorage({}))
@@ -159,21 +157,38 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
     expect([first.defaultPrevented, second.defaultPrevented]).toEqual([true, true])
   })
 
-  it('PB-05 T21 item 2: after a navigation that ended without replacing the page (a download, a 204), a real chunk failure still reloads, once the page is still here', () => {
+  it('PB-05 T21 item 2: after a navigation that ended without replacing the page (a download, a 204), a real chunk failure reloads again once LEAVE_GRACE_MS has passed; pagehide marks the page for good', () => {
     const aborted = fakeWindow(() => memoryStorage({}))
     const ask = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
     preBoot(aborted.win, ask)
     aborted.dispatch('beforeunload', new Event('beforeunload'))
+    expect(aborted.timers.map(timer => timer.ms)).toEqual([LEAVE_GRACE_MS])
     // The navigation ends with the page still here; a chunk of a gone deploy fails later.
+    aborted.stillHere()
     const failure = preloadError()
     aborted.dispatch('vite:preloadError', failure)
-    expect(ask).not.toHaveBeenCalled()
-    aborted.stillHere()
     expect(ask).toHaveBeenCalledTimes(1)
-    // The reload is under way, so the errors that follow are stopped at once.
-    const next = preloadError()
-    aborted.dispatch('vite:preloadError', next)
-    expect(next.defaultPrevented).toBe(true)
-    expect(ask).toHaveBeenCalledTimes(1)
+    expect(failure.defaultPrevented).toBe(true)
+
+    // Only the latest beforeunload's timer clears it: an earlier one coming due doesn't.
+    const twice = fakeWindow(() => memoryStorage({}))
+    const asked = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
+    preBoot(twice.win, asked)
+    twice.dispatch('beforeunload', new Event('beforeunload'))
+    const [earlier] = twice.timers.splice(0)
+    twice.dispatch('beforeunload', new Event('beforeunload'))
+    earlier?.run()
+    twice.dispatch('vite:preloadError', preloadError())
+    expect(asked).not.toHaveBeenCalled()
+
+    // pagehide is followed only by an unload or the back-forward cache: no timer clears it.
+    const hidden = fakeWindow(() => memoryStorage({}))
+    const never = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
+    preBoot(hidden.win, never)
+    hidden.dispatch('beforeunload', new Event('beforeunload'))
+    hidden.dispatch('pagehide', new Event('pagehide'))
+    hidden.stillHere()
+    hidden.dispatch('vite:preloadError', preloadError())
+    expect(never).not.toHaveBeenCalled()
   })
 })

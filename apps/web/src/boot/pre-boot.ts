@@ -15,12 +15,15 @@
 // 3. vite:preloadError (a stylesheet or chunk of a deploy that's gone) asks onPreloadError, which
 //    reloads at most once a minute (session/document.ts, reloadForUpdate). When it reloaded, the
 //    error is stopped; when it's blocked, the error goes on to the screen that loaded the chunk.
-//    Once the page is leaving (beforeunload or pagehide), a preload error is most likely the
-//    browser cancelling a chunk still loading, not a gone deploy: WebKit cancels a lazy import when
-//    a navigation starts, and a reload then would reload the page being left and stop that
-//    navigation. It goes on to its screen, and onPreloadError is asked only if the page is still
-//    here LEAVE_GRACE_MS later: a navigation that replaces the page ends its timers first, and one
-//    that ends without replacing it (a download, a 204) leaves a real failure to reload as before.
+//    While the page is leaving, a preload error is the browser cancelling a chunk still loading,
+//    not a gone deploy: WebKit cancels a lazy import as soon as a navigation starts, and a reload
+//    then reloads the page being left and stops that navigation, however long its response takes.
+//    So it is stopped, and nothing is asked: the import resolves to nothing, which its caller
+//    reads as a failure of its own (a query's error, an error screen with Try again), and the
+//    router's own reload for a missing module (lazyRouteComponent, which reloads once per message)
+//    never sees it either. Leaving starts at pagehide, which only an unload or the back-forward
+//    cache follows, and at beforeunload for LEAVE_GRACE_MS: a navigation that ends without
+//    replacing the page (a download, a 204) leaves later failures to reload as before.
 // 4. zod is told, before it loads, to build no code from strings (T21 item 2). zod 4 compiles an
 //    object schema's parser with `new Function` when it can, and finds out whether it can by trying
 //    `new Function('')` when the first object schema is built. The app's CSP has no 'unsafe-eval',
@@ -43,8 +46,8 @@ export interface ScrollCacheStorage {
   removeItem(key: string): void
 }
 
-// How long a preload error that came while the page was leaving waits before it is taken for a
-// deploy that's gone (item 3).
+// How long after beforeunload a preload error is taken for a cancelled chunk (item 3): a
+// navigation's cancellations come as it starts, well inside it.
 export const LEAVE_GRACE_MS = 1_000
 
 // zod's settings object, read when zod loads (item 4).
@@ -109,32 +112,25 @@ export function preBoot(win: PreBootWindow, onPreloadError: () => 'reloaded' | '
   // Once a reload is under way, later preload errors (several chunks of the same gone deploy)
   // are stopped too, so none of them reaches a screen while the page reloads.
   let reloading = false
-  // Set as the page starts to leave (item 3), and never cleared: an error after a navigation that
-  // didn't replace the page is only asked about later. A page that comes back from the
+  // Whether the page is leaving (item 3). A beforeunload marks it for LEAVE_GRACE_MS, and only the
+  // latest one's timer clears it; pagehide marks it for good, since a page that comes back from the
   // back-forward cache reloads anyway (item 2).
   let leaving = false
-  let deferred = false
+  let departures = 0
+  let hidden = false
   win.addEventListener('beforeunload', () => {
     leaving = true
+    const departure = ++departures
+    win.setTimeout(() => {
+      if (departure === departures && !hidden) leaving = false
+    }, LEAVE_GRACE_MS)
   })
   win.addEventListener('pagehide', () => {
+    hidden = true
     leaving = true
   })
-  const ask = () => {
-    if (!reloading && onPreloadError() === 'reloaded') reloading = true
-  }
   win.addEventListener('vite:preloadError', event => {
-    if (leaving && !reloading) {
-      if (!deferred) {
-        deferred = true
-        win.setTimeout(() => {
-          deferred = false
-          ask()
-        }, LEAVE_GRACE_MS)
-      }
-      return
-    }
-    ask()
-    if (reloading) event.preventDefault()
+    if (!reloading && !leaving && onPreloadError() === 'reloaded') reloading = true
+    if (reloading || leaving) event.preventDefault()
   })
 }
