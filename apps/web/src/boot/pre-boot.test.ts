@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  LEAVE_GRACE_MS,
   type PreBootWindow,
   preBoot,
   type ScrollCacheStorage,
@@ -25,6 +26,7 @@ function memoryStorage(entries: Record<string, string>): ScrollCacheStorage & { 
 function fakeWindow(storage: () => ScrollCacheStorage) {
   const listeners = new Map<string, ((event: Event) => void)[]>()
   const reload = vi.fn()
+  const timers: { run: () => void; ms: number }[] = []
   const win: PreBootWindow = {
     get sessionStorage() {
       return storage()
@@ -33,11 +35,18 @@ function fakeWindow(storage: () => ScrollCacheStorage) {
     addEventListener: (type, listener) => {
       listeners.set(type, [...(listeners.get(type) ?? []), listener])
     },
+    setTimeout: (run, ms) => {
+      timers.push({ run, ms })
+    },
   }
   const dispatch = (type: string, event: Event) => {
     for (const listener of listeners.get(type) ?? []) listener(event)
   }
-  return { win, reload, dispatch }
+  // The page is still here when its timers come due: runs every timer set so far.
+  const stillHere = () => {
+    for (const timer of timers.splice(0)) timer.run()
+  }
+  return { win, reload, dispatch, timers, stillHere }
 }
 
 const preloadError = () => new Event('vite:preloadError', { cancelable: true })
@@ -119,16 +128,25 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
     expect(events.map(event => event.defaultPrevented)).toEqual([true, true, true])
   })
 
-  it('PB-04 T21 item 2: once the page is leaving (beforeunload or pagehide), a preload error is a cancelled chunk: nothing reloads and the error goes on', () => {
+  it('PB-04 T21 item 2: once the page is leaving (beforeunload or pagehide), a preload error reloads nothing while the page goes, and the error goes on', () => {
     for (const leave of ['beforeunload', 'pagehide']) {
       const leaving = fakeWindow(() => memoryStorage({}))
       const ask = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
       preBoot(leaving.win, ask)
       leaving.dispatch(leave, new Event(leave))
-      const event = preloadError()
-      leaving.dispatch('vite:preloadError', event)
+      const events = [preloadError(), preloadError()]
+      for (const event of events) leaving.dispatch('vite:preloadError', event)
+      // A navigation that replaces the page ends its timers: nothing was asked, nothing reloads.
       expect(ask, leave).not.toHaveBeenCalled()
-      expect(event.defaultPrevented, leave).toBe(false)
+      expect(
+        events.map(event => event.defaultPrevented),
+        leave,
+      ).toEqual([false, false])
+      // One wait for a burst of errors, of LEAVE_GRACE_MS.
+      expect(
+        leaving.timers.map(timer => timer.ms),
+        leave,
+      ).toEqual([LEAVE_GRACE_MS])
     }
     // A reload already under way still stops the errors that follow it, leaving or not.
     const reloading = fakeWindow(() => memoryStorage({}))
@@ -139,5 +157,23 @@ describe('T21 D-02: before any library loads (boot/pre-boot.ts)', () => {
     const second = preloadError()
     reloading.dispatch('vite:preloadError', second)
     expect([first.defaultPrevented, second.defaultPrevented]).toEqual([true, true])
+  })
+
+  it('PB-05 T21 item 2: after a navigation that ended without replacing the page (a download, a 204), a real chunk failure still reloads, once the page is still here', () => {
+    const aborted = fakeWindow(() => memoryStorage({}))
+    const ask = vi.fn((): 'reloaded' | 'blocked' => 'reloaded')
+    preBoot(aborted.win, ask)
+    aborted.dispatch('beforeunload', new Event('beforeunload'))
+    // The navigation ends with the page still here; a chunk of a gone deploy fails later.
+    const failure = preloadError()
+    aborted.dispatch('vite:preloadError', failure)
+    expect(ask).not.toHaveBeenCalled()
+    aborted.stillHere()
+    expect(ask).toHaveBeenCalledTimes(1)
+    // The reload is under way, so the errors that follow are stopped at once.
+    const next = preloadError()
+    aborted.dispatch('vite:preloadError', next)
+    expect(next.defaultPrevented).toBe(true)
+    expect(ask).toHaveBeenCalledTimes(1)
   })
 })

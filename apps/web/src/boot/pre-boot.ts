@@ -15,10 +15,12 @@
 // 3. vite:preloadError (a stylesheet or chunk of a deploy that's gone) asks onPreloadError, which
 //    reloads at most once a minute (session/document.ts, reloadForUpdate). When it reloaded, the
 //    error is stopped; when it's blocked, the error goes on to the screen that loaded the chunk.
-//    Once the page is leaving (beforeunload or pagehide), a preload error is the browser cancelling
-//    a chunk still loading, not a gone deploy: WebKit cancels a lazy import when a navigation
-//    starts, and a reload then would reload the page being left and stop that navigation. It goes
-//    on to its screen, which is going too, and nothing reloads.
+//    Once the page is leaving (beforeunload or pagehide), a preload error is most likely the
+//    browser cancelling a chunk still loading, not a gone deploy: WebKit cancels a lazy import when
+//    a navigation starts, and a reload then would reload the page being left and stop that
+//    navigation. It goes on to its screen, and onPreloadError is asked only if the page is still
+//    here LEAVE_GRACE_MS later: a navigation that replaces the page ends its timers first, and one
+//    that ends without replacing it (a download, a 204) leaves a real failure to reload as before.
 // 4. zod is told, before it loads, to build no code from strings (T21 item 2). zod 4 compiles an
 //    object schema's parser with `new Function` when it can, and finds out whether it can by trying
 //    `new Function('')` when the first object schema is built. The app's CSP has no 'unsafe-eval',
@@ -41,6 +43,10 @@ export interface ScrollCacheStorage {
   removeItem(key: string): void
 }
 
+// How long a preload error that came while the page was leaving waits before it is taken for a
+// deploy that's gone (item 3).
+export const LEAVE_GRACE_MS = 1_000
+
 // zod's settings object, read when zod loads (item 4).
 export interface ZodConfigHolder {
   __zod_globalConfig?: { jitless?: boolean }
@@ -54,6 +60,7 @@ export interface PreBootWindow extends ZodConfigHolder {
     type: 'pageshow' | 'beforeunload' | 'pagehide' | 'vite:preloadError',
     listener: (event: Event) => void,
   ): void
+  setTimeout(handler: () => void, timeout: number): unknown
 }
 
 // The window's session storage, or undefined when reading it throws.
@@ -102,18 +109,32 @@ export function preBoot(win: PreBootWindow, onPreloadError: () => 'reloaded' | '
   // Once a reload is under way, later preload errors (several chunks of the same gone deploy)
   // are stopped too, so none of them reaches a screen while the page reloads.
   let reloading = false
-  // Set as the page starts to leave (item 3); a page that comes back from the back-forward cache
-  // reloads anyway (item 2).
+  // Set as the page starts to leave (item 3), and never cleared: an error after a navigation that
+  // didn't replace the page is only asked about later. A page that comes back from the
+  // back-forward cache reloads anyway (item 2).
   let leaving = false
+  let deferred = false
   win.addEventListener('beforeunload', () => {
     leaving = true
   })
   win.addEventListener('pagehide', () => {
     leaving = true
   })
-  win.addEventListener('vite:preloadError', event => {
-    if (leaving && !reloading) return
+  const ask = () => {
     if (!reloading && onPreloadError() === 'reloaded') reloading = true
+  }
+  win.addEventListener('vite:preloadError', event => {
+    if (leaving && !reloading) {
+      if (!deferred) {
+        deferred = true
+        win.setTimeout(() => {
+          deferred = false
+          ask()
+        }, LEAVE_GRACE_MS)
+      }
+      return
+    }
+    ask()
     if (reloading) event.preventDefault()
   })
 }
