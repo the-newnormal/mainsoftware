@@ -90,15 +90,24 @@
 // run them, and a source's deletion is logged in the step. A "fixture producer" is a transaction that,
 // as the owner, reads a derived source's record FOR KEY SHARE and requires it live, then makes the new
 // item and its edge, and sets its role to hearth_app before it commits, as a producer's checked
-// writer leaves it, so the deferred completeness check fires with hearth_app active (LH-43). A cascade
-// against a legal hold placed on the person a derived item's other source is about, each order
-// (LCR-12); a derive from a derived item against that item's deletion, which finds the new item in
-// its lock-ahead's next round, each order (LCR-13); two cascades sharing a dependant, which lock in id
-// order with no deadlock (LCR-14); a person-scoped deletion against a cascade over an item made from
-// the person's device, each order (LCR-17); and an edge naming a derived item against that item's
-// withdrawal, each order (LCR-18). 0014 has no migration-under-load race (unlike 0013's LCR-10): it
-// adds tables and functions only, its keys lock orgs and principals, which nothing writes at run time
-// in C0, and it replaces functions no runtime role runs.
+// writer leaves it, so the deferred completeness check fires with hearth_app active (LH-43). race()
+// runs its first step whole before the second starts, so it shows that a step waits but never the
+// order the step takes its locks in; where a case claims the lock-ahead's order (people before
+// items, items in id order, each round's people before its items), it drives the steps through
+// phased(): the second starts while the first is part done, then the first takes its next lock
+// under a 500 ms lock_timeout, or the watcher tries a row NOWAIT, so a lock taken out of order shows
+// as a timeout or a row held. A cascade against a legal hold placed on the person a derived item's
+// other source is about, each order, the cascade waiting on the person holding no item (LCR-12); a
+// derive from a derived item against that item's deletion, each order, and against a cascade, whose
+// next round waits on the new item's people before taking the new item (LCR-13); two cascades
+// sharing a dependant, and a producer reading two items in id order against their message's
+// cascade, with no deadlock (LCR-14); a person-scoped deletion against a cascade over an item made
+// from the person's device, each order, the deletion taking the item after the person while the
+// cascade waits (LCR-17); and an edge naming a derived item against that item's withdrawal, each
+// order, the withdrawal's next round holding the citing item (LCR-18). 0014 has no
+// migration-under-load race (unlike 0013's LCR-10): it adds tables and functions only, its keys
+// lock orgs and principals, which nothing writes at run time in C0, and it replaces functions no
+// runtime role runs.
 //
 // Each case opens two connections to a throwaway database (concurrency_check, built from
 // db/migrations/ with the migrator, owned by hearth_owner), starts the change in one, starts the
@@ -433,18 +442,21 @@ const LIFECYCLE_FIXTURE = `
 // C0.10 PR 2 (0014): the provenance org, as the owner, in two committed transactions, since a derived
 // item's edges can't name a derived record made in its own transaction (LH-40). Setup 1, with the
 // rest of the fixture: its Hearth principal v(a0); the Compliance Officer v(70), who places holds;
-// and people v(61) to v(66), each with an account and a device, v(e1) to v(e6), the anchors of the
-// items' device sources. Setup 2 (PROVENANCE_ITEMS): the items, each a record v(1x) whose item is
-// v(2x), from made-up messages v(31) to v(3a) and the devices:
+// and people v(61) to v(67), each with an account and a device, v(e1) to v(e7), the anchors of the
+// items' device sources. Setup 2 (PROVENANCE_ITEMS): the items, each a record v(1x) or v(4x) whose
+// item is v(2x) or v(5x), from made-up messages v(31) to v(3c) and the devices:
 //   LCR-12 11 and 12, each from a message (31, 32) and a device (e1 of 61, e2 of 62);
 //   LCR-13 13 and 14, from the devices e3 and e4 of 63 and 64, whom nothing holds (15 and 1f are the
-//          derives the case makes);
-//   LCR-14 16, from messages 33 and 34, and their private items 17 (33) and 18 (34);
+//          derives the case makes), and 41, from message 3b (45 is the derive the case makes, from it
+//          and the device e7 of 67, whom nothing holds);
+//   LCR-14 16, from messages 33 and 34, and their private items 17 (33) and 18 (34); and 42 and 43,
+//          from message 3c, whose items, 53 and 52, run the other way, so an index on items reads
+//          the two records against their id order (46 is the derive the case makes, from both);
 //   LCR-17 19 and 1a, each from a device (e5 of 65, e6 of 66) and a message (35, 36);
 //   LCR-18 1b and 1d, from messages 37 and 38, and the cited drafts 1c and 1e, citing 39 and 3a.
 const v = (suffix: string) => `c0000000-0000-4000-8000-0000000006${suffix}`
 const PROVENANCE_ORG = v('00')
-const PROVENANCE_PEOPLE = ['61', '62', '63', '64', '65', '66']
+const PROVENANCE_PEOPLE = ['61', '62', '63', '64', '65', '66', '67']
 const vks = (suffixes: string[]) => suffixes.map(k => `'${k}'`).join(', ')
 const PROVENANCE_FIXTURE = `
   insert into public.orgs (id, name) values ('${PROVENANCE_ORG}', 'Concurrency check provenance');
@@ -517,6 +529,9 @@ const PROVENANCE_ITEMS = [
   provenanceItem('1c', '2c', 'draft', 'cited', [['message', '39']]),
   provenanceItem('1d', '2d', 'derived', 'derived', [['message', '38']]),
   provenanceItem('1e', '2e', 'draft', 'cited', [['message', '3a']]),
+  provenanceItem('41', '51', 'derived', 'derived', [['message', '3b']]),
+  provenanceItem('42', '53', 'derived', 'derived', [['message', '3c']]),
+  provenanceItem('43', '52', 'derived', 'derived', [['message', '3c']]),
 ].join('')
 // A PIN hash in the one shape the server issues (0006; DB test 100 uses the same).
 const PIN_HASH = "'$argon2id$v=19$m=19456,t=2,p=1$' || repeat('A', 22) || '$' || repeat('B', 43)"
@@ -623,6 +638,20 @@ async function waitsOnLock(watcher: Client, pid: number): Promise<boolean> {
   return false
 }
 
+// Whether the backend `pid` waits on a lock the backend `blocker` holds, asked of Postgres for up to
+// 5 seconds (C0.10 PR 2: a wait that starts only after an earlier one ends).
+async function blockedBy(watcher: Client, pid: number, blocker: number): Promise<boolean> {
+  for (let tries = 0; tries < 100; tries += 1) {
+    const result = await watcher.query<{ blocked: boolean }>(
+      'select $2::integer = any (pg_blocking_pids($1)) as blocked',
+      [pid, blocker],
+    )
+    if (result.rows[0]?.blocked === true) return true
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  return false
+}
+
 // Starts `first` and leaves it open, runs `second` in another connection until it waits on a
 // lock, then commits `first` (or, with firstEnds 'rollback', rolls it back). Returns whether
 // `second` waited and the error it ended with, if any; `second` commits if it succeeded.
@@ -672,6 +701,75 @@ async function alongside(first: Step, second: Step): Promise<string | undefined>
     await b.query(error === undefined ? 'commit' : 'rollback')
     await a.query('commit')
     return error
+  } finally {
+    await a.end()
+    await b.end()
+  }
+}
+
+// What phased() runs between its steps: while `second` waits, `meanwhile` (A's next statements,
+// through `then`, and the watcher's reads); once A has ended, `afterFirst`, while `second` goes on;
+// and once `second`'s statement has ended, `ended`, before B commits.
+interface Phases {
+  meanwhile?: (then: (sql: string) => Promise<string | undefined>, pid: number) => Promise<void>
+  afterFirst?: (pid: number) => Promise<void>
+  ended?: () => Promise<void>
+}
+
+// C0.10 PR 2 (LH-21): race() runs `first` whole before `second` starts, so it can't show the order a
+// step takes its locks in. This starts `first` in A and leaves it open, runs `second` in B until it
+// waits on a lock, then the phases. A's next statements run under a 500 ms lock_timeout, below
+// Postgres's 1 s deadlock_timeout, so a step that takes its locks out of order shows as A's own
+// timeout rather than as a deadlock either side may be chosen to lose (as ACC-05 T5's does). A
+// commits, or rolls back once one of its statements has failed; B commits if it succeeded. Returns
+// whether `second` waited, the error A's statements (or A's commit) ended with, and the one
+// `second` ended with.
+async function phased(
+  watcher: Client,
+  first: Step,
+  second: Step,
+  phases: Phases,
+): Promise<{ waited: boolean; firstError?: string; error?: string }> {
+  const a = await connect(DB)
+  const b = await connect(DB)
+  try {
+    const pid = (await b.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]?.pid ?? 0
+    await begin(a, first)
+    await a.query(first.sql)
+    await begin(b, second)
+    const pending = b.query(second.sql).then(
+      () => undefined,
+      (error: unknown) => message(error),
+    )
+    const waited = await waitsOnLock(watcher, pid)
+    let firstError: string | undefined
+    let timed = false
+    const then = async (sql: string): Promise<string | undefined> => {
+      if (firstError !== undefined) return firstError
+      if (!timed) {
+        await a.query("set local lock_timeout = '500ms'")
+        timed = true
+      }
+      firstError = await a.query(sql).then(
+        () => undefined,
+        (error: unknown) => message(error),
+      )
+      return firstError
+    }
+    await phases.meanwhile?.(then, pid)
+    if (firstError === undefined) {
+      firstError = await a.query('commit').then(
+        () => undefined,
+        (error: unknown) => message(error),
+      )
+    } else {
+      await a.query('rollback')
+    }
+    await phases.afterFirst?.(pid)
+    const error = await pending
+    await phases.ended?.()
+    await b.query(error === undefined ? 'commit' : 'rollback')
+    return { waited, ...(firstError === undefined ? {} : { firstError }), ...(error === undefined ? {} : { error }) }
   } finally {
     await a.end()
     await b.end()
@@ -1281,19 +1379,22 @@ const forgetStep = (item: string, answers: number): Step => ({
           if answer is distinct from ${answers} then raise exception 'provenance_forget() answered %', answer; end if;
         end $$`,
 })
-// A fixture producer (LH-43; T23 item 14): as the owner, the derived source's record FOR KEY SHARE,
-// required live (a gone or withdrawn source: 'The source is gone.'), then the new item, derived from
-// it alone, and its edge; and hearth_app for the commit, as a producer's checked writer leaves it, so
-// the deferred completeness check fires with hearth_app active.
-const deriveStep = (source: string, rec: string, item: string): Step => ({
-  as: 'owner',
-  sql: `do $$ begin
+// A fixture producer's read of a derived source (LH-43; T23 item 14), as PL/pgSQL statements: its
+// record FOR KEY SHARE, required live (a gone or withdrawn source: 'The source is gone.').
+const readSource = (source: string) => `
           perform 1 from public.provenance_items p
           where p.org_id = '${PROVENANCE_ORG}' and p.item_kind = 'derived' and p.item_id = '${v(source)}' and p.state = 'live'
           for key share;
           if not found then
             raise exception 'The source is gone.';
-          end if;${provenanceItem(rec, item, 'derived', 'derived', [['derived', source]]).replaceAll('\n', '\n      ')}
+          end if;`
+// A fixture producer (LH-43; T23 item 14): as the owner, the derived source's record read
+// (readSource()), then the new item, derived from it and any `also` sources, and its edges; and
+// hearth_app for the commit, as a producer's checked writer leaves it, so the deferred completeness
+// check fires with hearth_app active.
+const deriveStep = (source: string, rec: string, item: string, also: Array<[string, string]> = []): Step => ({
+  as: 'owner',
+  sql: `do $$ begin${readSource(source)}${provenanceItem(rec, item, 'derived', 'derived', [['derived', source], ...also]).replaceAll('\n', '\n      ')}
         end $$;
         set local role hearth_app`,
 })
@@ -1307,12 +1408,40 @@ const provenanceHold = (person: string): Step => ({
         end $$`,
 })
 // A person-scoped deletion as a later step's will start (DB-11): the person FOR NO KEY UPDATE, then a
-// provenance record made from their device FOR UPDATE.
+// provenance record made from their device FOR UPDATE, each its own statement.
+const lockPerson = (person: string) =>
+  `select 1 from public.people where org_id = '${PROVENANCE_ORG}' and id = '${v(person)}' for no key update`
+const lockRecord = (rec: string) =>
+  `select 1 from public.provenance_items where org_id = '${PROVENANCE_ORG}' and id = '${v(rec)}' for update`
 const personScoped = (person: string, rec: string): Step => ({
   as: 'owner',
-  sql: `select 1 from public.people where org_id = '${PROVENANCE_ORG}' and id = '${v(person)}' for no key update;
-        select 1 from public.provenance_items where org_id = '${PROVENANCE_ORG}' and id = '${v(rec)}' for update`,
+  sql: `${lockPerson(person)};
+        ${lockRecord(rec)}`,
 })
+// The table whose row the backend `pid` waits for: a backend waiting for a row lock holds that
+// row's tuple lock while it waits on the holder's transaction. pg_locks lists no row lock a
+// backend already holds, so what a waiting step holds is asked with lockNow().
+const waitingRow = (watcher: Client, pid: number) =>
+  scalar(
+    watcher,
+    `select string_agg(c.relname, ',' order by c.relname) as v from pg_locks l join pg_class c on c.oid = l.relation
+     where l.pid = $1 and l.locktype = 'tuple' and l.granted`,
+    [pid],
+  )
+// Whether a statement of the watcher's own (whose lock ends with it) can lock provenance record
+// v(rec) in `mode` at once: undefined if it can, else the error (55P03 while another transaction
+// holds a lock that conflicts). FOR UPDATE conflicts with every row lock; FOR KEY SHARE only with
+// FOR UPDATE, a delete or a key change.
+const lockNow = (watcher: Client, rec: string, mode: 'update' | 'key share') =>
+  watcher
+    .query(`select 1 from public.provenance_items where org_id = $1 and id = $2 for ${mode} nowait`, [
+      PROVENANCE_ORG,
+      v(rec),
+    ])
+    .then(
+      result => (result.rowCount === 1 ? undefined : `no record ${rec}`),
+      (error: unknown) => message(error),
+    )
 // A correction of a message: withdraw_dependants() (as the owner, the org set), which must answer as
 // expected.
 const withdrawStep = (message: string, answers: number): Step => ({
@@ -1322,7 +1451,8 @@ const withdrawStep = (message: string, answers: number): Step => ({
           if answer is distinct from ${answers} then raise exception 'withdraw_dependants() answered %', answer; end if;
         end $$`,
 })
-// A cited draft's second source, a derived item, added as a producer adds one (as the owner).
+// A cited draft's second source, a derived item, added by a bare edge insert as the owner, without a
+// producer's own locks (LH-43), so the edge trigger's FOR SHARE on the source is what LCR-18 tests.
 const citeStep = (cited: string, item: string): Step => ({
   as: 'owner',
   sql: `insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
@@ -3364,12 +3494,23 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
   ],
   [
     // C0.10 PR 2 (0014; LH-50, LH-21): the cascade's lock-ahead takes the people its items' live
-    // sources are about FOR NO KEY UPDATE, as a placement takes its target, so the two take turns on
-    // the person, and the hold decision after reads a hold that committed meanwhile.
-    'LCR-12 ADM-08 PDPA-09 C0.10 LH-50 LH-21: a cascade waits for a legal hold being placed on the person a derived item’s other source is about, then keeps the item withdrawn; a placement waits for a cascade in progress, and places after it',
+    // sources are about FOR NO KEY UPDATE before it takes the items, as a placement takes its target,
+    // so the two take turns on the person, the cascade holds no item while it waits (the hold
+    // decision's own lock on the person comes only after the withdrawal has taken the item), and the
+    // hold decision after reads a hold that committed meanwhile.
+    'LCR-12 ADM-08 PDPA-09 C0.10 LH-50 LH-21: a cascade waits in its lock-ahead for a legal hold being placed on the person a derived item’s other source is about, on the person’s row and holding no item, then keeps the item withdrawn; a placement waits for a cascade in progress, and places after it',
     async watcher => {
-      const first = await race(watcher, provenanceHold('61'), cascadeStep('31', 0))
+      const seen: { row?: string | null; item?: string } = {}
+      const first = await phased(watcher, provenanceHold('61'), cascadeStep('31', 0), {
+        meanwhile: async (_then, pid) => {
+          seen.row = await waitingRow(watcher, pid)
+          seen.item = await lockNow(watcher, '11', 'update')
+        },
+      })
       expect(first.waited, 'the cascade did not wait for the placement in progress')
+      expect(seen.row === 'people', `the cascade waited on a row of ${seen.row ?? 'nothing'}, not on the person`)
+      expect(seen.item === undefined, `the cascade held the item while it waited on the person: ${seen.item}`)
+      expect(first.firstError === undefined, `the placement failed: ${first.firstError}`)
       expect(first.error === undefined, `the cascade failed: ${first.error}`)
       expect((await recordState(watcher, '11')) === 'withdrawn 0', 'the held item went, was logged, or stayed live')
       const second = await race(watcher, cascadeStep('32', 1), provenanceHold('62'))
@@ -3389,8 +3530,10 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
   ],
   [
     // C0.10 PR 2 (0014; LH-41, LH-43, DB-11): a producer reads its derived source FOR KEY SHARE and the
-    // lock-ahead takes it FOR UPDATE, then walks again in a new statement until nothing new appears.
-    'LCR-13 PDPA-09 BRAIN-08 C0.10 LH-41 LH-43 DB-11: a derived item’s deletion waits for a derive from it in progress, then finds the new item in its next round and deletes it too; a derive waits for a deletion in progress, then finds its source gone and records nothing',
+    // lock-ahead takes it FOR UPDATE, then walks again in a new statement until nothing new appears,
+    // taking each round's people before its items. provenance_forget() locks ahead again through the
+    // cascade it calls, so its rounds are shown through a cascade, which locks ahead once.
+    'LCR-13 PDPA-09 BRAIN-08 C0.10 LH-41 LH-43 DB-11: a derived item’s deletion waits for a derive from it in progress, then finds the new item and deletes it too; a derive waits for a deletion in progress, then finds its source gone and records nothing; a cascade waits for a derive in progress, then in its lock-ahead’s next round waits on the person the new item’s other source is about, holding nothing of the new item, and deletes both',
     async watcher => {
       const first = await race(watcher, deriveStep('23', '15', '25'), forgetStep('23', 2))
       expect(first.waited, 'the deletion did not wait for the derive in progress')
@@ -3417,12 +3560,48 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
         [PROVENANCE_ORG, v('23'), v('24')],
       )
       expect(live === '0 0', `a live edge names a deleted item, or an item made from it is live (${live})`)
+      // The derive makes 45 from 41 and the device of 67. While the cascade from 41's message waits
+      // on it, a person-scoped deletion takes 67's row (holder); once the derive commits, the
+      // cascade's next round must wait on 67 before it takes 45.
+      const holder = await connect(DB)
+      try {
+        const seen: { holder?: number; blocked?: boolean; item?: string } = {}
+        const third = await phased(watcher, deriveStep('51', '45', '55', [['device', 'e7']]), cascadeStep('3b', 2), {
+          meanwhile: async () => {
+            seen.holder = (await holder.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]?.pid ?? 0
+            await holder.query(`begin; set local role hearth_owner; ${lockPerson('67')}`)
+          },
+          afterFirst: async pid => {
+            seen.blocked = await blockedBy(watcher, pid, seen.holder ?? 0)
+            seen.item = await lockNow(watcher, '45', 'update')
+            await holder.query('commit')
+          },
+        })
+        expect(third.waited, 'the cascade did not wait for the derive in progress')
+        expect(third.firstError === undefined, `the derive failed: ${third.firstError}`)
+        expect(
+          seen.blocked === true,
+          'the cascade did not wait, after the derive, on the person the new item’s other source is about',
+        )
+        expect(
+          seen.item === undefined,
+          `the cascade held the new item while it waited on that person, so it took it outside its next round or before its people: ${seen.item}`,
+        )
+        expect(third.error === undefined, `the cascade failed: ${third.error}`)
+        expect(
+          (await recordState(watcher, '41')) === 'gone 1' && (await recordState(watcher, '45')) === 'gone 1',
+          'the cascade did not delete and log once both the item and the one derived from it meanwhile',
+        )
+      } finally {
+        await holder.end()
+      }
     },
   ],
   [
-    // C0.10 PR 2 (0014; LH-21): each cascade's lock-ahead takes its items FOR UPDATE in id order, so
-    // two over a shared dependant take turns on it and can't deadlock.
-    'LCR-14 PDPA-09 C0.10 LH-21: two cascades from two messages with a shared derived item take turns on it in id order, with no deadlock: the first keeps it withdrawn (its other source is a kind Hearth can’t judge yet) and deletes its own; the second deletes it and its own, each logged under its own cascade',
+    // C0.10 PR 2 (0014; LH-21, LH-43): each cascade's lock-ahead takes its items FOR UPDATE in id
+    // order, so two over a shared dependant take turns on it, and a producer, which reads the records
+    // it derives from one at a time in id order (T23 item 14), never waits on a cascade in a cycle.
+    'LCR-14 PDPA-09 C0.10 LH-21 LH-43: two cascades from two messages with a shared derived item take turns on it: the first keeps it withdrawn (its other source is a kind Hearth can’t judge yet) and deletes its own; the second deletes it and its own, each logged under its own cascade; and a cascade waiting on a producer’s read of the lower of two items made from its message holds nothing of the higher, so the producer’s read of it never waits, with no deadlock, and the cascade deletes all three',
     async watcher => {
       const { waited, error } = await race(watcher, cascadeStep('33', 1), cascadeStep('34', 2))
       expect(waited, 'the second cascade did not wait on the shared item')
@@ -3438,15 +3617,62 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
         parents === `${v('16')} ${v('34')},${v('17')} ${v('33')},${v('18')} ${v('34')}`,
         `the shared item and the private ones were not each logged under the cascade that deleted them (${parents})`,
       )
+      // The producer reads record 42 (item 53), the cascade from 3c starts and waits on it, then the
+      // producer reads 43 (item 52) and makes 46 from both. A lock-ahead that took 43 first (in
+      // descending id order, or in its items' order) would hold it and time the producer out; one
+      // that left the items to the withdrawal's UPDATE (FOR NO KEY UPDATE) would let the producer read
+      // both, then hold up its edge's FOR SHARE read of 42 in a cycle.
+      const made = await phased(
+        watcher,
+        {
+          as: 'owner',
+          sql: `do $$ begin${readSource('53')}
+        end $$`,
+        },
+        cascadeStep('3c', 3),
+        {
+          meanwhile: async then => {
+            await then(`do $$ begin${readSource('52')}${provenanceItem('46', '56', 'derived', 'derived', [
+              ['derived', '53'],
+              ['derived', '52'],
+            ]).replaceAll('\n', '\n      ')}
+        end $$;
+        set local role hearth_app`)
+          },
+        },
+      )
+      expect(made.waited, 'the cascade did not wait for the producer’s read of the lower item')
+      expect(
+        made.firstError === undefined,
+        `the producer’s read of the higher item waited on the cascade, which took it first: ${made.firstError}`,
+      )
+      expect(made.error === undefined, `the cascade failed: ${made.error}`)
+      const gone: Array<string | null> = []
+      for (const rec of ['42', '43', '46']) gone.push(await recordState(watcher, rec))
+      expect(
+        gone.every(state => state === 'gone 1'),
+        `the cascade did not delete and log once both items and the one made from them (${gone.join(', ')})`,
+      )
     },
   ],
   [
     // C0.10 PR 2 (0014; DB-11): a person-scoped deletion takes the person, then the item; the cascade's
     // lock-ahead takes the person an item's device is about before the item, in the lock order.
-    'LCR-17 PDPA-09 C0.10 DB-11: a person-scoped deletion and a cascade over an item made from the person’s device both take the person before the item, so they take turns, either order, with no deadlock, and the cascade deletes the item',
+    'LCR-17 PDPA-09 C0.10 DB-11: a person-scoped deletion and a cascade over an item made from the person’s device both take the person before the item: a cascade that starts once the deletion holds the person waits on the person’s row holding nothing of the item, so the deletion then takes the item, with no deadlock; a deletion waits for a cascade in progress; either order, the cascade deletes the item',
     async watcher => {
-      const first = await race(watcher, personScoped('65', '19'), cascadeStep('35', 1))
+      const seen: { row?: string | null; item?: string } = {}
+      const first = await phased(watcher, { as: 'owner', sql: lockPerson('65') }, cascadeStep('35', 1), {
+        meanwhile: async (then, pid) => {
+          seen.row = await waitingRow(watcher, pid)
+          seen.item = await then(lockRecord('19'))
+        },
+      })
       expect(first.waited, 'the cascade did not wait on the person')
+      expect(seen.row === 'people', `the cascade waited on a row of ${seen.row ?? 'nothing'}, not on the person`)
+      expect(
+        seen.item === undefined,
+        `the person-scoped deletion could not take the item after the person, so the cascade took it first: ${seen.item}`,
+      )
       expect(first.error === undefined, `the cascade failed: ${first.error}`)
       expect((await recordState(watcher, '19')) === 'gone 1', 'the cascade did not delete and log the item once')
       const second = await race(watcher, cascadeStep('36', 1), personScoped('66', '1a'))
@@ -3458,14 +3684,29 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
   [
     // C0.10 PR 2 (0014; LH-40; CLAUDE.md, a refusal because a row has ended reads it FOR SHARE): an
     // edge's insert trigger reads its derived source FOR SHARE, which a withdrawal's FOR UPDATE stops.
-    'LCR-18 C0.10 LH-40: an edge naming a derived item waits for that item’s withdrawal in progress, then refuses (23514); a withdrawal waits for an edge naming the item being added, then finds the citing item in its next round, withdraws the derived item and leaves the citing one live with its new edge',
+    'LCR-18 C0.10 LH-40 LH-41: an edge naming a derived item waits for that item’s withdrawal in progress, then refuses (23514); a withdrawal waits for an edge naming the item being added, then in its lock-ahead’s next round takes the citing item FOR UPDATE, withdraws the derived item and leaves the citing one live with its new edge',
     async watcher => {
       const first = await race(watcher, withdrawStep('37', 1), citeStep('1c', '2b'))
       expect(first.waited, 'the edge did not wait for the withdrawal in progress')
-      expect(first.error === "A withdrawn item can't be a source.", `the edge ended with ${first.error ?? 'no error'}`)
-      const second = await race(watcher, citeStep('1e', '2d'), withdrawStep('38', 1))
+      expect(
+        first.error === 'That item is no longer available to be a source.',
+        `the edge ended with ${first.error ?? 'no error'}`,
+      )
+      // Once the withdrawal's statement has ended and before it commits, the citing item, which only
+      // its next round can find, must be held FOR UPDATE: a FOR KEY SHARE read of it can't be taken.
+      const seen: { cited?: string } = {}
+      const second = await phased(watcher, citeStep('1e', '2d'), withdrawStep('38', 1), {
+        ended: async () => {
+          seen.cited = await lockNow(watcher, '1e', 'key share')
+        },
+      })
       expect(second.waited, 'the withdrawal did not wait for the edge being added')
+      expect(second.firstError === undefined, `the edge failed: ${second.firstError}`)
       expect(second.error === undefined, `the withdrawal failed: ${second.error}`)
+      expect(
+        seen.cited?.includes('could not obtain lock') === true,
+        `the withdrawal did not hold FOR UPDATE the citing item its next round finds (${seen.cited ?? 'it was free'})`,
+      )
       const states = await scalar(
         watcher,
         `select format('%s %s %s %s', (select state from public.provenance_items where id = $1),

@@ -8,8 +8,8 @@
 -- on both, 0013's lifecycle_guard('<table>') and lifecycle_no_truncate(), unchanged; the plain helpers
 -- provenance_dependants() and provenance_lock_ahead(), which no role may run; and the definers
 -- withdraw_dependants(), provenance_mark_stale(), lifecycle_cascade() and provenance_forget(), which
--- no role may run either until the step that calls each (C1.1, C1.2, C2.9, C2.11, C3.5, C4.3, C4.4,
--- A2.3), and each of which reads the org from app.org_id, never from an argument (DB-06).
+-- no role may run either until the step that calls each (C1.1, C1.2, C2.9, C2.11, C3.5, C4.1, C4.3,
+-- C4.4, A2.3), and each of which reads the org from app.org_id, never from an argument (DB-06).
 --
 -- What it replaces, each with its signature, as 0013 foresaw (T23 item 12: every later kind plugs in
 -- by replacement): retention_class_defaults() (the two tables move into the provenance class),
@@ -169,8 +169,10 @@ create table public.provenance_sources (
   -- then its edges, as a request's steps follow it (LH-13).
   foreign key (org_id, item) references public.provenance_items (org_id, id) deferrable initially deferred
 );
--- The walk from a source to what was made from it, over live edges.
-create index provenance_sources_source on public.provenance_sources (org_id, source_kind, source_id) where gone_at is null;
+-- By source, gone edges included: the walks from a source to what was made from it read its live
+-- edges through it (gone_at a filter), and provenance_items_insert() its every edge, gone ones too,
+-- so a partial index (where gone_at is null) couldn't serve that check, which would scan every edge.
+create index provenance_sources_source on public.provenance_sources (org_id, source_kind, source_id);
 
 -- Row level security: each table only within the org the server set (CLAUDE.md, Database). No role
 -- holds a grant on either, so the policy is a second line binding any future grantee; the functions
@@ -191,8 +193,12 @@ $$;
 -- C0.10 LH-40 (T23 item 14): an item takes its transaction from the database and starts live, for
 -- every writer, so no writer can choose an earlier transaction to add edges to a derived item later
 -- (as deletion_log_kept() does for the log's tx_id, GUARD-01); and a derived item can't be made for
--- something already used as a source, so a derived chain can't return to its start. A cited item may
--- get its record after it was cited. The messages can be shown as they are.
+-- something already used as a source, a gone edge included (provenance_sources_source serves the
+-- check). With the edge trigger below, that keeps derived provenance acyclic one transaction at a
+-- time; two producers writing at once rely on the producers' contract (LH-43), each reading its
+-- sources live before it writes, and the walks' UNION and the access core's cycle rule are the
+-- backstops for a cycle a producer breaking it left (T23 item 20's residuals). A cited item may get
+-- its record after it was cited. The messages can be shown as they are.
 create function public.provenance_items_insert() returns trigger
 language plpgsql set search_path = '' as $$
 begin
@@ -237,7 +243,7 @@ begin
   end if;
   if (old.state, new.state) not in (('live', 'live'), ('live', 'stale'), ('stale', 'stale'), ('stale', 'live'),
                                     ('live', 'withdrawn'), ('stale', 'withdrawn')) then
-    raise exception 'A provenance item moves only from live to stale or withdrawn, and from stale back to live.'
+    raise exception 'A provenance item moves only from live to stale, from live or stale to withdrawn, and from stale back to live.'
       using errcode = 'check_violation';
   end if;
   if new.acl_epoch < old.acl_epoch
@@ -264,13 +270,15 @@ create trigger provenance_items_state before update on public.provenance_items
 
 -- C0.10 LH-40, LH-43 (T23 item 14): checked at the commit of the transaction that made a derived item
 -- (deferred), every one of its source_count sources is recorded, numbered 1 to source_count (the
--- insert trigger keeps them in order). A derived item's edges are written only in that transaction
--- and go only with it, so its count then holds for as long as it exists. An item deleted in the same
--- transaction is passed over. A definer, unlike the tables' other triggers: Postgres 17 fires a
--- deferred trigger at the commit as whichever role is active then (hearth_app, or a job role), not the
--- owner whose checked writer made the item, and no runtime role holds a grant on either table. It
--- reads the org from the item it checks, as lifecycle_guard() reads the deleted row's (db/tests/190's
--- DB-06 names both), takes no acting user and writes nothing. The message can be shown as it is.
+-- insert trigger keeps them in order and refuses one numbered above the count, so a writer that fires
+-- this check early with SET CONSTRAINTS can't add one after it). A derived item's edges are written
+-- only in that transaction and go only with it, so its count then holds for as long as it exists. An
+-- item deleted in the same transaction is passed over. A definer, unlike the tables' other triggers:
+-- Postgres 17 fires a deferred trigger at the commit as whichever role is active then (hearth_app, or
+-- a job role), not the owner whose checked writer made the item, and no runtime role holds a grant on
+-- either table. It reads the org from the item it checks, as lifecycle_guard() reads the deleted
+-- row's (db/tests/190's DB-06 names both), takes no acting user and writes nothing. The message can be
+-- shown as it is.
 create function public.provenance_items_complete() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
@@ -288,20 +296,26 @@ create constraint trigger provenance_items_complete after insert on public.prove
   deferrable initially deferred for each row execute function public.provenance_items_complete();
 
 -- C0.10 LH-40 (T23 item 14), for every writer: an edge comes after its item, takes its item's next
--- number, and, for a derived item, is written only in the item's own transaction and never names a
--- derived item made in this transaction (the item itself included), so every derived edge points to a
--- record that existed before its item and no derived chain can cycle. Any edge's source, if it has a
--- record of its own, is read FOR SHARE (a withdrawal holds it FOR UPDATE, so this waits for one in
--- progress and then sees it; CLAUDE.md: a refusal because a row has ended reads it FOR SHARE) and must
--- not be withdrawn; a derived source must still have its record. A cited item may gain sources in a
--- later transaction (a second AI insert into one draft). The messages can be shown as they are.
+-- number, and, for a derived item, is numbered no higher than its source_count (so the count holds
+-- however the deferred check is set), is written only in the item's own transaction and never names
+-- a derived item made in this transaction (the item itself included), so every derived edge a
+-- transaction writes points to a record that existed before its item: no one writer can close a
+-- derived cycle. Two writers at once rely on the producers' contract (LH-43), with the walks' UNION
+-- and the access core's cycle rule as backstops (T23 item 20's residuals). Any edge's source, if it
+-- has a record of its own, is read FOR SHARE (a withdrawal holds it FOR UPDATE, so this waits for one
+-- in progress and then sees it; CLAUDE.md: a refusal because a row has ended reads it FOR SHARE).
+-- A withdrawn source and a derived source with no record are refused alike, by one statement with
+-- one message and SQLSTATE, since a hold may keep a withdrawn item that would otherwise be gone, and a
+-- kept item must look like a deleted one (T23 items 10 and 14, LH-55). A cited item may gain sources
+-- in a later transaction (a second AI insert into one draft). The messages can be shown as they are.
 create function public.provenance_sources_insert() returns trigger
 language plpgsql volatile set search_path = '' as $$
 declare
   it record;
   source_state text;
 begin
-  select p.mode, p.created_tx into it from public.provenance_items p where p.org_id = new.org_id and p.id = new.item;
+  select p.mode, p.created_tx, p.source_count into it
+  from public.provenance_items p where p.org_id = new.org_id and p.id = new.item;
   if not found then
     raise exception 'A source is recorded with its item, after it.' using errcode = 'check_violation';
   end if;
@@ -313,6 +327,9 @@ begin
     if it.created_tx is distinct from pg_catalog.pg_current_xact_id() then
       raise exception 'A derived item''s sources are recorded when it is made, never later.' using errcode = 'check_violation';
     end if;
+    if new.number > it.source_count then
+      raise exception 'A derived item has only as many sources as it was made with.' using errcode = 'check_violation';
+    end if;
     if exists (select 1 from public.provenance_items s
                where s.org_id = new.org_id and s.item_kind = new.source_kind and s.item_id = new.source_id
                  and s.mode = 'derived' and s.created_tx = pg_catalog.pg_current_xact_id()) then
@@ -322,10 +339,8 @@ begin
   select s.state into source_state from public.provenance_items s
   where s.org_id = new.org_id and s.item_kind = new.source_kind and s.item_id = new.source_id
   for share;
-  if source_state = 'withdrawn' then
-    raise exception 'A withdrawn item can''t be a source.' using errcode = 'check_violation';
-  elsif source_state is null and new.source_kind = 'derived' then
-    raise exception 'A derived item can be made only from items that still exist.' using errcode = 'check_violation';
+  if source_state = 'withdrawn' or (source_state is null and new.source_kind = 'derived') then
+    raise exception 'That item is no longer available to be a source.' using errcode = 'check_violation';
   end if;
   return new;
 end
@@ -586,7 +601,11 @@ revoke execute on function public.lifecycle_row_anchors(uuid, text, jsonb) from 
 -- a cited item, which is never held through its sources (LH-50), and nothing for an item with no
 -- record. The walk's UNION ends it whatever the graph, a cycle a broken producer left included, so
 -- it needs no depth limit: lifecycle_held() holds an item while any source in this closure is held,
--- and keeps one with a source of a kind Hearth can't judge yet. Within the org only.
+-- and keeps one with a source of a kind Hearth can't judge yet. It locks a person source as an anchor
+-- but no other source itself, so from C1.1 each kind step's lifecycle_containers_of() returns, for a
+-- derived-mode item, its closure's live sources of that step's hold-target kinds and the containers
+-- of every live source in it, which the hold decision and the lock-ahead lock FOR SHARE (T23 item
+-- 12). Within the org only.
 create or replace function public.lifecycle_sources_of(org uuid, kind text, id uuid)
   returns table (source_kind text, source_id uuid)
 language sql stable set search_path = '' as $$
@@ -779,7 +798,8 @@ revoke execute on function public.withdraw_dependants(text, uuid, text) from pub
 -- source's own stored ACL is rewritten, T16 item 14). A stale item is still readable: staleness is
 -- freshness, not access, so it takes no people's locks, only the items FOR NO KEY UPDATE in id order.
 -- Stale, withdrawn and cited items are untouched. No caller in C0: C1.2's edits, C4.x's document
--- edits and C1.1's and C4.1's acl.changed handlers call it, and A2 regenerates lazily. The org is
+-- edits, and C1.1's and C4.1's acl.changed handlers and C4.1's re-ACL job, which act for no person
+-- after a rewrite its own writer checked and audited, call it, and A2 regenerates lazily. The org is
 -- app.org_id's (DB-06); no acting user, no audit row of its own. Returns how many it marked. Granted
 -- to nobody.
 create function public.provenance_mark_stale(source_kind text, source_id uuid, reason text) returns integer
@@ -924,13 +944,14 @@ revoke execute on function public.lifecycle_cascade(text, uuid, bigint, integer)
 -- record's own cause is redaction or correction), then deletes the record, whose guard decides its
 -- hold through its own kind's people and its still-live edges (HF009 if held: the caller's own
 -- is_held() should have answered first), then its edges. An item with no record of its own (C1.1's
--- messages) only cascades. A withdrawn leftover of kind derived goes on its own with cause
--- correction, redaction or retention, as its withdrawn reason says (source_corrected,
--- source_redacted, source_deleted), and no parent (C2.9's sweep, after a correction or a redaction,
--- after a hold ends, or past the cascade's batch), answering 0 while it is held and logging nothing,
--- so a sweep counts it kept; 0 too for a leftover of another derived-mode kind, which keeps content of
--- its own until the step that stores that content replaces this function, with the same signature,
--- and for a record already gone. Causes: cascade with a parent; correction, redaction or retention
+-- messages) only cascades. A withdrawn leftover of kind derived goes on its own with the cause its
+-- withdrawn reason gives, and no parent (C2.9's sweep, after a correction or a redaction, after a
+-- hold ends, or past the cascade's batch): correction for source_corrected, redaction for
+-- source_redacted, retention for source_deleted, any other cause refused (22023) before its kind or
+-- hold is read, so the log states why it went; it answers 0 while it is held and logs nothing, so a
+-- sweep counts it kept; 0 too for a leftover of another derived-mode kind, which keeps content of its
+-- own until the step that stores that content replaces this function, with the same signature, and
+-- for a record already gone. Causes: cascade with a parent; correction, redaction or retention
 -- without (22023 otherwise). The org is app.org_id's (DB-06); no acting user, no audit row of its
 -- own. Returns how many records it deleted. Granted to nobody.
 create function public.provenance_forget(item_kind text, item_id uuid, cause text, parent bigint) returns integer
@@ -971,7 +992,7 @@ begin
     return public.lifecycle_cascade(provenance_forget.item_kind, provenance_forget.item_id, provenance_forget.parent, 500);
   end if;
   perform public.provenance_lock_ahead(org, provenance_forget.item_kind, provenance_forget.item_id);
-  select p.id, p.mode, p.state into rec from public.provenance_items p
+  select p.id, p.mode, p.state, p.withdrawn_reason into rec from public.provenance_items p
   where p.org_id = org and p.item_kind = provenance_forget.item_kind and p.item_id = provenance_forget.item_id;
   if not found then
     return 0;
@@ -979,6 +1000,12 @@ begin
   if provenance_forget.cause <> 'cascade' then
     if rec.mode <> 'derived' or rec.state <> 'withdrawn' then
       raise exception 'Only a withdrawn item''s provenance goes on its own.' using errcode = 'invalid_parameter_value';
+    end if;
+    if provenance_forget.cause is distinct from (case rec.withdrawn_reason when 'source_corrected' then 'correction'
+                                                                           when 'source_redacted' then 'redaction'
+                                                                           when 'source_deleted' then 'retention' end) then
+      raise exception 'A withdrawn item''s provenance goes with the cause its withdrawal gave it.'
+        using errcode = 'invalid_parameter_value';
     end if;
     -- As in the cascade, only kind derived goes whole with its record.
     if provenance_forget.item_kind <> 'derived' then

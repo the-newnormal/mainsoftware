@@ -8,7 +8,8 @@
 //      function's entry lists every table (every column, for an UPDATE) its body writes, and no
 //      body is one this can't read (BEGIN ATOMIC, or EXECUTE outside DYNAMIC_DDL); no stale entry; MATCH names real
 //      columns; no content table (packages/shared CONTENT_TABLES, or one an event with an ACL
-//      snapshot covers) is exempt, by grant or through a function. scripts/check-migrations.sh
+//      snapshot covers) is exempt, by grant or through a function, and no insert into the
+//      provenance registry (a producer's, T23 item 14) is exempt. scripts/check-migrations.sh
 //      refuses any other schema, and rules, so nothing writes outside what this reads. Postgres's
 //      own functions (pg_catalog's, such as the large-object ones every role may call by default)
 //      aren't the schema's and aren't checked;
@@ -48,6 +49,10 @@
 //      a default, a DYNAMIC_DDL function) is decided in apps/server/src/lifecycle/deletes.ts
 //      DELETE_PATHS as guarded, checked (only into a table a leaver's reduction marks, logging each
 //      row: GUARD-02) or exempt, each decision one docs/TECH-SPEC.md records, and no entry is stale;
+//      every guarded path says what it is to the provenance registry (T23 item 14): one whose rows
+//      can be a source calls provenance_forget() in its body, one whose rows never are cites a
+//      decision TECH-SPEC records or an id T23 cites, and the registry's own deletes from its two
+//      tables alone;
 //      no function body of public runs TRUNCATE, DROP TABLE, DETACH PARTITION, a trigger disabled,
 //      dropped or enabled ALWAYS or REPLICA, a setting of session_replication_role, a change to
 //      the guard's functions, or a guard's trigger replaced or made with a WHEN condition or an
@@ -119,6 +124,7 @@ import {
   type Relation,
   type ResolverProbe,
   recordedDecisions,
+  recordedReasons,
   registerProblems,
   resolverProblems,
   retentionDefaultProblems,
@@ -417,7 +423,14 @@ try {
       database,
     ),
     ...resolverProblems(resolverProbes),
-    ...deletePathProblems(DELETE_PATHS, GUARDED_TABLES, deletePaths, holdsTables(classes), recordedDecisions(spec)),
+    ...deletePathProblems(
+      DELETE_PATHS,
+      GUARDED_TABLES,
+      deletePaths,
+      holdsTables(classes),
+      recordedDecisions(spec),
+      recordedReasons(spec),
+    ),
     ...bodyDdlProblems(everyFunction),
     ...helperBodyProblems(everyFunction.filter(fn => !fn.reachable)),
   ]

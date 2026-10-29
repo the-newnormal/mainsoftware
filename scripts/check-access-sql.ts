@@ -31,7 +31,7 @@
 //
 // Connects with the PG* variables as a superuser (default: the local stack) and refuses any host
 // but this machine. The roles must exist (scripts/check-migrations.sh or npm run db:reset first; CI
-// runs it after both). Exits 1 if any check fails.
+// runs it in the migrations job, after scripts/check-migrations.sh). Exits 1 if any check fails.
 
 import { createHash } from 'node:crypto'
 import {

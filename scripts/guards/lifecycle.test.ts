@@ -653,7 +653,7 @@ describe('C0.10 review: CLAUDE.md, TECH-SPEC and ci.yml say what 0013 and its ch
 
   it('DOCS-03: only a guarded path’s tables carry the guard, beside checked and exempt paths', () => {
     expect(readRepoFile('apps/server/src/lifecycle/deletes.ts')).toContain(
-      'export type DeletePath = { guarded: true } | { checked: true; decision: string } | { exempt: string; decision: string }',
+      'export type DeletePath =\n  | { guarded: true; provenance: Provenance }\n  | { checked: true; decision: string }\n  | { exempt: string; decision: string }',
     )
     expect(claude).toContain('Every table a `guarded` delete path deletes from carries')
     expect(claude).toContain('as `guarded`, `checked` or `exempt`')

@@ -8,12 +8,16 @@
 --          item and one edge per source (LH-39);
 --   LCD-35 the triggers: an item takes its transaction from the database and starts live; an edge
 --          comes after its item with the next number, and a derived item's only in its own
---          transaction, never from a derived item made in it (itself included), a withdrawn item or
---          a derived item with no record; a derived-mode record for something already used as a
---          source is refused, a cited one not; a cited item gains sources later; the deferred
---          completeness check, a definer, passes and refuses on substance at the commit with
---          hearth_app active, never 42501; an item's state moves only as LH-42 says, its ACL row
---          only with a new epoch; an edge changes only by its gone_at, set once (LH-40, LH-42);
+--          transaction, never numbered above its count (in one insert, or after the deferred check
+--          was fired early), never from a derived item made in it (itself included), a withdrawn
+--          item or a derived item with no record, those two refused alike; a derived-mode record
+--          for something already used as a source, by a gone edge too, is refused, a cited one not,
+--          the check reading the edges through provenance_sources_source; a cited item gains
+--          sources later; the deferred completeness check, a definer, passes and refuses on
+--          substance at the commit with hearth_app active, never 42501, for fewer edges than the
+--          count and for more; an item's state moves only as LH-42 says (stale to withdrawn
+--          included), its ACL row only with a new epoch; an edge changes only by its gone_at, set
+--          once (LH-40, LH-42);
 --   LCD-36 deleting a source removes what was made from it: the cascade deletes a derived item and
 --          the one made from it, deepest first, each logged under its parent, marks the source's
 --          edges gone and leaves a cited draft live; the draft's own deletion takes its record with
@@ -22,19 +26,25 @@
 --          Hearth can't judge yet, stays withdrawn and nobody's; a redaction leaves the source's
 --          edges live, so a held redacted source keeps what was made from it and an unheld one
 --          doesn't; through and past an intermediate; another derived-mode kind stays withdrawn
---          and kept; the seam (a hold on a container-like kind, a later kind's own people); the
---          batch, which counts decisions, kept ones too; is_held() of a derived item (LH-50, LH-41);
+--          and kept; a source a hold kept and a deleted one refused alike as an edge's source; a
+--          leftover swept with a cause its withdrawal didn't give refused, held or not; the seam (a
+--          hold on a container-like kind, a later kind's own people); the batch, which counts
+--          decisions, kept ones too; is_held() of a derived item (LH-50, LH-41);
 --   LCD-38 staleness and withdrawal: provenance_mark_stale() marks only live derived-mode items,
---          once; withdraw_dependants() for a correction withdraws transitively, leaving the edges
---          live; provenance_forget() of the corrected leftover logs it as a correction and what was
---          made from it as its cascade, marking a cited record's edge to it gone (LH-42);
+--          once, never through a cited item; a deleted or redacted source withdraws its stale
+--          dependants as its live ones; a cited draft's own deletion takes what was made from it;
+--          withdraw_dependants() for a correction withdraws transitively, leaving the edges live;
+--          provenance_forget() of the corrected leftover refuses any cause but correction, then
+--          logs it as a correction and what was made from it as its cascade, marking a cited
+--          record's edge to it gone (LH-42);
 --   LCD-39 the guard on both tables: no log row (HF010), an edge before its item (HF010),
 --          TRUNCATE (0A000, HF010), a held derived record (HF009), and a cited or unheld derived
 --          record going logged, then its edges, the deferred key passing (LH-11, LH-12);
 --   LCD-40 scope, privileges, functions and anchors: the walks stay in the org, on live edges, and
---          end over a cycle, which gets no depth and so no deletion; the four definers refuse with
---          no org (42501); no runtime role touches either table or runs any of the eleven new
---          functions, five of them definers; lifecycle_row_anchors() for both tables; log_deletion()
+--          end over a cycle, which gets no depth and so no deletion; neither walk passes through a
+--          cited item; the cascade's and provenance_forget()'s writes leave another org's rows naming
+--          the same ids alone; the four definers refuse with no org (42501); no runtime role
+--          touches either table or runs any of the eleven new functions, five of them definers; lifecycle_row_anchors() for both tables; log_deletion()
 --          takes the provenance class (LH-30, ACC-11).
 -- No producer exists before C1.2, so rows are written here as the superuser or the owner (LH-43):
 -- through the triggers, or, for a derived item made "in an earlier transaction", planted with the
@@ -158,6 +168,24 @@ begin
 end
 $$;
 
+-- What a refusal shows: its SQLSTATE, its message and the edge trigger's own line of its context
+-- (which says where in the trigger it was raised); null if the statement passes.
+create function pg_temp.refusal(stmt text) returns text language plpgsql as $$
+declare
+  ctx text;
+begin
+  begin
+    execute stmt;
+  exception when others then
+    get stacked diagnostics ctx = pg_exception_context;
+    return format('%s %s %s', sqlstate, sqlerrm,
+                  (select string_agg(l, ' | ') from regexp_split_to_table(ctx, E'\n') l
+                   where l like '%function public.provenance_sources_insert()%'));
+  end;
+  return null;
+end
+$$;
+
 -- LCD-34 (LH-39): the shapes.
 select pg_temp.bad_item('cited', '{"mode": "copied"}', 'provenance_items_mode');
 select pg_temp.bad_item('cited', '{"item_kind": "derived"}', 'provenance_items_derived_kind');
@@ -261,12 +289,40 @@ select pg_temp.check(pg_temp.add_item('cited', jsonb_build_object('item_kind', '
                        is not null,
                      'a cited record for something already cited was refused (LCD-35)');
 rollback to savepoint lcd_35_first;
--- W (44), withdrawn, is no source; nor is a derived item with no record.
+-- A gone edge counts too, and the check reads the edges by source through provenance_sources_source,
+-- never by scanning them all: given 2,000 edges (of 400 cited records planted with the triggers off
+-- for their inserts alone), sequential scans off and every plan made again, a derived item's insert
+-- scans that index.
+savepoint lcd_35_gone;
+select pg_temp.make('1', '4b', 'draft', 'cited', array['suggested_task'], array[pg_temp.pid('1', '23')]);
+update public.provenance_sources set gone_at = now() where item = pg_temp.pid('1', '4b');
+select pg_temp.expect_error(format('select pg_temp.add_item(%L, %L)', 'derived',
+                                   jsonb_build_object('item_kind', 'suggested_task', 'item_id', pg_temp.pid('1', '23'))), '23514',
+                            'A derived item''s sources are recorded when it is made, before anything is made from it.');
+set local session_replication_role = replica;
+with made as (
+  insert into public.provenance_items (org_id, created_tx, item_kind, item_id, mode, created_by)
+  select pg_temp.id('1', '00'), '1', 'draft', gen_random_uuid(), 'cited', pg_temp.id('1', 'a8') from generate_series(1, 400)
+  returning org_id, id)
+insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+select m.org_id, m.id, n, 'message', gen_random_uuid() from made m cross join generate_series(1, 5) n;
+set local session_replication_role = origin;
+set local enable_seqscan = off;
+discard plans;
+select set_config('lcd.scans', pg_stat_get_xact_numscans('public.provenance_sources_source'::regclass)::text, true);
+set local role hearth_owner;
+select pg_temp.add_item('derived', '{}');
+reset role;
+select pg_temp.check(pg_stat_get_xact_numscans('public.provenance_sources_source'::regclass) > current_setting('lcd.scans')::bigint,
+                     'a derived item''s insert didn''t read the edges naming it through provenance_sources_source (LCD-35)');
+rollback to savepoint lcd_35_gone;
+-- W (44), withdrawn, is no source; nor is a derived item with no record, refused alike (LCD-37 compares
+-- a held one with a deleted one).
 select pg_temp.plant('1', '44', 'derived', 'derived', array['message'], array[pg_temp.pid('1', '15')], true);
 select pg_temp.expect_error(format('select pg_temp.make(%L, %L, %L, %L, %L, %L)', '1', '4c', 'draft', 'cited', array['derived'],
-                                   array[pg_temp.itm('1', '44')]), '23514', 'A withdrawn item can''t be a source.');
+                                   array[pg_temp.itm('1', '44')]), '23514', 'That item is no longer available to be a source.');
 select pg_temp.expect_error(format('select pg_temp.make(%L, %L, %L, %L, %L, %L)', '1', '4c', 'draft', 'cited', array['derived'],
-                                   array[gen_random_uuid()]), '23514', 'A derived item can be made only from items that still exist.');
+                                   array[gen_random_uuid()]), '23514', 'That item is no longer available to be a source.');
 -- Passes: a cited item made earlier (45) gains a second source now, its numbering going on; a derived
 -- item (46) made now from P1 and a message.
 select pg_temp.plant('1', '45', 'draft', 'cited', array['message'], array[pg_temp.pid('1', '15')]);
@@ -277,8 +333,8 @@ select pg_temp.check((select count(*) from public.provenance_sources where item 
                      'a cited item''s later source or a derived item made from an earlier one was refused (LCD-35)');
 -- The completeness check at the commit, as a producer's transaction meets it: its checked writer runs
 -- as the owner, its commit as hearth_app, which holds no grant on either table, so the check is a
--- definer. A derived item with its one source passes; one recorded with two and given one refuses on
--- substance, never 42501.
+-- definer. A derived item with its one source passes, and then gets no second source, though the check
+-- has fired; one recorded with two and given one refuses on substance, never 42501.
 savepoint lcd_35_commit;
 set local role hearth_owner;
 select pg_temp.make('1', '4d', 'derived', 'derived', array['message'], array[pg_temp.pid('1', '15')]);
@@ -286,6 +342,9 @@ set local role hearth_app;
 set constraints provenance_items_complete immediate;
 set constraints provenance_items_complete deferred;
 set local role hearth_owner;
+select pg_temp.expect_error(format($$insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values (%L, %L, 2, 'message', %L)$$, pg_temp.id('1', '00'), pg_temp.pid('1', '4d'), pg_temp.pid('1', '16')), '23514',
+  'A derived item has only as many sources as it was made with.');
 select pg_temp.add_item('derived', jsonb_build_object('id', pg_temp.pid('1', '4e'), 'source_count', 2));
 insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
   values (pg_temp.id('1', '00'), pg_temp.pid('1', '4e'), 1, 'message', pg_temp.pid('1', '15'));
@@ -294,6 +353,33 @@ select pg_temp.expect_error('set constraints provenance_items_complete immediate
                             'A derived item''s sources are all recorded when it is made.');
 reset role;
 rollback to savepoint lcd_35_commit;
+-- More sources than the count, each in a transaction of its own so no other item's check is pending:
+-- one recorded with one and given two in one insert is refused at the second; and, should an edge get
+-- past the insert trigger (planted here with the triggers off for the edges alone), the deferred
+-- check refuses more as it refuses fewer.
+savepoint lcd_35_more;
+set local role hearth_owner;
+select pg_temp.add_item('derived', jsonb_build_object('id', pg_temp.pid('1', '4f'), 'source_count', 1));
+select pg_temp.expect_error(format($$insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values (%L, %L, 1, 'message', %L), (%L, %L, 2, 'message', %L)$$, pg_temp.id('1', '00'), pg_temp.pid('1', '4f'),
+  pg_temp.pid('1', '15'), pg_temp.id('1', '00'), pg_temp.pid('1', '4f'), pg_temp.pid('1', '16')), '23514',
+  'A derived item has only as many sources as it was made with.');
+reset role;
+rollback to savepoint lcd_35_more;
+savepoint lcd_35_extra;
+set local role hearth_owner;
+select pg_temp.add_item('derived', jsonb_build_object('id', pg_temp.pid('1', '4f'), 'source_count', 1));
+reset role;
+set local session_replication_role = replica;
+insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values (pg_temp.id('1', '00'), pg_temp.pid('1', '4f'), 1, 'message', pg_temp.pid('1', '15')),
+         (pg_temp.id('1', '00'), pg_temp.pid('1', '4f'), 2, 'message', pg_temp.pid('1', '16'));
+set local session_replication_role = origin;
+set local role hearth_app;
+select pg_temp.expect_error('set constraints provenance_items_complete immediate', '23514',
+                            'A derived item''s sources are all recorded when it is made.');
+reset role;
+rollback to savepoint lcd_35_extra;
 select pg_temp.check(p.prosecdef and p.proconfig = array['search_path=""'],
                      'provenance_items_complete() isn''t a definer with search_path = '''' (LCD-35)')
 from pg_proc p where p.oid = 'public.provenance_items_complete()'::regprocedure;
@@ -317,10 +403,18 @@ select pg_temp.expect_error(format($$update public.provenance_items set index_cl
                             '23514', 'A derived item''s access row changes only with a new epoch.');
 select pg_temp.expect_error(format('update public.provenance_items set acl_epoch = 0 where id = %L', pg_temp.id('1', 'ee')),
                             '23514', 'A derived item''s access row changes only with a new epoch.');
+-- A state outside the three meets the trigger's move rule first, whose message names every move it allows.
+select pg_temp.expect_error(format($$update public.provenance_items set state = 'archived' where id = %L$$, pg_temp.id('1', 'ee')),
+                            '23514', 'A provenance item moves only from live to stale, from live or stale to withdrawn, and from stale back to live.');
 savepoint lcd_35_state;
 select pg_temp.expect_rows(format($$update public.provenance_items set state = 'stale', stale_since = now(),
   stale_reason = 'source_edited' where id = %L$$, pg_temp.pid('1', '43')), 1);
 select pg_temp.expect_rows(format('update public.provenance_items set acl_epoch = acl_epoch + 1 where id = %L', pg_temp.pid('1', '43')), 1);
+savepoint lcd_35_stale_withdrawn;
+select pg_temp.expect_rows(format($$update public.provenance_items set state = 'withdrawn', withdrawn_at = now(),
+  withdrawn_reason = 'source_deleted', acl_tokens = '{}', acl_more = '[]', acl_epoch = acl_epoch + 1 where id = %L$$,
+  pg_temp.pid('1', '43')), 1);
+rollback to savepoint lcd_35_stale_withdrawn;
 select pg_temp.expect_error(format($$update public.provenance_items set stale_reason = 'source_acl_changed' where id = %L$$,
                                    pg_temp.pid('1', '43')),
                             '23514', 'A provenance item''s staleness changes only as it goes stale or is made again.');
@@ -459,6 +553,8 @@ select pg_temp.check((select state = 'withdrawn' and withdrawn_reason = 'source_
                           from public.provenance_items where id = pg_temp.pid('1', '37'))
                      and not exists (select 1 from public.provenance_sources where item = pg_temp.pid('1', '37') and gone_at is not null),
                      'a redaction marked its source''s edges gone, or didn''t withdraw what was made from it (LCD-37)');
+select pg_temp.expect_error(format('select public.provenance_forget(%L, %L, %L, null)', 'derived', pg_temp.itm('1', '37'), 'retention'),
+                            '22023', 'A withdrawn item''s provenance goes with the cause its withdrawal gave it.');
 select pg_temp.check(public.provenance_forget('derived', pg_temp.itm('1', '37'), 'redaction', null) = 0,
                      'a held redacted leftover went, or was logged (LCD-37)');
 select pg_temp.check(not exists (select 1 from public.deletion_log where object_id = pg_temp.pid('1', '37')::text),
@@ -500,6 +596,16 @@ select pg_temp.check(not exists (select 1 from public.provenance_items where id 
                      and (select gone_at is not null from public.provenance_sources where item = pg_temp.pid('1', '3d') and number = 1)
                      and (select gone_at is null from public.provenance_sources where item = pg_temp.pid('1', '3d') and number = 2),
                      'the intermediate wasn''t deleted, or what was made from it lost its hold or kept a live edge to it (LCD-37)');
+-- Nothing is made from either now, and the refusals are the same, so whether a hold kept an item never
+-- shows (T23 item 10): D4, withdrawn and kept for its held source, and D9, deleted.
+select pg_temp.check(pg_temp.refusal(format('select pg_temp.make(%L, %L, %L, %L, %L, %L)', '1', '4c', 'draft', 'cited', array['derived'],
+                                            array[pg_temp.itm('1', '35')]))
+                       = pg_temp.refusal(format('select pg_temp.make(%L, %L, %L, %L, %L, %L)', '1', '4c', 'draft', 'cited',
+                                                array['derived'], array[pg_temp.itm('1', '3c')]))
+                     and pg_temp.refusal(format('select pg_temp.make(%L, %L, %L, %L, %L, %L)', '1', '4c', 'draft', 'cited',
+                                                array['derived'], array[pg_temp.itm('1', '35')]))
+                         like '23514 That item is no longer available to be a source. PL/pgSQL function public.provenance_sources_insert() line %',
+                     'a source a hold kept and a deleted one aren''t refused alike (LCD-37)');
 -- Another derived-mode kind stays: S1 (3e), a suggested task from M13 alone, nothing holding it, is
 -- withdrawn, nobody's and kept (its content would live in its own table), and a sweep answers 0.
 select set_config('lcd.p13', pg_temp.logged('1', 'messages', 'messages', pg_temp.pid('1', '0d'), 'user')::text, true);
@@ -593,13 +699,17 @@ select pg_temp.check(public.is_held('derived', pg_temp.itm('1', '35')) and not p
 reset role;
 
 -- LCD-38 (LH-42): staleness and withdrawal. Ds1 (76) derived earlier from Ms (11); Ds2 (77) derived
--- now from Ds1; Cs (78) a cited draft citing Ms; Dw (79) derived now from Ms and Mo (14), withdrawn by
--- Mo's deletion. A record deleted in C0 must have no live source of a kind Hearth can't judge yet, so
--- the correction's source is a person, a4: Dc1 (7a) derived earlier from a4; Cc2 (7d) a cited draft
--- citing Dc1, made before the withdrawal; Dc2 (7b) derived now from Dc1; Cc (7c) a cited draft citing a4.
+-- now from Ds1; Cs (78) a cited draft citing Ms; Dx (70) derived now from Cs, which no walk from Ms
+-- reaches, since a walk never passes through a cited item (LH-41, LH-50); Dw (79) derived now from Ms
+-- and Mo (14), withdrawn by Mo's deletion. A record deleted in C0 must have no live source of a kind
+-- Hearth can't judge yet, so the correction's source is a person, a4: Dc1 (7a) derived earlier from
+-- a4; Cc2 (7d) a cited draft citing Dc1, made before the withdrawal; Dc2 (7b) derived now from Dc1; Cc
+-- (7c) a cited draft citing a4. Stale items are withdrawn as live ones are, by a deletion or a
+-- redaction of their source.
 select pg_temp.plant('1', '76', 'derived', 'derived', array['message'], array[pg_temp.pid('1', '11')]);
 select pg_temp.make('1', '77', 'derived', 'derived', array['derived'], array[pg_temp.itm('1', '76')]);
 select pg_temp.make('1', '78', 'draft', 'cited', array['message'], array[pg_temp.pid('1', '11')]);
+select pg_temp.make('1', '70', 'derived', 'derived', array['draft'], array[pg_temp.itm('1', '78')]);
 select pg_temp.make('1', '79', 'derived', 'derived', array['message', 'message'], array[pg_temp.pid('1', '11'), pg_temp.pid('1', '14')]);
 select pg_temp.plant('1', '7a', 'derived', 'derived', array['person'], array[pg_temp.id('1', 'a4')]);
 select pg_temp.make('1', '7d', 'draft', 'cited', array['derived'], array[pg_temp.itm('1', '7a')]);
@@ -625,6 +735,52 @@ select pg_temp.check((select stale_since::text from public.provenance_items wher
                      'a second edit marked a stale item again or moved its time (LCD-38)');
 select pg_temp.expect_error(format('select public.provenance_mark_stale(%L, %L, %L)', 'message', pg_temp.pid('1', '11'), 'source_deleted'),
                             '22023', 'That isn''t a reason to mark what was made from a record stale.');
+-- Ds1 and Ds2 are stale now. Ms deleted: both are withdrawn, then deleted, Ds2 first, each logged under
+-- Ms's deletion (Dw stays, its live edge to Mo a kind Hearth can't judge yet); Cs, and Dx made from it,
+-- stay live. Each block undone, so LCD-40 still walks from Ms; each check in a statement of its own,
+-- after the call's.
+savepoint lcd_38_stale_deleted;
+select set_config('lcd.ps', pg_temp.logged('1', 'messages', 'messages', pg_temp.pid('1', '11'), 'user')::text, true);
+select pg_temp.check(public.lifecycle_cascade('message', pg_temp.pid('1', '11'), current_setting('lcd.ps')::bigint, 500) = 2,
+                     'a deleted source''s stale dependants weren''t withdrawn and deleted (LCD-38)');
+select pg_temp.check(not exists (select 1 from public.provenance_items where id in (pg_temp.pid('1', '76'), pg_temp.pid('1', '77')))
+                     and (select string_agg(object_id, ',' order by id) from public.deletion_log
+                          where parent_id = current_setting('lcd.ps')::bigint and cause = 'cascade')
+                         = format('%s,%s', pg_temp.pid('1', '77'), pg_temp.pid('1', '76'))
+                     and (select count(*) from public.provenance_items
+                          where id in (pg_temp.pid('1', '78'), pg_temp.pid('1', '70')) and state = 'live') = 2,
+                     'a deleted source''s stale dependants weren''t withdrawn and deleted, each logged under it, or the cited '
+                     'draft or what was made from it went (LCD-38)');
+rollback to savepoint lcd_38_stale_deleted;
+-- Ms redacted: both withdrawn with source_redacted, nobody's, their epochs up, their staleness kept and
+-- their edges live, and kept, since Ms is a kind Hearth can't judge yet; Cs and Dx untouched.
+savepoint lcd_38_stale_redacted;
+select set_config('lcd.ps', pg_temp.logged('1', 'messages', 'messages', pg_temp.pid('1', '11'), 'redaction')::text, true);
+select pg_temp.check(public.lifecycle_cascade('message', pg_temp.pid('1', '11'), current_setting('lcd.ps')::bigint, 500) = 0,
+                     'a redacted source''s stale dependants weren''t kept (LCD-38)');
+select pg_temp.check((select count(*) = 2 and bool_and(state = 'withdrawn' and withdrawn_reason = 'source_redacted' and acl_tokens = '{}'
+                                                       and acl_more = '[]' and acl_epoch = 2 and stale_since is not null
+                                                       and stale_reason = 'source_edited')
+                      from public.provenance_items where id in (pg_temp.pid('1', '76'), pg_temp.pid('1', '77')))
+                     and not exists (select 1 from public.provenance_sources
+                                     where item in (pg_temp.pid('1', '76'), pg_temp.pid('1', '77'), pg_temp.pid('1', '78'),
+                                                    pg_temp.pid('1', '70')) and gone_at is not null)
+                     and (select count(*) from public.provenance_items
+                          where id in (pg_temp.pid('1', '78'), pg_temp.pid('1', '70')) and state = 'live') = 2,
+                     'a redacted source''s stale dependants aren''t withdrawn and nobody''s with their staleness kept and their '
+                     'edges live, or the cited draft or what was made from it changed (LCD-38)');
+rollback to savepoint lcd_38_stale_redacted;
+-- Cs's own deletion does reach what was made from it: Dx goes as its cascade, logged under Cs's record.
+savepoint lcd_38_cited_source;
+select set_config('lcd.pc', pg_temp.logged('1', 'messages', 'drafts', pg_temp.itm('1', '78'), 'user')::text, true);
+select pg_temp.check(public.provenance_forget('draft', pg_temp.itm('1', '78'), 'cascade', current_setting('lcd.pc')::bigint) = 2,
+                     'a cited draft''s deletion didn''t take what was made from it (LCD-38)');
+select pg_temp.check(not exists (select 1 from public.provenance_items where id in (pg_temp.pid('1', '78'), pg_temp.pid('1', '70')))
+                     and (select cause = 'cascade' and parent_id = (select d.id from public.deletion_log d
+                                                                    where d.object_id = pg_temp.pid('1', '78')::text)
+                          from public.deletion_log where object_id = pg_temp.pid('1', '70')::text),
+                     'a cited draft''s deletion didn''t take what was made from it, logged under its record (LCD-38)');
+rollback to savepoint lcd_38_cited_source;
 -- A correction of a4: Dc1 and Dc2 withdrawn, nobody's, their epochs up, the edges live; the cited
 -- drafts untouched.
 select pg_temp.check(public.withdraw_dependants('person', pg_temp.id('1', 'a4'), 'source_corrected') = 2,
@@ -638,6 +794,16 @@ select pg_temp.check((select count(*) = 2 and bool_and(state = 'withdrawn' and w
                      and (select count(*) from public.provenance_items
                           where id in (pg_temp.pid('1', '7c'), pg_temp.pid('1', '7d')) and state = 'live') = 2,
                      'a correction''s withdrawal isn''t transitive, nobody''s and with its edges live, or touched a cited draft (LCD-38)');
+-- The corrected leftover goes only as a correction: retention or redaction is refused (22023), deleting
+-- and logging nothing.
+select pg_temp.expect_error(format('select public.provenance_forget(%L, %L, %L, null)', 'derived', pg_temp.itm('1', '7a'), 'retention'),
+                            '22023', 'A withdrawn item''s provenance goes with the cause its withdrawal gave it.');
+select pg_temp.expect_error(format('select public.provenance_forget(%L, %L, %L, null)', 'derived', pg_temp.itm('1', '7a'), 'redaction'),
+                            '22023', 'A withdrawn item''s provenance goes with the cause its withdrawal gave it.');
+select pg_temp.check((select count(*) from public.provenance_items where id in (pg_temp.pid('1', '7a'), pg_temp.pid('1', '7b'))) = 2
+                     and not exists (select 1 from public.deletion_log
+                                     where object_id in (pg_temp.pid('1', '7a')::text, pg_temp.pid('1', '7b')::text)),
+                     'a leftover swept with a cause its withdrawal didn''t give went, or was logged (LCD-38)');
 -- The corrected leftover goes as a correction, with no parent; Dc2 as its cascade; Cc2 stays live with
 -- its edge to Dc1 now gone, and no live edge names Dc1.
 select pg_temp.check(public.provenance_forget('derived', pg_temp.itm('1', '7a'), 'correction', null) = 2,
@@ -752,6 +918,14 @@ select pg_temp.check((select string_agg(format('%s %s', s.source_kind, s.source_
                      = format('derived %s,device %s', pg_temp.itm('1', '3a'), pg_temp.id('1', 'e1'))
                      and not exists (select 1 from public.lifecycle_sources_of(pg_temp.id('1', '00'), 'draft', pg_temp.itm('1', '78'))),
                      'lifecycle_sources_of() isn''t the live closure through derived items within the org (LCD-40)');
+-- Nor through a cited item: Dx's closure stops at Cs, never reaching Ms; and LCD-38's withdrawals left
+-- Dx live and readable.
+select pg_temp.check((select string_agg(format('%s %s', s.source_kind, s.source_id), ',' order by s.source_kind, s.source_id)
+                      from public.lifecycle_sources_of(pg_temp.id('1', '00'), 'derived', pg_temp.itm('1', '70')) s)
+                     = format('draft %s', pg_temp.itm('1', '78'))
+                     and (select state = 'live' and acl_tokens = array['o:' || pg_temp.id('1', '00')] and acl_epoch = 1
+                          from public.provenance_items where id = pg_temp.pid('1', '70')),
+                     'lifecycle_sources_of() passed through a cited item, or what was made from one was withdrawn (LCD-40)');
 -- provenance_dependants(): within the org, depths as built.
 select pg_temp.check((select string_agg(format('%s %s', d.provenance_id, coalesce(d.depth::text, '-')), ',' order by d.provenance_id)
                       from public.provenance_dependants(pg_temp.id('1', '00'), 'message', pg_temp.pid('1', '11')) d)
@@ -774,6 +948,37 @@ select pg_temp.check((select string_agg(format('%s %s', s.source_kind, s.source_
                       from public.lifecycle_sources_of(pg_temp.id('1', '00'), 'derived', pg_temp.itm('1', '40')) s)
                      = format('derived %s,derived %s', pg_temp.itm('1', '40'), pg_temp.itm('1', '41')),
                      'lifecycle_sources_of() over a cycle didn''t end with both (LCD-40)');
+-- The writes stay in the org too: org 2's rows naming org 1's ids (32's edge to Ms, and 33's to Ds1,
+-- Ds2 and the fixture's draft fb) are untouched when org 1 deletes Ms, which deletes Ds2 and Ds1 and
+-- marks their edges and Ms's gone, and forgets fb. The definers run as the owner, which RLS doesn't
+-- bind, so each one's org filter is all that keeps them out (ACC-11). Undone after.
+savepoint lcd_40_orgs;
+reset role;
+select pg_temp.plant('2', '33', 'draft', 'cited', array['derived', 'derived', 'draft'],
+                     array[pg_temp.itm('1', '76'), pg_temp.itm('1', '77'), pg_temp.id('1', 'fb')]);
+create function pg_temp.org2_rows() returns text language sql as $$
+  select (select string_agg(format('%s %s %s %s %s', p.id, p.state, p.withdrawn_at, p.acl_epoch, p.acl_tokens), ',' order by p.id)
+          from public.provenance_items p where p.org_id = pg_temp.id('2', '00'))
+         || '|' || (select string_agg(format('%s %s %s %s %s', e.item, e.number, e.source_kind, e.source_id, e.gone_at), ','
+                                      order by e.item, e.number)
+                    from public.provenance_sources e where e.org_id = pg_temp.id('2', '00'))
+$$;
+select set_config('lcd.org2', pg_temp.org2_rows(), true);
+set local role hearth_owner;
+select set_config('lcd.pm', pg_temp.logged('1', 'messages', 'messages', pg_temp.pid('1', '11'), 'user')::text, true);
+select pg_temp.check(public.lifecycle_cascade('message', pg_temp.pid('1', '11'), current_setting('lcd.pm')::bigint, 10) = 2,
+                     'org 1''s cascade from Ms didn''t delete Ds2 and Ds1 (LCD-40)');
+select set_config('lcd.pf', pg_temp.logged('1', 'messages', 'drafts', pg_temp.id('1', 'fb'), 'user')::text, true);
+select pg_temp.check(public.provenance_forget('draft', pg_temp.id('1', 'fb'), 'cascade', current_setting('lcd.pf')::bigint) = 1,
+                     'org 1''s draft fb didn''t go with its record (LCD-40)');
+reset role;
+select pg_temp.check(pg_temp.org2_rows() = current_setting('lcd.org2')
+                     and not exists (select 1 from public.provenance_sources
+                                     where org_id = pg_temp.id('1', '00') and source_kind = 'message'
+                                       and source_id = pg_temp.pid('1', '11') and gone_at is null),
+                     'an org-1 deletion changed an org-2 row, or didn''t mark its own edges gone (LCD-40)');
+rollback to savepoint lcd_40_orgs;
+set local role hearth_owner;
 -- Each definer with no org set (42501).
 select set_config('app.org_id', '', true);
 select pg_temp.expect_error($$select public.withdraw_dependants('message', gen_random_uuid(), 'source_deleted')$$, '42501',

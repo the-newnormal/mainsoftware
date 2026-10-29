@@ -5,7 +5,8 @@
 // seams every write to be covered, so nothing here is left undecided:
 //   - content writes always append their event (no exemption is allowed for a content table,
 //     packages/shared CONTENT_TABLES or one whose events carry a snapshot, by its grant or through
-//     a function: check-catalogues.ts refuses one);
+//     a function, nor for an insert into the provenance registry, a producer's (T23 item 14):
+//     check-catalogues.ts refuses one);
 //   - other writes append their catalogue event where a consumer may act on them (sign-ins,
 //     credentials, deactivation, flags, the registers), including the grants a later step will use
 //     first, which name that step's reserved events (C0.9, C0.15, C0.16);
@@ -53,7 +54,7 @@ const CASE_DELETED =
   "a request is never indexed, derived from or retrieved (RQS-11, T22 item 62), so no consumer holds a copy to delete, and C0.14's alert re-reads the case and passes over one that is gone (T16 item 9); its deletion_log row and audit row are the record"
 // C0.10 PR 2 (TECH-SPEC T23 item 14; LH-41, LH-42): the provenance registry's writers.
 const PROVENANCE =
-  "marks derived items withdrawn or stale, and deletes what nothing holds, in the transaction of their source's deletion, redaction, correction or edit; no consumer of a derived kind exists, and the first producer of a derived-mode item adds provenance_items to CONTENT_TABLES and gives these writes their events (T23 item 14)"
+  "marks derived items withdrawn or stale, and deletes what nothing holds, in the transaction of their source's deletion, redaction, correction or edit, or, for staleness, in the handler or job that follows a rewrite of a source's stored ACL; no consumer of a derived kind exists, and the first producer of a derived-mode item adds provenance_items to CONTENT_TABLES and gives these writes their events (T23 item 14)"
 // What a withdrawal writes: the item's state and reason, and its ACL row made nobody's under a new
 // epoch.
 const PROVENANCE_WITHDRAW = [
@@ -469,8 +470,8 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
   'deletion_log_kept()': { exempt: CHECK, writes: [] },
   'legal_holds_kept()': { exempt: CHECK, writes: [] },
   // C0.10 PR 2 (0014; TECH-SPEC T23 item 14; LH-39 to LH-43): the provenance registry's definers,
-  // each granted to nobody until the step that calls each (C1.1, C1.2, C2.9, C2.11, C3.5, C4.3, C4.4,
-  // A2.3), so check-catalogues reads them as SECURITY DEFINER functions. withdraw_dependants() and
+  // each granted to nobody until the step that calls each (C1.1, C1.2, C2.9, C2.11, C3.5, C4.1, C4.3,
+  // C4.4, A2.3), so check-catalogues reads them as SECURITY DEFINER functions. withdraw_dependants() and
   // provenance_mark_stale() mark items; lifecycle_cascade() and provenance_forget() withdraw, log
   // (through log_deletion()) and delete, each listing the withdrawal it calls. The tables' triggers
   // only refuse: four plain functions, and the deferred provenance_items_complete(), a definer as
