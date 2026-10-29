@@ -2,12 +2,13 @@
 // LH-09): every kind of data Hearth keeps, how long, from what, who may change that and whether
 // holds keep it longer. Keys and fixed facts live here, in code, as PURPOSES and FLAGS do (T16 item
 // 16, T22 item 18). The classes whose data Postgres holds or whose objects S3 holds are mirrored by
-// migration 0013's retention_class_defaults(), which lists exactly retentionClassDefaults()'s rows,
-// and apps/server/scripts/check-catalogues.ts (check 7) holds the two equal both ways, every table of
-// public in exactly one class, every fixed age equal to the interval in its function's body, and the
-// vocabularies below equal the database's. A class has no per-org row: nothing in C0 changes a period
-// per org, and C2.9 adds the settings table, its setter (within each class's range) and the rule for
-// changing a period (LH-38), replacing retention_period_days() with the same signature (LH-09).
+// retention_class_defaults() (0013, replaced by 0014), which lists exactly retentionClassDefaults()'s
+// rows, and apps/server/scripts/check-catalogues.ts (check 7) holds the two equal both ways, every
+// table of public in exactly one class, every fixed age equal to the interval in its function's
+// body, and the vocabularies below equal the database's. A class has no per-org row: nothing in C0
+// changes a period per org, and C2.9 adds the settings table, its setter (within each class's range)
+// and the rule for changing a period (LH-38), replacing retention_period_days() with the same
+// signature (LH-09).
 //
 // Nothing here deletes anything: C0 has no retention sweep (BUILD-PLAN's C0 "Not in this stage"
 // line). The deletion code (C0.10's delete_case(), then C1.2's, C2.9's and C4.1's) asks the
@@ -369,11 +370,10 @@ export const RETENTION_CLASSES = {
     deletedBy: 'C2.9’s purge',
     fixedIn: [{ fn: 'deletion_log_kept', intervals: ['731 days'] }],
   },
-  // LH-39 (PR 2 moves provenance_items and provenance_sources in): withdrawn and deleted with what it
-  // was made from, by the cascade or C2.9.
+  // LH-39 (0014): withdrawn and deleted with what it was made from, by the cascade or C2.9.
   provenance: {
     store: 'postgres',
-    tables: [],
+    tables: ['provenance_items', 'provenance_sources'],
     covers: 'What each derived or cited item was made from (BRAIN-08)',
     purposes: [],
     ai: false,
@@ -944,7 +944,7 @@ export const CLOUDWATCH_RETENTION_DAYS = [
   1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653,
 ] as const
 
-// --- The SQL mirror (migration 0013's retention_class_defaults(), check 7a) ---------------------
+// --- The SQL mirror (retention_class_defaults(), 0013 and 0014; check 7a) -----------------------
 
 // One row of retention_class_defaults(): a class whose data the database holds, deletes or logs.
 //   period_kind  days, follows, while or until (ttl is Valkey's, which the database never sees)
@@ -1008,9 +1008,10 @@ export const REFUSED_COPY_HOLD = { days: 30, noticeMarginDays: 14 } as const
 
 // The kinds of record the database's hold decision can judge (lifecycle_kinds() lists the same;
 // check 7f). Sign-in sessions are signin_session, never session, which C2.4 keeps for recorded room
-// sessions (T14 item 17). PR 2 adds 'derived'; each later step adds its kinds (C1.1 message, channel,
-// dm and group_dm; C2.4 room and session; C4.1 folder and file). A kind not listed never reads as not
-// held: is_held() refuses it, and a source of such a kind keeps what was made from it (LH-18).
+// sessions (T14 item 17). 'derived' (0014) takes its people from its sources; each later step adds
+// its kinds (C1.1 message, channel, dm and group_dm; C2.4 room and session; C4.1 folder and file). A
+// kind not listed never reads as not held: is_held() refuses it, and a source of such a kind keeps
+// what was made from it (LH-18).
 export const HOLD_KINDS = [
   'person',
   'phone_number',
@@ -1021,6 +1022,7 @@ export const HOLD_KINDS = [
   'case',
   'legal_hold',
   'data_access_event',
+  'derived',
 ] as const
 export type HoldKind = (typeof HOLD_KINDS)[number]
 

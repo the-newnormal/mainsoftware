@@ -51,6 +51,28 @@ const STAMP = 'stamps the row being written with the database clock; that write 
 const DELETION_LOG = 'the deletion log is itself the record of each deletion, written in its transaction (PDPA-09)'
 const CASE_DELETED =
   "a request is never indexed, derived from or retrieved (RQS-11, T22 item 62), so no consumer holds a copy to delete, and C0.14's alert re-reads the case and passes over one that is gone (T16 item 9); its deletion_log row and audit row are the record"
+// C0.10 PR 2 (TECH-SPEC T23 item 14; LH-41, LH-42): the provenance registry's writers.
+const PROVENANCE =
+  "marks derived items withdrawn or stale, and deletes what nothing holds, in the transaction of their source's deletion, redaction, correction or edit; no consumer of a derived kind exists, and the first producer of a derived-mode item adds provenance_items to CONTENT_TABLES and gives these writes their events (T23 item 14)"
+// What a withdrawal writes: the item's state and reason, and its ACL row made nobody's under a new
+// epoch.
+const PROVENANCE_WITHDRAW = [
+  'provenance_items.state:UPDATE',
+  'provenance_items.withdrawn_at:UPDATE',
+  'provenance_items.withdrawn_reason:UPDATE',
+  'provenance_items.acl_tokens:UPDATE',
+  'provenance_items.acl_more:UPDATE',
+  'provenance_items.acl_epoch:UPDATE',
+] as const
+// What the cascade and provenance_forget() write: the withdrawal they call, the edges marked gone,
+// each deleted item logged, and the items and their edges deleted.
+const PROVENANCE_DELETE = [
+  ...PROVENANCE_WITHDRAW,
+  'provenance_sources.gone_at:UPDATE',
+  'provenance_items:DELETE',
+  'provenance_sources:DELETE',
+  'deletion_log:INSERT',
+] as const
 
 const deactivation: Coverage = { events: ['person.deactivated'] }
 // The registers (C0.9, TECH-SPEC T22 item 13): their functions are their only writers.
@@ -446,6 +468,30 @@ export const WRITES: Readonly<Record<string, Coverage>> = {
   'lifecycle_no_truncate()': { exempt: CHECK, writes: [] },
   'deletion_log_kept()': { exempt: CHECK, writes: [] },
   'legal_holds_kept()': { exempt: CHECK, writes: [] },
+  // C0.10 PR 2 (0014; TECH-SPEC T23 item 14; LH-39 to LH-43): the provenance registry's definers,
+  // each granted to nobody until the step that calls each (C1.1, C1.2, C2.9, C2.11, C3.5, C4.3, C4.4,
+  // A2.3), so check-catalogues reads them as SECURITY DEFINER functions. withdraw_dependants() and
+  // provenance_mark_stale() mark items; lifecycle_cascade() and provenance_forget() withdraw, log
+  // (through log_deletion()) and delete, each listing the withdrawal it calls. The tables' triggers
+  // only refuse: four plain functions, and the deferred provenance_items_complete(), a definer as
+  // lifecycle_guard() is. The plain helpers provenance_dependants() and provenance_lock_ahead() are
+  // neither definers nor runnable by any runtime role, so they have no entry.
+  'withdraw_dependants(text, uuid, text)': { exempt: PROVENANCE, writes: PROVENANCE_WITHDRAW },
+  'provenance_mark_stale(text, uuid, text)': {
+    exempt: PROVENANCE,
+    writes: [
+      'provenance_items.state:UPDATE',
+      'provenance_items.stale_since:UPDATE',
+      'provenance_items.stale_reason:UPDATE',
+    ],
+  },
+  'lifecycle_cascade(text, uuid, bigint, integer)': { exempt: PROVENANCE, writes: PROVENANCE_DELETE },
+  'provenance_forget(text, uuid, text, bigint)': { exempt: PROVENANCE, writes: PROVENANCE_DELETE },
+  'provenance_items_insert()': { exempt: CHECK, writes: [] },
+  'provenance_items_state()': { exempt: CHECK, writes: [] },
+  'provenance_items_complete()': { exempt: CHECK, writes: [] },
+  'provenance_sources_insert()': { exempt: CHECK, writes: [] },
+  'provenance_sources_fixed()': { exempt: CHECK, writes: [] },
   // Lookups, fences and checks.
   'session_by_token(bytea, interval)': { exempt: 'a sign-in lookup before the org is known', writes: [] },
   'person_by_phone(text)': { exempt: 'a sign-in lookup before the org is known', writes: [] },

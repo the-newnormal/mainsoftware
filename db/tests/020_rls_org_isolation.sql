@@ -305,3 +305,68 @@ select pg_temp.expect_error($$insert into public.legal_holds (org_id, client_key
 select pg_temp.expect_error($$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause, s3_class, s3_key)
   values ('f2000000-0000-4000-8000-000000000000', 'profile_photos', 'profiles', gen_random_uuid()::text, 'user', 'profile_photos',
           'f1000000-0000-4000-8000-000000000000/' || gen_random_uuid())$$, '23514', '%deletion_log_s3_key%');
+
+-- The provenance registry (0014, C0.10 LH-39; LCD-40). No runtime role holds a grant on either table,
+-- so the discovery above passes them over, and hearth_app reads neither in its own org (42501). The
+-- owner, which RLS doesn't bind, reads both orgs' rows: the fixture's derived item and cited draft,
+-- with three edges, in each. The org policy binds any future grantee: hearth_app, granted SELECT and
+-- INSERT here for this transaction alone, sees exactly the org it acts in, and can't add a row to the
+-- other org.
+select pg_temp.act_as('1', 'a5');
+select pg_temp.expect_error('select count(*) from public.provenance_items', '42501');
+select pg_temp.expect_error('select count(*) from public.provenance_sources', '42501');
+reset role;
+set local role hearth_owner;
+select pg_temp.check((select count(*) from public.provenance_items where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'))) = 4
+                     and (select count(*) from public.provenance_sources
+                          where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'))) = 6,
+                     'the owner does not read both fixture orgs'' provenance records (LCD-40)');
+reset role;
+grant select, insert on public.provenance_items, public.provenance_sources to hearth_app;
+do $$
+declare
+  o text;
+begin
+  foreach o in array array['1', '2'] loop
+    perform pg_temp.act_as(o, 'a5');
+    perform pg_temp.check((select count(*) filter (where org_id = pg_temp.id(o, '00')) = 2 and count(*) = 2
+                           from public.provenance_items)
+                          and (select count(*) filter (where org_id = pg_temp.id(o, '00')) = 3 and count(*) = 3
+                               from public.provenance_sources),
+                          format('acting in org %s, a future grantee saw another org''s provenance records (LCD-40)', o));
+    perform set_config('role', 'none', true);
+  end loop;
+end
+$$;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.expect_error($$insert into public.provenance_items (org_id, item_kind, item_id, mode, created_by)
+  values ('f1000000-0000-4000-8000-000000000000', 'draft', gen_random_uuid(), 'cited', 'f1000000-0000-4000-8000-0000000000a8')$$,
+  '42501');
+-- An org-1 edge is refused by its insert trigger first: acting in org 2, it can't see org 1's item.
+select pg_temp.expect_error($$insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values ('f1000000-0000-4000-8000-000000000000', 'f1000000-0000-4000-8000-0000000000ef', 2, 'message', gen_random_uuid())$$,
+  '23514', 'A source is recorded with its item, after it.');
+reset role;
+revoke select, insert on public.provenance_items, public.provenance_sources from hearth_app;
+-- No item can name another org's principal as its maker (as the superuser, so only the keys and checks
+-- stand in the way).
+select pg_temp.expect_error($$insert into public.provenance_items (org_id, item_kind, item_id, mode, created_by)
+  values ('f2000000-0000-4000-8000-000000000000', 'draft', gen_random_uuid(), 'cited', 'f1000000-0000-4000-8000-0000000000a8')$$,
+  '23503', '%provenance_items_org_id_created_by_fkey%');
+-- Nor an edge another org's item. Its insert trigger looks the item up in the edge's own org, and an
+-- item id lives in one org only, so it refuses first, for the superuser too, and no insert reaches
+-- the composite key; the key is proved by its definition: (org_id, item) to provenance_items
+-- (org_id, id), deferred (LH-32, the shape scripts/check-migrations.sh's composite-key check holds).
+select pg_temp.expect_error($$insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values ('f2000000-0000-4000-8000-000000000000', 'f1000000-0000-4000-8000-0000000000ef', 2, 'message', gen_random_uuid())$$,
+  '23514', 'A source is recorded with its item, after it.');
+select pg_temp.check(exists (
+  select 1 from pg_constraint k
+  where k.conname = 'provenance_sources_org_id_item_fkey' and k.contype = 'f'
+    and k.conrelid = 'public.provenance_sources'::regclass and k.confrelid = 'public.provenance_items'::regclass
+    and k.condeferrable and k.condeferred
+    and (select array_agg(a.attname order by x.n) from unnest(k.conkey) with ordinality x (attnum, n)
+         join pg_attribute a on a.attrelid = k.conrelid and a.attnum = x.attnum) = array['org_id', 'item']::name[]
+    and (select array_agg(a.attname order by x.n) from unnest(k.confkey) with ordinality x (attnum, n)
+         join pg_attribute a on a.attrelid = k.confrelid and a.attnum = x.attnum) = array['org_id', 'id']::name[]),
+  'an edge''s key to its item isn''t (org_id, item) to (org_id, id), deferred (LCD-40)');

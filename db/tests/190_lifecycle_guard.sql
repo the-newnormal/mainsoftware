@@ -20,7 +20,8 @@
 --   LCD-13 is_held(): no org set (42501); an unknown kind (22023); a read-only transaction (25006);
 --          another org's hold on the same id answers false; the answer is a boolean only;
 --   DB-06  every SECURITY DEFINER of public reads its org from app.org_id but the named exceptions,
---          lifecycle_guard() among them, which CLAUDE.md's definer rule names (review DOCS-04).
+--          lifecycle_guard() and, from 0014, provenance_items_complete() among them, which CLAUDE.md's
+--          definer rule names (review DOCS-04).
 -- The owner deletes through `set role hearth_owner`, the superuser with no role set; app.org_id is set
 -- only where log_deletion() needs it, since the guard reads the org from the row.
 \ir fixtures/two_orgs.sql
@@ -409,13 +410,16 @@ select pg_temp.check(pg_get_function_result('public.is_held(text,uuid)'::regproc
 -- DB-06 (C0.10 review DOCS-04): every SECURITY DEFINER of public reads its org from app.org_id in its
 -- own body, but these: the pre-org lookups (person_by_phone(), session_by_token()) and
 -- worker_org_ids(), before an org is known; create_data_access_partitions(), which acts in no org;
--- transfer_cleared(), through transfer_send_state(), which reads it; and lifecycle_guard(), a
+-- transfer_cleared(), through transfer_send_state(), which reads it; lifecycle_guard(), a
 -- trigger, which reads the deleted row's org, so a delete with no app.org_id is still checked
--- (T23 item 8). A new one here names why in CLAUDE.md's definer rule.
+-- (T23 item 8); and provenance_items_complete() (0014), a deferred constraint trigger, which reads
+-- the org from the item it checks: a definer because Postgres 17 fires a deferred trigger at the
+-- commit as whichever role is active then, which holds no grant on the provenance tables (T23 item
+-- 18). A new one here names why in CLAUDE.md's definer rule.
 select pg_temp.check(
   coalesce((select array_agg(p.proname::text order by p.proname)
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
             where n.nspname = 'public' and p.prosecdef and p.prosrc not like '%app.org_id%'), '{}')
-  = array['create_data_access_partitions', 'lifecycle_guard', 'person_by_phone', 'session_by_token',
-          'transfer_cleared', 'worker_org_ids'],
+  = array['create_data_access_partitions', 'lifecycle_guard', 'person_by_phone', 'provenance_items_complete',
+          'session_by_token', 'transfer_cleared', 'worker_org_ids'],
   'a SECURITY DEFINER takes its org other than from app.org_id: name why in CLAUDE.md''s definer rule (DB-06)');

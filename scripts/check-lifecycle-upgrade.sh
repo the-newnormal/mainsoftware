@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The upgrade check for 0013_lifecycle_holds (C0.10 PR 1, LH-34; CLAUDE.md, Testing and CI): 0013
-# applied on top of the rows 0001 to 0012 allow, as a C0.9 deployment could hold them, instead of to
-# an empty database.
+# The upgrade check for 0013_lifecycle_holds (C0.10 PR 1, LH-34; CLAUDE.md, Testing and CI), and for
+# 0014_provenance (C0.10 PR 2, which rides it): 0013 and 0014 applied on top of the rows 0001 to 0012
+# allow, as a C0.9 deployment could hold them, instead of to an empty database.
 #
 # 0013 inserts, updates and deletes no row, but it changes what rows already there mean in ways the
 # schema digest can't see: a request for a copy refused before it, an open request for a copy or a
@@ -37,9 +37,10 @@
 #   b5's and b6's old complaints, open for b6's correction, not_due for b3's refusal (within 731
 #   days), and deleted for b7's complaint, with one log row and one audit row; the superuser's direct
 #   delete of a held request is refused without a log row (HF010) and with one (HF009); no table but
-#   cases, case_steps and legal_holds carries the guard, each named by its argument (deletion_log
-#   carries its own two), no guard trigger has a WHEN condition or an UPDATE OF list (GUARD-04,
-#   TESTS-03), and no runtime role holds a DELETE grant but hearth_app's on working_hours;
+#   the five, cases, case_steps, legal_holds and from 0014 provenance_items and provenance_sources,
+#   carries the guard, each named by its argument (deletion_log carries its own two), no guard trigger
+#   has a WHEN condition or an UPDATE OF list (GUARD-04, TESTS-03), and no runtime role holds a DELETE
+#   grant but hearth_app's on working_hours;
 # - LCU-05 (OD-27, LH-27): both job roles read every column of the outbox but actor_id and
 #   actor_kind, which are refused to each; readBatch()'s, startOf()'s and futureRows()' statements,
 #   and the sockets job's for the revocation role, run as each over the events already there;
@@ -47,7 +48,16 @@
 #   a register, flag or settings row (the Owner bootstrap's write set is untouched);
 # - LCU-08 (LH-03, LH-04): retention_class_defaults() equals the database classes of
 #   packages/shared RETENTION_CLASSES (retentionClassDefaults()), as check-catalogues.ts check 7a
-#   holds them on a fresh build, objects included (RETENTION_CLASSES' objects; R2DB-01).
+#   holds them on a fresh build, objects included (RETENTION_CLASSES' objects; R2DB-01);
+# - LCU-10 (0014; LH-39, LH-30, LH-50): 0014_provenance is applied; provenance_items and
+#   provenance_sources exist with row level security on and the one org policy each, and hold no row;
+#   no runtime role holds any privilege on either or may run any of 0014's eleven new functions;
+#   lifecycle_kinds() equals packages/shared HOLD_KINDS; and, acting as org B's Hearth as the owner in
+#   a transaction rolled back, is_held() of a derived item with no record answers false and a cascade
+#   from a message nothing was made from answers 0, leaving the log empty. 0014 changes no row, so it
+#   needs no data of its own: what the digest can't see is the guard's place (LCU-04), that no role
+#   gained a grant, and that the hold decision still answers as before over real data (LCU-03, read
+#   after 0014 too).
 # LCU-06 is C1.11's (0013 doesn't replace read_audit_events()). LCU-09 is the other upgrade checks'
 # own: each applies 0013 too, over its own data, and stays green. The data is made up; none of it is
 # anyone's.
@@ -280,8 +290,8 @@ sql -d "$db" -o /dev/null -c begin -c "$(refused_like HF010 'Rows here are delet
        from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_proc f on f.oid = t.tgfoid
        where not t.tgisinternal and f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept')
          and t.tgenabled = 'O'")" = \
-  'case_steps lifecycle_guard case_steps\000,case_steps lifecycle_no_truncate ,cases lifecycle_guard cases\000,cases lifecycle_no_truncate ,deletion_log deletion_log_kept ,deletion_log lifecycle_no_truncate ,legal_holds lifecycle_guard legal_holds\000,legal_holds lifecycle_no_truncate ' ] ||
-  { echo "LCU-04: the guard isn't on exactly cases, case_steps and legal_holds, each named by its argument and enabled" >&2; exit 1; }
+  'case_steps lifecycle_guard case_steps\000,case_steps lifecycle_no_truncate ,cases lifecycle_guard cases\000,cases lifecycle_no_truncate ,deletion_log deletion_log_kept ,deletion_log lifecycle_no_truncate ,legal_holds lifecycle_guard legal_holds\000,legal_holds lifecycle_no_truncate ,provenance_items lifecycle_guard provenance_items\000,provenance_items lifecycle_no_truncate ,provenance_sources lifecycle_guard provenance_sources\000,provenance_sources lifecycle_no_truncate ' ] ||
+  { echo "LCU-04: the guard isn't on exactly cases, case_steps, legal_holds and the provenance tables, each named by its argument and enabled" >&2; exit 1; }
 [ "$(sql -d "$db" -Atc "select count(*) from pg_trigger t join pg_proc f on f.oid = t.tgfoid
        where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
          and (t.tgqual is not null or cardinality(t.tgattr::int2[]) <> 0)")" = 0 ] ||
@@ -348,4 +358,55 @@ if [ "$from_sql" != "$from_code" ]; then
   exit 1
 fi
 
-echo "OK: 0013 upgraded $db over the rows 0001 to 0012 allow; every row is unchanged, the requests already there hold as T23 says, delete_case() and the guard decide over them, the consumers read the outbox without its actor, the registry matches code, and the schema matches a fresh build."
+# LCU-10: 0014, which rode this step: its two tables there, empty, with row level security on and the
+# org policy each; no grant to any runtime role (the DELETE query's filter above) on either or on any
+# of its eleven new functions; lifecycle_kinds() as packages/shared HOLD_KINDS lists them (both in C
+# order); and is_held() and the cascade answering over the upgraded data, rolled back.
+[ "$(sql -d "$db" -Atc "select count(*) from public.kysely_migration where name = '0014_provenance'")" = 1 ] ||
+  { echo "LCU-10: 0014_provenance was not applied" >&2; exit 1; }
+[ "$(sql -d "$db" -Atc "select string_agg(format('%s %s %s', c.relname, c.relrowsecurity,
+       (select string_agg(p.polname, ',' order by p.polname) from pg_policy p where p.polrelid = c.oid)), ',' order by c.relname)
+     from pg_class c where c.oid in ('public.provenance_items'::regclass, 'public.provenance_sources'::regclass)")" = \
+  'provenance_items t org_isolation,provenance_sources t org_isolation' ] &&
+  [ "$(sql -d "$db" -Atc "select format('%s %s', (select count(*) from public.provenance_items),
+       (select count(*) from public.provenance_sources))")" = '0 0' ] ||
+  { echo "LCU-10: the provenance tables aren't there, empty, with row level security on and one org policy each" >&2; exit 1; }
+granted=$(sql -d "$db" -Atc "select coalesce(string_agg(distinct format('%s %s', r.rolname, x.what), ','), '')
+  from pg_roles r cross join lateral (
+    select t.name || ':' || p.priv as what
+    from unnest(array['provenance_items', 'provenance_sources']) t (name)
+    cross join unnest(array['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) p (priv)
+    where has_table_privilege(r.oid, ('public.' || t.name)::regclass, p.priv)
+       or (p.priv in ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+           and has_any_column_privilege(r.oid, ('public.' || t.name)::regclass, p.priv))
+    union all
+    select f.sig || ':EXECUTE' from unnest(array[
+      'public.provenance_dependants(uuid,text,uuid)', 'public.provenance_lock_ahead(uuid,text,uuid)',
+      'public.withdraw_dependants(text,uuid,text)', 'public.provenance_mark_stale(text,uuid,text)',
+      'public.lifecycle_cascade(text,uuid,bigint,integer)', 'public.provenance_forget(text,uuid,text,bigint)',
+      'public.provenance_items_insert()', 'public.provenance_items_state()', 'public.provenance_items_complete()',
+      'public.provenance_sources_insert()', 'public.provenance_sources_fixed()']) f (sig)
+    where has_function_privilege(r.oid, f.sig, 'EXECUTE')) x
+  where r.rolname like 'hearth\_%' and r.rolname <> 'hearth_owner'
+    and not pg_has_role(r.oid, 'hearth_owner', 'USAGE') and not pg_has_role(r.oid, 'hearth_owner', 'SET')")
+[ -z "$granted" ] || { echo "LCU-10: runtime roles hold privileges 0014 grants nobody: $granted" >&2; exit 1; }
+kinds_code=$(node --input-type=module -e "
+  const { HOLD_KINDS } = await import('@hearth/shared')
+  console.log([...HOLD_KINDS].sort().join(','))")
+kinds_sql=$(sql -d "$db" -Atc "select string_agg(k, ',' order by k collate \"C\") from public.lifecycle_kinds() k")
+[ "$kinds_sql" = "$kinds_code" ] ||
+  { echo "LCU-10: lifecycle_kinds() reads '$kinds_sql', not packages/shared HOLD_KINDS' '$kinds_code'" >&2; exit 1; }
+provenance=$(sql -d "$db" -At -c begin -c 'set local role hearth_owner' \
+  -c "select set_config('app.org_id', '$org_b', true), set_config('app.user_id', '$hearth', true)" \
+  -c "insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+        values ('$org_b', 'messages', 'messages', gen_random_uuid()::text, 'user')" \
+  -c "select concat_ws(' ', public.is_held('derived', gen_random_uuid()),
+        public.lifecycle_cascade('message', gen_random_uuid(),
+                                 (select max(d.id) from public.deletion_log d where d.org_id = '$org_b'), 10))" \
+  -c rollback | tail -n 1)
+[ "$provenance" = 'f 0' ] ||
+  { echo "LCU-10: is_held() of a derived item and a cascade over the upgraded data answered '$provenance', not 'f 0'" >&2; exit 1; }
+[ "$(sql -d "$db" -Atc "select count(*) from public.deletion_log")" = 0 ] ||
+  { echo "LCU-10: the rolled-back cascade left a log row behind" >&2; exit 1; }
+
+echo "OK: 0013 and 0014 upgraded $db over the rows 0001 to 0012 allow; every row is unchanged, the requests already there hold as T23 says, delete_case() and the guard decide over them, the consumers read the outbox without its actor, the registry matches code, the provenance registry is there, empty and granted to nobody, and the schema matches a fresh build."

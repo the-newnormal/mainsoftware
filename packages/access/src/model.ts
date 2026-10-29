@@ -46,24 +46,28 @@ export type Grant = { grantee: Grantee; role: GrantRole }
 // A Drive item is owned by one person or one team (ACC-05 moves ownership to a manager or a team).
 export type DriveOwner = { kind: 'person'; id: Id } | { kind: 'team'; id: Id }
 
-export type ResourceKind =
-  | 'channel'
-  | 'dm'
-  | 'group_dm'
-  | 'agent_dm'
-  | 'assistant_chat'
-  | 'room'
-  | 'thread'
-  | 'message'
-  | 'session'
-  | 'slide_copy'
-  | 'event'
-  | 'task'
-  | 'suggested_task'
-  | 'folder'
-  | 'file'
-  | 'comment'
-  | 'derived'
+// Every kind of resource the access core decides, as a list a loader can check stored kinds against
+// (provenance.ts). 'case' is none: requests never reach an index or a derived item (RQS-11).
+export const RESOURCE_KINDS = [
+  'channel',
+  'dm',
+  'group_dm',
+  'agent_dm',
+  'assistant_chat',
+  'room',
+  'thread',
+  'message',
+  'session',
+  'slide_copy',
+  'event',
+  'task',
+  'suggested_task',
+  'folder',
+  'file',
+  'comment',
+  'derived',
+] as const
+export type ResourceKind = (typeof RESOURCE_KINDS)[number]
 export type Ref = { kind: ResourceKind; id: Id }
 export type ConversationKind = 'dm' | 'group_dm' | 'agent_dm' | 'assistant_chat'
 

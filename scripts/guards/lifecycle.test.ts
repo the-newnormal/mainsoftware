@@ -19,13 +19,13 @@
 //   Database, S3; PRD B.6). The allow-lists stay empty until C0.15 adds its S3 deletion module and
 //   C0.12 the tag-filtered backstop, each with its reason;
 // - LCG-03, migrations: a migration numbered above 0013 holds, outside its function bodies (a DO
-//   block's body counts, since it runs in the migration), no TRUNCATE, DROP TABLE, DETACH PARTITION,
-//   DISABLE TRIGGER, DROP TRIGGER, ENABLE ALWAYS TRIGGER or ENABLE REPLICA TRIGGER, no replacement,
-//   drop or change of the guard's functions or lifecycle_held() (DB-07), no CREATE OR REPLACE TRIGGER
-//   of a guard's trigger, no guard's trigger created with a WHEN condition or an UPDATE OF list
-//   (check 7d refuses both on the fresh build too), and no DELETE from a table of a class whose holds
-//   apply or that is kept, or from deletion_log, unless its file and statement are on the reviewed
-//   list below with why;
+//   block's body counts, since it runs in the migration), no TRUNCATE (but in a trigger's event list,
+//   which empties nothing, as check 8 reads it), DROP TABLE, DETACH PARTITION, DISABLE TRIGGER, DROP
+//   TRIGGER, ENABLE ALWAYS TRIGGER or ENABLE REPLICA TRIGGER, no replacement, drop or change of the
+//   guard's functions or lifecycle_held() (DB-07), no CREATE OR REPLACE TRIGGER of a guard's trigger,
+//   no guard's trigger created with a WHEN condition or an UPDATE OF list (check 7d refuses both on
+//   the fresh build too), and no DELETE from a table of a class whose holds apply or that is kept, or
+//   from deletion_log, unless its file and statement are on the reviewed list below with why;
 // - LCG-04, server code: no runtime file under apps/server/src/ outside apps/server/src/lifecycle/
 //   (tests and the testing/ folder aside) deletes from or truncates such a table, as SQL text or
 //   through Kysely's deleteFrom();
@@ -290,7 +290,9 @@ const GUARD_TRIGGERS = 'lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|
 
 // What LCG-03 refuses, by name.
 const DESTRUCTIVE: ReadonlyArray<[string, RegExp]> = [
-  ['truncate', /\btruncate\b/gi],
+  // A TRUNCATE in a trigger's event list (BEFORE TRUNCATE, OR TRUNCATE) empties nothing: 0014's guard
+  // on the provenance tables, and C2.9's per-partition triggers. Check 8's DESTRUCTIVE reads it so too.
+  ['truncate', /(?<!\b(?:before|after|or)\s+)\btruncate\b/gi],
   ['drop table', /\bdrop\s+table\b/gi],
   ['detach partition', /\bdetach\s+partition\b/gi],
   ['disable trigger', /\bdisable\s+trigger\b/gi],
@@ -389,6 +391,9 @@ describe('LCG-03 (C0.10 LH-33, DB-07): later migrations hold no destructive or g
           // A guard's trigger created plainly, and another trigger replaced, pass.
           "create trigger lifecycle_guard before delete on public.devices for each row execute function public.lifecycle_guard('devices');",
           'create or replace trigger touch before update on public.teams for each row when (old.name is distinct from new.name) execute function public.touch();',
+          // A TRUNCATE in a trigger's event list empties nothing, so it passes (0014's guard).
+          'create trigger lifecycle_no_truncate before truncate on public.provenance_items for each statement execute function public.lifecycle_no_truncate();',
+          'create trigger audit after insert or truncate on public.x for each statement execute function public.f();',
         ].join('\n'),
       ],
       [

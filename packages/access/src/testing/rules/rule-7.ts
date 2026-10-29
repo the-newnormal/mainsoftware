@@ -4,11 +4,13 @@ import {
   audienceOf,
   can,
   canRead,
+  derivedFacts,
   type Facts,
   type FileFact,
   type FolderFact,
   filterReadable,
   type Id,
+  indexClassOf,
   isLive,
   keysOf,
   listAccessible,
@@ -17,7 +19,7 @@ import {
   readersOf,
   type Subject,
   sourceAllowed,
-  type World,
+  World,
 } from '../../index.ts'
 import {
   AG,
@@ -25,6 +27,7 @@ import {
   agent,
   assistant,
   C,
+  CHAIN_DERIVED,
   CM,
   CV,
   DV,
@@ -32,12 +35,20 @@ import {
   FI,
   human,
   M,
+  markGone,
+  markStale,
+  ORG,
   P,
+  type ProvenanceRows,
+  provenanceRowsOf,
   ref,
   SC,
   SEED_PEOPLE,
+  ST,
   system,
   T,
+  TK,
+  withdraw,
 } from '../index.ts'
 import { ai, c0, core, type RuleCase } from './case.ts'
 import { changed, expectReaders, reads, refsOf, rowReadable, world } from './helpers.ts'
@@ -566,8 +577,90 @@ export const RULE_7: readonly RuleCase[] = [
     'C2.9',
     'Rule 7 REC-23 PDPA-09: recordings, transcripts, notes and slide copies are deleted only by the retention engine, the DPO on a request or redaction, each deletion logged',
   ),
-  // C0.10's PR 2 runs it (the provenance registry and its cascade; LH-35, LH-41).
-  core('R7-11', 'C0.10', 'Rule 7 PDPA-09 BRAIN-08: deleting a source deletes or marks stale what was made from it'),
+  // Run from C0.10 PR 2 (0014; LH-41, LH-42).
+  c0(
+    'R7-11',
+    'Rule 7 PDPA-09 BRAIN-08 PRD-110: deleting a source withdraws everything made from it, transitively, so nobody reads any of it, rebuilt from its provenance rows or through its stored row; an edit only marks it stale, which changes nobody’s access (the cascade itself: db/tests/200_provenance.sql)',
+    () => {
+      // The ops summary is made from two #ops-north-site messages, the mixed summary from one of
+      // them and the Q4 forecast, and the chain's digest from the ops summary and a #general message;
+      // the weekly digest from the pricing review alone. Marcus deletes the message both summaries use.
+      const withChain: Change = f => ({ ...f, derived: [...f.derived, ...CHAIN_DERIVED] })
+      const w0 = changed(withChain)
+      const madeFromIt = [DV.opsSummary, DV.mixed, ...CHAIN_DERIVED.map(d => d.id)]
+      const ids = w0.facts.derived.map(d => d.id)
+      const rows = provenanceRowsOf(w0, ids)
+      const rebuiltFrom = (facts: Facts, r: ProvenanceRows) =>
+        new World({ ...facts, derived: derivedFacts(ORG, r.items, r.sources) })
+      // Before, someone reads each of them.
+      for (const id of madeFromIt) {
+        const read = askers.some(s => canRead(w0, s, ref.derived(id)))
+        expect(read, id).toBe(true)
+      }
+
+      // 1. The rows as lifecycle_cascade('message', M.ops2, …) leaves them: M.ops2's edges gone, and
+      // everything made from it, the digest through the ops summary, withdrawn and its stored row
+      // nobody's. Nobody reads any of it, in memory or through the stored row.
+      const cascaded = withdraw(markGone(rows, ref.message(M.ops2)), madeFromIt)
+      const deleted = changed(steps(withChain, deleteMessage(M.ops2))).facts
+      const after = rebuiltFrom(deleted, cascaded)
+      for (const id of madeFromIt) {
+        const item = ref.derived(id)
+        const stored = cascaded.stored.get(id)
+        expect(readersOf(after, item), id).toEqual([])
+        expect(isLive(after, item), id).toBe(false)
+        expect(indexClassOf(after, item), id).toBe('restricted')
+        for (const s of askers) {
+          expect(canRead(after, s, item), `${label(s)} ${id}`).toBe(false)
+          expect(stored !== undefined && rowReadable(stored, keysOf(after, s)), `${label(s)} ${id}`).toBe(false)
+        }
+      }
+
+      // 2. Either change alone already closes it, so the order they commit in doesn't matter: the
+      // message deleted with the rows untouched, or the rows withdrawn with the message still there
+      // (a correction, source_corrected, which keeps its source and its edges).
+      const halfway: [string, World][] = [
+        ['message deleted, rows untouched', rebuiltFrom(deleted, rows)],
+        ['rows withdrawn, message there', rebuiltFrom(w0.facts, withdraw(rows, madeFromIt))],
+      ]
+      for (const [what, w] of halfway) {
+        for (const id of madeFromIt) {
+          for (const s of askers) expect(canRead(w, s, ref.derived(id)), `${what}: ${label(s)} ${id}`).toBe(false)
+        }
+      }
+
+      // 3. What wasn't made from it keeps its readers: the weekly digest, and the task made from a DM
+      // message and the suggested tasks, which keep their own rules (Rule 5's owner-only), even with
+      // the message the task was made from deleted too.
+      const alsoDm = rebuiltFrom(
+        changed(steps(withChain, deleteMessage(M.ops2), deleteMessage(M.priya2))).facts,
+        cascaded,
+      )
+      const untouched = [
+        ref.derived(DV.digest),
+        ref.task(TK.fromDm),
+        ref.suggestedTask(ST.board),
+        ref.suggestedTask(ST.people),
+      ]
+      for (const item of untouched) {
+        expect(readersOf(w0, item).length, item.id).toBeGreaterThan(0)
+        for (const w of [after, alsoDm]) {
+          expect(readersOf(w, item), item.id).toEqual(readersOf(w0, item))
+          for (const s of askers) expect(canRead(w, s, item), `${label(s)} ${item.id}`).toBe(canRead(w0, s, item))
+        }
+      }
+
+      // 4. An edit marks what was made from the source stale (provenance_mark_stale()), which is
+      // freshness, not access: the ops summary and the digest read exactly as before.
+      const edited = [DV.opsSummary, ...CHAIN_DERIVED.map(d => d.id)]
+      const stale = rebuiltFrom(w0.facts, markStale(rows, edited))
+      for (const id of edited) {
+        const item = ref.derived(id)
+        expect(aclOf(stale, item), id).toEqual(rows.stored.get(id))
+        for (const s of askers) expect(canRead(stale, s, item), `${label(s)} ${id}`).toBe(canRead(w0, s, item))
+      }
+    },
+  ),
   // C0.10 wrote the deletion log a restore replays; C0.17 builds the replay (LH-35, LH-51).
   core(
     'R7-11b',

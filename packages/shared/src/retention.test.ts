@@ -1,7 +1,7 @@
 // C0.10's retention-class registry and the refused-copy window's mirror (PDPA-09, ADM-07, ADM-08;
 // TECH-SPEC T23 items 2 to 7 and 10 to 12; LH-03 to LH-10, LH-18 to LH-20, LH-45 to LH-47): LCS-01 to LCS-08.
-// That the registry, its SQL mirror and the vocabularies equal migration 0013's is checked against
-// the database by apps/server/scripts/check-catalogues.ts (check 7); that db/tests/192's sample block
+// That the registry, its SQL mirror and the vocabularies equal migrations 0013's and 0014's is checked
+// against the database by apps/server/scripts/check-catalogues.ts (check 7); that db/tests/192's sample block
 // equals retention-samples.json is LCV-08's (apps/server/src/lifecycle/retention.test.ts), so LCS-06
 // here and LCD-14 there run one table through heldUntil() and case_hold_until().
 import { describe, expect, it } from 'vitest'
@@ -86,6 +86,9 @@ describe('LH-03 LH-04 LH-05: the retention classes', () => {
     // PR 1's own two tables are classed with it (LH-10, LH-15).
     expect(owner.get('deletion_log')).toBe('deletion_log')
     expect(owner.get('legal_holds')).toBe('legal_holds')
+    // And PR 2's (0014) with provenance (LH-39).
+    expect(owner.get('provenance_items')).toBe('provenance')
+    expect(owner.get('provenance_sources')).toBe('provenance')
   })
 
   it('LCS-02 LH-36: every class names known purposes, once each, and only legal_holds and the follows classes name none', () => {
@@ -369,12 +372,15 @@ describe('LH-03 check 7a: retention_class_defaults()’s rows', () => {
       anchor: 'created',
       holds: 'exempt',
     })
+    // LH-39: 0014's two tables, in this order.
     expect(rows.find(r => r.key === 'provenance')).toMatchObject({
       period_kind: 'follows',
       days: null,
       anchor: null,
       follows: 'source',
-      tables: [],
+      holds: 'apply',
+      tables: ['provenance_items', 'provenance_sources'],
+      objects: false,
     })
     expect(rows.find(r => r.key === 'working_hours')).toMatchObject({
       period_kind: 'until',
@@ -558,6 +564,8 @@ describe('LCS-08 LH-10 LH-15 LH-18: the vocabularies check 7f holds to the datab
       'case',
       'legal_hold',
       'data_access_event',
+      // 0014: a derived item, held through its sources (LH-50).
+      'derived',
     ])
     for (const kind of HOLD_KINDS) expect(kind).toMatch(SNAKE)
     expect(HOLD_KINDS as readonly string[]).not.toContain('session')

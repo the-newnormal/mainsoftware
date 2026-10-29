@@ -741,13 +741,13 @@ describe('C0.9 PD-41 T22 item 18 check 6: NOTICE_TRANSFER_FACTS equals what noti
 const classes: Readonly<Record<string, RetentionClass>> = RETENTION_CLASSES
 // retention_class_defaults() as migration 0013 writes it: the registry's own rows.
 const classRows: ClassDefault[] = retentionClassDefaults()
-// Every table of public as 0001 to 0013 make them, each its own root.
+// Every table of public as 0001 to 0014 make them, each its own root.
 const TABLES = Object.values(classes).flatMap(spec => spec.tables)
 const relations: Relation[] = TABLES.map(name => ({ name, root: name }))
 const changingClass = (key: string, change: Partial<ClassDefault>) =>
   classRows.map(row => (row.key === key ? { ...row, ...change } : row))
 
-// The guard's triggers as 0013 creates them.
+// The guard's triggers as 0013 and 0014 create them.
 const guardTrigger = (table: string): TriggerRow => ({
   relation: table,
   root: table,
@@ -926,7 +926,7 @@ describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and 
     ])
   })
 
-  it('7d LH-11 LH-12 C010-SPEC-09: passes the guard as 0013 puts it, and names a guard missing, disabled, enabled ALWAYS, misnamed, mis-typed or naming another table, and one on a table GUARDED_TABLES doesn’t list', () => {
+  it('7d LH-11 LH-12 C010-SPEC-09: passes the guard as 0013 and 0014 put it, and names a guard missing, disabled, enabled ALWAYS, misnamed, mis-typed or naming another table, and one on a table GUARDED_TABLES doesn’t list', () => {
     expect(guardProblems(GUARDED_TABLES, relations, TRIGGERS, APPLY)).toEqual([])
     const changing = (table: string, fn: string, change: Partial<TriggerRow>) =>
       TRIGGERS.map(t => (t.relation === table && t.fn === fn ? { ...t, ...change } : t))
@@ -1112,7 +1112,7 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
   // them as citations.
   const UNRECORDED = `LH-${99}`
   const OUTSIDE_T23 = `LH-${77}`
-  // The delete paths as 0001 to 0013 build them.
+  // The delete paths as 0001 to 0014 build them.
   const fns: Fn[] = [
     {
       key: 'purge_outbox(integer)',
@@ -1153,6 +1153,25 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       trigger: true,
       source: 'if exists (select 1 from public.deletion_log) then return old; end if;',
     },
+    // 0014's two paths into the provenance registry (LH-41), each deleting items and their edges.
+    {
+      key: 'lifecycle_cascade(text, uuid, bigint, integer)',
+      definer: true,
+      trigger: false,
+      source: `perform public.lifecycle_held(org, '{}', k, i);
+        perform public.log_deletion('provenance', 'provenance_items', c::text, 'cascade', null, parent, null, null, false);
+        delete from public.provenance_items p where p.id = c;
+        update public.provenance_sources e set gone_at = pg_catalog.now() where e.source_id = i;
+        delete from public.provenance_sources e where e.item = c;`,
+    },
+    {
+      key: 'provenance_forget(text, uuid, text, bigint)',
+      definer: true,
+      trigger: false,
+      source: `logged := public.log_deletion('provenance', 'provenance_items', r::text, cause, null, parent, null, null, false);
+        delete from public.provenance_items p where p.id = r;
+        delete from public.provenance_sources e where e.item = r;`,
+    },
   ]
   const deleteGrants: Grant[] = [
     { role: 'hearth_app', table: 'working_hours', op: 'DELETE' },
@@ -1187,11 +1206,35 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       ['fk passkeys.passkeys_org_id_user_id_created_device_id_fkey', []],
       ['fk schedule_runs.schedule_runs_org_id_resumed_from_fkey', []],
       ['hearth_app working_hours:DELETE', ['working_hours']],
+      ['lifecycle_cascade(text, uuid, bigint, integer)', ['provenance_items', 'provenance_sources']],
+      ['provenance_forget(text, uuid, text, bigint)', ['provenance_items', 'provenance_sources']],
       ['purge_jobs(integer)', ['jobs']],
       ['purge_outbox(integer)', ['outbox_events']],
       ['purge_schedule_runs(integer)', ['schedule_runs']],
     ])
     expect(problemsOf()).toEqual([])
+  })
+
+  it('LH-12 LH-41: the provenance registry’s two paths are guarded, and an edge table the guard leaves off is named', () => {
+    const forget = 'provenance_forget(text, uuid, text, bigint)'
+    expect(
+      problemsOf(
+        found.filter(path => path.key === forget),
+        { [forget]: { guarded: true } },
+        GUARDED_TABLES.filter(table => table !== 'provenance_sources'),
+      ),
+    ).toEqual([
+      "provenance_forget(text, uuid, text, bigint) is guarded in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.provenance_sources, which GUARDED_TABLES doesn't list: a table gets lifecycle_guard() with its first delete path (LH-12)",
+    ])
+    // Exempt, either would delete from a table whose class's holds apply.
+    expect(
+      problemsOf(
+        found.filter(path => path.key === forget),
+        { [forget]: { exempt: 'a withdrawn leftover', decision: 'LH-48' } },
+      ),
+    ).toEqual([
+      "provenance_forget(text, uuid, text, bigint) is exempt in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.provenance_items, public.provenance_sources, whose retention class's holds apply: make it guarded or checked",
+    ])
   })
 
   it('names an unlisted DELETE grant, an unlisted definer delete and an unlisted ON DELETE CASCADE, and a stale entry', () => {

@@ -12,7 +12,8 @@
 -- contact version itself, or running dpo_settings_unchanged(); from 0012, any privilege on cases or
 -- case_steps, or running a case helper or trigger function; from 0013, any privilege on deletion_log
 -- or legal_holds, or running any of C0.10's functions, since C0.10 grants hearth_app nothing, LH-30,
--- which 180's LCD-04 also walks) fails. Nothing may be granted to
+-- which 180's LCD-04 also walks; 0014 gives it nothing either: no privilege on provenance_items or
+-- provenance_sources, and none of 0014's functions, which 200's LCD-40 also walks) fails. Nothing may be granted to
 -- PUBLIC at all, and hearth_app can create no schema object or temporary table. 032 pins the
 -- worker's roles the same way.
 \ir fixtures/two_orgs.sql

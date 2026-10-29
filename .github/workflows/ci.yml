@@ -216,8 +216,11 @@ jobs:
       # placed, a PDPC review step, a request for a copy or a correction sent, a release and a hold
       # citing a request, each against a request's deletion, is_held() against a request being
       # sent, two deletions for one requester, and 0013 applied under load, locking none of the
-      # busy tables, LCR-01 to LCR-04, LCR-10, LCR-11, LCR-15 and LCR-16), in two connections to a
-      # throwaway database.
+      # busy tables, LCR-01 to LCR-04, LCR-10, LCR-11, LCR-15 and LCR-16; from C0.10 PR 2, the
+      # provenance registry: a cascade against a hold on another source's person, a derive against
+      # its source's deletion, two cascades with a shared dependant, a person-scoped deletion
+      # against a cascade and an edge's insert against its source's withdrawal, LCR-12 to LCR-14,
+      # LCR-17 and LCR-18), in two connections to a throwaway database.
       - run: node apps/server/scripts/check-concurrency.ts
       # The catalogues in code match the database (C0.6): every write grant of every runtime role,
       # every function one can run and every SECURITY DEFINER and trigger function is covered by
@@ -236,6 +239,9 @@ jobs:
       # in-memory rule allows, for every person, both assistants and the system principal in the
       # fixture org, on Postgres 17, and still does after membership changes with no row rewritten;
       # a NULL acl_more is nobody's, and agents (who read by scope; A2) match no row (C0.4, SRCH-04).
+      # From C0.10 PR 2, over the provenance registry's stored rows too: derived items written into
+      # it reload through derivedFacts() as written, the filter selects what filterReadable keeps,
+      # and none once a cascade has withdrawn it.
       - run: node scripts/check-access-sql.ts
       # The first-Owner bootstrap script (scripts/owner-bootstrap.ts; CLAUDE.md, Database; TECH-SPEC
       # T22 items 63 to 71), run as a person runs it: a child process, its input in the environment,
@@ -334,7 +340,10 @@ jobs:
       # T23 says, the guard on exactly its three tables, the consumers' statements running over the
       # column grants with the actor refused, the outbox's types and every org's registers, flags and
       # settings as they were, and retention_class_defaults() equal to packages/shared's classes
-      # (LCU-01 to LCU-05, LCU-07, LCU-08).
+      # (LCU-01 to LCU-05, LCU-07, LCU-08). 0014 (C0.10 PR 2) rides this step: it changes no row;
+      # LCU-10 checks its two tables empty with no grant, the guard on them, lifecycle_kinds() equal
+      # to the code's and the cascade and is_held() answering over the upgraded data, and LCU-04
+      # holds the guard to five tables.
       - env:
           CHECK_DB: hearth_upgrade_check
         run: UP_TO=0013 scripts/check-migrations.sh && scripts/check-lifecycle-upgrade.sh

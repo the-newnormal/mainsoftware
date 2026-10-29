@@ -44,8 +44,8 @@ export type DeletePath = { guarded: true } | { checked: true; decision: string }
 // class whose holds apply; deletion_log carries lifecycle_no_truncate() beside deletion_log_kept(),
 // and legal_holds legal_holds_kept() beside its guard. A step adds a table with its first delete path
 // (check 8): C2.9 the sign-in records, acknowledgements and logs; C1.2, C4.1 and later their own.
-// PR 2 adds 'provenance_items' and 'provenance_sources'.
-export const GUARDED_TABLES = ['cases', 'case_steps', 'legal_holds'] as const
+// PR 2 (0014) added the provenance tables, with the cascade's and provenance_forget()'s paths.
+export const GUARDED_TABLES = ['cases', 'case_steps', 'legal_holds', 'provenance_items', 'provenance_sources'] as const
 
 // Reasons shared by several entries.
 // T16 item 6 (LH-26, confirmed under LH-48): the outbox, the queue and the scheduler's runs hold only
@@ -87,6 +87,9 @@ export const DELETE_PATHS: Readonly<Record<string, DeletePath>> = {
   },
   // The deletion code's path for requests (LH-22): lifecycle_held() before, the guard on both.
   'delete_case(uuid, text, boolean)': { guarded: true },
-  // PR 2: 'lifecycle_cascade(text, uuid, bigint, integer)' and 'provenance_forget(text, uuid, text,
-  // bigint)', each { guarded: true }.
+  // The provenance registry's deletion code (0014, LH-41): lifecycle_held() per item before, the guard
+  // on both tables. Each body deletes items and their edges itself (the cascade never calls
+  // provenance_forget()), so each is a path of its own.
+  'lifecycle_cascade(text, uuid, bigint, integer)': { guarded: true },
+  'provenance_forget(text, uuid, text, bigint)': { guarded: true },
 }

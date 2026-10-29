@@ -83,6 +83,23 @@
 // tables, SHARE ROW EXCLUSIVE on cases and ACCESS EXCLUSIVE on case_steps, never waits while it holds
 // one, and the round reads on over the column grants OD-27 leaves (LCR-10).
 //
+// C0.10 PR 2 (0014, TECH-SPEC T23 item 14; LH-21, LH-41 to LH-43, LH-50) adds the provenance
+// registry's cascade, in an org of its own built in two committed transactions (PROVENANCE_FIXTURE,
+// then PROVENANCE_ITEMS: a derived item's edges can't name a derived record made in its own
+// transaction), after LCR-16. Steps run as the owner with app.org_id set, as the deletion code will
+// run them, and a source's deletion is logged in the step. A "fixture producer" is a transaction that,
+// as the owner, reads a derived source's record FOR KEY SHARE and requires it live, then makes the new
+// item and its edge, and sets its role to hearth_app before it commits, as a producer's checked
+// writer leaves it, so the deferred completeness check fires with hearth_app active (LH-43). A cascade
+// against a legal hold placed on the person a derived item's other source is about, each order
+// (LCR-12); a derive from a derived item against that item's deletion, which finds the new item in
+// its lock-ahead's next round, each order (LCR-13); two cascades sharing a dependant, which lock in id
+// order with no deadlock (LCR-14); a person-scoped deletion against a cascade over an item made from
+// the person's device, each order (LCR-17); and an edge naming a derived item against that item's
+// withdrawal, each order (LCR-18). 0014 has no migration-under-load race (unlike 0013's LCR-10): it
+// adds tables and functions only, its keys lock orgs and principals, which nothing writes at run time
+// in C0, and it replaces functions no runtime role runs.
+//
 // Each case opens two connections to a throwaway database (concurrency_check, built from
 // db/migrations/ with the migrator, owned by hearth_owner), starts the change in one, starts the
 // dependent write in the other, waits until Postgres reports that write waiting on a lock, commits
@@ -413,6 +430,94 @@ const LIFECYCLE_FIXTURE = `
   insert into public.legal_holds (id, org_id, client_key, target_kind, target_id, reason, placed_by)
   values ('${h('c1')}', '${LIFECYCLE_ORG}', gen_random_uuid(), 'person', '${h('66')}', 'A made-up investigation', '${h('70')}');
 `
+// C0.10 PR 2 (0014): the provenance org, as the owner, in two committed transactions, since a derived
+// item's edges can't name a derived record made in its own transaction (LH-40). Setup 1, with the
+// rest of the fixture: its Hearth principal v(a0); the Compliance Officer v(70), who places holds;
+// and people v(61) to v(66), each with an account and a device, v(e1) to v(e6), the anchors of the
+// items' device sources. Setup 2 (PROVENANCE_ITEMS): the items, each a record v(1x) whose item is
+// v(2x), from made-up messages v(31) to v(3a) and the devices:
+//   LCR-12 11 and 12, each from a message (31, 32) and a device (e1 of 61, e2 of 62);
+//   LCR-13 13 and 14, from the devices e3 and e4 of 63 and 64, whom nothing holds (15 and 1f are the
+//          derives the case makes);
+//   LCR-14 16, from messages 33 and 34, and their private items 17 (33) and 18 (34);
+//   LCR-17 19 and 1a, each from a device (e5 of 65, e6 of 66) and a message (35, 36);
+//   LCR-18 1b and 1d, from messages 37 and 38, and the cited drafts 1c and 1e, citing 39 and 3a.
+const v = (suffix: string) => `c0000000-0000-4000-8000-0000000006${suffix}`
+const PROVENANCE_ORG = v('00')
+const PROVENANCE_PEOPLE = ['61', '62', '63', '64', '65', '66']
+const vks = (suffixes: string[]) => suffixes.map(k => `'${k}'`).join(', ')
+const PROVENANCE_FIXTURE = `
+  insert into public.orgs (id, name) values ('${PROVENANCE_ORG}', 'Concurrency check provenance');
+  insert into public.principals (id, org_id, kind, system_key) values ('${v('a0')}', '${PROVENANCE_ORG}', 'system', 'hearth');
+  insert into public.principals (id, org_id, kind)
+  select ('c0000000-0000-4000-8000-0000000006' || s.k)::uuid, '${PROVENANCE_ORG}', 'human'
+  from unnest(array['70', ${vks(PROVENANCE_PEOPLE)}]) as s (k);
+  insert into public.people (id, org_id, full_name, created_by)
+  select p.id, p.org_id, 'Person ' || p.id, '${v('a0')}' from public.principals p
+  where p.org_id = '${PROVENANCE_ORG}' and p.kind = 'human';
+  insert into public.users (id, org_id)
+  select ('c0000000-0000-4000-8000-0000000006' || s.k)::uuid, '${PROVENANCE_ORG}' from unnest(array[${vks(PROVENANCE_PEOPLE)}]) as s (k);
+  insert into public.devices (id, org_id, user_id, label)
+  select ('c0000000-0000-4000-8000-0000000006e' || right(s.k, 1))::uuid, '${PROVENANCE_ORG}',
+         ('c0000000-0000-4000-8000-0000000006' || s.k)::uuid, 'Phone'
+  from unnest(array[${vks(PROVENANCE_PEOPLE)}]) as s (k);
+  insert into public.role_assignments (org_id, person_id, role, created_by)
+  values ('${PROVENANCE_ORG}', '${v('70')}', 'compliance_officer', '${v('a0')}');
+`
+// A provenance record in the provenance org, as a producer's checked writer writes it (as the owner):
+// record v(rec), item v(item), of the kind and mode given, from the sources given in order. A derived
+// item carries its count and the org's ACL row.
+function provenanceItem(
+  rec: string,
+  item: string,
+  kind: string,
+  mode: 'derived' | 'cited',
+  sources: Array<[string, string]>,
+): string {
+  const made = mode === 'derived'
+  return `
+  insert into public.provenance_items (id, org_id, item_kind, item_id, mode, source_count, acl_tokens, acl_more, index_class,
+                                       acl_epoch, created_by)
+  values ('${v(rec)}', '${PROVENANCE_ORG}', '${kind}', '${v(item)}', '${mode}', ${made ? sources.length : 'null'},
+          ${made ? `array['o:${PROVENANCE_ORG}']` : 'null'}, ${made ? "'[]'" : 'null'}, ${made ? "'normal'" : 'null'},
+          ${made ? 1 : 'null'}, '${v('a0')}');${sources
+            .map(
+              ([sourceKind, source], i) => `
+  insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+  values ('${PROVENANCE_ORG}', '${v(rec)}', ${i + 1}, '${sourceKind}', '${v(source)}');`,
+            )
+            .join('')}`
+}
+const PROVENANCE_ITEMS = [
+  provenanceItem('11', '21', 'derived', 'derived', [
+    ['message', '31'],
+    ['device', 'e1'],
+  ]),
+  provenanceItem('12', '22', 'derived', 'derived', [
+    ['message', '32'],
+    ['device', 'e2'],
+  ]),
+  provenanceItem('13', '23', 'derived', 'derived', [['device', 'e3']]),
+  provenanceItem('14', '24', 'derived', 'derived', [['device', 'e4']]),
+  provenanceItem('16', '26', 'derived', 'derived', [
+    ['message', '33'],
+    ['message', '34'],
+  ]),
+  provenanceItem('17', '27', 'derived', 'derived', [['message', '33']]),
+  provenanceItem('18', '28', 'derived', 'derived', [['message', '34']]),
+  provenanceItem('19', '29', 'derived', 'derived', [
+    ['device', 'e5'],
+    ['message', '35'],
+  ]),
+  provenanceItem('1a', '2a', 'derived', 'derived', [
+    ['device', 'e6'],
+    ['message', '36'],
+  ]),
+  provenanceItem('1b', '2b', 'derived', 'derived', [['message', '37']]),
+  provenanceItem('1c', '2c', 'draft', 'cited', [['message', '39']]),
+  provenanceItem('1d', '2d', 'derived', 'derived', [['message', '38']]),
+  provenanceItem('1e', '2e', 'draft', 'cited', [['message', '3a']]),
+].join('')
 // A PIN hash in the one shape the server issues (0006; DB test 100 uses the same).
 const PIN_HASH = "'$argon2id$v=19$m=19456,t=2,p=1$' || repeat('A', 22) || '$' || repeat('B', 43)"
 const FIXTURE = `
@@ -451,7 +556,7 @@ const FIXTURE = `
     ('${ORG}', '${id('ba')}', 'leadership', '${ADMIN}'), ('${ORG}', '${id('c5')}', 'admin', '${ADMIN}');
   insert into public.audit_log_readers (org_id, role, created_by) values
     ('${ORG}', 'dpo', '${ADMIN}'), ('${ORG}', 'compliance_officer', '${ADMIN}'), ('${ORG}', 'leadership', '${ADMIN}');
-${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}${REQUEST_FIXTURE}${LIFECYCLE_FIXTURE}`
+${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}${REQUEST_FIXTURE}${LIFECYCLE_FIXTURE}${PROVENANCE_FIXTURE}`
 
 function url(database: string): string {
   const result = new URL(`postgres://${connection.host.includes(':') ? `[${connection.host}]` : connection.host}`)
@@ -1150,6 +1255,86 @@ const caseState = (watcher: Client, caseSuffix: string) =>
     `select format('%s %s', exists (select 1 from public.cases where id = $1),
                    (select count(*) from public.deletion_log where object_table = 'cases' and object_id = $1::text)) as v`,
     [h(caseSuffix)],
+  )
+
+// C0.10 PR 2 (0014): a message's deletion, logged in the step as its own deletion code will log it,
+// then the cascade from it (as the owner, the org set), which must answer as expected.
+const cascadeStep = (message: string, answers: number): Step => ({
+  as: 'owner',
+  sql: `select set_config('app.org_id', '${PROVENANCE_ORG}', true);
+        do $$ declare parent bigint; answer integer; begin
+          insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+          values ('${PROVENANCE_ORG}', 'messages', 'messages', '${v(message)}', 'user') returning id into parent;
+          answer := public.lifecycle_cascade('message', '${v(message)}', parent, 10);
+          if answer is distinct from ${answers} then raise exception 'lifecycle_cascade() answered %', answer; end if;
+        end $$`,
+})
+// A derived item's deletion: its content's, logged in the step, then provenance_forget() of its
+// record with that row as parent, which must answer as expected.
+const forgetStep = (item: string, answers: number): Step => ({
+  as: 'owner',
+  sql: `select set_config('app.org_id', '${PROVENANCE_ORG}', true);
+        do $$ declare parent bigint; answer integer; begin
+          insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+          values ('${PROVENANCE_ORG}', 'derived_caches', 'derived_items', '${v(item)}', 'retention') returning id into parent;
+          answer := public.provenance_forget('derived', '${v(item)}', 'cascade', parent);
+          if answer is distinct from ${answers} then raise exception 'provenance_forget() answered %', answer; end if;
+        end $$`,
+})
+// A fixture producer (LH-43; T23 item 14): as the owner, the derived source's record FOR KEY SHARE,
+// required live (a gone or withdrawn source: 'The source is gone.'), then the new item, derived from
+// it alone, and its edge; and hearth_app for the commit, as a producer's checked writer leaves it, so
+// the deferred completeness check fires with hearth_app active.
+const deriveStep = (source: string, rec: string, item: string): Step => ({
+  as: 'owner',
+  sql: `do $$ begin
+          perform 1 from public.provenance_items p
+          where p.org_id = '${PROVENANCE_ORG}' and p.item_kind = 'derived' and p.item_id = '${v(source)}' and p.state = 'live'
+          for key share;
+          if not found then
+            raise exception 'The source is gone.';
+          end if;${provenanceItem(rec, item, 'derived', 'derived', [['derived', source]]).replaceAll('\n', '\n      ')}
+        end $$;
+        set local role hearth_app`,
+})
+// A fixture placement in the provenance org (as PR 1's placeHold(), with no cited case).
+const provenanceHold = (person: string): Step => ({
+  as: 'owner',
+  sql: `do $$ begin
+          perform public.lifecycle_lock_target('${PROVENANCE_ORG}', 'person', '${v(person)}', 'no key update');
+          insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+          values ('${PROVENANCE_ORG}', gen_random_uuid(), 'person', '${v(person)}', 'A made-up matter', '${v('70')}');
+        end $$`,
+})
+// A person-scoped deletion as a later step's will start (DB-11): the person FOR NO KEY UPDATE, then a
+// provenance record made from their device FOR UPDATE.
+const personScoped = (person: string, rec: string): Step => ({
+  as: 'owner',
+  sql: `select 1 from public.people where org_id = '${PROVENANCE_ORG}' and id = '${v(person)}' for no key update;
+        select 1 from public.provenance_items where org_id = '${PROVENANCE_ORG}' and id = '${v(rec)}' for update`,
+})
+// A correction of a message: withdraw_dependants() (as the owner, the org set), which must answer as
+// expected.
+const withdrawStep = (message: string, answers: number): Step => ({
+  as: 'owner',
+  sql: `select set_config('app.org_id', '${PROVENANCE_ORG}', true);
+        do $$ declare answer integer := public.withdraw_dependants('message', '${v(message)}', 'source_corrected'); begin
+          if answer is distinct from ${answers} then raise exception 'withdraw_dependants() answered %', answer; end if;
+        end $$`,
+})
+// A cited draft's second source, a derived item, added as a producer adds one (as the owner).
+const citeStep = (cited: string, item: string): Step => ({
+  as: 'owner',
+  sql: `insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+        values ('${PROVENANCE_ORG}', '${v(cited)}', 2, 'derived', '${v(item)}')`,
+})
+// A provenance record's state ('gone' once deleted) and how many log rows name it, as "state logged".
+const recordState = (watcher: Client, rec: string) =>
+  scalar(
+    watcher,
+    `select format('%s %s', coalesce((select state from public.provenance_items where id = $1), 'gone'),
+                   (select count(*) from public.deletion_log where object_table = 'provenance_items' and object_id = $1::text)) as v`,
+    [v(rec)],
   )
 
 // One step alone, in a transaction of its own: the error it ended with, if any (committed if none).
@@ -3178,6 +3363,125 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
     },
   ],
   [
+    // C0.10 PR 2 (0014; LH-50, LH-21): the cascade's lock-ahead takes the people its items' live
+    // sources are about FOR NO KEY UPDATE, as a placement takes its target, so the two take turns on
+    // the person, and the hold decision after reads a hold that committed meanwhile.
+    'LCR-12 ADM-08 PDPA-09 C0.10 LH-50 LH-21: a cascade waits for a legal hold being placed on the person a derived item’s other source is about, then keeps the item withdrawn; a placement waits for a cascade in progress, and places after it',
+    async watcher => {
+      const first = await race(watcher, provenanceHold('61'), cascadeStep('31', 0))
+      expect(first.waited, 'the cascade did not wait for the placement in progress')
+      expect(first.error === undefined, `the cascade failed: ${first.error}`)
+      expect((await recordState(watcher, '11')) === 'withdrawn 0', 'the held item went, was logged, or stayed live')
+      const second = await race(watcher, cascadeStep('32', 1), provenanceHold('62'))
+      expect(second.waited, 'the placement did not wait for the cascade in progress')
+      expect(second.error === undefined, `the placement failed: ${second.error}`)
+      expect(
+        (await recordState(watcher, '12')) === 'gone 1',
+        'the cascade that went first did not delete and log the item once',
+      )
+      const placed = await scalar(
+        watcher,
+        'select count(*)::text as v from public.legal_holds where org_id = $1 and target_id = $2 and released_at is null',
+        [PROVENANCE_ORG, v('62')],
+      )
+      expect(placed === '1', `the placement after the cascade left ${placed ?? 'no'} hold(s), not one`)
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; LH-41, LH-43, DB-11): a producer reads its derived source FOR KEY SHARE and the
+    // lock-ahead takes it FOR UPDATE, then walks again in a new statement until nothing new appears.
+    'LCR-13 PDPA-09 BRAIN-08 C0.10 LH-41 LH-43 DB-11: a derived item’s deletion waits for a derive from it in progress, then finds the new item in its next round and deletes it too; a derive waits for a deletion in progress, then finds its source gone and records nothing',
+    async watcher => {
+      const first = await race(watcher, deriveStep('23', '15', '25'), forgetStep('23', 2))
+      expect(first.waited, 'the deletion did not wait for the derive in progress')
+      expect(first.error === undefined, `the deletion failed: ${first.error}`)
+      expect(
+        (await recordState(watcher, '13')) === 'gone 1' && (await recordState(watcher, '15')) === 'gone 1',
+        'the deleted item, or the item derived from it meanwhile, was not deleted and logged once',
+      )
+      const second = await race(watcher, forgetStep('24', 1), deriveStep('24', '1f', '2f'))
+      expect(second.waited, 'the derive did not wait for the deletion in progress')
+      expect(second.error === 'The source is gone.', `the derive ended with ${second.error ?? 'no error'}`)
+      expect(
+        (await recordState(watcher, '14')) === 'gone 1' && (await recordState(watcher, '1f')) === 'gone 0',
+        'the deletion that went first did not delete and log once, or the derive recorded something',
+      )
+      const live = await scalar(
+        watcher,
+        `select format('%s %s',
+                  (select count(*) from public.provenance_sources e
+                   where e.org_id = $1 and e.source_kind = 'derived' and e.source_id in ($2, $3) and e.gone_at is null),
+                  (select count(*) from public.provenance_items p
+                   join public.provenance_sources e on e.org_id = p.org_id and e.item = p.id
+                   where p.org_id = $1 and e.source_kind = 'derived' and e.source_id in ($2, $3) and p.state = 'live')) as v`,
+        [PROVENANCE_ORG, v('23'), v('24')],
+      )
+      expect(live === '0 0', `a live edge names a deleted item, or an item made from it is live (${live})`)
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; LH-21): each cascade's lock-ahead takes its items FOR UPDATE in id order, so
+    // two over a shared dependant take turns on it and can't deadlock.
+    'LCR-14 PDPA-09 C0.10 LH-21: two cascades from two messages with a shared derived item take turns on it in id order, with no deadlock: the first keeps it withdrawn (its other source is a kind Hearth can’t judge yet) and deletes its own; the second deletes it and its own, each logged under its own cascade',
+    async watcher => {
+      const { waited, error } = await race(watcher, cascadeStep('33', 1), cascadeStep('34', 2))
+      expect(waited, 'the second cascade did not wait on the shared item')
+      expect(error === undefined, `the second cascade failed: ${error}`)
+      const parents = await scalar(
+        watcher,
+        `select string_agg(format('%s %s', d.object_id, p.object_id), ',' order by d.object_id) as v
+         from public.deletion_log d join public.deletion_log p on p.org_id = d.org_id and p.id = d.parent_id
+         where d.org_id = $1 and d.object_table = 'provenance_items' and d.object_id in ($2, $3, $4)`,
+        [PROVENANCE_ORG, v('16'), v('17'), v('18')],
+      )
+      expect(
+        parents === `${v('16')} ${v('34')},${v('17')} ${v('33')},${v('18')} ${v('34')}`,
+        `the shared item and the private ones were not each logged under the cascade that deleted them (${parents})`,
+      )
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; DB-11): a person-scoped deletion takes the person, then the item; the cascade's
+    // lock-ahead takes the person an item's device is about before the item, in the lock order.
+    'LCR-17 PDPA-09 C0.10 DB-11: a person-scoped deletion and a cascade over an item made from the person’s device both take the person before the item, so they take turns, either order, with no deadlock, and the cascade deletes the item',
+    async watcher => {
+      const first = await race(watcher, personScoped('65', '19'), cascadeStep('35', 1))
+      expect(first.waited, 'the cascade did not wait on the person')
+      expect(first.error === undefined, `the cascade failed: ${first.error}`)
+      expect((await recordState(watcher, '19')) === 'gone 1', 'the cascade did not delete and log the item once')
+      const second = await race(watcher, cascadeStep('36', 1), personScoped('66', '1a'))
+      expect(second.waited, 'the person-scoped deletion did not wait on the person')
+      expect(second.error === undefined, `the person-scoped deletion failed: ${second.error}`)
+      expect((await recordState(watcher, '1a')) === 'gone 1', 'the cascade did not delete and log the item once')
+    },
+  ],
+  [
+    // C0.10 PR 2 (0014; LH-40; CLAUDE.md, a refusal because a row has ended reads it FOR SHARE): an
+    // edge's insert trigger reads its derived source FOR SHARE, which a withdrawal's FOR UPDATE stops.
+    'LCR-18 C0.10 LH-40: an edge naming a derived item waits for that item’s withdrawal in progress, then refuses (23514); a withdrawal waits for an edge naming the item being added, then finds the citing item in its next round, withdraws the derived item and leaves the citing one live with its new edge',
+    async watcher => {
+      const first = await race(watcher, withdrawStep('37', 1), citeStep('1c', '2b'))
+      expect(first.waited, 'the edge did not wait for the withdrawal in progress')
+      expect(first.error === "A withdrawn item can't be a source.", `the edge ended with ${first.error ?? 'no error'}`)
+      const second = await race(watcher, citeStep('1e', '2d'), withdrawStep('38', 1))
+      expect(second.waited, 'the withdrawal did not wait for the edge being added')
+      expect(second.error === undefined, `the withdrawal failed: ${second.error}`)
+      const states = await scalar(
+        watcher,
+        `select format('%s %s %s %s', (select state from public.provenance_items where id = $1),
+                       (select count(*) from public.provenance_sources where item = $2),
+                       (select state from public.provenance_items where id = $3),
+                       (select state || ' ' || (select count(*) from public.provenance_sources where item = $4 and gone_at is null)
+                        from public.provenance_items where id = $4)) as v`,
+        [v('1b'), v('1c'), v('1d'), v('1e')],
+      )
+      expect(
+        states === 'withdrawn 1 withdrawn live 2',
+        `the derived items aren't withdrawn, or the citing drafts' edges and states are wrong (${states})`,
+      )
+    },
+  ],
+  [
     'LCR-10 C0.10 LH-31 R9: 0013 applied while a request is submitted, sign-ins write sessions, devices and audit rows, a consumer round reads the outbox, a step is added and the partitions job holds its locks: it locks none of the busy tables, holds cases SHARE ROW EXCLUSIVE and case_steps ACCESS EXCLUSIVE, never waits holding one, and the round reads on over its column grants',
     async () => {
       await lifecycleMigrationUnderLoad()
@@ -3447,6 +3751,7 @@ async function main(): Promise<number> {
     const watcher = await connect(DB)
     try {
       await watcher.query(`begin; set local role hearth_owner; ${FIXTURE} commit;`)
+      await watcher.query(`begin; set local role hearth_owner; ${PROVENANCE_ITEMS} commit;`)
       for (const [name, check] of CASES) {
         try {
           await check(watcher)

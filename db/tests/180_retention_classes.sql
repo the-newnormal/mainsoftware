@@ -1,12 +1,14 @@
--- PDPA-09, ADM-07, ACC-11 (C0.10 PR 1, 0013; LH-03 to LH-14, LH-19, LH-30; TECH-SPEC T23 items 2,
--- 5, 7, 8 and 11): the retention-class registry's SQL side, the guard's place, and who may touch
--- C0.10's tables and functions. The cases:
+-- PDPA-09, ADM-07, ACC-11 (C0.10 PR 1, 0013, and PR 2, 0014; LH-03 to LH-14, LH-19, LH-30, LH-39;
+-- TECH-SPEC T23 items 2, 5, 7, 8, 11 and 14): the retention-class registry's SQL side, the guard's
+-- place, and who may touch C0.10's tables and functions. The cases:
 --   LCD-01 retention_class_defaults() has unique keys, valid kinds, positive days, every follows
 --          naming a row or source, every AI row finite and never kept, and objects set for exactly
 --          the s3 classes and Drive's two (LH-03, LH-06, R2DB-01);
 --   LCD-02 every table of public (partitions and the migrator's ledger aside) is in exactly one
---          row's tables, and every name there is such a table (LH-04);
---   LCD-03 exactly cases, case_steps and legal_holds carry both guard triggers, enabled the default
+--          row's tables, and every name there is such a table, 0014's two provenance tables in the
+--          provenance class among them (LH-04, LH-39);
+--   LCD-03 exactly cases, case_steps, legal_holds, provenance_items and provenance_sources (0014)
+--          carry both guard triggers, enabled the default
 --          way, each guard's argument its own table's name; deletion_log carries
 --          lifecycle_no_truncate and deletion_log_kept, the latter before every insert as well as
 --          every update and delete (GUARD-01); no other table carries either; none of the four guard
@@ -98,8 +100,8 @@ select pg_temp.check(not exists (
   where not exists (select 1 from pg_class t join pg_namespace n on n.oid = t.relnamespace
                     where n.nspname = 'public' and t.relname = x.name and t.relkind in ('r', 'p') and not t.relispartition)),
   'a class names a table public doesn''t have (LCD-02)');
-select pg_temp.check((select count(*) from public.retention_class_defaults() c cross join unnest(c.tables)) = 37,
-                     'the classes don''t cover exactly the 35 tables 0001 to 0012 create and 0013''s two (LCD-02)');
+select pg_temp.check((select count(*) from public.retention_class_defaults() c cross join unnest(c.tables)) = 39,
+                     'the classes don''t cover exactly the 35 tables 0001 to 0012 create, 0013''s two and 0014''s two (LCD-02)');
 
 -- LCD-03: the guard on exactly the right tables. tgtype's bits: 1 row, 2 before, 4 insert, 8
 -- delete, 16 update, 32 truncate. A trigger's argument is stored with a trailing NUL. A
@@ -114,8 +116,11 @@ select pg_temp.check(
               and f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept')), '')
   = 'case_steps lifecycle_guard 11 O,case_steps lifecycle_no_truncate 34 O,cases lifecycle_guard 11 O,'
     'cases lifecycle_no_truncate 34 O,deletion_log deletion_log_kept 31 O,deletion_log lifecycle_no_truncate 34 O,'
-    'legal_holds lifecycle_guard 11 O,legal_holds lifecycle_no_truncate 34 O',
-  'the guard triggers are not exactly on cases, case_steps and legal_holds (and the log''s on deletion_log), enabled O (LCD-03)');
+    'legal_holds lifecycle_guard 11 O,legal_holds lifecycle_no_truncate 34 O,'
+    'provenance_items lifecycle_guard 11 O,provenance_items lifecycle_no_truncate 34 O,'
+    'provenance_sources lifecycle_guard 11 O,provenance_sources lifecycle_no_truncate 34 O',
+  'the guard triggers are not exactly on cases, case_steps, legal_holds and the provenance tables (and the log''s on '
+  'deletion_log), enabled O (LCD-03)');
 select pg_temp.check(not exists (
   select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_proc f on f.oid = t.tgfoid
   where f.proname = 'lifecycle_guard' and (t.tgnargs <> 1 or encode(t.tgargs, 'escape') <> c.relname || '\000')),
@@ -131,7 +136,7 @@ select pg_temp.check(
   'legal_holds_kept is not the BEFORE UPDATE row trigger on legal_holds (LCD-03)');
 select pg_temp.check(
   (select count(*) from pg_trigger t join pg_proc f on f.oid = t.tgfoid
-   where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')) = 9
+   where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')) = 13
   and not exists (
     select 1 from pg_trigger t join pg_proc f on f.oid = t.tgfoid
     where f.proname in ('lifecycle_guard', 'lifecycle_no_truncate', 'deletion_log_kept', 'legal_holds_kept')
