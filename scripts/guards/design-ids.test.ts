@@ -12,6 +12,19 @@
 // PR 3a: PD-63 to PD-86; PD-113 from C0.9 PR 3b: PD-87 to PD-113; PD-136 from the first-Owner
 // bootstrap PR: PD-114 to PD-136, its defaults, T22 items 63 to 71), with no gap, so the index row and
 // the items agree.
+//
+// And for C0.10's ids (LCG-01, C0.10 LH-02): every LH id that code cites in the same reach is one
+// TECH-SPEC T23 records, and T23 records every one from LH-01 to the last its index row names
+// ("LH-01 to LH-61"; the retired LH-28 and LH-52 stay recorded), with no gap. Code cites none of the
+// id families of the designs C0.10's replaced (RK-, LD-, LQ- and LO-, DB-15): they were reworked into
+// LH ids and kept only in the design's own record. LH- ends in neither PD- nor AQ-, so neither of
+// the regexes above reads an LH id; RT-PD-nn would have been read as PD-nn, which is why the prefix
+// is LH (both proved on planted text below).
+//
+// And LCG-07 (C0.10 review DOCS-07, LH-45, LH-46): every line of TECH-SPEC that names LH-45 or LH-46
+// with the DPO's confirmation gives it one deadline, before PR 1 merges (or in PR 1's "Before
+// merging" steps), and no other ("before a case records", "before Hearth holds", before a later
+// step).
 import { describe, expect, it } from 'vitest'
 import { readRepoFile, repoFiles } from './repo-files'
 
@@ -149,5 +162,135 @@ describe('C0.9 PR 2, PR 3a, PR 3b and the bootstrap PR T22: the defaults are rec
     const last = lastNamed(spec)
     expect(last).toBeGreaterThanOrEqual(136)
     expect(missing(pdIdsIn(sectionOf(spec, 'T22')), last ?? 0)).toEqual([])
+  })
+})
+
+// The C0.10 LH ids a text names (LH-nn/mm names both).
+function lhIdsIn(text: string): Set<string> {
+  const ids = new Set<string>()
+  for (const [, first, second] of text.matchAll(/\bLH-(\d+)(?:\/(\d+))?\b/g)) {
+    ids.add(`LH-${first}`)
+    if (second !== undefined) ids.add(`LH-${second}`)
+  }
+  return ids
+}
+
+// The id families of the designs C0.10's replaced (DB-15), each cited as "path: id".
+const OLD_FAMILIES = /\b(?:RK|LD|LQ|LO)-\d+\b/g
+function oldFamilies(files: ReadonlyMap<string, string>): string[] {
+  const found: string[] = []
+  for (const [path, text] of files) for (const [id] of text.matchAll(OLD_FAMILIES)) found.push(`${path}: ${id}`)
+  return found
+}
+
+// Each cited LH id T23 doesn't record, as "path: id".
+function danglingLh(files: ReadonlyMap<string, string>, recorded: ReadonlySet<string>): string[] {
+  const found: string[] = []
+  for (const [path, text] of files) {
+    for (const id of lhIdsIn(text)) if (!recorded.has(id)) found.push(`${path}: ${id}`)
+  }
+  return found
+}
+
+// The highest LH id the T23 index row names ("LH-01 to LH-61"), the largest if it names several
+// runs, so a sub-range written first ("LH-01 to LH-43") can't lower it.
+function lastLhNamed(spec: string): number | undefined {
+  const row = spec.split('\n').find(line => line.startsWith('| T23 |'))
+  const lasts = [...(row ?? '').matchAll(/\bLH-01 to LH-(\d+)\b/g)].map(match => Number(match[1]))
+  return lasts.length === 0 ? undefined : Math.max(...lasts)
+}
+
+const missingLh = (recorded: ReadonlySet<string>, last: number): string[] =>
+  Array.from({ length: last }, (_, i) => `LH-${String(i + 1).padStart(2, '0')}`).filter(id => !recorded.has(id))
+
+const codeFiles = () =>
+  new Map(
+    repoFiles()
+      .filter(path => PD_CODE.test(path) && path !== SELF)
+      .map(path => [path, readRepoFile(path)] as const),
+  )
+
+describe('C0.10 T23 (LCG-01, LH-02): the LH ids code cites are recorded in TECH-SPEC T23, with no gap', () => {
+  it('reads LH ids apart from PD and AQ ids, finds a dangling one, a gap and an older family on planted text', () => {
+    // LH-07 is no C0.9 or C0.8 id, PD-07 no LH id, and RT-PD-07 would have been read as PD-07 (a
+    // hyphen before P is a word boundary), which is why C0.10's prefix is LH.
+    expect([...pdIdsIn('// LH-07 and LH-08/09')]).toEqual([])
+    expect([...idsIn('// LH-07 and LH-08/09', { q: true })]).toEqual([])
+    expect([...lhIdsIn('// PD-07, AQ-07 and RT-PD-07')]).toEqual([])
+    expect([...pdIdsIn('// RT-PD-07')]).toEqual(['PD-07'])
+    const recorded = lhIdsIn('(LH-01, LH-07) and LH-20/21')
+    expect([...recorded].sort()).toEqual(['LH-01', 'LH-07', 'LH-20', 'LH-21'])
+    const files = new Map([
+      ['db/migrations/0013_x.sql', '-- C0.10 LH-07 and LH-21/07'],
+      ['apps/server/src/lifecycle/a.ts', '// LH-62, and LH-7'],
+      ['packages/shared/src/b.ts', '// RK-08 and LD-03, not FIELD-2 or HELLO-3'],
+    ])
+    expect(danglingLh(files, recorded)).toEqual([
+      'apps/server/src/lifecycle/a.ts: LH-62',
+      'apps/server/src/lifecycle/a.ts: LH-7',
+    ])
+    expect(oldFamilies(files)).toEqual(['packages/shared/src/b.ts: RK-08', 'packages/shared/src/b.ts: LD-03'])
+    expect(lastLhNamed('| T22 | (LH-01 to LH-09) |\n| T23 | x, LH-01 to LH-61 (LH-01 to LH-43) | y |')).toBe(61)
+    expect(lastLhNamed('| T22 | (LH-01 to LH-09) |')).toBeUndefined()
+    expect(missingLh(lhIdsIn('LH-01, LH-02/03 and LH-05'), 5)).toEqual(['LH-04'])
+  })
+
+  it('every LH id in code is one T23 records, and code cites no older design family', () => {
+    const recorded = lhIdsIn(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T23'))
+    const files = codeFiles()
+    // Code does cite C0.10's ids, so an empty match would mean the guard reads nothing.
+    expect([...files.values()].some(text => lhIdsIn(text).size > 0)).toBe(true)
+    expect(danglingLh(files, recorded)).toEqual([])
+    expect(oldFamilies(files)).toEqual([])
+  })
+
+  it('T23 records LH-01 to the last id its index row names, LH-61 or later, the retired LH-28 and LH-52 included', () => {
+    const spec = readRepoFile('docs/TECH-SPEC.md')
+    const last = lastLhNamed(spec)
+    expect(last).toBeGreaterThanOrEqual(61)
+    const t23 = sectionOf(spec, 'T23')
+    expect(missingLh(lhIdsIn(t23), last ?? 0)).toEqual([])
+    expect(t23).toMatch(/\bLH-28\b[^\n]*retired/)
+    expect(t23).toMatch(/\bLH-52\b[^\n]*retired/)
+  })
+})
+
+// Each line that names LH-45 or LH-46 with the DPO's confirming, but gives it a deadline other
+// than PR 1's merge in PR 1's "Before merging" steps, as "line n: why" (LCG-07, DOCS-07).
+const DEADLINE = /\bbefore PR 1 merges\b|\bPR 1['’]s "Before merging" steps\b/
+const OTHER_DEADLINE = /\bbefore (?:a case records|Hearth holds|C\d\.\d+|PR 2)\b/
+function legalDeadlineProblems(text: string): string[] {
+  const found: string[] = []
+  for (const [index, line] of text.split('\n').entries()) {
+    if (!/\bLH-4[56]\b/.test(line) || !/\bconfirm/.test(line)) continue
+    if (!DEADLINE.test(line)) found.push(`line ${index + 1}: no "before PR 1 merges"`)
+    if (OTHER_DEADLINE.test(line)) found.push(`line ${index + 1}: another deadline`)
+  }
+  return found
+}
+
+describe('LCG-07 (C0.10 review DOCS-07, LH-45, LH-46): T23 gives the DPO’s legal confirmation one deadline', () => {
+  it('finds a line with none or another, on planted text', () => {
+    const planted = [
+      '- LH-45 (a): holds; stays for the DPO to confirm before PR 1 merges, in its "Before merging" steps;',
+      '- LH-46 (a): the margin; regulation 8 stays for the DPO to confirm before a case records the hold;',
+      '- LH-45 (a): holds. The DPO confirms whether the offence applies.',
+      '- LH-46 (a): the margin (item 11).',
+      '- confirmed in PR 1’s "Before merging" steps: the margin (LH-46).',
+    ].join('\n')
+    expect(legalDeadlineProblems(planted)).toEqual([
+      'line 2: no "before PR 1 merges"',
+      'line 2: another deadline',
+      'line 3: no "before PR 1 merges"',
+    ])
+  })
+
+  it('every line of TECH-SPEC naming LH-45’s or LH-46’s confirmation says before PR 1 merges, and the index row does', () => {
+    const spec = readRepoFile('docs/TECH-SPEC.md')
+    const t23 = sectionOf(spec, 'T23')
+    const named = t23.split('\n').filter(line => /\bLH-4[56]\b/.test(line) && /\bconfirm/.test(line))
+    // T23 does name the confirmation, so an empty match would mean the guard reads nothing.
+    expect(named.length).toBeGreaterThan(3)
+    expect(legalDeadlineProblems(spec)).toEqual([])
   })
 })

@@ -10,7 +10,9 @@
 // and the words no screen holds before the AI stages (ai-copy.ts), from its PR 3a the DPO's
 // business contact (dpo-contact.ts), and from its PR 3b the requests to the DPO (cases.ts) and the
 // DPO's reply targets (dpo-contact.ts). From the first-Owner bootstrap: the rules for the
-// organisation's name (org-name.ts), and the transfer facts' body alone (registers.ts).
+// organisation's name (org-name.ts), and the transfer facts' body alone (registers.ts). From C0.10:
+// the retention-class registry, the hold and deletion vocabularies, and the refused-copy window's
+// mirror (retention.ts, TECH-SPEC T23).
 
 export * from './ai-copy.ts'
 export * from './api-errors.ts'
@@ -28,5 +30,6 @@ export * from './phone.ts'
 export * from './pin-policy.ts'
 export * from './purposes.ts'
 export * from './registers.ts'
+export * from './retention.ts'
 export * from './web.ts'
 export * from './web-headers.ts'

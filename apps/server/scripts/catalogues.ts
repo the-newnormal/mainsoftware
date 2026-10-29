@@ -1,7 +1,17 @@
 // What check-catalogues.ts compares, as pure functions over what it reads from the database, so
 // catalogues.test.ts can prove each check fails when it should (TECH-SPEC T16 item 7, T17 item 1,
-// T18, T22 item 18). Each problem names the gap and how to close it.
-import { CONTENT_TABLES, EVENTS, type EventType, type FlagSpec, isAiFlag, type PurposeSpec } from '@hearth/shared'
+// T18, T22 item 18, T23 item 19). Each problem names the gap and how to close it.
+import {
+  CONTENT_TABLES,
+  EVENTS,
+  type EventType,
+  type FlagSpec,
+  holdsOf,
+  isAiFlag,
+  type PurposeSpec,
+  type RetentionClass,
+} from '@hearth/shared'
+import type { DeletePath } from '#src/lifecycle/deletes.ts'
 import { type Coverage, grantKey } from '#src/outbox/coverage.ts'
 
 // A write a runtime role may make through a grant: a row operation by table, an update by column.
@@ -241,11 +251,47 @@ export function bodyWrites(source: string): Array<{ table: string; op: Grant['op
   return [...seen.values()]
 }
 
-// Functions whose body runs dynamic SQL (EXECUTE) that only changes the schema and writes no row,
-// with why; bodyProblems refuses EXECUTE in any other. Adding one is a reviewed change.
-export const DYNAMIC_DDL: Readonly<Record<string, string>> = {
-  'create_data_access_partitions(integer)':
-    "creates data_access_events' month partitions and turns on their row level security",
+// A function whose body runs dynamic SQL (EXECUTE) that only changes the schema and writes no row:
+// why, and its body as the latest migration that defines it writes it. bodyProblems refuses EXECUTE
+// in any other function. check 8 (bodyDdlProblems) compares the database's body with `body`, comments
+// and runs of whitespace aside, because no check can read what a string built at run time, or a verb
+// passed to format() as an argument, will run: a migration that replaces the function fails until
+// its new body is pinned here, a reviewed change, read for anything that deletes or turns the guard
+// off or replaces it (LH-33, R2CODE-01). Adding one is a reviewed change too.
+export interface DynamicDdl {
+  why: string
+  body: string
+}
+
+export const DYNAMIC_DDL: Readonly<Record<string, DynamicDdl>> = {
+  // 0005.
+  'create_data_access_partitions(integer)': {
+    why: "creates data_access_events' month partitions and turns on their row level security",
+    body: `
+declare
+  month timestamptz;
+  name text;
+begin
+  if months_ahead is null or months_ahead not between 0 and 24 then
+    raise exception 'months_ahead must be between 0 and 24' using errcode = 'invalid_parameter_value';
+  end if;
+  for month in
+    select pg_catalog.generate_series(
+      pg_catalog.date_trunc('month', pg_catalog.now()),
+      pg_catalog.date_trunc('month', pg_catalog.now()) + pg_catalog.make_interval(months => months_ahead),
+      interval '1 month')
+  loop
+    name := 'data_access_events_' || pg_catalog.to_char(month, 'YYYY_MM');
+    if pg_catalog.to_regclass('public.' || name) is null then
+      execute pg_catalog.format(
+        'create table public.%I partition of public.data_access_events for values from (%L) to (%L)',
+        name, month, month + interval '1 month');
+      execute pg_catalog.format('alter table public.%I enable row level security', name);
+    end if;
+  end loop;
+end
+`,
+  },
 }
 
 const verbOf = (op: Grant['op'], table: string, column?: string): string =>
@@ -268,7 +314,7 @@ export function bodyProblems(
   writes: Readonly<Record<string, Coverage>>,
   functions: readonly Fn[],
   grants: readonly Grant[],
-  dynamic: Readonly<Record<string, string>> = DYNAMIC_DDL,
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
 ): string[] {
   const problems: string[] = []
   for (const fn of functions) {
@@ -686,6 +732,854 @@ export function noticeFactProblems(code: readonly string[], probe: unknown): str
   for (const key of Object.keys(stated)) {
     if (!code.includes(key)) {
       problems.push(`notice_facts() states ${key}, which packages/shared NOTICE_TRANSFER_FACTS doesn't list`)
+    }
+  }
+  return problems
+}
+
+// --- C0.10: the retention registry (check 7) and the delete paths (check 8) ---------------------
+// TECH-SPEC T23 items 3, 8, 9 and 19; LH-04, LH-12, LH-14.
+
+// A function body cut into its pieces, as stripSql reads it: code, comments, string literals (quoted,
+// E'' and dollar-quoted, with their quotes, and `body` their contents) and quoted identifiers.
+interface SqlPiece {
+  kind: 'code' | 'comment' | 'string' | 'ident'
+  text: string
+  body?: string
+}
+
+function sqlPieces(source: string): SqlPiece[] {
+  const pieces: SqlPiece[] = []
+  const n = source.length
+  let code = ''
+  const push = (piece: SqlPiece) => {
+    if (code !== '') pieces.push({ kind: 'code', text: code })
+    code = ''
+    pieces.push(piece)
+  }
+  let i = 0
+  while (i < n) {
+    const c = source[i]
+    const start = i
+    if (c === '-' && source[i + 1] === '-') {
+      while (i < n && source[i] !== '\n') i += 1
+      push({ kind: 'comment', text: source.slice(start, i) })
+    } else if (c === '/' && source[i + 1] === '*') {
+      let depth = 0
+      do {
+        if (source[i] === '/' && source[i + 1] === '*') {
+          depth += 1
+          i += 2
+        } else if (source[i] === '*' && source[i + 1] === '/') {
+          depth -= 1
+          i += 2
+        } else i += 1
+      } while (i < n && depth > 0)
+      push({ kind: 'comment', text: source.slice(start, i) })
+    } else if (c === "'") {
+      const escapes = /[eE]/.test(source[i - 1] ?? '') && !/[A-Za-z0-9_$]/.test(source[i - 2] ?? '')
+      i += 1
+      let end = n
+      while (i < n) {
+        if (escapes && source[i] === '\\') i += 2
+        else if (source[i] === "'" && source[i + 1] === "'") i += 2
+        else if (source[i] === "'") {
+          end = i
+          i += 1
+          break
+        } else i += 1
+      }
+      push({ kind: 'string', text: source.slice(start, i), body: source.slice(start + 1, end) })
+    } else if (c === '$' && !/[A-Za-z0-9_$]/.test(source[i - 1] ?? '')) {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(source.slice(i))?.[0]
+      if (tag === undefined) {
+        code += c
+        i += 1
+      } else {
+        const close = source.indexOf(tag, i + tag.length)
+        i = close < 0 ? n : close + tag.length
+        const body = source.slice(start + tag.length, close < 0 ? n : close)
+        push({ kind: 'string', text: source.slice(start, i), body })
+      }
+    } else if (c === '"') {
+      i += 1
+      while (i < n && !(source[i] === '"' && source[i + 1] !== '"')) i += source[i] === '"' ? 2 : 1
+      i += 1
+      push({ kind: 'ident', text: source.slice(start, i) })
+    } else {
+      code += c
+      i += 1
+    }
+  }
+  if (code !== '') pieces.push({ kind: 'code', text: code })
+  return pieces
+}
+
+// A function's body with its comments gone and everything else as written, string literals
+// included, so check 7c reads an interval literal never through stripSql, which empties every string
+// (DB-10), and never one a comment names.
+export function stripComments(source: string): string {
+  return sqlPieces(source)
+    .map(piece => (piece.kind === 'comment' ? ' ' : piece.text))
+    .join('')
+}
+
+// The contents of a body's string literals, its comments aside: a DYNAMIC_DDL function's format
+// strings, for check 8.
+export function stringLiterals(source: string): string[] {
+  return sqlPieces(source).flatMap(piece => (piece.kind === 'string' ? [piece.body ?? ''] : []))
+}
+
+// One row of retention_class_defaults() (0013), or of packages/shared retentionClassDefaults(), which
+// lists what the function must.
+export interface ClassDefault {
+  key: string
+  store: string
+  ai: boolean
+  period_kind: string
+  days: number | null
+  anchor: string | null
+  follows: string | null
+  holds: string
+  tables: readonly string[]
+  objects: boolean
+}
+
+const CLASS_COLUMNS = ['store', 'ai', 'period_kind', 'days', 'anchor', 'follows', 'holds', 'tables', 'objects'] as const
+const columnText = (row: ClassDefault, column: (typeof CLASS_COLUMNS)[number]): string =>
+  column === 'tables' ? `[${[...row.tables].sort().join(', ')}]` : String(row[column])
+
+// 7a. Every class whose data Postgres or S3 holds is a row of retention_class_defaults(), on every
+// column, and every row a class, both ways, as check 6 holds PURPOSES (T22 item 18).
+export function retentionDefaultProblems(code: readonly ClassDefault[], database: readonly ClassDefault[]): string[] {
+  const problems: string[] = []
+  const byKey = new Map<string, ClassDefault>()
+  for (const row of database) {
+    if (byKey.has(row.key)) problems.push(`retention_class_defaults() lists ${row.key} twice`)
+    byKey.set(row.key, row)
+  }
+  for (const want of code) {
+    const row = byKey.get(want.key)
+    if (row === undefined) {
+      problems.push(
+        `${want.key} is a Postgres or S3 class in packages/shared RETENTION_CLASSES but not in retention_class_defaults(): a migration replaces the function with it`,
+      )
+      continue
+    }
+    const differ = CLASS_COLUMNS.filter(column => columnText(row, column) !== columnText(want, column))
+    if (differ.length > 0) {
+      problems.push(
+        `${want.key}: packages/shared RETENTION_CLASSES says ${differ.map(c => `${c} ${columnText(want, c)}`).join(', ')}; retention_class_defaults() says ${differ.map(c => `${c} ${columnText(row, c)}`).join(', ')}`,
+      )
+    }
+  }
+  const inCode = new Set(code.map(row => row.key))
+  for (const row of byKey.values()) {
+    if (!inCode.has(row.key)) {
+      problems.push(
+        `${row.key} is in retention_class_defaults() but not a Postgres or S3 class in packages/shared RETENTION_CLASSES: add it there`,
+      )
+    }
+  }
+  return problems
+}
+
+// 7b. Every table of public (relkind r or p, not a partition, the migrator's ledger aside) is in
+// exactly one class's tables, and every name a class lists is such a table, so a new table without a
+// class fails its own PR (LH-04).
+export function classTableProblems(
+  classes: Readonly<Record<string, Pick<RetentionClass, 'tables'>>>,
+  tables: readonly string[],
+): string[] {
+  const problems: string[] = []
+  const owners = new Map<string, string[]>()
+  for (const [key, spec] of Object.entries(classes)) {
+    for (const table of spec.tables) owners.set(table, [...(owners.get(table) ?? []), key])
+  }
+  const known = new Set(tables)
+  for (const table of tables) {
+    const of = owners.get(table) ?? []
+    if (of.length === 0) {
+      problems.push(
+        `public.${table} is in no retention class: add it to one class's tables in packages/shared RETENTION_CLASSES, and to retention_class_defaults()`,
+      )
+    } else if (of.length > 1) {
+      problems.push(`public.${table} is in more than one retention class (${of.join(', ')}): keep it in one`)
+    }
+  }
+  for (const [table, of] of owners) {
+    if (!known.has(table)) {
+      problems.push(`the retention class ${of.join(', ')} lists ${table}, which isn't a table of public`)
+    }
+  }
+  return problems
+}
+
+// The distinct `interval '<n> days'` literals a body holds, comments aside, each as '<n> days'.
+export function dayIntervals(source: string): string[] {
+  const found = new Set<string>()
+  for (const match of stripComments(source).matchAll(/\binterval\s*'\s*(\d+)\s+(days?)\s*'/gi)) {
+    found.add(`${Number(match[1])} ${(match[2] ?? 'days').toLowerCase()}`)
+  }
+  return [...found].sort()
+}
+
+// 7c. Each fixed age the database enforces is the one its class lists: the distinct interval
+// literals in each fixedIn function's body (pg_proc.prosrc, comments stripped) equal the class's
+// intervals, so changing an age is a migration and a registry change together (T15's preamble).
+// bodies: each function of public by name, with every overload's body.
+export function fixedAgeProblems(
+  classes: Readonly<Record<string, Pick<RetentionClass, 'fixedIn'>>>,
+  bodies: ReadonlyMap<string, readonly string[]>,
+): string[] {
+  const problems: string[] = []
+  for (const [key, spec] of Object.entries(classes)) {
+    for (const { fn, intervals } of spec.fixedIn ?? []) {
+      const sources = bodies.get(fn) ?? []
+      if (sources.length !== 1) {
+        problems.push(
+          sources.length === 0
+            ? `the retention class ${key} says public.${fn}() fixes its age, but there is no such function`
+            : `the retention class ${key} says public.${fn}() fixes its age, but public has ${sources.length} functions of that name: check 7c can't tell which`,
+        )
+        continue
+      }
+      const held = dayIntervals(sources[0] ?? '')
+      const want = [...intervals].sort()
+      if (held.join(', ') !== want.join(', ')) {
+        problems.push(
+          `the retention class ${key} says public.${fn}() fixes ${want.map(i => `'${i}'`).join(', ')}; its body holds interval ${held.map(i => `'${i}'`).join(', ') || 'none'}`,
+        )
+      }
+    }
+  }
+  return problems
+}
+
+// A table of public and the table at the root of its partition tree (itself, for any other).
+export interface Relation {
+  name: string
+  root: string
+}
+
+// A trigger of public, as pg_trigger holds it: the relation it is on and that relation's root, its
+// name, the function it executes, tgtype, tgenabled, its arguments, whether it has a WHEN condition
+// (tgqual) and how many columns its UPDATE OF list names (tgattr; 0 for none).
+export interface TriggerRow {
+  relation: string
+  root: string
+  name: string
+  fn: string
+  type: number
+  enabled: string
+  args: readonly string[]
+  conditional: boolean
+  columns: number
+}
+
+// pg_trigger.tgtype's bits.
+const ROW = 1
+const BEFORE = 2
+const INSERT = 4
+const DELETE = 8
+const UPDATE = 16
+const TRUNCATE = 32
+// The guard's triggers and the two history triggers, each with the tgtype it must have: the guard
+// BEFORE DELETE FOR EACH ROW, the TRUNCATE refusal BEFORE TRUNCATE FOR EACH STATEMENT,
+// deletion_log_kept() BEFORE INSERT OR UPDATE OR DELETE (GUARD-01) and legal_holds_kept() BEFORE UPDATE,
+// each row by row.
+const GUARD_TYPES: Readonly<Record<string, number>> = {
+  lifecycle_guard: ROW | BEFORE | DELETE,
+  lifecycle_no_truncate: BEFORE | TRUNCATE,
+  deletion_log_kept: ROW | BEFORE | INSERT | UPDATE | DELETE,
+  legal_holds_kept: ROW | BEFORE | UPDATE,
+}
+
+function triggerTypeText(type: number): string {
+  const events = [type & INSERT ? 'INSERT' : '', type & DELETE ? 'DELETE' : '', type & UPDATE ? 'UPDATE' : '']
+  if (type & TRUNCATE) events.push('TRUNCATE')
+  const when = type & BEFORE ? 'BEFORE' : type & 64 ? 'INSTEAD OF' : 'AFTER'
+  return `${when} ${events.filter(e => e !== '').join(' OR ')} FOR EACH ${type & ROW ? 'ROW' : 'STATEMENT'}`
+}
+
+// 7d. The guard is on exactly the right tables, the way it must be (LH-11, LH-12; C010-SPEC-09):
+// every table in GUARDED_TABLES (each of a class whose holds apply) carries lifecycle_guard() with its
+// own name as the argument, and every partition of one carries its clone naming the parent; each
+// carries lifecycle_no_truncate(); deletion_log carries lifecycle_no_truncate() and
+// deletion_log_kept(), and legal_holds legal_holds_kept(); each enabled the default way (O), named as
+// its function, with its tgtype, and with no WHEN condition and no UPDATE OF list, so it fires for
+// every row and every column; and no other table carries any of them. A migration that disables,
+// drops, misnames, re-points, conditions or column-limits one, or enables it ALWAYS, fails here,
+// though the schema digest would agree with a fresh build made the same way. (A BEFORE trigger
+// varies only in these: transition tables, constraint triggers and deferral are AFTER triggers'.)
+// applyTables: the tables of classes whose holds apply.
+export function guardProblems(
+  guarded: readonly string[],
+  relations: readonly Relation[],
+  triggers: readonly TriggerRow[],
+  applyTables: ReadonlySet<string>,
+): string[] {
+  const problems: string[] = []
+  const guardedSet = new Set(guarded)
+  const roots = new Set(relations.filter(r => r.name === r.root).map(r => r.name))
+  // Where each trigger function must be: relation → the functions it must carry.
+  const want = new Map<string, Set<string>>()
+  const expect = (relation: string, fn: string) => want.set(relation, new Set([...(want.get(relation) ?? []), fn]))
+  for (const table of guarded) {
+    if (!roots.has(table)) {
+      problems.push(
+        `GUARDED_TABLES in apps/server/src/lifecycle/deletes.ts lists ${table}, which isn't a table of public`,
+      )
+      continue
+    }
+    if (!applyTables.has(table)) {
+      problems.push(
+        `GUARDED_TABLES lists ${table}, whose retention class's holds don't apply: the guard belongs only on tables the deletion code deletes held-checked`,
+      )
+    }
+    for (const relation of relations) if (relation.root === table) expect(relation.name, 'lifecycle_guard')
+    expect(table, 'lifecycle_no_truncate')
+  }
+  expect('deletion_log', 'lifecycle_no_truncate')
+  expect('deletion_log', 'deletion_log_kept')
+  expect('legal_holds', 'legal_holds_kept')
+  for (const [relation, fns] of want) {
+    for (const fn of fns) {
+      const found = triggers.filter(t => t.relation === relation && t.fn === fn)
+      const root = relations.find(r => r.name === relation)?.root ?? relation
+      const args = fn === 'lifecycle_guard' ? [root] : []
+      if (found.length !== 1) {
+        problems.push(
+          found.length === 0
+            ? `public.${relation} has no trigger executing ${fn}(): the migration that adds it creates "${fn}" ${triggerTypeText(GUARD_TYPES[fn] ?? 0)}${args.length > 0 ? ` with the argument '${args[0]}'` : ''}`
+            : `public.${relation} has ${found.length} triggers executing ${fn}(): keep one`,
+        )
+        continue
+      }
+      const trigger = found[0] as TriggerRow
+      if (trigger.name !== fn)
+        problems.push(`public.${relation}'s trigger executing ${fn}() is named ${trigger.name}: name it ${fn}`)
+      if (trigger.type !== GUARD_TYPES[fn]) {
+        problems.push(
+          `public.${relation}'s ${fn} fires ${triggerTypeText(trigger.type)}; it must fire ${triggerTypeText(GUARD_TYPES[fn] ?? 0)}`,
+        )
+      }
+      if (trigger.enabled !== 'O') {
+        problems.push(
+          `public.${relation}'s ${fn} is enabled ${trigger.enabled === 'D' ? 'nowhere (disabled)' : trigger.enabled === 'A' ? 'ALWAYS' : trigger.enabled === 'R' ? 'only on a replica' : trigger.enabled}; it must be enabled the default way (O), so it fires for every writer and not in a replica's apply (LH-11)`,
+        )
+      }
+      if (trigger.args.join(',') !== args.join(',')) {
+        problems.push(
+          fn === 'lifecycle_guard'
+            ? `public.${relation}'s lifecycle_guard names ${trigger.args.map(a => `'${a}'`).join(', ') || 'no table'}; it must name ${relation === root ? 'its own table' : 'its parent'}, '${root}'`
+            : `public.${relation}'s ${fn} takes arguments (${trigger.args.join(', ')}); it takes none`,
+        )
+      }
+    }
+  }
+  for (const trigger of triggers) {
+    const fnKnown = Object.hasOwn(GUARD_TYPES, trigger.fn)
+    const nameKnown = Object.hasOwn(GUARD_TYPES, trigger.name)
+    if (nameKnown && trigger.fn !== trigger.name) {
+      problems.push(
+        `public.${trigger.relation}'s trigger ${trigger.name} executes ${trigger.fn}(), not ${trigger.name}(): a guard's trigger is named as its function`,
+      )
+    }
+    if (!fnKnown) continue
+    // On a parent table and a partition's clone alike: a condition or a column list lets the rows or
+    // updates it leaves out past the guard.
+    if (trigger.conditional) {
+      problems.push(
+        `public.${trigger.relation}'s ${trigger.fn} fires only WHEN a condition holds; a guard has no WHEN, so it fires for every row (LH-11)`,
+      )
+    }
+    if (trigger.columns > 0) {
+      problems.push(
+        `public.${trigger.relation}'s ${trigger.fn} fires only on UPDATE OF ${trigger.columns === 1 ? 'one column' : `${trigger.columns} columns`}; a guard has no column list, so it fires on every update, whatever it changes (LH-11)`,
+      )
+    }
+    const wanted = want.get(trigger.relation)?.has(trigger.fn) ?? false
+    // A TRUNCATE refusal on a partition of a guarded table is allowed: Postgres doesn't clone a
+    // statement trigger, so a step guarding a partitioned table may add one to each partition.
+    const partitionTruncate =
+      trigger.fn === 'lifecycle_no_truncate' && trigger.relation !== trigger.root && guardedSet.has(trigger.root)
+    if (!wanted && !partitionTruncate) {
+      problems.push(
+        `public.${trigger.relation} carries ${trigger.fn}(), but ${trigger.fn === 'lifecycle_guard' || trigger.fn === 'lifecycle_no_truncate' ? "GUARDED_TABLES in apps/server/src/lifecycle/deletes.ts doesn't list it" : `only ${trigger.fn === 'deletion_log_kept' ? 'deletion_log' : 'legal_holds'} carries it`}: add the table with its first delete path, or drop the trigger`,
+      )
+    }
+  }
+  return problems
+}
+
+// Whether a class's period is finite through its chain: a day count (a days period, or an until
+// period with one), or a follows chain that ends at one or at 'source'. A loop, a while period or
+// an until period with no day count is not.
+function finitePeriod(key: string, byKey: ReadonlyMap<string, ClassDefault>): boolean {
+  const seen = new Set<string>()
+  let at: string | null = key
+  while (at !== null) {
+    if (at === 'source') return true
+    if (seen.has(at)) return false
+    seen.add(at)
+    const row = byKey.get(at)
+    if (row === undefined) return false
+    if (row.period_kind === 'follows') at = row.follows
+    else return (row.period_kind === 'days' || row.period_kind === 'until') && row.days !== null
+  }
+  return false
+}
+
+// 7e. Every AI class has a finite period, through its follows chain, and none is kept (LH-06; D12,
+// D41): read from retention_class_defaults(), which 7a holds to the registry.
+export function aiClassProblems(rows: readonly ClassDefault[]): string[] {
+  const byKey = new Map(rows.map(row => [row.key, row]))
+  const problems: string[] = []
+  for (const row of rows) {
+    if (!row.ai) continue
+    if (!finitePeriod(row.key, byKey)) {
+      problems.push(
+        `the AI retention class ${row.key} has no finite period: give it a day count, or a follows chain that ends at one or at its source (LH-06)`,
+      )
+    }
+    if (row.holds === 'kept')
+      problems.push(`the AI retention class ${row.key} is kept: every AI class is deleted (LH-06)`)
+  }
+  return problems
+}
+
+// The vocabularies and figures code and the database must share (7f), and each days class's period
+// in days: in code its default, in the database what retention_period_days() answered for a scratch
+// org (null when it raised).
+export interface Vocabularies {
+  holdTargetKinds: readonly string[]
+  deletionCauses: readonly string[]
+  holdKinds: readonly string[]
+  refusedCopyHold: { days: number; noticeMarginDays: number } | undefined
+  periods: Readonly<Record<string, number | null>>
+}
+
+function listProblems(
+  code: readonly string[],
+  database: readonly string[],
+  codeName: string,
+  dbName: string,
+): string[] {
+  const inDatabase = new Set(database)
+  const inCode = new Set(code)
+  return [
+    ...code.filter(v => !inDatabase.has(v)).map(v => `${v} is in packages/shared ${codeName} but not in ${dbName}`),
+    ...database.filter(v => !inCode.has(v)).map(v => `${v} is in ${dbName} but not in packages/shared ${codeName}`),
+  ]
+}
+
+// 7f. HOLD_TARGET_KINDS equals legal_holds_target_kind's list, DELETION_CAUSES deletion_causes()
+// (C010-SPEC-02), HOLD_KINDS lifecycle_kinds(), REFUSED_COPY_HOLD refused_copy_hold(), and
+// retention_period_days() answers every days class's default (LH-09, LH-15, LH-18, LH-19).
+export function vocabularyProblems(code: Vocabularies, database: Vocabularies): string[] {
+  const problems = [
+    ...listProblems(code.holdTargetKinds, database.holdTargetKinds, 'HOLD_TARGET_KINDS', 'legal_holds_target_kind'),
+    ...listProblems(code.deletionCauses, database.deletionCauses, 'DELETION_CAUSES', 'deletion_causes()'),
+    ...listProblems(code.holdKinds, database.holdKinds, 'HOLD_KINDS', 'lifecycle_kinds()'),
+  ]
+  const want = code.refusedCopyHold
+  const got = database.refusedCopyHold
+  if (got === undefined) problems.push('refused_copy_hold() answered no row')
+  else if (want !== undefined && (want.days !== got.days || want.noticeMarginDays !== got.noticeMarginDays)) {
+    problems.push(
+      `packages/shared REFUSED_COPY_HOLD says ${want.days} days and a ${want.noticeMarginDays}-day margin; refused_copy_hold() says ${got.days} and ${got.noticeMarginDays}`,
+    )
+  }
+  for (const [key, days] of Object.entries(code.periods)) {
+    const answered = database.periods[key]
+    if (answered === undefined || answered === null) {
+      problems.push(`retention_period_days() gave no period for ${key}, whose default is ${days} days`)
+    } else if (answered !== days) {
+      problems.push(`retention_period_days() answers ${answered} days for ${key}; its default is ${days}`)
+    }
+  }
+  return problems
+}
+
+// One resolver call check-catalogues tried in a transaction it rolled back (7g): what it called, the
+// SQLSTATE and message it raised, if it did, and how many rows it returned when exactly some are
+// needed.
+export interface ResolverProbe {
+  call: string
+  error?: string
+  rows?: number
+  wantRows?: number
+}
+
+// 7g. The hold decision's resolvers know every kind, container kind and table they will be asked
+// about: lifecycle_persons_of() and lifecycle_containers_of() for every kind lifecycle_kinds() lists,
+// lifecycle_lock_target() for a person, a case and every container or holdable kind, and
+// lifecycle_row_anchors() for every table of a class whose holds apply, each without raising, and the
+// last returning exactly one row. A step that moves a table into a holds-apply class, or adds a kind
+// or a container kind, without its resolver fails CI before its guard is ever attached (LH-12, LH-18,
+// LH-56).
+export function resolverProblems(probes: readonly ResolverProbe[]): string[] {
+  const problems: string[] = []
+  for (const probe of probes) {
+    if (probe.error !== undefined) {
+      problems.push(
+        `${probe.call} raised ${probe.error}: the step that adds that kind or table replaces the resolver to know it`,
+      )
+    } else if (probe.wantRows !== undefined && probe.rows !== probe.wantRows) {
+      problems.push(`${probe.call} returned ${probe.rows ?? 0} rows; the guard reads exactly ${probe.wantRows}`)
+    }
+  }
+  return problems
+}
+
+// A foreign key whose ON DELETE action deletes or changes its child: CASCADE (c), SET NULL (n) or
+// SET DEFAULT (d).
+export interface ForeignKey {
+  table: string
+  name: string
+  action: 'c' | 'n' | 'd'
+  parent: string
+}
+
+// A delete path the database allows (check 8): its DELETE_PATHS key, the tables it deletes from, and
+// for a function its body (`checked` reads it), for a DYNAMIC_DDL function its body too (its format
+// strings), for a CASCADE key its parent.
+export interface FoundPath {
+  key: string
+  deletes: readonly string[]
+  body?: string
+  ddl?: string
+  cascadeParent?: string
+}
+
+// Every delete path, found as check 1 finds writes (DB-10): a runtime role's DELETE grant (its
+// table); a function of public whose body deletes (the tables its DELETEs name); a foreign key that
+// cascades (its child) or sets null or a default (nothing: an UPDATE of the child, whose firing delete
+// is its parent's own path); and every DYNAMIC_DDL function (nothing, if its format strings keep to
+// creating). check-catalogues passes every function of public, not only the ones check 1 reaches (a
+// definer, a trigger function or one a runtime role may execute): a plain helper no runtime role may
+// run still deletes when a definer calls it, so it is a path of its own (GUARD-03).
+export function deletePathsOf(
+  grants: readonly Grant[],
+  functions: readonly Fn[],
+  foreignKeys: readonly ForeignKey[],
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
+): FoundPath[] {
+  const found: FoundPath[] = []
+  for (const grant of grants) {
+    if (grant.op === 'DELETE') found.push({ key: grantKey(grant.role, grant.table, 'DELETE'), deletes: [grant.table] })
+  }
+  for (const fn of functions) {
+    if (fn.source === undefined) continue
+    const deletes = bodyWrites(fn.source)
+      .filter(write => write.op === 'DELETE')
+      .map(write => write.table)
+    if (deletes.length > 0) found.push({ key: fn.key, deletes: [...new Set(deletes)], body: fn.source })
+  }
+  for (const key of foreignKeys) {
+    found.push({
+      key: `fk ${key.table}.${key.name}`,
+      deletes: key.action === 'c' ? [key.table] : [],
+      ...(key.action === 'c' ? { cascadeParent: key.parent } : {}),
+    })
+  }
+  for (const key of Object.keys(dynamic)) {
+    const fn = functions.find(f => f.key === key)
+    found.push({ key: `ddl ${key}`, deletes: [], ddl: fn?.source ?? '' })
+  }
+  return found.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+}
+
+// Whether a decision a DELETE_PATHS entry cites is one TECH-SPEC records: an LH id T23 records
+// (LH-nn/mm records both), or a TECH-SPEC item ("T15 item 16": section T15 has an item 16).
+export function recordedDecisions(spec: string): (decision: string) => boolean {
+  const sections = new Map<string, string>()
+  const headings = [...spec.matchAll(/^## (T\d+):/gm)]
+  headings.forEach((heading, i) => {
+    sections.set(heading[1] ?? '', spec.slice(heading.index, headings[i + 1]?.index ?? spec.length))
+  })
+  const lh = new Set<string>()
+  for (const [, first, second] of (sections.get('T23') ?? '').matchAll(/\bLH-(\d+)(?:\/(\d+))?\b/g)) {
+    lh.add(`LH-${first}`)
+    if (second !== undefined) lh.add(`LH-${second}`)
+  }
+  return decision => {
+    if (/^LH-\d+$/.test(decision)) return lh.has(decision)
+    const item = /^(T\d+) item (\d+)$/.exec(decision)
+    if (item === null) return false
+    const section = sections.get(item[1] ?? '')
+    return section !== undefined && new RegExp(`\\n${item[2]}\\. `).test(section)
+  }
+}
+
+// What the registry says of each table's holds: the tables of classes whose holds apply, of classes
+// kept as history, and of classes a leaver's reduction deletes from or changes, rows a person also
+// edits (`reduction: 'apply'`, LH-58; packages/shared RETENTION_CLASSES).
+export interface HoldsTables {
+  apply: ReadonlySet<string>
+  kept: ReadonlySet<string>
+  reduction: ReadonlySet<string>
+}
+
+export function holdsTables(
+  classes: Readonly<Record<string, Pick<RetentionClass, 'tables' | 'holds' | 'reduction'>>>,
+): HoldsTables {
+  const apply = new Set<string>()
+  const kept = new Set<string>()
+  const reduction = new Set<string>()
+  for (const spec of Object.values(classes)) {
+    const holds = holdsOf(spec.holds)
+    for (const table of spec.tables) {
+      if (holds === 'apply') apply.add(table)
+      if (holds === 'kept') kept.add(table)
+      if (spec.reduction === 'apply') reduction.add(table)
+    }
+  }
+  return { apply, kept, reduction }
+}
+
+// The verbs a DYNAMIC_DDL function's format strings may not name: it only creates (check 8). A
+// TRUNCATE in a trigger's event list (BEFORE TRUNCATE, OR TRUNCATE) empties nothing, so the
+// per-partition lifecycle_no_truncate() trigger C2.9 may create passes (R2CODE-01).
+const DESTRUCTIVE = /\b(drop|detach|delete)\b|(?<!\b(?:before|after|or)\s+)\b(truncate)\b/i
+// A checked path's own hold decision, comments and strings aside.
+const ASKS_HELD = /\b(?:lifecycle_held|is_held)\s*\(/
+// A checked path's own log row: it deletes unguarded, so no trigger requires one (LH-10). The leaver
+// reduction logs a row for each working-hours row it deletes (design 4.5), so no reduction is exempt.
+const LOGS_DELETION = /\blog_deletion\s*\(/
+
+const deletesText = (tables: readonly string[]) =>
+  tables.length === 0 ? 'nothing' : tables.map(table => `public.${table}`).join(', ')
+
+// 8. Every delete path the database allows is decided in apps/server/src/lifecycle/deletes.ts
+// DELETE_PATHS, and no entry is stale (LH-12, LH-14, LH-26, LH-48, LH-58): a guarded path deletes
+// only from GUARDED_TABLES, so a step's first delete path brings the guard; a checked path is a
+// function whose body asks lifecycle_held() or is_held() and calls log_deletion(), and that deletes
+// only from tables a leaver's reduction marks (`reduction: 'apply'`, rows a person also edits, where
+// a trigger would refuse their own edit or reveal a hold: today working_hours alone), never a guarded
+// or kept one, so any other holds-apply table's first path is guarded and brings its guard (GUARD-02);
+// an exempt path deletes from no table whose holds apply; an exempt or checked path cites a decision
+// TECH-SPEC records; no path deletes from a table kept as history; a CASCADE key into a guarded table
+// cascades into a guarded or listed child; and a DYNAMIC_DDL function's format strings name no drop,
+// truncate (but in a trigger's event list), detach or delete, so "only changes the schema and writes
+// no row" is checked, not trusted. What a body does without a DELETE (TRUNCATE, DROP TABLE, DETACH
+// PARTITION, the guard off or replaced), and a DYNAMIC_DDL body other than the one pinned, are
+// bodyDdlProblems'.
+export function deletePathProblems(
+  entries: Readonly<Record<string, DeletePath>>,
+  guarded: readonly string[],
+  found: readonly FoundPath[],
+  holds: HoldsTables,
+  recorded: (decision: string) => boolean,
+): string[] {
+  const problems: string[] = []
+  const guardedSet = new Set(guarded)
+  const where = 'DELETE_PATHS in apps/server/src/lifecycle/deletes.ts'
+  for (const path of found) {
+    const entry = entries[path.key]
+    if (path.ddl !== undefined) {
+      for (const literal of stringLiterals(path.ddl)) {
+        const match = DESTRUCTIVE.exec(literal)
+        const verb = match?.[1] ?? match?.[2]
+        if (verb !== undefined) {
+          problems.push(
+            `public.${path.key.slice(4)} is in DYNAMIC_DDL, which only creates, but a string it runs names ${verb.toLowerCase()}: a deletion goes through the deletion code, never dynamic DDL`,
+          )
+        }
+      }
+    }
+    if (entry === undefined) {
+      problems.push(
+        path.cascadeParent !== undefined && guardedSet.has(path.cascadeParent) && !guardedSet.has(path.deletes[0] ?? '')
+          ? `${path.key} cascades a delete of guarded public.${path.cascadeParent} into unguarded public.${path.deletes[0]}: guard the child, or list the key in ${where} with why`
+          : `${path.key} deletes from ${deletesText(path.deletes)}, but ${where} doesn't decide it: add '${path.key}' as guarded, checked or exempt with its decision`,
+      )
+      continue
+    }
+    const kept = path.deletes.filter(table => holds.kept.has(table))
+    if (kept.length > 0) {
+      problems.push(`${path.key} deletes from ${deletesText(kept)}, whose retention class keeps every row as history`)
+    }
+    if ('guarded' in entry) {
+      const unguarded = path.deletes.filter(table => !guardedSet.has(table))
+      if (unguarded.length > 0) {
+        problems.push(
+          `${path.key} is guarded in ${where}, but deletes from ${deletesText(unguarded)}, which GUARDED_TABLES doesn't list: a table gets lifecycle_guard() with its first delete path (LH-12)`,
+        )
+      }
+      continue
+    }
+    if (!recorded(entry.decision)) {
+      problems.push(
+        `'${path.key}' in ${where} cites ${entry.decision}, which isn't an LH id docs/TECH-SPEC.md T23 records or a TECH-SPEC item (T<n> item <m>)`,
+      )
+    }
+    if ('checked' in entry) {
+      if (path.body === undefined) {
+        problems.push(`${path.key} is checked in ${where}, but only a function can ask lifecycle_held() itself`)
+      } else {
+        const code = stripSql(path.body)
+        if (!ASKS_HELD.test(code)) {
+          problems.push(
+            `${path.key} is checked in ${where}, but its body never calls lifecycle_held() or is_held(): ask it and skip a held row, or guard its tables (LH-58)`,
+          )
+        }
+        if (!LOGS_DELETION.test(code)) {
+          problems.push(
+            `${path.key} is checked in ${where}, but its body never calls log_deletion(): no guard requires its log row, so it writes one for each row it deletes (LH-10, LH-58, GUARD-02)`,
+          )
+        }
+      }
+      const barred = path.deletes.filter(table => guardedSet.has(table) || holds.kept.has(table))
+      if (barred.length > 0) {
+        problems.push(
+          `${path.key} is checked in ${where}, but deletes from ${deletesText(barred)}: a guarded table's path is guarded, and a kept table has none`,
+        )
+      }
+      const unreduced = path.deletes.filter(table => !barred.includes(table) && !holds.reduction.has(table))
+      if (unreduced.length > 0) {
+        problems.push(
+          `${path.key} is checked in ${where}, but deletes from ${deletesText(unreduced)}, whose retention class marks no leaver's reduction of rows a person also edits: make the path guarded, and the table gets lifecycle_guard() with it (LH-12, LH-58, GUARD-02)`,
+        )
+      }
+      continue
+    }
+    const held = path.deletes.filter(table => holds.apply.has(table))
+    if (held.length > 0) {
+      problems.push(
+        `${path.key} is exempt in ${where}, but deletes from ${deletesText(held)}, whose retention class's holds apply: make it guarded or checked`,
+      )
+    }
+  }
+  const keys = new Set(found.map(path => path.key))
+  for (const key of Object.keys(entries)) {
+    if (!keys.has(key))
+      problems.push(`${where} decides '${key}', which no delete path the database allows matches: remove it`)
+  }
+  return problems
+}
+
+// The guard's functions, and the hold decision every guard and definer asks (DB-07).
+const GUARD_FUNCTION = '(?:lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept|lifecycle_held)'
+// The guard's triggers, each named as its function (check 7d).
+const GUARD_TRIGGER = '(?:lifecycle_guard|lifecycle_no_truncate|deletion_log_kept|legal_holds_kept)'
+
+// What no function body may run, read from its text with comments and strings stripped (stripSql,
+// which folds code to lower case): each empties rows or partitions with no row trigger, so neither
+// the guard nor the hold decision sees it, or turns the guard off or replaces it. TRUNCATE also
+// empties every org's rows, which no definer function, filtering by its org, may do. Set by
+// set_config(), session_replication_role's name is a string, so that form is read with only the
+// comments stripped (stripComments). A guard's trigger replaced (CREATE OR REPLACE TRIGGER naming a
+// guard's trigger or function anywhere in its statement), or created with a WHEN condition or an
+// UPDATE OF list, is named as LCG-03 names it in a migration, so the refusal never rests on the
+// EXECUTE FUNCTION in it tripping check 1's dynamic-SQL rule; a plain CREATE TRIGGER of a guard's
+// function, as C2.9 may add for each new partition, passes (R2CODE-01, LH-11). A DYNAMIC_DDL
+// function's string literals are read against every rule too (bodyDdlProblems).
+const BODY_DDL: ReadonlyArray<[string, RegExp, 'code' | 'strings']> = [
+  // Not in a trigger's event list (BEFORE TRUNCATE, OR TRUNCATE), which empties nothing.
+  ['TRUNCATE', /(?<!\b(?:before|after|or)\s+)\btruncate\b/, 'code'],
+  ['DROP TABLE', /\bdrop\s+table\b/, 'code'],
+  ['DETACH PARTITION', /\bdetach\s+partition\b/, 'code'],
+  ['DISABLE TRIGGER', /\bdisable\s+trigger\b/, 'code'],
+  ['DROP TRIGGER', /\bdrop\s+trigger\b/, 'code'],
+  ['ENABLE ALWAYS or REPLICA TRIGGER', /\benable\s+(?:always|replica)\s+trigger\b/, 'code'],
+  [
+    'CREATE OR REPLACE TRIGGER of a guard trigger',
+    new RegExp(String.raw`\bcreate\s+or\s+replace\s+(?:constraint\s+)?trigger\b(?=[^;]*\b${GUARD_TRIGGER}\b)`),
+    'code',
+  ],
+  [
+    'CREATE TRIGGER of a guard function with a WHEN condition or an UPDATE OF list',
+    new RegExp(
+      String.raw`\bcreate\s+(?:constraint\s+)?trigger\b(?=[^;]*\bexecute\s+(?:function|procedure)\s+(?:(?:public|"public")\s*\.\s*)?"?${GUARD_TRIGGER}\b)(?=[^;]*(?:\bwhen\s*\(|\bupdate\s+of\b))`,
+    ),
+    'code',
+  ],
+  ['SET session_replication_role', /\bset\s+(?:local\s+|session\s+)?"?session_replication_role\b/, 'code'],
+  ['SET session_replication_role', /\bset_config\s*\(\s*'session_replication_role'/i, 'strings'],
+  [
+    'CREATE OR REPLACE, DROP or ALTER FUNCTION of a guard function or lifecycle_held()',
+    new RegExp(
+      String.raw`\b(?:create\s+or\s+replace|drop|alter)\s+function\s+(?:if\s+exists\s+)?(?:(?:public|"public")\s*\.\s*)?"?${GUARD_FUNCTION}\b`,
+    ),
+    'code',
+  ],
+]
+
+// A body as DYNAMIC_DDL pins it: comments gone and runs of whitespace folded.
+const pinnedText = (source: string): string => stripComments(source).replace(/\s+/g, ' ').trim()
+
+// 8, function bodies. No function of public (check-catalogues passes every one, helpers no runtime
+// role may run included, GUARD-03) runs, as a plain statement, TRUNCATE, DROP TABLE, DETACH
+// PARTITION, DISABLE, DROP or ENABLE ALWAYS or REPLICA TRIGGER, a setting of
+// session_replication_role, a replacement, drop or change of the guard's functions or
+// lifecycle_held(), or a guard's trigger replaced or created with a WHEN condition or an UPDATE OF
+// list: none is a DELETE, so deletePathsOf finds no path for it, and DESTRUCTIVE reads only a
+// DYNAMIC_DDL function's format strings, for drop, truncate, detach or delete (LH-12, LH-33). A
+// DYNAMIC_DDL function's own plain statements are held to it too, and so is each of its string
+// literals (folded, its doubled quotes read as one), so a string that turns the guard off or
+// replaces it is named. What a string built at run time or a verb passed to format() as an argument
+// will run, no reading can see, so a DYNAMIC_DDL function's body must also be the one DYNAMIC_DDL
+// pins (R2CODE-01). A step that needs any of these changes this check, a reviewed change.
+export function bodyDdlProblems(
+  functions: readonly Fn[],
+  dynamic: Readonly<Record<string, DynamicDdl>> = DYNAMIC_DDL,
+): string[] {
+  const problems: string[] = []
+  for (const fn of functions) {
+    if (fn.source === undefined) continue
+    const code = stripSql(fn.source)
+    const strings = stripComments(fn.source)
+    const named = new Set<string>()
+    for (const [what, pattern, reads] of BODY_DDL) {
+      if (!named.has(what) && pattern.test(reads === 'code' ? code : strings)) named.add(what)
+    }
+    for (const what of named) {
+      problems.push(
+        `public.${fn.key} runs ${what} in its body, which deletes or turns the guard off with no DELETE for check 8 to decide: a deletion goes through the deletion code, never DDL in a function (LH-12, LH-33)`,
+      )
+    }
+    const ddl = dynamic[fn.key]
+    if (ddl === undefined) continue
+    const held = new Set<string>()
+    for (const literal of stringLiterals(fn.source)) {
+      const text = literal.replace(/''/g, "'").replace(/\s+/g, ' ').toLowerCase()
+      for (const [what, pattern] of BODY_DDL) if (pattern.test(text)) held.add(what)
+    }
+    for (const what of held) {
+      problems.push(
+        `public.${fn.key} is in DYNAMIC_DDL, but a string it runs holds ${what}, which deletes or turns the guard off with no DELETE for check 8 to decide: dynamic DDL only creates (LH-12, LH-33, R2CODE-01)`,
+      )
+    }
+    if (pinnedText(fn.source) !== pinnedText(ddl.body)) {
+      problems.push(
+        `public.${fn.key} is in DYNAMIC_DDL, but its body isn't the one pinned there, and what a string built at run time or a verb passed as an argument runs, no check can read: read the new body for anything that deletes, or turns the guard off or replaces it, then pin it in DYNAMIC_DDL in apps/server/scripts/catalogues.ts, a reviewed change (LH-33, R2CODE-01)`,
+      )
+    }
+  }
+  return problems
+}
+
+// 8, helpers' bodies. check 1 refuses a body check-catalogues can't read (BEGIN ATOMIC, whose source
+// Postgres doesn't keep, or EXECUTE outside DYNAMIC_DDL) only in a function it reaches (bodyProblems).
+// A helper no runtime role may run deletes just as well when a definer calls it, and what such a
+// body deletes can't be read, so check 8 refuses either in every other function of public too; the
+// caller passes the functions check 1 doesn't reach (GUARD-03).
+export function helperBodyProblems(
+  functions: readonly Fn[],
+  dynamic: Readonly<Record<string, unknown>> = DYNAMIC_DDL,
+): string[] {
+  const problems: string[] = []
+  for (const fn of functions) {
+    if (fn.atomic === true) {
+      problems.push(
+        `public.${fn.key} is written with BEGIN ATOMIC, whose deletes check 8 can't read, though a function that may be run can call it: write its body as a quoted string (as $$ ... $$) (GUARD-03)`,
+      )
+    } else if (fn.source !== undefined && /\bexecute\b/.test(stripSql(fn.source)) && dynamic[fn.key] === undefined) {
+      problems.push(
+        `public.${fn.key} runs dynamic SQL (EXECUTE), whose deletes check 8 can't read, though a function that may be run can call it: write them as plain statements (GUARD-03)`,
+      )
     }
   }
   return problems

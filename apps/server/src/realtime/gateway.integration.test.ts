@@ -30,7 +30,9 @@
 // afterAll sweeps the run: every frame any socket was sent passes the strict ServerFrame (ids, codes
 // and ints only, and no field for a position), and none holds the id, or the time, of any entry the
 // run appended to an org's stream (T19 item 9); no Node warning fired (the harness's stop() also fails on the two P9 guards); no
-// frame handler or upgrade failed; and every write a runtime role committed is exempt or had its
+// frame handler or upgrade failed; every Valkey key the run left, the streams and epochs among them,
+// expires within its family's figure in the retention registry (C0.10 LCI-02,
+// testing/valkey-expiry.ts); and every write a runtime role committed is exempt or had its
 // outbox event (testing/writes.ts).
 import { randomUUID } from 'node:crypto'
 import { GATEWAY_CLOSE, ServerFrame } from '@hearth/shared'
@@ -52,6 +54,7 @@ import {
   type Stack,
   startStack,
 } from '#src/testing/stack.ts'
+import { valkeyExpiryProblems } from '#src/testing/valkey-expiry.ts'
 import { everyTestPassed, expectEveryWriteCovered } from '#src/testing/writes.ts'
 import { createSubscriber } from '#src/valkey.ts'
 
@@ -249,6 +252,12 @@ describe('C0.7 the realtime gateway on the Compose stack (T19, Rule 6, ACC-05)',
       // Nothing the gateway does failed in a way only a bug could.
       const bugs = ['ws_frame_failed', 'ws_upgrade_failed', 'stream_reader_stopped', 'topic_event_invalid']
       expect(s.logs.filter(line => bugs.includes(String(line.event)))).toEqual([])
+      // C0.10 LCI-02 (LH-07, TECH-SPEC T23 item 6): every key the run left under its prefix, the
+      // orgs' streams and epochs among them, is one family's of the retention registry, and expires,
+      // at most its family's figure from now.
+      const expiry = await valkeyExpiryProblems(s.valkey, s.prefix)
+      expect(expiry.problems).toEqual([])
+      if (everyTestPassed(suite)) expect([...expiry.seen]).toEqual(expect.arrayContaining(['stream', 'epoch']))
       await expectEveryWriteCovered(s.superuser, 'gateway', { allPassed: everyTestPassed(suite) })
     } finally {
       await s.stop()

@@ -2,7 +2,9 @@
 -- are append-only. hearth_app can add a row for its own org and nothing else: no reading (not even
 -- through INSERT ... RETURNING), changing, deleting or emptying them, no choosing a row's id, time
 -- or (for the outbox) position, and no reaching a data_access_events partition directly. Only the
--- partitions job's role adds partitions.
+-- partitions job's role adds partitions. From 0013 (C0.10 LH-10, LCD-32) the deletion log joins
+-- them, for every writer: no role holds a grant on it, and deletion_log_kept() and
+-- lifecycle_no_truncate() hold the owner and the superuser to it too.
 \ir fixtures/two_orgs.sql
 
 select pg_temp.act_as('1', 'a2');
@@ -131,3 +133,34 @@ select pg_temp.check(count(*) = 1 and min(actor_id::text) = 'f1000000-0000-4000-
                      and min(tx_id::text) = pg_current_xact_id()::text and min(at) >= now(),
                      'the outbox event hearth_app added is missing, doubled, or has another actor, position or time')
 from public.outbox_events where type = 'person.deactivated' and entity_id = 'f1000000-0000-4000-8000-0000000000a9';
+
+-- LCD-32 (C0.10 LH-10): the deletion log is append-only for every writer. hearth_app holds nothing on
+-- it; the owner and the superuser may add a row (as log_deletion() does, as the owner) but change
+-- nothing but an S3 deletion's stamp, once, delete no row younger than 731 days, and never empty it
+-- (185 has the rest).
+select pg_temp.act_as('1', 'a2');
+select pg_temp.expect_error($$select count(*) from public.deletion_log$$, '42501');
+select pg_temp.expect_error($$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+  values ('f1000000-0000-4000-8000-000000000000', 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention')$$, '42501');
+select pg_temp.expect_error($$update public.deletion_log set cause = 'user'$$, '42501');
+select pg_temp.expect_error($$delete from public.deletion_log$$, '42501');
+select pg_temp.expect_error($$truncate public.deletion_log$$, '42501');
+reset role;
+do $$
+declare
+  who text;
+begin
+  foreach who in array array['hearth_owner', 'none'] loop
+    perform set_config('role', who, true);
+    perform pg_temp.expect_rows(format($i$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+      values (%L, 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention')$i$, pg_temp.id('1', '00')), 1);
+    perform pg_temp.expect_error($u$update public.deletion_log set cause = 'user'$u$, '23514',
+                                 'The deletion log only grows; a row''s S3 deletion is stamped once.');
+    perform pg_temp.expect_error($d$delete from public.deletion_log$d$, '23514', 'The deletion log keeps each row for 731 days.');
+    perform pg_temp.expect_error($t$truncate public.deletion_log$t$, 'HF010', '%never TRUNCATE.');
+    perform set_config('role', 'none', true);
+  end loop;
+end
+$$;
+select pg_temp.check(count(*) = 4, format('the deletion log holds %s rows of the fixture orgs, not the 2 fixture rows and 2 added', count(*)))
+from public.deletion_log where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'));

@@ -24,7 +24,9 @@
 #     integration sweep) couldn't see. Objects that belong to an extension and
 #     the constructor functions Postgres makes for a range type are skipped. The migrator's own ledger (kysely_migration,
 #     kysely_migration_lock) has no org_id or row level security, so those two checks skip it by
-#     name; it must still be the owner's and granted to nobody.
+#     name; it must still be the owner's and granted to nobody. From C0.10 (LH-32), also a foreign
+#     key between two tables that both have org_id that doesn't name org_id on both sides, at the
+#     same place in its column lists (a key to orgs itself aside), so no reference crosses orgs.
 #
 # The scratch database ($CHECK_DB, default hearth_check) is dropped and rebuilt on every run, so
 # the database you develop against is never touched; scripts/test-db.sh then runs against it.
@@ -35,6 +37,10 @@
 #
 # UP_TO=NNNN builds the database only up to the migration before NNNN, for an upgrade test:
 # scripts/check-<name>-upgrade.sh then loads production-shaped data and applies NNNN.
+#
+# CHECKS_ONLY=1 builds nothing: it runs the checks on $CHECK_DB as it stands, so
+# scripts/check-schema-digest.sh can prove a check refuses what it plants in a throwaway database
+# (C0.10's composite-key check, LH-32).
 #
 # A scratch build starts empty, so it can't see a migration numbered below one production has
 # already applied; scripts/check-migration-order.sh, run against main in CI, does.
@@ -62,6 +68,9 @@ superuser_extensions=()
   { echo "CHECK_DB must be a lower-case name ending in _check, at most 61 characters, not '$db'" >&2; exit 2; }
 up_to=${UP_TO:-}
 [[ -z $up_to || $up_to =~ ^[0-9]{4}$ ]] || { echo "UP_TO must be a 4-digit migration number, not '$up_to'" >&2; exit 2; }
+checks_only=${CHECKS_ONLY:-}
+[[ -z $checks_only || $checks_only == 1 ]] || { echo "CHECKS_ONLY must be 1 or unset, not '$checks_only'" >&2; exit 2; }
+[[ -z $checks_only || -z $up_to ]] || { echo "CHECKS_ONLY builds nothing, so it takes no UP_TO" >&2; exit 2; }
 sql() { psql --no-psqlrc -w -v ON_ERROR_STOP=1 -q "$@"; }  # -w: fail rather than prompt
 
 shopt -s nullglob dotglob  # hidden entries are listed too, so they're refused
@@ -113,29 +122,31 @@ fi
 [ "$(sql -d postgres -Atc "select rolsuper from pg_roles where rolname = current_user")" = t ] ||
   { echo "Connect as a superuser (PGUSER): this script creates roles and runs migrations as $owner." >&2; exit 2; }
 
-migrator_pw=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-trap 'sql -d postgres -c "drop role if exists $migrator" >/dev/null 2>&1 || true' EXIT
-sql -d postgres -c "set client_min_messages = warning" \
-  -c "do \$\$ begin create role $owner nologin createrole; exception when duplicate_object then null; end \$\$" \
-  -c "alter role $owner nosuperuser nobypassrls createrole" \
-  -c "do \$\$ begin create role $migrator; exception when duplicate_object then null; end \$\$" \
-  -c "alter role $migrator login nosuperuser nobypassrls nocreaterole nocreatedb noinherit password '$migrator_pw'" \
-  -c "grant $owner to $migrator" \
-  -c "drop database if exists $db with (force)" \
-  -c "create database $db owner $owner template template0"
-for ext in ${superuser_extensions[@]+"${superuser_extensions[@]}"}; do
-  sql -d "$db" -c "create extension if not exists \"$ext\""
-done
+if [ -z "$checks_only" ]; then
+  migrator_pw=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  trap 'sql -d postgres -c "drop role if exists $migrator" >/dev/null 2>&1 || true' EXIT
+  sql -d postgres -c "set client_min_messages = warning" \
+    -c "do \$\$ begin create role $owner nologin createrole; exception when duplicate_object then null; end \$\$" \
+    -c "alter role $owner nosuperuser nobypassrls createrole" \
+    -c "do \$\$ begin create role $migrator; exception when duplicate_object then null; end \$\$" \
+    -c "alter role $migrator login nosuperuser nobypassrls nocreaterole nocreatedb noinherit password '$migrator_pw'" \
+    -c "grant $owner to $migrator" \
+    -c "drop database if exists $db with (force)" \
+    -c "create database $db owner $owner template template0"
+  for ext in ${superuser_extensions[@]+"${superuser_extensions[@]}"}; do
+    sql -d "$db" -c "create extension if not exists \"$ext\""
+  done
 
-# The migrator checks around every file that the session is still hearth_owner and still in the
-# batch's one transaction, and names the file that broke either rule. It connects with the PG*
-# variables, so nothing has to be put into a URL; an inherited MIGRATION_DATABASE_URL would win
-# over them, so it's dropped.
-before=()
-[ -z "$up_to" ] || before=(--before "$up_to")
-PGUSER=$migrator PGPASSWORD=$migrator_pw PGDATABASE=$db MIGRATION_ROLE=$owner \
-  env -u MIGRATION_DATABASE_URL node apps/server/src/db/migrate.ts ${before[@]+"${before[@]}"} >&2 ||
-  { echo "Migrations failed: see the migrate: lines above." >&2; exit 1; }
+  # The migrator checks around every file that the session is still hearth_owner and still in the
+  # batch's one transaction, and names the file that broke either rule. It connects with the PG*
+  # variables, so nothing has to be put into a URL; an inherited MIGRATION_DATABASE_URL would win
+  # over them, so it's dropped.
+  before=()
+  [ -z "$up_to" ] || before=(--before "$up_to")
+  PGUSER=$migrator PGPASSWORD=$migrator_pw PGDATABASE=$db MIGRATION_ROLE=$owner \
+    env -u MIGRATION_DATABASE_URL node apps/server/src/db/migrate.ts ${before[@]+"${before[@]}"} >&2 ||
+    { echo "Migrations failed: see the migrate: lines above." >&2; exit 1; }
+fi
 
 checks="
 with recursive rel as (
@@ -262,6 +273,20 @@ with recursive rel as (
   union all
   select 'The database is not owned by $owner', pg_get_userbyid(datdba)
   from pg_database where datname = current_database() and datdba <> '$owner'::regrole
+  union all
+  -- C0.10 LH-32: a foreign key between two tables that both have org_id names org_id on both sides,
+  -- at the same place in its column lists, so a reference, and the cascade or hold lookup that
+  -- follows it, never crosses orgs (ACC-11). A key to orgs itself has no org_id on that side and is
+  -- left out. A partition's copy of its parent's key is checked like the parent's.
+  select 'Foreign key without org_id at the same place on both sides (a reference must stay in its org: (org_id, ...) references t (org_id, ...))',
+         format('%s: %s', rel.name, con.conname)
+  from pg_constraint con
+  join rel on rel.oid = con.conrelid
+  join pg_attribute a on a.attrelid = con.conrelid and a.attname = 'org_id' and not a.attisdropped
+  join pg_attribute b on b.attrelid = con.confrelid and b.attname = 'org_id' and not b.attisdropped
+  where con.contype = 'f'
+    and not exists (select 1 from generate_subscripts(con.conkey, 1) i
+                    where con.conkey[i] = a.attnum and con.confkey[i] = b.attnum)
 )
 select problem, object from problems order by 1, 2"
 problems=$(sql -d "$db" -At -F $'\t' -c "$checks")
@@ -270,7 +295,9 @@ if [ -n "$problems" ]; then
   exit 1
 fi
 
-if [ -n "$up_to" ]; then
+if [ -n "$checks_only" ]; then
+  echo "OK: checked $db as it stands; every check passes."
+elif [ -n "$up_to" ]; then
   echo "OK: built $db up to (not including) $up_to: ${#files[@]} migration(s); every check passes."
 else
   echo "OK: ${#files[@]} migration(s) applied to $db; every check passes."

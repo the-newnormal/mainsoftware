@@ -204,6 +204,10 @@ declare
     'public.case_due_on(text,text,date,date,date,integer,integer,integer,integer)', 'public.case_kind_now(uuid,uuid)',
     'public.case_due(uuid,uuid)', 'public.case_replied_in_time(uuid,uuid)', 'public.cases_check_dpo(uuid,uuid)',
     'public.cases_fixed()', 'public.case_steps_unchanged()'];
+  -- C0.10 (0013, LH-19, LH-22): how long a case holds its requester's data, and the deletion code's
+  -- path for a request, delete_case(), now the only way a request leaves (db/tests/196 tests it).
+  -- Granted to nobody until C2.9 grants its sweep role.
+  later constant text[] := array['public.case_hold_until(uuid,uuid)', 'public.delete_case(uuid,text,boolean)'];
   r text;
   f text;
 begin
@@ -212,15 +216,16 @@ begin
       perform pg_temp.check(has_function_privilege(r, f, 'EXECUTE') = (r = 'hearth_app'),
                             format('%s %s run %s (RQD-01)', r, case when r = 'hearth_app' then 'can''t' else 'can' end, f));
     end loop;
-    foreach f in array helpers loop
+    foreach f in array helpers || later loop
       perform pg_temp.check(not has_function_privilege(r, f, 'EXECUTE'), format('%s can run the helper %s (RQD-01)', r, f));
     end loop;
   end loop;
-  -- The ten and the helpers are every function 0012 adds: none other in public names a case.
+  -- The ten and the helpers are every function 0012 adds, and 0013 adds the two above: none other in
+  -- public names a case.
   perform pg_temp.check(not exists (
     select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public' and (p.proname ~ 'case' or p.proname = 'set_reply_targets')
-      and format('public.%s', p.oid::regprocedure) <> all (granted || helpers)),
+      and format('public.%s', p.oid::regprocedure) <> all (granted || helpers || later)),
     'a function naming a case is neither granted nor a known helper (RQD-01)');
 end
 $$;
@@ -417,7 +422,9 @@ select pg_temp.expect_error(format('insert into public.case_steps select * from 
                                    pg_temp.step_json(jsonb_build_object('case_id', pg_temp.id('1', 'e8'), 'number', 1))),
                             '23505', '%case_steps_order%');
 -- cases_fixed(): what was received never changes and the closure is written once, as the owner and
--- as the superuser; case_steps_unchanged(): a step never changes.
+-- as the superuser; case_steps_unchanged(): a step never changes. A request leaves only through
+-- C0.10's deletion code, delete_case(), which checks holds and logs it (0013; db/tests/196 tests it,
+-- and 190 the guard that refuses every other DELETE and TRUNCATE).
 do $$
 declare
   change text;

@@ -2,7 +2,7 @@
 
 ## What these are
 
-The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), and the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
+The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71), and C0.10 added how records are kept and deleted (TECH-SPEC T23). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
 
 Every runbook but this one has the same sections, in this order: *Use this when*, *Who does what*, *Before you start*, *Steps*, *Check it worked*, *Afterwards* and *Code paths*. *Don't* may sit between them where a mistake would make things worse, and other sections, such as *Prevention*, may too. *Code paths* lists the code each one relies on, so a change to that code shows here (`scripts/guards/runbooks.test.ts`).
 
@@ -89,6 +89,17 @@ The count on the avatar button, and on "Data protection" in its menu, shows the 
 ## If the DPO leaves
 
 Only the DPO reads requests (C0.9 OD-14). If the sole DPO leaves, nobody reads open requests until C0.16's console grants a new DPO, who then reads every case, complaints about their predecessor included, while the due days keep running.
+
+## Keeping and deleting, until C0.15
+
+Until C0.15, nothing deletes anyone's data. The only deletions are the C0.6 clean-up's of the outbox, the job queue and its runs, which hold ids only (TECH-SPEC T16 item 6); the DPO confirmed that exemption from holds (TECH-SPEC T23 item 15).
+
+- A refused request for a copy keeps the requester's records for at least 30 days after the refusal, plus a 14-day margin for a review the PDPC tells the organisation of late, and through any PDPC review; an open request for a copy or a correction keeps them until it is closed (TECH-SPEC T23 item 11). Hearth works this out from the case, so the DPO records closures and review steps on the day they happen.
+- A request from someone who has left keeps their records only when it is logged against their former person ([A request for a copy of someone's personal data](access-request.md)). A request is never linked after it is logged, so one the log dialog says to log as someone without a Hearth account, because it can't tell two people apart, keeps only the case: the DPO notes that on the case, keeps who it is in the DPO's own files, and, once C1.11's console exists, places a legal hold on their person, and releases it once the request's own hold would have ended.
+- Legal holds arrive with C1.11's console. Until then the DPO places none by hand, and nobody writes a hold or deletes anything in production by hand.
+- The retention defaults the DPO confirms are TECH-SPEC T23 item 2's.
+
+C0.15 (its first S3 deletions) and C1.2 (the first deleted messages) each update this section when their first deletes land.
 
 ## Changing a runbook
 

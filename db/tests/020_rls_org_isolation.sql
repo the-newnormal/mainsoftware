@@ -259,3 +259,49 @@ select pg_temp.expect_error($$insert into public.notice_version_purposes (org_id
 select pg_temp.expect_error($$insert into public.notice_version_providers (org_id, notice_version_id, clearance_id)
   values ('f2000000-0000-4000-8000-000000000000', 'f2000000-0000-4000-8000-0000000000e3', 'f1000000-0000-4000-8000-0000000000e5')$$,
   '23503', '%notice_version_providers_org_id_clearance_id_fkey%');
+
+-- The deletion log and legal holds (0013, C0.10 LH-10, LH-15; LCD-33). No runtime role holds a grant
+-- on either, so the discovery above passes them over, and hearth_app reads neither in its own org
+-- (42501). The owner, which RLS doesn't bind, reads both orgs' rows. The org policy binds any future
+-- grantee: hearth_app, granted SELECT and INSERT here for this transaction alone, sees exactly the
+-- org it acts in, and can't add a row to the other org.
+select pg_temp.act_as('1', 'a5');
+select pg_temp.expect_error('select count(*) from public.deletion_log', '42501');
+select pg_temp.expect_error('select count(*) from public.legal_holds', '42501');
+reset role;
+set local role hearth_owner;
+select pg_temp.check((select count(*) from public.deletion_log where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'))) = 2
+                     and (select count(*) from public.legal_holds where org_id in (pg_temp.id('1', '00'), pg_temp.id('2', '00'))) = 4,
+                     'the owner does not read both fixture orgs'' deletion log and legal holds (LCD-33)');
+reset role;
+grant select, insert on public.deletion_log, public.legal_holds to hearth_app;
+do $$
+declare
+  o text;
+begin
+  foreach o in array array['1', '2'] loop
+    perform pg_temp.act_as(o, 'a5');
+    perform pg_temp.check((select count(*) filter (where org_id = pg_temp.id(o, '00')) = 1 and count(*) = 1 from public.deletion_log)
+                          and (select count(*) filter (where org_id = pg_temp.id(o, '00')) = 2 and count(*) = 2
+                               from public.legal_holds),
+                          format('acting in org %s, a future grantee saw another org''s deletion log or legal holds (LCD-33)', o));
+    perform set_config('role', 'none', true);
+  end loop;
+end
+$$;
+select pg_temp.act_as('2', 'a5');
+select pg_temp.expect_error($$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
+  values ('f1000000-0000-4000-8000-000000000000', 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention')$$, '42501');
+select pg_temp.expect_error($$insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+  values ('f1000000-0000-4000-8000-000000000000', gen_random_uuid(), 'person', 'f1000000-0000-4000-8000-0000000000a8',
+          'Planted from org 2', 'f2000000-0000-4000-8000-0000000000a6')$$, '42501');
+reset role;
+revoke select, insert on public.deletion_log, public.legal_holds from hearth_app;
+-- No hold can name another org's principal as its placer, nor a log row another org's key (as the
+-- superuser, so only the keys and checks stand in the way).
+select pg_temp.expect_error($$insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, placed_by)
+  values ('f2000000-0000-4000-8000-000000000000', gen_random_uuid(), 'person', 'f2000000-0000-4000-8000-0000000000a8',
+          'Placed by another org', 'f1000000-0000-4000-8000-0000000000a6')$$, '23503', '%legal_holds_org_id_placed_by_fkey%');
+select pg_temp.expect_error($$insert into public.deletion_log (org_id, class_key, object_table, object_id, cause, s3_class, s3_key)
+  values ('f2000000-0000-4000-8000-000000000000', 'profile_photos', 'profiles', gen_random_uuid()::text, 'user', 'profile_photos',
+          'f1000000-0000-4000-8000-000000000000/' || gen_random_uuid())$$, '23514', '%deletion_log_s3_key%');

@@ -183,7 +183,9 @@ jobs:
       # Builds a scratch database from every file in db/migrations/ with the migrator production
       # uses, in one transaction, from a session that can only act as hearth_owner, then checks it
       # against CLAUDE.md's Database rules (org_id, RLS, views, grants, functions, ownership, and
-      # that no runtime role, hearth_app, the worker's login or a job role among them, can skip RLS).
+      # that no runtime role, hearth_app, the worker's login or a job role among them, can skip RLS;
+      # from C0.10, LH-32, that every foreign key between two org-scoped tables names org_id on both
+      # sides, at the same place, so no reference crosses orgs).
       - run: scripts/check-migrations.sh
       # The migrator itself, against throwaway databases: it refuses a migration that commits or
       # leaves another role in place, rolls a failed batch back, fails fast on a role it can't
@@ -210,14 +212,25 @@ jobs:
       # from one revision, a log against its requester's deactivation, the reply targets against a
       # publish and a contact change, an audit read against the reader losing the dpo role, and
       # 0012 applied while a publish, a register write and the notice's read touch dpo_settings and
-      # the outbox, RQR-01 to RQR-09), in two connections to a throwaway database.
+      # the outbox, RQR-01 to RQR-09; from C0.10 PR 1, holds and the deletion code: a legal hold
+      # placed, a PDPC review step, a request for a copy or a correction sent, a release and a hold
+      # citing a request, each against a request's deletion, is_held() against a request being
+      # sent, two deletions for one requester, and 0013 applied under load, locking none of the
+      # busy tables, LCR-01 to LCR-04, LCR-10, LCR-11, LCR-15 and LCR-16), in two connections to a
+      # throwaway database.
       - run: node apps/server/scripts/check-concurrency.ts
       # The catalogues in code match the database (C0.6): every write grant of every runtime role,
       # every function one can run and every SECURITY DEFINER and trigger function is covered by
       # an outbox event or a reasoned exemption (apps/server/src/outbox/coverage.ts), and the
       # event catalogue, the flag registry and the worker's job roles equal 0007's and 0008's
       # lists; from C0.7, every consumer the worker runs is bound in outbox_checkpoints_own_row()
-      # to exactly its role, and every bound name is one of them (0008).
+      # to exactly its role, and every bound name is one of them (0008); from C0.10, check 7 (the
+      # retention classes equal retention_class_defaults(), every table in one, the guard on exactly
+      # GUARDED_TABLES, enabled O, with no WHEN or UPDATE OF) and check 8 (every delete path, plain
+      # helpers included, decided in apps/server/src/lifecycle/deletes.ts, and no TRUNCATE, DROP
+      # TABLE, DETACH PARTITION or guard switched off or replaced in a function body or a
+      # DYNAMIC_DDL function's strings, and every DYNAMIC_DDL body the one pinned in
+      # apps/server/scripts/catalogues.ts; TECH-SPEC T23 items 9 and 19).
       - run: node apps/server/scripts/check-catalogues.ts
       # The SQL access filter (sqlReadableBy, @hearth/access/sql) selects exactly what the
       # in-memory rule allows, for every person, both assistants and the system principal in the
@@ -306,10 +319,30 @@ jobs:
       - env:
           CHECK_DB: hearth_upgrade_check
         run: UP_TO=0012 scripts/check-migrations.sh && scripts/check-cases-upgrade.sh
+      # 0013 (C0.10 PR 1, LH-34) updates no row, but it changes what rows already there mean, which
+      # the digest can't see: requests for a copy refused before it, an open request for a copy or a
+      # correction and the PDPC review steps already recorded now hold their requester's data and
+      # themselves; a request leaves only through delete_case(), logged and never while held, and the
+      # guard refuses every other DELETE of cases, case_steps and legal_holds; and the offboarding and
+      # revocation roles read every column of the outbox but the actor (OD-27). Its data is built at
+      # 0012, where requests exist, so it can't ride the 0012 step above (whose run applies 0013
+      # too): over the seed and an org in Pacific/Kiritimati with refused copies (one under review,
+      # one past its window, one for someone without an account, one for a leaver), an open
+      # correction sent in Hearth with its case.opened naming its requester, complaints closed 800
+      # days ago, and each member's sign-in records and acknowledgement: every row unchanged, the
+      # schema matching the fresh build, is_held() and delete_case() answering over the requests as
+      # T23 says, the guard on exactly its three tables, the consumers' statements running over the
+      # column grants with the actor refused, the outbox's types and every org's registers, flags and
+      # settings as they were, and retention_class_defaults() equal to packages/shared's classes
+      # (LCU-01 to LCU-05, LCU-07, LCU-08).
+      - env:
+          CHECK_DB: hearth_upgrade_check
+        run: UP_TO=0013 scripts/check-migrations.sh && scripts/check-lifecycle-upgrade.sh
       # The schema digest the upgrade checks compare (scripts/schema-digest.sql), against pairs of
       # throwaway databases: each respect it was widened for (partitions, options, sequences,
       # identity and generated columns, collations, default privileges, schemas, NOT VALID,
       # rewrite rules, aggregates) shows, and equivalent builds compare equal (other months'
       # partitions, a database in New York, an older month made by 0005's function in a copy of
-      # the fresh build above).
+      # the fresh build above); and, from C0.10 (LH-32), check-migrations.sh's composite-key check
+      # refuses a planted foreign key that leaves out org_id, and passes its composite twin.
       - run: scripts/check-schema-digest.sh

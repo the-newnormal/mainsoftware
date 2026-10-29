@@ -25,13 +25,19 @@
 //   withdrawal-by-hand.md's table whose "How you stop it for one person" cell says how, since the
 //   notice tells people such a purpose stops for them; and every row names a real purpose. "Says
 //   how" is a heuristic (a cell that isn't empty and doesn't start by saying it can't be done, isn't
-//   possible or isn't active yet), which the DPO's review of every change backs up.
+//   possible or isn't active yet), which the DPO's review of every change backs up;
+// - RB-06 (C0.10 review PRIVACY-02, LH-61): access-request.md names the log dialog's leaver label
+//   as the picker shows it (CASE_COPY.people.leftOn). While the dialog says to log someone it can't
+//   tell apart from another person as someone without a Hearth account (CASE_COPY.people.same),
+//   access-request.md and the README say that a request is never linked after it is logged (0012's
+//   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11).
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
 import { CONDUCT_WITHDRAWABLE, PURPOSE_KEYS } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
 import { APP_PATHS, NOTICE_PATH } from '../../apps/web/src/router/paths.ts'
+import { CASE_COPY } from '../../apps/web/src/strings/dpo-case.ts'
 import { ADMIN_ACTIONS, SELF_ACTIONS } from '../../packages/access/src/requests.ts'
 import { IDENTIFYING } from './identifying'
 import { withoutComments } from './imports'
@@ -41,6 +47,7 @@ const { dirname, join, normalize } = posix
 
 const DIR = 'docs/runbooks/'
 const README = `${DIR}README.md`
+const ACCESS_REQUEST = `${DIR}access-request.md`
 const WITHDRAWAL = `${DIR}withdrawal-by-hand.md`
 
 // The runbook folder's own Markdown files, README included.
@@ -592,5 +599,59 @@ describe('RB-05 (C0.9 OD-18, PD-86): each purpose CONDUCT_WITHDRAWABLE lists has
       "security_audit: its row doesn't say how",
     ])
     expect(withdrawalProblems(text, CONDUCT_WITHDRAWABLE, PURPOSE_KEYS)).toEqual([])
+  })
+})
+
+// --- RB-06: how a requester is linked, as the log dialog says --------------------------------------
+
+// What access-request.md (or the README, with no label) leaves out about linking a requester: the
+// leaver label as the log dialog's picker shows it, and, while the dialog says to log someone it
+// can't tell apart from another person as someone without a Hearth account, that a request is
+// never linked after it is logged and what stands in for the link (PRIVACY-02).
+function linkProblems(text: string, copy: { leftOn?: (label: string, day: string) => string; same: string }): string[] {
+  const found: string[] = []
+  if (copy.leftOn !== undefined) {
+    // ", left on <day>" with the label's punctuation dropped: "left on <day>".
+    const label = copy.leftOn('', '<day>').replace(/^[^\p{L}]+/u, '')
+    if (!text.includes(`"${label}"`)) found.push(`no "${label}"`)
+  }
+  if (/\bas someone without a Hearth account\b/.test(copy.same)) {
+    if (!/\bnever linked\b/.test(text)) found.push('no "never linked"')
+    if (!/\bcan[’']t tell two people apart\b/.test(text)) found.push('no "can’t tell two people apart"')
+    if (!/\blegal hold on their person\b/.test(text)) found.push('no "legal hold on their person"')
+  }
+  return found
+}
+
+describe('RB-06 (C0.10 review PRIVACY-02, LH-61): the runbooks say how a requester is linked, as the log dialog does', () => {
+  const same = 'Two people here read the same. Log it as someone without a Hearth account.'
+  const leftOn = (label: string, day: string) => `${label}, left on ${day}`
+
+  it('finds a wrong label and a missing exception on planted text, and passes the right words', () => {
+    const old = 'Log it against their former person (shown as "Has left"), never as someone without an account.'
+    expect(linkProblems(old, { leftOn, same })).toEqual([
+      'no "left on <day>"',
+      'no "never linked"',
+      'no "can’t tell two people apart"',
+      'no "legal hold on their person"',
+    ])
+    const fixed =
+      'Listed as "left on <day>". A request is never linked after it is logged. If the dialog can’t tell two people apart, log it so, and place a legal hold on their person.'
+    expect(linkProblems(fixed, { leftOn, same })).toEqual([])
+    // A dialog that never says to log someone at the organisation as an outsider needs no exception.
+    expect(linkProblems('Listed as "left on <day>".', { leftOn, same: 'Neither can be picked.' })).toEqual([])
+    expect(linkProblems('Nothing here.', { same })).toEqual([
+      'no "never linked"',
+      'no "can’t tell two people apart"',
+      'no "legal hold on their person"',
+    ])
+  })
+
+  it('access-request.md and the README say what the log dialog does', () => {
+    // The dialog does tell the DPO to log someone it can't tell apart as an outsider, so the
+    // exception is required, not skipped.
+    expect(CASE_COPY.people.same).toMatch(/\bas someone without a Hearth account\b/)
+    expect(linkProblems(readRepoFile(ACCESS_REQUEST), CASE_COPY.people)).toEqual([])
+    expect(linkProblems(readRepoFile(README), { same: CASE_COPY.people.same })).toEqual([])
   })
 })

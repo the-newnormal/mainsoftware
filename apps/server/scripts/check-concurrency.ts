@@ -65,6 +65,24 @@
 // reads dpo_settings: the migration never waits while it holds one of the two, so none fails
 // (RQR-09).
 //
+// C0.10 PR 1 (0013, TECH-SPEC T23 items 8 to 13; LH-18 to LH-22, LH-31) adds the hold decision and
+// the deletion code's path for requests, in an org of its own (LIFECYCLE_FIXTURE), after RQR-09. A
+// "fixture placement" is a transaction, as the owner, that takes the target's person row FOR NO KEY
+// UPDATE, then a cited case FOR KEY SHARE, then inserts the hold, which is what C1.11's writer will
+// do (C010-SPEC-06). A legal hold placed on a person against delete_case() of their due case, each
+// order (LCR-01); a PDPC review step on a refused copy past its window against its deletion, each
+// order (LCR-02); a request for a copy, and one for a correction, sent by a person against the
+// deletion of their other closed case, each order (LCR-03); a release not yet committed against a
+// deletion, which answers held at once, and deleted once the release commits (LCR-04); two
+// deletions of one requester's two cases, which take turns on the requester with no deadlock
+// (LCR-11); is_held() of a person against a request for a copy they send, each order (LCR-15); and a
+// placement citing a case, on someone else, against that case's deletion, each order (LCR-16). And,
+// in a database of its own built to the migration before 0013, 0013 applied while a request is
+// submitted, sign-ins write sessions, devices and audit rows, a consumer round reads the outbox, a
+// step is added and the partitions job holds its locks: the migration holds no lock on the busy
+// tables, SHARE ROW EXCLUSIVE on cases and ACCESS EXCLUSIVE on case_steps, never waits while it holds
+// one, and the round reads on over the column grants OD-27 leaves (LCR-10).
+//
 // Each case opens two connections to a throwaway database (concurrency_check, built from
 // db/migrations/ with the migrator, owned by hearth_owner), starts the change in one, starts the
 // dependent write in the other, waits until Postgres reports that write waiting on a lock, commits
@@ -75,6 +93,7 @@
 //
 // Connects with the PG* variables as a superuser (default: the local stack) and refuses any host
 // but this machine. Exits 1 if any case fails.
+import { readdirSync, readFileSync } from 'node:fs'
 import { Client } from 'pg'
 import { migrate } from '#src/db/migrations.ts'
 
@@ -325,6 +344,75 @@ const REQUEST_FIXTURE = `
   insert into public.dpo_settings (org_id, version, contact_title, contact_email, recorded_by)
   values ('${REQUEST_ORG}', 1, 'Data Protection Officer', 'dpo@requests.example', '${q('61')}');
 `
+// C0.10 PR 1 (0013): the lifecycle org, as the owner. Its Hearth principal h(a0); the DPO h(61), who
+// adds review steps; the Compliance Officer h(70), who places the fixture's holds; and requesters,
+// each with requests logged by the DPO, closed 800 days ago (in Singapore's zone, the org's), so past
+// the cases class's 731 days: h(62) and h(72) an answered complaint each (b1, b2; LCR-01); h(63) and
+// h(73) a refused copy each, past its window (b3, b4; LCR-02); h(64), h(65), h(74) and h(75) an
+// answered complaint each (b5 to b8; LCR-03); h(66) one (b9) under h(70)'s active hold c1 (LCR-04);
+// h(67) two (ba, bb; LCR-11); h(69) and h(6b) one each (bc, bd; LCR-16), whose holds name h(79) and
+// h(7b). h(68) and h(78) send requests in LCR-15.
+const h = (suffix: string) => `c0000000-0000-4000-8000-0000000005${suffix}`
+const LIFECYCLE_ORG = h('00')
+const hids = (suffixes: string[]) => suffixes.map(s => `'${h(s)}'`).join(', ')
+const LIFECYCLE_PEOPLE = [
+  '61',
+  '62',
+  '63',
+  '64',
+  '65',
+  '66',
+  '67',
+  '68',
+  '69',
+  '6b',
+  '70',
+  '72',
+  '73',
+  '74',
+  '75',
+  '78',
+  '79',
+  '7b',
+]
+// Each due request: its id's suffix, its requester's, and whether it is a refused copy.
+const LIFECYCLE_CASES: Array<[string, string, boolean]> = [
+  ['b1', '62', false],
+  ['b2', '72', false],
+  ['b3', '63', true],
+  ['b4', '73', true],
+  ['b5', '64', false],
+  ['b6', '65', false],
+  ['b7', '74', false],
+  ['b8', '75', false],
+  ['b9', '66', false],
+  ['ba', '67', false],
+  ['bb', '67', false],
+  ['bc', '69', false],
+  ['bd', '6b', false],
+]
+const LIFECYCLE_FIXTURE = `
+  set local role hearth_owner;
+  insert into public.orgs (id, name) values ('${LIFECYCLE_ORG}', 'Concurrency check lifecycle');
+  insert into public.principals (id, org_id, kind, system_key) values ('${h('a0')}', '${LIFECYCLE_ORG}', 'system', 'hearth');
+  insert into public.principals (id, org_id, kind)
+  select s.id, '${LIFECYCLE_ORG}', 'human' from unnest(array[${hids(LIFECYCLE_PEOPLE)}]::uuid[]) as s (id);
+  insert into public.people (id, org_id, full_name, created_by)
+  select s.id, '${LIFECYCLE_ORG}', 'Person ' || s.id, '${h('a0')}' from unnest(array[${hids(LIFECYCLE_PEOPLE)}]::uuid[]) as s (id);
+  insert into public.role_assignments (org_id, person_id, role, created_by)
+  values ('${LIFECYCLE_ORG}', '${h('61')}', 'dpo', '${h('a0')}'), ('${LIFECYCLE_ORG}', '${h('70')}', 'compliance_officer', '${h('a0')}');
+  insert into public.cases (id, org_id, client_key, kind, came_by, received_on, logged_by, requester_person_id, details,
+                            closed_on, closed_kind, outcome, closed_note, closed_at, closed_by)
+  select ('c0000000-0000-4000-8000-0000000005' || x.k)::uuid, '${LIFECYCLE_ORG}', gen_random_uuid(),
+         case when x.refused then 'access' else 'complaint' end, 'email',
+         (now() at time zone 'Asia/Singapore')::date - 801, '${h('61')}', ('c0000000-0000-4000-8000-0000000005' || x.r)::uuid,
+         'A request made up for the race.', (now() at time zone 'Asia/Singapore')::date - 800,
+         case when x.refused then 'access' else 'complaint' end, case when x.refused then 'refused' else 'answered' end,
+         case when x.refused then 'Refused for a made-up reason.' end, now(), '${h('61')}'
+  from (values ${LIFECYCLE_CASES.map(([k, r, refused]) => `('${k}', '${r}', ${refused})`).join(', ')}) as x (k, r, refused);
+  insert into public.legal_holds (id, org_id, client_key, target_kind, target_id, reason, placed_by)
+  values ('${h('c1')}', '${LIFECYCLE_ORG}', gen_random_uuid(), 'person', '${h('66')}', 'A made-up investigation', '${h('70')}');
+`
 // A PIN hash in the one shape the server issues (0006; DB test 100 uses the same).
 const PIN_HASH = "'$argon2id$v=19$m=19456,t=2,p=1$' || repeat('A', 22) || '$' || repeat('B', 43)"
 const FIXTURE = `
@@ -363,7 +451,7 @@ const FIXTURE = `
     ('${ORG}', '${id('ba')}', 'leadership', '${ADMIN}'), ('${ORG}', '${id('c5')}', 'admin', '${ADMIN}');
   insert into public.audit_log_readers (org_id, role, created_by) values
     ('${ORG}', 'dpo', '${ADMIN}'), ('${ORG}', 'compliance_officer', '${ADMIN}'), ('${ORG}', 'leadership', '${ADMIN}');
-${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}${REQUEST_FIXTURE}`
+${C06_FIXTURE}${C09_FIXTURE}${NOTICE_FIXTURE}${CONTACT_FIXTURE}${BREAK_GLASS_FIXTURE}${REQUEST_FIXTURE}${LIFECYCLE_FIXTURE}`
 
 function url(database: string): string {
   const result = new URL(`postgres://${connection.host.includes(':') ? `[${connection.host}]` : connection.host}`)
@@ -989,6 +1077,79 @@ const revisionOf = async (watcher: Client, caseId: string) =>
        from public.cases c where c.id = $1`,
       [caseId],
     ),
+  )
+
+// C0.10 PR 1 (0013): the deletion code and the holds, in the lifecycle org. delete_case() as C2.9's
+// sweep will run it: as the owner (it is granted to nobody until then), acting as the org's Hearth
+// principal; with `answers`, the step raises unless that is its answer.
+const deleteCase = (caseSuffix: string, answers?: string, replay = false): Step => ({
+  as: 'owner',
+  sql: `select set_config('app.org_id', '${LIFECYCLE_ORG}', true), set_config('app.user_id', '${h('a0')}', true);
+        do $$ declare answer text := public.delete_case('${h(caseSuffix)}', 'retention', ${replay}); begin
+          ${answers === undefined ? '' : `if answer is distinct from '${answers}' then raise exception 'delete_case() answered %', answer; end if;`}
+        end $$`,
+})
+// A fixture placement (C010-SPEC-06): as the owner, the target's person row FOR NO KEY UPDATE, then
+// the cited case FOR KEY SHARE (none of the org's: "There is no such request.", 22023), then the
+// hold, as C1.11's place_legal_hold() will. Both locks are lifecycle_lock_target()'s, so LCR-16
+// proves its case branch against delete_case()'s FOR UPDATE (TESTS-05); whether the case is still
+// there is read in a statement after the lock, which sees a deletion it waited for.
+const placeHold = (target: string, citing?: string): Step => ({
+  as: 'owner',
+  sql: `do $$ begin
+          perform public.lifecycle_lock_target('${LIFECYCLE_ORG}', 'person', '${h(target)}', 'no key update');
+          ${
+            citing === undefined
+              ? ''
+              : `perform public.lifecycle_lock_target('${LIFECYCLE_ORG}', 'case', '${h(citing)}', 'key share');
+          if not exists (select 1 from public.cases where org_id = '${LIFECYCLE_ORG}' and id = '${h(citing)}') then
+            raise exception 'There is no such request.' using errcode = 'invalid_parameter_value';
+          end if;`
+          }
+          insert into public.legal_holds (org_id, client_key, target_kind, target_id, reason, case_id, placed_by)
+          values ('${LIFECYCLE_ORG}', gen_random_uuid(), 'person', '${h(target)}', 'A made-up matter',
+                  ${citing === undefined ? 'null' : `'${h(citing)}'`}, '${h('70')}');
+        end $$`,
+})
+// A release, as C1.11's release_legal_hold() will: the hold FOR NO KEY UPDATE, then the update.
+const releaseHold = (hold: string): Step => ({
+  as: 'owner',
+  sql: `select 1 from public.legal_holds where org_id = '${LIFECYCLE_ORG}' and id = '${h(hold)}' for no key update;
+        update public.legal_holds set released_at = now(), released_by = '${h('61')}', release_reason = 'The matter closed'
+        where org_id = '${LIFECYCLE_ORG}' and id = '${h(hold)}'`,
+})
+// is_held() of a person, as a deletion definer asks it (as the owner, with the org set), which must
+// answer as expected.
+const isHeldStep = (person: string, expected: boolean): Step => ({
+  as: 'owner',
+  sql: `select set_config('app.org_id', '${LIFECYCLE_ORG}', true);
+        do $$ begin if public.is_held('person', '${h(person)}') is distinct from ${expected} then
+          raise exception 'is_held() answered %', not ${expected}; end if; end $$`,
+})
+// A request sent in Hearth by a person of the lifecycle org, of the kind given.
+const sendLifecycle = (person: string, kind: 'access' | 'correction'): Step => ({
+  as: 'app',
+  org: LIFECYCLE_ORG,
+  user: h(person),
+  sql: `select * from public.submit_case('${kind}', ${kind === 'access' ? 'null' : "'My title is wrong.'"}, gen_random_uuid(),
+          'race', null, null)`,
+})
+// A PDPC review starting on a refused copy, recorded by the DPO, from the revision the sheet showed
+// (the closure only: 1).
+const reviewStarted = (caseSuffix: string): Step => ({
+  as: 'app',
+  org: LIFECYCLE_ORG,
+  user: h('61'),
+  sql: `select * from public.add_case_step('${h(caseSuffix)}', 1, 'review_started', (now() at time zone 'Asia/Singapore')::date,
+          null, null, null, null, 'race', null, null)`,
+})
+// Whether a lifecycle case is still there, and how many log rows name it, as "present logged".
+const caseState = (watcher: Client, caseSuffix: string) =>
+  scalar(
+    watcher,
+    `select format('%s %s', exists (select 1 from public.cases where id = $1),
+                   (select count(*) from public.deletion_log where object_table = 'cases' and object_id = $1::text)) as v`,
+    [h(caseSuffix)],
   )
 
 // One step alone, in a transaction of its own: the error it ended with, if any (committed if none).
@@ -2885,6 +3046,143 @@ const CASES: Array<[string, (watcher: Client) => Promise<void>]> = [
       }
     },
   ],
+  [
+    // C0.10 PR 1 (0013; LH-21, DB-01): a placement takes the target's row FOR NO KEY UPDATE, and
+    // delete_case() takes the requester's row the same way first, so the two take turns on it.
+    'LCR-01 ADM-08 PDPA-09 C0.10 LH-21: a deletion of a person’s due request waits for a legal hold being placed on them, then answers held; a placement waits for a deletion in progress, and places after it',
+    async watcher => {
+      const first = await race(watcher, placeHold('62'), deleteCase('b1', 'held'))
+      expect(first.waited, 'the deletion did not wait for the placement in progress')
+      expect(first.error === undefined, `the deletion failed: ${first.error}`)
+      expect((await caseState(watcher, 'b1')) === 't 0', 'the held request went, or was logged')
+      const second = await race(watcher, deleteCase('b2', 'deleted'), placeHold('72'))
+      expect(second.waited, 'the placement did not wait for the deletion in progress')
+      expect(second.error === undefined, `the placement failed: ${second.error}`)
+      expect((await caseState(watcher, 'b2')) === 'f 1', 'the deletion that went first did not delete and log once')
+      const placed = await scalar(
+        watcher,
+        'select count(*)::text as v from public.legal_holds where org_id = $1 and target_id = $2 and released_at is null',
+        [LIFECYCLE_ORG, h('72')],
+      )
+      expect(placed === '1', `the placement after the deletion left ${placed ?? 'no'} hold(s), not one`)
+    },
+  ],
+  [
+    // C0.10 PR 1 (T22 item 54; LH-19): add_case_step() holds the case FOR NO KEY UPDATE, and
+    // delete_case() reads it FOR UPDATE, so a review step and the deletion take turns on the case.
+    'LCR-02 PDPA-09 C0.10 LH-19 HOLD-01: a deletion of a refused copy past its window waits for a PDPC review step in progress, then answers held; a step waits for a deletion in progress, then finds no request (22023)',
+    async watcher => {
+      const first = await race(watcher, reviewStarted('b3'), deleteCase('b3', 'held'))
+      expect(first.waited, 'the deletion did not wait for the review step in progress')
+      expect(first.error === undefined, `the deletion failed: ${first.error}`)
+      expect((await caseState(watcher, 'b3')) === 't 0', 'the refused copy under review went, or was logged')
+      const second = await race(watcher, deleteCase('b4', 'deleted'), reviewStarted('b4'))
+      expect(second.waited, 'the review step did not wait for the deletion in progress')
+      expect(second.error === 'There is no such request.', `the review step ended with ${second.error ?? 'no error'}`)
+      expect((await caseState(watcher, 'b4')) === 'f 1', 'the deletion that went first did not delete and log once')
+    },
+  ],
+  [
+    // C0.10 PR 1 (LH-20, LH-45, DB-01): submit_case() reads the requester FOR SHARE and delete_case()
+    // takes them FOR NO KEY UPDATE, so an open copy or correction request sent meanwhile is seen.
+    'LCR-03 PDPA-05 PDPA-07 C0.10 LH-20 LH-45 DB-01: a deletion of a person’s other closed request waits for a request for a copy, or a correction, they are sending, then answers held; a request waits for a deletion in progress, then sends',
+    async watcher => {
+      for (const [person, kind, caseSuffix] of [
+        ['64', 'access', 'b5'],
+        ['65', 'correction', 'b6'],
+      ] as const) {
+        const { waited, error } = await race(watcher, sendLifecycle(person, kind), deleteCase(caseSuffix, 'held'))
+        expect(waited, `the deletion did not wait for the ${kind} request being sent`)
+        expect(error === undefined, `the deletion against a ${kind} request failed: ${error}`)
+        expect((await caseState(watcher, caseSuffix)) === 't 0', `a request held by an open ${kind} request went`)
+      }
+      for (const [person, kind, caseSuffix] of [
+        ['74', 'access', 'b7'],
+        ['75', 'correction', 'b8'],
+      ] as const) {
+        const { waited, error } = await race(watcher, deleteCase(caseSuffix, 'deleted'), sendLifecycle(person, kind))
+        expect(waited, `the ${kind} request did not wait for the deletion in progress`)
+        expect(error === undefined, `the ${kind} request after a deletion failed: ${error}`)
+        expect(
+          (await caseState(watcher, caseSuffix)) === 'f 1',
+          'the deletion that went first did not delete and log once',
+        )
+      }
+      const sent = await scalar(
+        watcher,
+        `select count(*)::text as v from public.cases where org_id = $1 and closed_at is null
+         and requester_person_id in (${hids(['64', '65', '74', '75'])})`,
+        [LIFECYCLE_ORG],
+      )
+      expect(sent === '4', `${sent ?? 'no'} requests were sent, not four`)
+    },
+  ],
+  [
+    // C0.10 PR 1 (R2): a release takes no lock the deletion waits for, and lifecycle_held() reads
+    // holds plainly, so a release not yet committed reads as still active, which fails safe.
+    'LCR-04 ADM-08 C0.10 LH-18 R2: a deletion never waits for a release in progress and answers held; once the release commits, a new deletion answers deleted',
+    async watcher => {
+      const error = await alongside(releaseHold('c1'), deleteCase('b9', 'held'))
+      expect(error === undefined, `the deletion beside the release ended with ${error}`)
+      const after = await alone(deleteCase('b9', 'deleted'))
+      expect(after === undefined, `the deletion after the release ended with ${after}`)
+      expect((await caseState(watcher, 'b9')) === 'f 1', 'the released request was not deleted and logged once')
+    },
+  ],
+  [
+    // C0.10 PR 1 (LH-21): both deletions take the requester's row FOR NO KEY UPDATE first, then
+    // their own request, so they take turns and can't deadlock.
+    'LCR-11 PDPA-09 C0.10 LH-21: two deletions of one requester’s two due requests take turns on the requester’s row, with no deadlock, and both delete',
+    async watcher => {
+      const { waited, error } = await race(watcher, deleteCase('ba', 'deleted'), deleteCase('bb', 'deleted'))
+      expect(waited, 'the second deletion did not wait on the requester')
+      expect(error === undefined, `the second deletion failed: ${error}`)
+      expect(
+        (await caseState(watcher, 'ba')) === 'f 1' && (await caseState(watcher, 'bb')) === 'f 1',
+        'the two requests were not each deleted and logged once',
+      )
+    },
+  ],
+  [
+    // C0.10 PR 1 (DB-01): is_held() takes its anchor people FOR NO KEY UPDATE, never FOR SHARE, so
+    // a request sent or logged for them (FOR SHARE) can't commit unseen behind it.
+    'LCR-15 PDPA-09 C0.10 LH-18 LH-21 DB-01: is_held() of a person waits for a request for a copy they are sending, then answers true; a request waits for is_held() in progress, then sends',
+    async watcher => {
+      const first = await race(watcher, sendLifecycle('68', 'access'), isHeldStep('68', true))
+      expect(first.waited, 'is_held() did not wait for the request being sent')
+      expect(first.error === undefined, `is_held() after the request failed: ${first.error}`)
+      const second = await race(watcher, isHeldStep('78', false), sendLifecycle('78', 'access'))
+      expect(second.waited, 'the request did not wait for is_held() in progress')
+      expect(second.error === undefined, `the request after is_held() failed: ${second.error}`)
+    },
+  ],
+  [
+    // C0.10 PR 1 (DB-02): a placement reads a case it cites FOR KEY SHARE, which conflicts with
+    // delete_case()'s FOR UPDATE, whoever the hold's target is.
+    'LCR-16 ADM-08 C0.10 LH-15 DB-02: a deletion of a request waits for a hold citing it being placed on someone else, then answers held; a placement citing a request waits for its deletion in progress, then finds it gone (22023)',
+    async watcher => {
+      const first = await race(watcher, placeHold('79', 'bc'), deleteCase('bc', 'held'))
+      expect(first.waited, 'the deletion did not wait for the placement citing it')
+      expect(first.error === undefined, `the deletion failed: ${first.error}`)
+      expect((await caseState(watcher, 'bc')) === 't 0', 'the cited request went, or was logged')
+      const second = await race(watcher, deleteCase('bd', 'deleted'), placeHold('7b', 'bd'))
+      expect(second.waited, 'the placement did not wait for the deletion of the request it cites')
+      expect(second.error === 'There is no such request.', `the placement ended with ${second.error ?? 'no error'}`)
+      expect((await caseState(watcher, 'bd')) === 'f 1', 'the deletion that went first did not delete and log once')
+      const placed = await scalar(
+        watcher,
+        'select count(*)::text as v from public.legal_holds where org_id = $1 and target_id = $2',
+        [LIFECYCLE_ORG, h('7b')],
+      )
+      expect(placed === '0', 'a hold citing a deleted request was placed')
+    },
+  ],
+  [
+    'LCR-10 C0.10 LH-31 R9: 0013 applied while a request is submitted, sign-ins write sessions, devices and audit rows, a consumer round reads the outbox, a step is added and the partitions job holds its locks: it locks none of the busy tables, holds cases SHARE ROW EXCLUSIVE and case_steps ACCESS EXCLUSIVE, never waits holding one, and the round reads on over its column grants',
+    async () => {
+      await lifecycleMigrationUnderLoad()
+    },
+  ],
 ]
 
 // Whether the migrator in `db` (any backend there but `except`) is held up, asked of Postgres for
@@ -2902,6 +3200,234 @@ async function heldUp(watcher: Client, db: string, except: number): Promise<bool
   return false
 }
 
+// Whether the backend `pid` sleeps between tries at its locks (0012's and 0013's no-wait loop),
+// asked of Postgres for up to 10 seconds.
+async function sleeping(watcher: Client, pid: number): Promise<boolean> {
+  for (let tries = 0; tries < 200; tries += 1) {
+    const result = await watcher.query<{ wait: string | null }>(
+      'select wait_event as wait from pg_stat_activity where pid = $1',
+      [pid],
+    )
+    if (result.rows[0]?.wait === 'PgSleep') return true
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  return false
+}
+
+// One transaction in `db` with a 2 s lock_timeout, as a request makes one: the prelude (its role
+// and settings), then the statement. The error it ended with, if any (committed if none).
+async function within(db: string, prelude: string, statement: string): Promise<string | undefined> {
+  const client = await connect(db)
+  try {
+    await client.query("begin; set local lock_timeout = '2s'")
+    await client.query(prelude)
+    const error = await client.query(statement).then(
+      () => undefined,
+      (failure: unknown) => message(failure),
+    )
+    await client.query(error === undefined ? 'commit' : 'rollback')
+    return error
+  } finally {
+    await client.end()
+  }
+}
+
+// LCR-10 (C0.10 PR 1, LH-31): PR 1's migration applied under load, in a database of its own built
+// to the migration before it. The migration's file is sent in a transaction this check holds open,
+// as the migrator sends it (as hearth_owner, with its 10 s lock_timeout), so pg_locks can be read for
+// its backend before it commits. Meanwhile: a request being submitted (holding cases, so 0013's
+// no-wait loop sleeps); the partitions job making a month (holding its locks until 0013 is seen held
+// up); sign-ins writing a device, a session and an audit row, and a consumer round reading the
+// outbox, none of which may wait; and, while 0013 holds its window, a step and a submit, which wait
+// at most their 2 s and answer try_again (55P03) or go through.
+async function lifecycleMigrationUnderLoad(): Promise<void> {
+  const folder = new URL('../../../db/migrations/', import.meta.url)
+  const name = readdirSync(folder).find(file => /^\d{4}_lifecycle_holds\.sql$/.test(file))
+  if (name === undefined) throw new Error('the lifecycle migration (NNNN_lifecycle_holds.sql) is missing')
+  const number = name.slice(0, 4)
+  const text = readFileSync(new URL(name, folder), 'utf8')
+  const db = 'concurrency_lifecycle_check'
+  const admin = await connect('postgres')
+  try {
+    await admin.query(`drop database if exists ${db} with (force)`)
+    await admin.query(`create database ${db} owner hearth_owner template template0`)
+  } finally {
+    await admin.end()
+  }
+  const org = h('f0')
+  const hearth = h('f1')
+  const dpo = h('f2')
+  const member = h('f3')
+  const openCase = h('f5')
+  const asMember = `select set_config('app.org_id', '${org}', true), set_config('app.user_id', '${member}', true);
+    set local role hearth_app`
+  const asDpo = `select set_config('app.org_id', '${org}', true), set_config('app.user_id', '${dpo}', true);
+    set local role hearth_app`
+  const asRound = `select set_config('app.org_id', '${org}', true), set_config('app.user_id', '${hearth}', true);
+    set local role hearth_job_offboarding`
+  // A sign-in as the server's makes it: the person FOR SHARE, a device, a session and its audit row.
+  const signIn = `do $$ declare d uuid := gen_random_uuid(); begin
+      perform 1 from public.people where org_id = '${org}' and id = '${member}' and deactivated_at is null for share;
+      insert into public.devices (id, org_id, user_id, label) values (d, '${org}', '${member}', 'Phone');
+      insert into public.sessions (id, org_id, user_id, device_id, token_hash, expires_at)
+      values (gen_random_uuid(), '${org}', '${member}', d, sha256(gen_random_uuid()::text::bytea), now() + interval '1 day');
+      insert into public.audit_events (org_id, actor_id, action, device_id) values ('${org}', '${member}', 'auth.sign_in', d);
+    end $$`
+  // readBatch()'s statement (apps/server/src/outbox/positions.ts), every column but the actor.
+  const readBatch = `with f as (select last_tx, last_id from public.outbox_floors where org_id = '${org}'),
+    b as (select id, tx_id, at, type, version, entity_type, entity_id, container_type, container_id, acl_tokens,
+                 acl_more, index_class, acl_epoch, subject_ids, purpose, tombstone, ids
+          from public.outbox_events where org_id = '${org}' and (tx_id, id) > ('0'::xid8, 0::bigint)
+          order by tx_id, id limit 100)
+    select f.last_tx, b.* from (select) one left join f on true left join b on true`
+  const submit = `select * from public.submit_case('question', 'How long are the rota sheets kept?', gen_random_uuid(), 'race',
+    null, null)`
+  const step = `select * from public.add_case_step('${openCase}', 0, 'note', (now() at time zone 'Asia/Singapore')::date,
+    'A note while the migration runs.', null, null, null, 'race', null, null)`
+  const timedOut = (error: string | undefined) => error === undefined || /lock timeout/.test(error)
+  try {
+    const built = await migrate({ databaseUrl: url(db), role: 'hearth_owner', before: number })
+    if (built.error !== undefined) throw new Error(`the migrations before ${number} failed: ${message(built.error)}`)
+    const setup = await connect(db)
+    try {
+      await setup.query(`insert into public.orgs (id, name) values ('${org}', 'Concurrency check ${number}');
+        insert into public.principals (id, org_id, kind, system_key) values ('${hearth}', '${org}', 'system', 'hearth');
+        insert into public.principals (id, org_id, kind) values ('${dpo}', '${org}', 'human'), ('${member}', '${org}', 'human');
+        insert into public.people (id, org_id, full_name, created_by)
+        values ('${dpo}', '${org}', 'Dee Pio', '${hearth}'), ('${member}', '${org}', 'Mem Ber', '${hearth}');
+        insert into public.role_assignments (org_id, person_id, role, created_by) values ('${org}', '${dpo}', 'dpo', '${hearth}');
+        insert into public.users (id, org_id) values ('${member}', '${org}');
+        insert into public.cases (id, org_id, client_key, kind, came_by, received_on, logged_by, requester_person_id, details)
+        values ('${openCase}', '${org}', gen_random_uuid(), 'question', 'email', (now() at time zone 'Asia/Singapore')::date,
+                '${dpo}', '${member}', 'Asks how long the rota sheets are kept.');
+        select set_config('app.user_id', '${hearth}', true);
+        insert into public.outbox_events (org_id, type, entity_type, entity_id, actor_id, actor_kind, purpose, ids)
+        select '${org}', 'flag.changed', 'feature_flag', f.id, '${hearth}', 'system', 'service_operation',
+               jsonb_build_object('key', f.key, 'enabled', f.enabled)
+        from public.feature_flags f where f.org_id = '${org}' and f.key = 'core.system'`)
+    } finally {
+      await setup.end()
+    }
+    const round = await connect(db)
+    const submitting = await connect(db)
+    const partitions = await connect(db)
+    const migrating = new Client({ ...connection, database: db, options: '-c role=hearth_owner -c lock_timeout=10s' })
+    await migrating.connect()
+    const check = await connect(db)
+    try {
+      const pid = (await migrating.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]?.pid ?? 0
+      // A consumer round in progress, which has read a batch.
+      await round.query("begin; set local lock_timeout = '10s'")
+      await round.query(asRound)
+      await round.query(readBatch)
+      // A request being sent, holding cases.
+      await submitting.query("begin; set local lock_timeout = '10s'")
+      await submitting.query(asMember)
+      await submitting.query(submit)
+      // The partitions job making next year's month, holding its locks.
+      await partitions.query("begin; set local lock_timeout = '10s'")
+      await partitions.query(`select set_config('app.org_id', '${org}', true), set_config('app.user_id', '${hearth}', true);
+        set local role hearth_job_partitions`)
+      await partitions.query('select public.create_data_access_partitions(13)')
+      await migrating.query('begin')
+      const applying = migrating.query(text).then(
+        () => undefined,
+        (error: unknown) => message(error),
+      )
+      expect(await heldUp(check, db, 0), `${number} was never held up by the requests and the partitions job`)
+      // Sign-ins and the round never wait for it.
+      expect((await within(db, asMember, signIn)) === undefined, 'a sign-in waited for the migration, or failed')
+      expect(
+        await round.query(readBatch).then(
+          () => true,
+          () => false,
+        ),
+        'the round could not read the outbox while the migration waited',
+      )
+      await partitions.query('commit')
+      expect(await sleeping(check, pid), `${number} never slept between tries at cases while a request held it`)
+      expect(
+        (await within(db, asMember, signIn)) === undefined,
+        'a sign-in waited for the sleeping migration, or failed',
+      )
+      await submitting.query('commit')
+      const applied = await applying
+      expect(applied === undefined, `${number} failed: ${applied}`)
+      // Its locks, before it commits: none on the busy tables, the window on the requests.
+      const locks = await check.query<{ relname: string; mode: string }>(
+        `select c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
+         where l.pid = $1 and l.locktype = 'relation' and l.granted`,
+        [pid],
+      )
+      const busy = locks.rows.filter(
+        lock =>
+          [
+            'people',
+            'sessions',
+            'devices',
+            'passkeys',
+            'phone_numbers',
+            'notice_acknowledgments',
+            'audit_events',
+            'outbox_events',
+          ].includes(lock.relname) || lock.relname.startsWith('data_access_events'),
+      )
+      expect(busy.length === 0, `${number} holds ${busy.map(lock => `${lock.relname} ${lock.mode}`).join(', ')}`)
+      const held = new Set(locks.rows.map(lock => `${lock.relname} ${lock.mode}`))
+      expect(
+        held.has('cases ShareRowExclusiveLock') && held.has('case_steps AccessExclusiveLock'),
+        `${number} doesn't hold cases SHARE ROW EXCLUSIVE and case_steps ACCESS EXCLUSIVE: ${[...held].join(', ')}`,
+      )
+      // While it holds the window: sign-ins and the round go on; a step and a submit wait at most
+      // their 2 s and answer try_again, or go through.
+      expect((await within(db, asMember, signIn)) === undefined, 'a sign-in waited for the window, or failed')
+      expect(
+        await round.query(readBatch).then(
+          () => true,
+          () => false,
+        ),
+        'the round could not read the outbox while the migration held its window',
+      )
+      const stepped = await within(db, asDpo, step)
+      expect(timedOut(stepped), `a step during the window ended with ${stepped}`)
+      const sent = await within(db, asMember, submit)
+      expect(timedOut(sent), `a request during the window ended with ${sent}`)
+      await migrating.query('commit')
+      // The round reads on over the column grants OD-27 left it, and no longer reads the actor.
+      expect(
+        await round.query(readBatch).then(
+          () => true,
+          () => false,
+        ),
+        'the round could not read a batch over the column grants',
+      )
+      const actor = await round.query('select actor_id from public.outbox_events').then(
+        () => undefined,
+        (error: unknown) => message(error),
+      )
+      expect(
+        actor !== undefined && /permission denied/.test(actor),
+        `the round read the actor after ${number}: ${actor}`,
+      )
+      await round.query('rollback')
+      const after = await check.query<{ v: string }>(
+        `select format('%s %s', to_regclass('public.deletion_log') is not null,
+                       (select count(*) from public.sessions where org_id = '${org}')) as v`,
+      )
+      expect(after.rows[0]?.v === 't 3', `after ${number} the database reads ${after.rows[0]?.v ?? 'nothing'}`)
+    } finally {
+      await round.end().catch(() => {})
+      await submitting.end().catch(() => {})
+      await partitions.end().catch(() => {})
+      await migrating.end().catch(() => {})
+      await check.end().catch(() => {})
+    }
+  } finally {
+    const cleanup = await connect('postgres')
+    await cleanup.query(`drop database if exists ${db} with (force)`)
+    await cleanup.end()
+  }
+}
 async function main(): Promise<number> {
   if (!LOCAL_HOSTS.has(host)) {
     console.error(`check-concurrency: refusing ${host}: point PG* at the local stack or CI's service`)

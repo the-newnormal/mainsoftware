@@ -10,7 +10,9 @@
 -- on processing_restrictions, or running the bootstrap's clearance; from 0010, adding a notice
 -- version, a link or an acknowledgement itself, or running notice_facts(); from 0011, writing a
 -- contact version itself, or running dpo_settings_unchanged(); from 0012, any privilege on cases or
--- case_steps, or running a case helper or trigger function) fails. Nothing may be granted to
+-- case_steps, or running a case helper or trigger function; from 0013, any privilege on deletion_log
+-- or legal_holds, or running any of C0.10's functions, since C0.10 grants hearth_app nothing, LH-30,
+-- which 180's LCD-04 also walks) fails. Nothing may be granted to
 -- PUBLIC at all, and hearth_app can create no schema object or temporary table. 032 pins the
 -- worker's roles the same way.
 \ir fixtures/two_orgs.sql

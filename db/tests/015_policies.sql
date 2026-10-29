@@ -56,6 +56,11 @@ begin
   perform pg_temp.check(expected @> (select array_agg(format('%s|org_isolation|PERMISSIVE|ALL|{public}|%s|%s', t, scoped, scoped))
                                      from unnest(array['cases', 'case_steps']) t),
                         'a request table is missing from the expected policies');
+  -- And the deletion log and legal holds (0013, C0.10 LH-10, LH-15; LCD-33): no role holds a grant
+  -- on either, so the policy is the second line, binding any future grantee.
+  perform pg_temp.check(expected @> (select array_agg(format('%s|org_isolation|PERMISSIVE|ALL|{public}|%s|%s', t, scoped, scoped))
+                                     from unnest(array['deletion_log', 'legal_holds']) t),
+                        'a lifecycle table is missing from the expected policies');
 
   select coalesce(array_agg(e order by e), '{}') into missing from unnest(expected) e where e <> all (actual);
   select coalesce(array_agg(a order by a), '{}') into extra from unnest(actual) a where a <> all (expected);

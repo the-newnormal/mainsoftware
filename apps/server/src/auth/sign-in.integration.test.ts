@@ -11,7 +11,9 @@
 //
 // afterAll sweeps the whole run: no log line or audit row holds a number, code, PIN, session token
 // or attempt id; every /api reply was no-store and held no token or attempt id; no Node warning
-// fired (testing/leaks.ts, which the dormant passkey suite runs too); and every write a runtime role
+// fired (testing/leaks.ts, which the dormant passkey suite runs too); every Valkey key the run left
+// is one family's of the retention registry and expires within its family's figure (C0.10 LCI-01,
+// testing/valkey-expiry.ts); and every write a runtime role
 // committed is exempt or had its outbox event naming it (C0.6, T16 item 7; testing/writes.ts). When
 // every test ran and passed, it also checks that every error code was answered, every audit action
 // written and every event type this suite owns appended, at least once; the exceptions are
@@ -47,6 +49,7 @@ import {
   type Stack,
   startStack,
 } from '#src/testing/stack.ts'
+import { valkeyExpiryProblems } from '#src/testing/valkey-expiry.ts'
 import { expectEveryWriteCovered, sweepWrites } from '#src/testing/writes.ts'
 
 // The dormant passkey routes (D46), unregistered while passkeys are off.
@@ -341,12 +344,19 @@ describe('C0.5 sign-in, devices and socket revocation on the Compose stack (ACC-
       // was no-store with no token or attempt id and none a 500, and no Node warning fired.
       await expectNothingLeaked(s)
 
+      // C0.10 LCI-01 (LH-07, TECH-SPEC T23 item 6): every key the run left under its prefix is one
+      // family's of the retention registry, and expires, at most its family's figure from now. When
+      // every test ran, the families sign-in writes and keeps longest were among them.
+      const expiry = await valkeyExpiryProblems(s.valkey, s.prefix)
+      expect(expiry.problems).toEqual([])
+
       // C0.6: every write a runtime role committed is covered by its outbox event, or exempt.
       const all = suite.tasks.every(task => task.type !== 'test' || task.result?.state === 'pass')
       await expectEveryWriteCovered(s.superuser, 'sign-in', { allPassed: all && suite.tasks.length > 0 })
 
       // When every test ran and passed, every code and every audit action was seen.
       if (all && suite.tasks.length > 0) {
+        expect([...expiry.seen]).toEqual(expect.arrayContaining(['attempt', 'otp', 'limit']))
         const answered = new Set(s.replies.map(reply => reply.error))
         // The dormant passkey codes and actions are the passkey suite's (D46, testing/dormant.ts).
         const elsewhere = new Set<string>([
