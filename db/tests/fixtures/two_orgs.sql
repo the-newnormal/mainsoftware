@@ -30,6 +30,10 @@
 --   eb ea's first step: how a5 checked who they are
 --   ec an active legal hold on a9 (the DPO who has left), placed by a6 (0013, C0.10)
 --   ed a legal hold on aa (the former Admin), placed by a6 and released by a5 (0013)
+--   ee a derived item (0014, C0.10 LH-39), fa, made by Hearth from two made-up messages, fc and fd,
+--      readable by the org; a derived item with a message source is held in C0 (a message is a kind
+--      Hearth can't judge yet)
+--   ef a8's cited draft, fb, citing fc (0014)
 -- and a deletion_log row naming a device that was deleted (class sign_in_records, cause retention,
 -- a fresh id; 0013), written in the test's own transaction. a8, whose device 070 and 100 delete, is
 -- held by nothing: e8 is an open complaint, which holds nothing (LH-20).
@@ -254,6 +258,24 @@ begin
      pg_temp.id(o, 'a6'), now(), pg_temp.id(o, 'a5'), 'The fixture matter ended');
   insert into public.deletion_log (org_id, class_key, object_table, object_id, cause)
     values (org, 'sign_in_records', 'devices', gen_random_uuid()::text, 'retention');
+
+  -- The provenance registry (0014, C0.10 LH-39), written through its triggers as a producer's checked
+  -- writer will, in the test's own transaction, so the deferred completeness check and the edges'
+  -- deferred key stay pending until its end (a TRUNCATE or ALTER TABLE of either table sets both
+  -- immediate first: 200): ee, a derived item made from two made-up messages, and ef, a8's cited
+  -- draft citing the first. No table holds a message or a draft before C1.1 and C1.2: sources and
+  -- items are polymorphic, a kind and an id.
+  insert into public.provenance_items (id, org_id, item_kind, item_id, mode, source_count, acl_tokens, acl_more, index_class,
+                                       acl_epoch, created_by)
+    values (pg_temp.id(o, 'ee'), org, 'derived', pg_temp.id(o, 'fa'), 'derived', 2, array['o:' || org], '[]', 'normal', 1,
+            hearth);
+  insert into public.provenance_sources (org_id, item, number, source_kind, source_id) values
+    (org, pg_temp.id(o, 'ee'), 1, 'message', pg_temp.id(o, 'fc')),
+    (org, pg_temp.id(o, 'ee'), 2, 'message', pg_temp.id(o, 'fd'));
+  insert into public.provenance_items (id, org_id, item_kind, item_id, mode, created_by)
+    values (pg_temp.id(o, 'ef'), org, 'draft', pg_temp.id(o, 'fb'), 'cited', pg_temp.id(o, 'a8'));
+  insert into public.provenance_sources (org_id, item, number, source_kind, source_id)
+    values (org, pg_temp.id(o, 'ef'), 1, 'message', pg_temp.id(o, 'fc'));
 end
 $$;
 

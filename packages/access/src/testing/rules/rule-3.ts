@@ -6,6 +6,7 @@ import {
   can,
   canRead,
   covers,
+  derivedFacts,
   type Facts,
   filterReadable,
   type Id,
@@ -16,7 +17,7 @@ import {
   readersOf,
   SEARCHABLE_CLASSES,
   type Subject,
-  type World,
+  World,
 } from '../../index.ts'
 import {
   AG,
@@ -24,6 +25,7 @@ import {
   agent,
   assistant,
   C,
+  CHAIN_DERIVED,
   CM,
   CV,
   DV,
@@ -32,13 +34,17 @@ import {
   FI,
   human,
   M,
+  ORG,
   P,
+  provenanceRowsOf,
   R,
   ref,
   S,
   SC,
   SEED_PEOPLE,
+  SEVERAL_CLAUSE_DERIVED,
   ST,
+  system,
   T,
   TH,
   TK,
@@ -170,10 +176,42 @@ export const RULE_3: readonly RuleCase[] = [
     expect(readable).toBeGreaterThan(100)
     expect(unreadable).toBeGreaterThan(100)
   }),
-  core(
+  c0(
     'R3-01b',
-    'C0.10',
-    'Rule 3 BRAIN-08 C0.10: the provenance registry stores every derived row’s sources, and its outbox ACL snapshot is the intersection of theirs',
+    'Rule 3 BRAIN-08 C0.10: every derived item rebuilt from its provenance rows has the same sources, and the ACL row stored with it admits exactly those who can read every source',
+    () => {
+      // The fixture's derived items, those whose readers need several clauses, and a chain (a digest
+      // made from the derived ops summary), stored as a producer stores them (0014; LH-39): the World
+      // is rebuilt from the rows alone (derivedFacts()), which recomputes each item's readers from its
+      // sources. Agents stay out: they read by scope, never through a stored row (R3-18).
+      const w = withDerived([...SEVERAL_CLAUSE_DERIVED, ...CHAIN_DERIVED])
+      const ids = w.facts.derived.map(d => d.id)
+      const rows = provenanceRowsOf(w, ids)
+      const rebuilt = new World({ ...w.facts, derived: derivedFacts(ORG, rows.items, rows.sources) })
+      // dv-no-sources rebuilds with no sources, as it was.
+      expect(rebuilt.facts.derived).toEqual(
+        [...w.facts.derived].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+      )
+      let readable = 0
+      let unreadable = 0
+      for (const { id, sources } of w.facts.derived) {
+        const item = ref.derived(id)
+        const stored = rows.stored.get(id)
+        expect(aclOf(rebuilt, item), id).toEqual(stored)
+        for (const s of [...subjects, system]) {
+          // [].every is true, so an item with no sources is read by nobody by its length.
+          const expected = sources.length > 0 && sources.every(source => canRead(w, s, source))
+          const label = `${s.kind} ${s.id}: ${id}`
+          expect(canRead(rebuilt, s, item), label).toBe(expected)
+          expect(stored !== undefined && rowReadable(stored, new Set(keysOf(rebuilt, s))), label).toBe(expected)
+          if (expected) readable++
+          else unreadable++
+        }
+      }
+      // The loop saw both answers many times, so it checks something both ways.
+      expect(readable).toBeGreaterThan(40)
+      expect(unreadable).toBeGreaterThan(80)
+    },
   ),
   c0(
     'R3-02',

@@ -1,6 +1,7 @@
 -- T18, CLAUDE.md Database: the worker's roles (0007, 0008; 0009 lets hearth_queue read the registers,
 -- and 0010 the notice's versions and links, T22 item 9; 0011 and 0012 give them nothing; 0013 narrows
--- the two consumers' outbox read to every column but the actor, OD-27). The worker logs
+-- the two consumers' outbox read to every column but the actor, OD-27; 0014 gives them nothing: no
+-- privilege on the provenance tables or any of its functions, LCD-40). The worker logs
 -- in as hearth_worker, which holds nothing itself and takes one job role per transaction; each job
 -- role gets only the grants its jobs need. This pins every privilege each job role can use on every
 -- table, column, sequence and function, however it got it, as 030 does hearth_app's, so any new

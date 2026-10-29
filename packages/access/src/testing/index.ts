@@ -9,23 +9,30 @@
 // - a group DM with join and leave eras, a person who has left with a role never revoked, a
 //   revoked Admin, an archived team with a Team Admin, a pending DPO grant, and a second org;
 // - a few devices and passkeys, live and ended, for the requests about your own (C0.5).
+// Beside the fixture, kept out of it: derived items with several clauses and a chain, and the
+// provenance registry's rows for any of a World's derived items, with the changes 0014 makes to them
+// (C0.10, R3-01b, R7-11).
 // Everything here is made up; nothing is anyone's data. Test-only: the server image leaves out
 // testing/ folders.
-import type {
-  ChannelFact,
-  ConversationFact,
-  Facts,
-  FileFact,
-  FolderFact,
-  Grant,
-  Id,
-  MembershipFact,
-  MessageFact,
-  Ref,
-  RoomFact,
-  SessionFact,
-  Subject,
+import { type AclRow, aclOf } from '../lists.ts'
+import {
+  type ChannelFact,
+  type ConversationFact,
+  type DerivedFact,
+  type Facts,
+  type FileFact,
+  type FolderFact,
+  type Grant,
+  type Id,
+  type MembershipFact,
+  type MessageFact,
+  RESOURCE_KINDS,
+  type Ref,
+  type RoomFact,
+  type SessionFact,
+  type Subject,
 } from '../model.ts'
+import type { ProvenanceItemRow, ProvenanceSourceRow } from '../provenance.ts'
 import { World } from '../world.ts'
 
 const seedPerson = (n: string) => `b0000000-0000-4000-8000-0000000000${n}`
@@ -254,26 +261,7 @@ export const M = {
 // Every resource in the fixture, by kind, for loops over "everything".
 export const ALL_REFS = (): Ref[] => {
   const world = fixtureWorld()
-  const kinds = [
-    'channel',
-    'dm',
-    'group_dm',
-    'agent_dm',
-    'assistant_chat',
-    'room',
-    'thread',
-    'message',
-    'session',
-    'slide_copy',
-    'event',
-    'task',
-    'suggested_task',
-    'folder',
-    'file',
-    'comment',
-    'derived',
-  ] as const
-  return kinds.flatMap(kind => world.all(kind).map(fact => ({ kind, id: (fact as { id: Id }).id })))
+  return RESOURCE_KINDS.flatMap(kind => world.all(kind).map(fact => ({ kind, id: (fact as { id: Id }).id })))
 }
 
 export const human = (id: Id): Subject => ({ kind: 'human', id })
@@ -300,6 +288,20 @@ export const ref = {
   comment: (id: Id): Ref => ({ kind: 'comment', id }),
   derived: (id: Id): Ref => ({ kind: 'derived', id }),
 }
+
+// Derived items whose readers need several clauses, their sources read by different sets (Rule 3),
+// so a stored row's acl_more is exercised (scripts/check-access-sql.ts, R3-01b). Kept out of
+// fixtureFacts(), so the suite's loops over the fixture don't change.
+export const SEVERAL_CLAUSE_DERIVED: readonly DerivedFact[] = [
+  { id: 'dv-check-leadership-q3', sources: [ref.message(M.leadership), ref.file(FI.q3Numbers)] },
+  { id: 'dv-check-leadership-forecast', sources: [ref.message(M.leadership), ref.file(FI.forecast)] },
+  { id: 'dv-check-q4-leadership', sources: [ref.message(M.q4Third), ref.message(M.leadership)] },
+]
+// A chain: a digest made from the ops summary, itself derived, and a #general message (R3-01b,
+// R7-11, the registry's checks in scripts/check-access-sql.ts). Kept out of fixtureFacts() too.
+export const CHAIN_DERIVED: readonly DerivedFact[] = [
+  { id: 'dv-ops-digest', sources: [ref.derived(DV.opsSummary), ref.message(M.general)] },
+]
 
 const ALL_STAFF = [...SEED_PEOPLE, P.cfo]
 
@@ -759,6 +761,78 @@ export function fixtureFacts(): Facts {
 export function fixtureWorld(change?: (facts: Facts) => Facts): World {
   const facts = fixtureFacts()
   return new World(change ? change(facts) : facts)
+}
+
+// The provenance registry's rows for some of a World's derived items, as a producer stores them
+// (0014; TECH-SPEC T23 item 14, LH-39): one live item row per fact, its record id 'pv-' and the
+// fact's id, its edges numbered 1 to n in the fact's order, and the ACL row stored with it, aclOf's.
+// derivedFacts() rebuilds the facts from items and sources; the transformers below leave the rows
+// as the database's withdrawal, cascade and stale-marking do (LH-41, LH-42).
+export interface ProvenanceRows {
+  items: readonly ProvenanceItemRow[]
+  sources: readonly ProvenanceSourceRow[]
+  // By derived item id.
+  stored: ReadonlyMap<Id, AclRow>
+}
+export function provenanceRowsOf(world: World, ids: readonly Id[]): ProvenanceRows {
+  const items: ProvenanceItemRow[] = []
+  const sources: ProvenanceSourceRow[] = []
+  const stored = new Map<Id, AclRow>()
+  for (const id of ids) {
+    const fact = world.get({ kind: 'derived', id })
+    if (!fact) throw new Error(`The world holds no derived item ${id}`)
+    const record = `pv-${id}`
+    items.push({
+      id: record,
+      org_id: world.orgId,
+      item_kind: 'derived',
+      item_id: id,
+      mode: 'derived',
+      state: 'live',
+      source_count: fact.sources.length,
+    })
+    fact.sources.forEach((source, at) => {
+      sources.push({
+        org_id: world.orgId,
+        item: record,
+        number: at + 1,
+        source_kind: source.kind,
+        source_id: source.id,
+        gone_at: null,
+      })
+    })
+    stored.set(id, aclOf(world, ref.derived(id)))
+  }
+  return { items, sources, stored }
+}
+// A withdrawal (withdraw_dependants()): each item withdrawn, its stored row nobody's.
+export function withdraw(rows: ProvenanceRows, ids: readonly Id[]): ProvenanceRows {
+  const chosen = new Set(ids)
+  return {
+    items: rows.items.map((r): ProvenanceItemRow => (chosen.has(r.item_id) ? { ...r, state: 'withdrawn' } : r)),
+    sources: rows.sources,
+    stored: new Map(
+      [...rows.stored].map(([id, row]): [Id, AclRow] => [id, chosen.has(id) ? { ...row, tokens: [], more: [] } : row]),
+    ),
+  }
+}
+// A deleted source (lifecycle_cascade()): every edge naming it gone.
+export function markGone(rows: ProvenanceRows, source: Ref): ProvenanceRows {
+  const gone = (e: ProvenanceSourceRow) => e.source_kind === source.kind && e.source_id === source.id
+  return {
+    ...rows,
+    sources: rows.sources.map(e => (gone(e) ? { ...e, gone_at: '2026-10-29T00:00:00.000Z' } : e)),
+  }
+}
+// An edited source (provenance_mark_stale()): each live item stale, its stored row unchanged.
+export function markStale(rows: ProvenanceRows, ids: readonly Id[]): ProvenanceRows {
+  const chosen = new Set(ids)
+  return {
+    ...rows,
+    items: rows.items.map(
+      (r): ProvenanceItemRow => (chosen.has(r.item_id) && r.state === 'live' ? { ...r, state: 'stale' } : r),
+    ),
+  }
 }
 
 // A second org, to show nothing crosses orgs (ACC-11): its own Owner, a public channel and an

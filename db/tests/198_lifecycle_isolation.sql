@@ -1,5 +1,6 @@
 -- test-db: repeatable read
--- PDPA-09, ADM-08 (C0.10 PR 1, 0013; LH-18, LH-21; TECH-SPEC T23 item 12; review HOLDS-03): a hold
+-- PDPA-09, ADM-08 (C0.10 PR 1, 0013, and PR 2, 0014; LH-18, LH-21, LH-41, LH-42; TECH-SPEC T23 items
+-- 12 and 14; review HOLDS-03): a hold
 -- is decided only under READ COMMITTED. lifecycle_held() takes its locks and then reads in later
 -- statements, each with a new snapshot under READ COMMITTED, so it sees a request or a hold that
 -- committed while its locks waited. Under REPEATABLE READ every read would see the transaction's
@@ -8,8 +9,11 @@
 --   LCD-13 is_held() refuses (25000) for a person nothing holds;
 --   LCD-09 the owner's logged delete of a released legal hold, which nothing holds, refuses (25000),
 --          and so does the superuser's;
---   LCD-27 delete_case() of a request past its period refuses (25000), deleting and logging nothing.
--- Each would pass under READ COMMITTED (190's LCD-09 and LCD-13, 196's LCD-28). The first line asks
+--   LCD-27 delete_case() of a request past its period refuses (25000), deleting and logging nothing;
+--   LCD-36, LCD-38 withdraw_dependants(), provenance_mark_stale(), lifecycle_cascade() and
+--          provenance_forget() (0014) each refuse (25000) by their own first check, before they lock,
+--          mark, withdraw, log or delete anything.
+-- Each would pass under READ COMMITTED (190's LCD-09 and LCD-13, 196's LCD-28, 200's LCD-36 to LCD-38). The first line asks
 -- scripts/test-db.sh to run this test REPEATABLE READ. The two-org fixture sets managers, which this
 -- level refuses (0002), so this builds its own small org, as 085 does; everyone in it is made up.
 do $$
@@ -98,6 +102,35 @@ begin
      or exists (select 1 from public.audit_events where action = 'case.deleted'
                 and target_id = 'f4000000-0000-4000-8000-0000000000e2') then
     raise exception 'a refusal under REPEATABLE READ deleted or logged something (HOLDS-03)';
+  end if;
+end
+$$;
+
+-- LCD-36, LCD-38 (HOLDS-03): the provenance registry's definers (0014), as the deletion code will run
+-- them (the owner, the org set). Each refuses first, so none writes: org 4's deletion log holds as
+-- many rows after as before (LCD-09's log_deletion() above left its row for the rest of this file),
+-- none of them the provenance class's, and neither provenance table holds a row of org 4.
+create temporary table lcd_36_before on commit drop as
+  select count(*) as n from public.deletion_log where org_id = 'f4000000-0000-4000-8000-000000000000';
+set local role hearth_owner;
+select set_config('app.org_id', 'f4000000-0000-4000-8000-000000000000', true);
+select pg_temp.expect_error($$select public.withdraw_dependants('message', gen_random_uuid(), 'source_deleted')$$, '25000',
+                            'What was made from a record is withdrawn, marked or deleted only under READ COMMITTED.');
+select pg_temp.expect_error($$select public.provenance_mark_stale('message', gen_random_uuid(), 'source_edited')$$, '25000',
+                            'What was made from a record is withdrawn, marked or deleted only under READ COMMITTED.');
+select pg_temp.expect_error($$select public.lifecycle_cascade('message', gen_random_uuid(), 1, 10)$$, '25000',
+                            'What was made from a record is withdrawn, marked or deleted only under READ COMMITTED.');
+select pg_temp.expect_error($$select public.provenance_forget('derived', gen_random_uuid(), 'retention', null)$$, '25000',
+                            'What was made from a record is withdrawn, marked or deleted only under READ COMMITTED.');
+reset role;
+do $$
+begin
+  if (select count(*) from public.deletion_log where org_id = 'f4000000-0000-4000-8000-000000000000')
+       <> (select n from lcd_36_before)
+     or exists (select 1 from public.deletion_log where class_key = 'provenance' or object_table = 'provenance_items')
+     or exists (select 1 from public.provenance_items where org_id = 'f4000000-0000-4000-8000-000000000000')
+     or exists (select 1 from public.provenance_sources where org_id = 'f4000000-0000-4000-8000-000000000000') then
+    raise exception 'a provenance definer under REPEATABLE READ marked, logged or deleted something (HOLDS-03)';
   end if;
 end
 $$;

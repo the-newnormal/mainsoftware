@@ -7,7 +7,9 @@
 // C0.8 it decides who signs in with the PIN and how a session re-authenticates (reauth.ts, D46),
 // and who reads their own session and client flags (session.read_own, T21). From C0.9 it decides
 // what anyone may do before acknowledging the current privacy notice (notice.ts, PDPA-03), and from
-// C0.9 PR 3b who sends, reads and works requests to the DPO (case.*, PDPA-13, OD-14, OD-15).
+// C0.9 PR 3b who sends, reads and works requests to the DPO (case.*, PDPA-13, OD-14, OD-15). From
+// C0.10 PR 2 it rebuilds the World's derived facts from the provenance registry's rows (provenance.ts,
+// BRAIN-08), recomputing their readers from their sources rather than trusting a stored row.
 export { isAdmin, isOwner } from './admin.ts'
 export {
   type Audience,
@@ -29,6 +31,7 @@ export { eraToken, keysOf, membersToken, orgToken, personToken, teamAdminsToken,
 export { type AclRow, aclOf, filterReadable, listAccessible, type SourceRun, sourceAllowed } from './lists.ts'
 export * from './model.ts'
 export { admitsSocket, NOTICE_FREE, NOTICE_SETUP, type NoticeStanding, type NoticeUse, noticeAdmits } from './notice.ts'
+export { derivedFacts, type ProvenanceItemRow, type ProvenanceSourceRow } from './provenance.ts'
 export { type Acl, allows, attendeesOf, NOBODY, readersOf } from './readers.ts'
 export { holdsPinRole, type ReauthFacts, reauthenticated, reauthMethodOf } from './reauth.ts'
 export type {

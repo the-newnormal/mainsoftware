@@ -17,7 +17,7 @@ import {
 } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
 import { DELETE_PATHS, type DeletePath, GUARDED_TABLES } from '#src/lifecycle/deletes.ts'
-import type { Coverage } from '#src/outbox/coverage.ts'
+import { type Coverage, WRITES } from '#src/outbox/coverage.ts'
 import {
   aiClassProblems,
   bindingProblems,
@@ -35,6 +35,7 @@ import {
   eventProblems,
   type Fn,
   type ForeignKey,
+  type FoundPath,
   fixedAgeProblems,
   flagProblems,
   type Grant,
@@ -50,6 +51,7 @@ import {
   type RegisterCode,
   type Relation,
   recordedDecisions,
+  recordedReasons,
   registerProblems,
   resolverProblems,
   retentionDefaultProblems,
@@ -159,6 +161,40 @@ describe('C0.6 T16 item 7 check-catalogues: every way to write is covered', () =
     }
     expect(contentProblems(mixed, type => type === 'message.created', [])).toEqual([
       expect.stringContaining("'post_message(uuid, text)' is exempt, but writes messages"),
+    ])
+  })
+
+  it('T23 item 14 LH-43: an exempt entry that inserts into the provenance registry is refused while CONTENT_TABLES is empty: a producer appends its events', () => {
+    const produced = (key: string, table: string) =>
+      `'${key}' is exempt, but inserts into ${table}, the provenance registry's: a producer's writes append their events (T23 item 14, LH-43)`
+    // A producer marked exempt with no event, by its function and by a grant.
+    const producer: Record<string, Coverage> = {
+      'record_summary(uuid, uuid[])': {
+        exempt: 'a made-up producer',
+        writes: ['provenance_items:INSERT', 'provenance_sources:INSERT', 'audit_events:INSERT'],
+      },
+      'hearth_app provenance_sources:INSERT': { exempt: 'a made-up grant' },
+    }
+    expect(contentProblems(producer, () => false, [])).toEqual([
+      produced('record_summary(uuid, uuid[])', 'provenance_items'),
+      produced('record_summary(uuid, uuid[])', 'provenance_sources'),
+      produced('hearth_app provenance_sources:INSERT', 'provenance_sources'),
+    ])
+    // With its events it passes, and so do 0014's definers, which only update and delete the
+    // registry's rows, as coverage.ts has them.
+    const covered: Record<string, Coverage> = {
+      'record_summary(uuid, uuid[])': {
+        events: ['message.created'],
+        writes: ['provenance_items:INSERT', 'provenance_sources:INSERT'],
+      },
+    }
+    expect(contentProblems(covered, () => false, [])).toEqual([])
+    expect(contentProblems(WRITES)).toEqual([])
+    // Once provenance_items is content, the content rule names that insert, and only once.
+    expect(contentProblems(producer, () => false, ['provenance_items'])).toEqual([
+      "'record_summary(uuid, uuid[])' is exempt, but writes provenance_items, which holds content, whose every write appends its event with an ACL snapshot",
+      produced('record_summary(uuid, uuid[])', 'provenance_sources'),
+      produced('hearth_app provenance_sources:INSERT', 'provenance_sources'),
     ])
   })
 
@@ -741,13 +777,13 @@ describe('C0.9 PD-41 T22 item 18 check 6: NOTICE_TRANSFER_FACTS equals what noti
 const classes: Readonly<Record<string, RetentionClass>> = RETENTION_CLASSES
 // retention_class_defaults() as migration 0013 writes it: the registry's own rows.
 const classRows: ClassDefault[] = retentionClassDefaults()
-// Every table of public as 0001 to 0013 make them, each its own root.
+// Every table of public as 0001 to 0014 make them, each its own root.
 const TABLES = Object.values(classes).flatMap(spec => spec.tables)
 const relations: Relation[] = TABLES.map(name => ({ name, root: name }))
 const changingClass = (key: string, change: Partial<ClassDefault>) =>
   classRows.map(row => (row.key === key ? { ...row, ...change } : row))
 
-// The guard's triggers as 0013 creates them.
+// The guard's triggers as 0013 and 0014 create them.
 const guardTrigger = (table: string): TriggerRow => ({
   relation: table,
   root: table,
@@ -926,7 +962,7 @@ describe('LCV-04 C0.10 T23 items 3, 8 and 12 check 7: fixed ages, the guard and 
     ])
   })
 
-  it('7d LH-11 LH-12 C010-SPEC-09: passes the guard as 0013 puts it, and names a guard missing, disabled, enabled ALWAYS, misnamed, mis-typed or naming another table, and one on a table GUARDED_TABLES doesn’t list', () => {
+  it('7d LH-11 LH-12 C010-SPEC-09: passes the guard as 0013 and 0014 put it, and names a guard missing, disabled, enabled ALWAYS, misnamed, mis-typed or naming another table, and one on a table GUARDED_TABLES doesn’t list', () => {
     expect(guardProblems(GUARDED_TABLES, relations, TRIGGERS, APPLY)).toEqual([])
     const changing = (table: string, fn: string, change: Partial<TriggerRow>) =>
       TRIGGERS.map(t => (t.relation === table && t.fn === fn ? { ...t, ...change } : t))
@@ -1112,7 +1148,7 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
   // them as citations.
   const UNRECORDED = `LH-${99}`
   const OUTSIDE_T23 = `LH-${77}`
-  // The delete paths as 0001 to 0013 build them.
+  // The delete paths as 0001 to 0014 build them.
   const fns: Fn[] = [
     {
       key: 'purge_outbox(integer)',
@@ -1153,6 +1189,25 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       trigger: true,
       source: 'if exists (select 1 from public.deletion_log) then return old; end if;',
     },
+    // 0014's two paths into the provenance registry (LH-41), each deleting items and their edges.
+    {
+      key: 'lifecycle_cascade(text, uuid, bigint, integer)',
+      definer: true,
+      trigger: false,
+      source: `perform public.lifecycle_held(org, '{}', k, i);
+        perform public.log_deletion('provenance', 'provenance_items', c::text, 'cascade', null, parent, null, null, false);
+        delete from public.provenance_items p where p.id = c;
+        update public.provenance_sources e set gone_at = pg_catalog.now() where e.source_id = i;
+        delete from public.provenance_sources e where e.item = c;`,
+    },
+    {
+      key: 'provenance_forget(text, uuid, text, bigint)',
+      definer: true,
+      trigger: false,
+      source: `logged := public.log_deletion('provenance', 'provenance_items', r::text, cause, null, parent, null, null, false);
+        delete from public.provenance_items p where p.id = r;
+        delete from public.provenance_sources e where e.item = r;`,
+    },
   ]
   const deleteGrants: Grant[] = [
     { role: 'hearth_app', table: 'working_hours', op: 'DELETE' },
@@ -1171,12 +1226,14 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
   ]
   const holds = holdsTables(classes)
   const recorded = (decision: string) => ['LH-26', 'LH-48', 'LH-58', 'T15 item 16'].includes(decision)
+  // Why a guarded path's rows are never a provenance source: a recorded decision, or an id T23 cites.
+  const reasons = (id: string) => recorded(id) || id === 'RQS-11'
   const found = deletePathsOf(deleteGrants, fns, keys)
   const problemsOf = (
     paths = found,
     entries: Readonly<Record<string, DeletePath>> = DELETE_PATHS,
     guarded: readonly string[] = GUARDED_TABLES,
-  ) => deletePathProblems(entries, guarded, paths, holds, recorded)
+  ) => deletePathProblems(entries, guarded, paths, holds, recorded, reasons)
 
   it('finds each path as check 1 finds writes, and passes DELETE_PATHS as it stands', () => {
     expect(found.map(path => [path.key, path.deletes])).toEqual([
@@ -1187,11 +1244,214 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       ['fk passkeys.passkeys_org_id_user_id_created_device_id_fkey', []],
       ['fk schedule_runs.schedule_runs_org_id_resumed_from_fkey', []],
       ['hearth_app working_hours:DELETE', ['working_hours']],
+      ['lifecycle_cascade(text, uuid, bigint, integer)', ['provenance_items', 'provenance_sources']],
+      ['provenance_forget(text, uuid, text, bigint)', ['provenance_items', 'provenance_sources']],
       ['purge_jobs(integer)', ['jobs']],
       ['purge_outbox(integer)', ['outbox_events']],
       ['purge_schedule_runs(integer)', ['schedule_runs']],
     ])
     expect(problemsOf()).toEqual([])
+  })
+
+  it('LH-12 LH-41: the provenance registry’s two paths are guarded, and an edge table the guard leaves off is named', () => {
+    const forget = 'provenance_forget(text, uuid, text, bigint)'
+    expect(
+      problemsOf(
+        found.filter(path => path.key === forget),
+        { [forget]: { guarded: true, provenance: { registry: true } } },
+        GUARDED_TABLES.filter(table => table !== 'provenance_sources'),
+      ),
+    ).toEqual([
+      "provenance_forget(text, uuid, text, bigint) is guarded in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.provenance_sources, which GUARDED_TABLES doesn't list: a table gets lifecycle_guard() with its first delete path (LH-12)",
+    ])
+    // Exempt, either would delete from a table whose class's holds apply.
+    expect(
+      problemsOf(
+        found.filter(path => path.key === forget),
+        { [forget]: { exempt: 'a withdrawn leftover', decision: 'LH-48' } },
+      ),
+    ).toEqual([
+      "provenance_forget(text, uuid, text, bigint) is exempt in DELETE_PATHS in apps/server/src/lifecycle/deletes.ts, but deletes from public.provenance_items, public.provenance_sources, whose retention class's holds apply: make it guarded or checked",
+    ])
+  })
+
+  it('T23 item 14 LH-41: a guarded path says what it is to the provenance registry, and one whose rows can be a source calls provenance_forget() in its body', () => {
+    // A message's delete path as BUILD-PLAN's C1.1 row has it: it asks the hold decision, logs and
+    // deletes from a guarded messages table, then forgets the message, which cascades.
+    const call = "perform public.provenance_forget('message', the_message, 'cascade', parent);"
+    const remove = (forget: string): FoundPath[] =>
+      deletePathsOf(
+        [],
+        [
+          {
+            key: 'delete_message(uuid)',
+            definer: true,
+            trigger: false,
+            source: `begin
+              if public.is_held('message', the_message) then raise exception 'held'; end if;
+              parent := public.log_deletion('messages', 'messages', the_message::text, 'user', null, null, null, null, false);
+              delete from public.messages m where m.org_id = org and m.id = the_message;
+              ${forget}
+            end`,
+          },
+        ],
+        [],
+        {},
+      )
+    const guarded = [...GUARDED_TABLES, 'messages']
+    const as = (provenance: unknown) => ({ 'delete_message(uuid)': { guarded: true, provenance } as DeletePath })
+    const where = 'DELETE_PATHS in apps/server/src/lifecycle/deletes.ts'
+    const forgets = as({ forgets: true })
+    expect(problemsOf(remove(call), forgets, guarded)).toEqual([])
+    // The call missing, named only in a comment or a string, or only the cascade called: none is the
+    // call, so what was made from or cites the message would stay.
+    const never = `delete_message(uuid) is guarded in ${where} as deleting rows that can be a provenance source, but its body never calls provenance_forget(): call it for each row it deletes, in its transaction, so what was made from or cites the row goes with it (T23 item 14, LH-41)`
+    expect(problemsOf(remove(''), forgets, guarded)).toEqual([never])
+    expect(
+      problemsOf(
+        remove(
+          `-- ${call}\n raise notice 'provenance_forget(%)', x; perform public.lifecycle_cascade('message', the_message, parent, 100);`,
+        ),
+        forgets,
+        guarded,
+      ),
+    ).toEqual([never])
+    // An entry that declares nothing, or something else, is refused whatever its body.
+    const nothing = `delete_message(uuid) is guarded in ${where}, but doesn't say what it is to the provenance registry: forgets (its rows can be a source, and its body calls provenance_forget()), notASource with the decision that records why, or registry (T23 item 14)`
+    expect(problemsOf(remove(call), { 'delete_message(uuid)': { guarded: true } as DeletePath }, guarded)).toEqual([
+      nothing,
+    ])
+    expect(problemsOf(remove(call), as({}), guarded)).toEqual([nothing])
+    // Never a source: it cites a decision check 8 reads, or an id T23 cites.
+    expect(problemsOf(remove(''), as({ notASource: 'a planted reason', decision: 'RQS-11' }), guarded)).toEqual([])
+    expect(problemsOf(remove(''), as({ notASource: 'a planted reason', decision: UNRECORDED }), guarded)).toEqual([
+      `'delete_message(uuid)' in ${where} says its rows are never a provenance source, citing ${UNRECORDED}, which isn't a decision check 8 reads from docs/TECH-SPEC.md or an id T23 cites`,
+    ])
+    // Only lifecycle_cascade() and provenance_forget() are the registry's own, by key, so no other
+    // path can claim to be one (the next case plants more).
+    expect(problemsOf(remove(''), as({ registry: true }), guarded)).toEqual([
+      `delete_message(uuid) says in ${where} that it is the provenance registry's own deletion code, but only lifecycle_cascade() and provenance_forget() are: every other guarded path says forgets or notASource (T23 item 14)`,
+    ])
+    // A grant can't call anything.
+    expect(
+      problemsOf(
+        deletePathsOf([{ role: 'hearth_app', table: 'messages', op: 'DELETE' }], [], [], {}),
+        { 'hearth_app messages:DELETE': { guarded: true, provenance: { forgets: true } } },
+        guarded,
+      ),
+    ).toEqual([
+      `hearth_app messages:DELETE is guarded in ${where} as deleting rows that can be a provenance source, but only a function can call provenance_forget()`,
+    ])
+    // As DELETE_PATHS stands: a request is never a source (RQS-11), and the cascade and
+    // provenance_forget() are the registry's own.
+    expect(
+      Object.entries(DELETE_PATHS).flatMap(([key, entry]) => ('guarded' in entry ? [[key, entry.provenance]] : [])),
+    ).toEqual([
+      ['delete_case(uuid, text, boolean)', { notASource: expect.any(String), decision: 'RQS-11' }],
+      ['lifecycle_cascade(text, uuid, bigint, integer)', { registry: true }],
+      ['provenance_forget(text, uuid, text, bigint)', { registry: true }],
+    ])
+  })
+
+  it('T23 item 14 LH-41: only lifecycle_cascade() and provenance_forget() delete from the provenance registry, and only they say registry', () => {
+    const where = 'DELETE_PATHS in apps/server/src/lifecycle/deletes.ts'
+    const guarded = [...GUARDED_TABLES, 'messages']
+    const cascade = 'lifecycle_cascade(text, uuid, bigint, integer)'
+    // A set-based sweep of withdrawn derived leftovers that deletes the records itself, after the hold
+    // decision and the log row, as C2.9 must not write it: it would skip what provenance_forget() does
+    // for each record, the cascade to what was made from it and marking gone the edges naming it.
+    const sweep = (also = '') =>
+      deletePathsOf(
+        [],
+        [
+          {
+            key: 'sweep_withdrawn(integer)',
+            definer: true,
+            trigger: false,
+            source: `begin
+              if public.lifecycle_held(org, '{}', 'derived', d) then return 0; end if;
+              parent := public.log_deletion('provenance', 'provenance_items', d::text, 'retention', null, null, null, null, false);
+              ${also}
+              delete from public.provenance_items p where p.org_id = org and p.state = 'withdrawn';
+              delete from public.provenance_sources e where e.org_id = org and e.item = d;
+            end`,
+          },
+        ],
+        [],
+        {},
+      )
+    const declared = (key: string, provenance: unknown) => ({ [key]: { guarded: true, provenance } as DeletePath })
+    const records = (key: string, tables = 'public.provenance_items, public.provenance_sources') =>
+      `${key} deletes from ${tables}, which only the registry's own deletion code, lifecycle_cascade() and provenance_forget(), deletes from: call provenance_forget() for each item instead, so what was made from it goes too and the edges naming it are marked gone, and say forgets (T23 item 14, LH-41)`
+    const notOwn = (key: string) =>
+      `${key} says in ${where} that it is the provenance registry's own deletion code, but only lifecycle_cascade() and provenance_forget() are: every other guarded path says forgets or notASource (T23 item 14)`
+    const fn = 'sweep_withdrawn(integer)'
+    // Another function, whatever it says: registry, never a source (citing an id T23 cites), or
+    // forgets, calling provenance_forget() beside its own DELETEs.
+    expect(problemsOf(sweep(), declared(fn, { registry: true }))).toEqual([records(fn), notOwn(fn)])
+    expect(problemsOf(sweep(), declared(fn, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      records(fn),
+    ])
+    expect(
+      problemsOf(
+        sweep("perform public.provenance_forget('derived', d, 'retention', parent);"),
+        declared(fn, { forgets: true }),
+      ),
+    ).toEqual([records(fn)])
+    // A runtime role's DELETE grant on the registry, and an ON DELETE CASCADE key into its edges.
+    const grant = 'hearth_app provenance_items:DELETE'
+    const grants = deletePathsOf([{ role: 'hearth_app', table: 'provenance_items', op: 'DELETE' }], [], [], {})
+    expect(problemsOf(grants, declared(grant, { registry: true }))).toEqual([
+      records(grant, 'public.provenance_items'),
+      notOwn(grant),
+    ])
+    expect(problemsOf(grants, declared(grant, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      records(grant, 'public.provenance_items'),
+    ])
+    const fk = 'fk provenance_sources.provenance_sources_planted_fkey'
+    const cascadeKey = deletePathsOf(
+      [],
+      [],
+      [
+        {
+          table: 'provenance_sources',
+          name: 'provenance_sources_planted_fkey',
+          action: 'c',
+          parent: 'provenance_items',
+        },
+      ],
+      {},
+    )
+    expect(problemsOf(cascadeKey, declared(fk, { registry: true }))).toEqual([
+      records(fk, 'public.provenance_sources'),
+      notOwn(fk),
+    ])
+    // The registry's own code says registry, never anything else.
+    const own = found.filter(path => path.key === cascade)
+    expect(problemsOf(own, declared(cascade, { notASource: 'a planted reason', decision: 'RQS-11' }))).toEqual([
+      `${cascade} is the provenance registry's own deletion code, but ${where} doesn't say registry (T23 item 14)`,
+    ])
+    expect(problemsOf(own, declared(cascade, { forgets: true }))).toEqual([
+      `${cascade} is the provenance registry's own deletion code, but ${where} doesn't say registry (T23 item 14)`,
+    ])
+    // And deletes from the registry's two tables alone.
+    const wider = deletePathsOf(
+      [],
+      [
+        {
+          key: cascade,
+          definer: true,
+          trigger: false,
+          source:
+            'delete from public.messages m where m.id = i; delete from public.provenance_items p where p.id = c; delete from public.provenance_sources e where e.item = c;',
+        },
+      ],
+      [],
+      {},
+    )
+    expect(problemsOf(wider, declared(cascade, { registry: true }), guarded)).toEqual([
+      `${cascade} is the provenance registry's own path in ${where}, but deletes from public.messages: the registry's own paths delete from provenance_items and provenance_sources alone, and every other guarded path says forgets or notASource (T23 item 14)`,
+    ])
   })
 
   it('names an unlisted DELETE grant, an unlisted definer delete and an unlisted ON DELETE CASCADE, and a stale entry', () => {
@@ -1248,9 +1508,10 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       [],
       {},
     )
+    const device = { notASource: 'a device is never a source', decision: 'LH-48' }
     expect(
       problemsOf(paths, {
-        'sweep_devices(integer)': { guarded: true },
+        'sweep_devices(integer)': { guarded: true, provenance: device },
         'purge_audit(integer)': { exempt: 'old rows', decision: 'LH-26' },
         'drop_person(uuid)': { exempt: 'a leaver', decision: 'LH-48' },
       }),
@@ -1261,7 +1522,10 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     ])
     // With the guard on devices, the same path passes.
     expect(
-      problemsOf(paths.slice(2), { 'sweep_devices(integer)': { guarded: true } }, [...GUARDED_TABLES, 'devices']),
+      problemsOf(paths.slice(2), { 'sweep_devices(integer)': { guarded: true, provenance: device } }, [
+        ...GUARDED_TABLES,
+        'devices',
+      ]),
     ).toEqual([])
   })
 
@@ -1335,11 +1599,16 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
       expect.stringContaining('deletes from public.sessions, public.audit_events, whose retention class marks no'),
     ])
     expect(
-      problemsOf(deletePathsOf([], [sweep(logged)], [], {}), { 'c29_sweep_sign_ins(uuid)': { guarded: true } }, [
-        ...GUARDED_TABLES,
-        'sessions',
-        'audit_events',
-      ]),
+      problemsOf(
+        deletePathsOf([], [sweep(logged)], [], {}),
+        {
+          'c29_sweep_sign_ins(uuid)': {
+            guarded: true,
+            provenance: { notASource: 'a sign-in record is never a source', decision: 'LH-58' },
+          },
+        },
+        [...GUARDED_TABLES, 'sessions', 'audit_events'],
+      ),
     ).toEqual([])
     // log_deletion named only in a comment or a string isn't a call; one table marked and one not
     // names only the unmarked one.
@@ -1527,6 +1796,7 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
         deletePathsOf([], [fn(partitions, addsTrigger)], [], pinnedAs(addsTrigger)),
         holdsTables(RETENTION_CLASSES),
         () => true,
+        () => true,
       ),
     ).toEqual([])
     expect(bodyDdlProblems([fn('add_guard()', `begin ${perPartition.replace('%I', 'p')}; end`)])).toEqual([])
@@ -1602,5 +1872,36 @@ describe('LCV-05 C0.10 T23 item 9 check 8: every delete path the database allows
     ])
     // Outside T23, an item a section doesn't have, a section that doesn't exist, or any other shape.
     expect([OUTSIDE_T23, 'LH-02', 'T15 item 17', 'T99 item 1', 'D18', 'lh-26'].filter(isRecorded)).toEqual([])
+    // A requirement or test id is no decision an exempt or checked path may cite.
+    expect(['RQS-11', 'ADM-08'].filter(isRecorded)).toEqual([])
+  })
+
+  it('T23 item 14: reads why a guarded path’s rows are never a provenance source: a recorded decision, or an id T23 cites', () => {
+    const spec = [
+      '# TECH-SPEC',
+      '## T22: the registers',
+      'RQS-10 holds.',
+      '## T23: retention (C0.10)',
+      '1. **Scope (LH-01).**',
+      '14. **Provenance.** A request is never a source (RQS-11; LCA-04e).',
+      '## T24: later',
+      'ADM-08',
+    ].join('\n')
+    const isReason = recordedReasons(spec)
+    expect(['LH-01', 'T23 item 14', 'RQS-11', 'LCA-04e'].filter(isReason)).toEqual([
+      'LH-01',
+      'T23 item 14',
+      'RQS-11',
+      'LCA-04e',
+    ])
+    // Cited outside T23, a longer or shorter id, another case or shape.
+    expect(['RQS-10', 'ADM-08', 'RQS-1', 'RQS-110', 'rqs-11', 'D18', 'RQS-11 and more'].filter(isReason)).toEqual([])
+    // As TECH-SPEC stands, every never-a-source entry in DELETE_PATHS cites one.
+    const real = readFileSync(new URL('../../../docs/TECH-SPEC.md', import.meta.url), 'utf8')
+    const cited = Object.values(DELETE_PATHS).flatMap(entry =>
+      'guarded' in entry && 'notASource' in entry.provenance ? [entry.provenance.decision] : [],
+    )
+    expect(cited).toEqual(['RQS-11'])
+    expect(cited.filter(recordedReasons(real))).toEqual(cited)
   })
 })

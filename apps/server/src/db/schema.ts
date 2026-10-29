@@ -433,6 +433,39 @@ export interface Profiles {
   updated_at: Generated<Timestamp>
 }
 
+export interface ProvenanceItems {
+  id: Generated<string>
+  org_id: string
+  created_tx: Generated<string>
+  item_kind: string
+  item_id: string
+  mode: 'derived' | 'cited'
+  state: Generated<'live' | 'stale' | 'withdrawn'>
+  stale_since: Timestamp | null
+  stale_reason: 'source_edited' | 'source_acl_changed' | null
+  withdrawn_at: Timestamp | null
+  withdrawn_reason: 'source_deleted' | 'source_redacted' | 'source_corrected' | null
+  fingerprint: string | null
+  source_count: number | null
+  acl_tokens: string[] | null
+  acl_more: Json | null
+  index_class: 'normal' | 'dm' | 'agent_dm' | 'personal' | 'playback_only' | 'restricted' | null
+  acl_epoch: Int8 | null
+  created_at: Generated<Timestamp>
+  created_by: string
+}
+
+export interface ProvenanceSources {
+  org_id: string
+  item: string
+  number: number
+  source_kind: string
+  source_id: string
+  source_version: string | null
+  anchor: Json | null
+  gone_at: Timestamp | null
+}
+
 export interface RoleAssignments {
   id: Generated<string>
   org_id: string
@@ -607,6 +640,8 @@ export interface DB {
   processing_register: ProcessingRegister
   processing_restrictions: ProcessingRestrictions
   profiles: Profiles
+  provenance_items: ProvenanceItems
+  provenance_sources: ProvenanceSources
   role_assignments: RoleAssignments
   schedule_runs: ScheduleRuns
   schedules: Schedules

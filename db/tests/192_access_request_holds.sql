@@ -462,7 +462,7 @@ begin
     perform pg_temp.check(not exists (select 1 from public.lifecycle_sources_of(org, k, item)),
                           format('a %s has sources already (LCD-18)', k));
   end loop;
-  perform pg_temp.check((select count(*) from public.lifecycle_kinds()) = 9, 'lifecycle_kinds() isn''t the nine kinds (LCD-18)');
+  perform pg_temp.check((select count(*) from public.lifecycle_kinds()) = 10, 'lifecycle_kinds() isn''t the ten kinds (LCD-18)');
 end
 $$;
 select pg_temp.expect_error(format('select public.lifecycle_persons_of(%L, %L, %L)', pg_temp.id('1', '00'), 'session', pg_temp.id('1', 'e2')),
