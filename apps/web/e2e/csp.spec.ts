@@ -42,6 +42,10 @@ test('CS-02 SHL-69: a tour of every route makes only same-origin requests, both 
     await page.evaluate(async () => {
       await document.fonts.ready
     })
+    // A screen's own reads (Settings › Privacy's GET /api/requests, after a lazy import) finish
+    // before the tour moves on: WebKit and Firefox report a fetch the next navigation cancels as a
+    // page error, which the guard would count.
+    await page.waitForLoadState('networkidle')
   }
   expect(fonts.length).toBeGreaterThanOrEqual(2)
   for (const font of fonts) expect(new URL(font).origin).toBe(E2E_ORIGIN)
