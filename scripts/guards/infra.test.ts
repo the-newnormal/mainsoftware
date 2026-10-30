@@ -28,6 +28,7 @@ import {
   regionFindings,
   ruleFindings,
   scriptFindings,
+  testImportFindings,
   workloadGraphFindings,
 } from './infra'
 import { isScript, readRepoFile, repoFiles, root } from './repo-files'
@@ -343,8 +344,10 @@ describe('IG-06 (C11-D44, C11-D76): the server image only by digest, never built
       // aws-cdk-lib's own image-asset class, which makes a DockerImageAsset (R2GUARD-02).
       "taskDefinition.addContainer('api', { image: new ecs.AssetImage('../apps/server') })",
       "import { AssetImage } from 'aws-cdk-lib/aws-ecs'",
+      // The module through aws-cdk-lib's root.
+      "import { aws_ecr_assets as assets } from 'aws-cdk-lib'",
     ]
-    expect(planted.map(line => ruleFindings('x.ts', line, IMAGE_RULES).length)).toEqual([1, 1, 1, 1, 1, 0, 1, 1])
+    expect(planted.map(line => ruleFindings('x.ts', line, IMAGE_RULES).length)).toEqual([1, 1, 1, 1, 1, 0, 1, 1, 1])
   })
 
   it('no infra script uses one', () => {
@@ -392,6 +395,7 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       k: './node_modules/.bin/cdk gc',
       l: 'cdk synth; cdk -c a=b diff',
       m: 'npx -p aws-cdk cdk deploy',
+      n: 'cdk --no-color true synth',
       ok1: 'cdk synth --quiet',
       ok2: 'HEARTH_FIXTURE=1 cdk --app "node bin/landing-zone.ts" synth',
       ok3: 'cdk -a cdk.out ls && cdk --app=cdk.out list',
@@ -413,11 +417,14 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       'package.json: IG-07 script "k" runs cdk gc: only synth or list',
       'package.json: IG-07 script "l" runs cdk diff: only synth or list',
       'package.json: IG-07 script "m" runs cdk deploy: only synth or list',
+      'package.json: IG-07 script "n" runs cdk true: only synth or list',
     ])
   })
 
   // aws-cdk 2.1146.1's parser isn't strict, so an option it doesn't know takes the next word as its
-  // value: `cdk --toolkit-stack-name synth deploy` deploys (R2GUARD-01).
+  // value: `cdk --toolkit-stack-name synth deploy` deploys (R2GUARD-01). A short option with nothing
+  // after its = is two words to it, an option named = taking the next: `cdk -c= synth deploy` deploys,
+  // and so does `cdk -a= synth` once npm appends a caller's `deploy` (R3PARSE-01).
   it('refuses an option before the subcommand that isn’t one of the CLI’s own, whose value it can’t tell from a subcommand', () => {
     const scripts = {
       a: 'cdk --toolkit-stack-name synth deploy',
@@ -428,10 +435,14 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       f: 'cdk -jo synth deploy',
       g: 'cdk --telemetry-file --toolkit-stack-name synth deploy',
       h: 'cdk  --require-approval never deploy',
+      i: 'cdk -c= synth deploy',
+      j: 'cdk -a= synth',
+      k: 'cdk -c="" synth deploy',
       ok1: 'cdk --toolkit-stack-name=x synth',
       ok2: 'cdk -y --no-staging --profile p --region ap-southeast-1 -a cdk.out ls',
+      ok3: 'cdk -c== --context= synth',
     }
-    const why = "before its subcommand: the guard reads past only the CLI's own options"
+    const why = "before its subcommand: the guard reads past only the CLI's own options and options written as one word"
     expect(scriptFindings('package.json', { scripts })).toEqual([
       `package.json: IG-07 script "a" runs cdk with --toolkit-stack-name ${why}`,
       `package.json: IG-07 script "b" runs cdk with --change-set-name ${why}`,
@@ -441,6 +452,9 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       `package.json: IG-07 script "f" runs cdk with -jo ${why}`,
       `package.json: IG-07 script "g" runs cdk with --toolkit-stack-name ${why}`,
       `package.json: IG-07 script "h" runs cdk with --require-approval ${why}`,
+      `package.json: IG-07 script "i" runs cdk with -c= ${why}`,
+      `package.json: IG-07 script "j" runs cdk with -a= ${why}`,
+      `package.json: IG-07 script "k" runs cdk with -c= ${why}`,
     ])
   })
 
@@ -626,7 +640,75 @@ describe('IG-11 (C11-D29): no Lambda and no custom resource of infra’s own', (
     ])
   })
 
-  it('no infra script makes one', () => {
+  // A transform in each form aws-cdk-lib 2.274.0 documents, and SAM's own module, whose resources its
+  // transform expands (R3RULES-04, R3DOCS-03).
+  it('finds a transform in every documented form, and SAM’s module', () => {
+    const planted = [
+      "this.templateOptions.transforms = ['AWS::Include']",
+      "stack.templateOptions.transform = 'AWS::LanguageExtensions'",
+      "stack.templateOptions.transforms?.push('AWS::SecretsManager-2024-09-16')",
+      "stack.templateOptions['transforms'] = ['AWS::Include']",
+      "const snippet = cdk.Fn.transform('AWS::Include', { Location: location })",
+      "new cdk.CfnResource(this, 'p', { type: 'AWS::SSM::Parameter', properties: { 'Fn::Transform': { Name: 'AWS::Include' } } })",
+      "import * as sam from 'aws-cdk-lib/aws-sam'",
+      "new cdk.aws_sam.CfnSimpleTable(this, 't', {})",
+      "this.templateOptions.description = 'Hearth workload'",
+      'const shaped = transformTemplate(transform(template))',
+      'expect(template.Transform).toBeUndefined()',
+      "import * as s3 from 'aws-cdk-lib/aws-s3'",
+    ]
+    expect(planted.map(line => ruleFindings('infra/src/x.ts', line, LAMBDA_RULES).length)).toEqual([
+      1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0,
+    ])
+  })
+
+  // The modules that make one, reached through aws-cdk-lib's root rather than a subpath.
+  it('finds the Lambda modules through aws-cdk-lib’s root, and lets the plain word through', () => {
+    const planted = [
+      "new cdk.aws_lambda.DockerImageFunction(this, 'f', { code: cdk.aws_lambda.DockerImageCode.fromEcr(repo) })",
+      "import { aws_lambda as lambda } from 'aws-cdk-lib'",
+      "import { aws_lambda_nodejs } from 'aws-cdk-lib'",
+      "new cdk.custom_resources.Provider(this, 'p', { onEventHandler: handler })",
+      'cdk.aws_s3_deployment.Source.data("x", "y")',
+      "new cdk.triggers.Trigger(this, 't', { handler })",
+      "import { Stack, triggers } from 'aws-cdk-lib'",
+      'const triggers = rules.map(rule => rule.id)',
+      "new codebuild.Project(this, 'p', { triggers: [] })",
+      "import { Stack, aws_s3 as s3 } from 'aws-cdk-lib'",
+    ]
+    expect(planted.map(line => ruleFindings('infra/src/x.ts', line, LAMBDA_RULES).length)).toEqual([
+      1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
+    ])
+  })
+
+  // The assertion tests look for these types and keys in a synthesised template, which they never
+  // deploy, and no other file imports one; what makes one is refused in a test too (R3RULES-01).
+  it('lets an assertion test name the types and keys it looks for, and no other file import a test', () => {
+    const named = [
+      "template.resourceCountIs('AWS::CloudFormation::CustomResource', 0)",
+      "expect(types.filter(t => t.startsWith('AWS::Serverless::') || (t.startsWith('Custom::') && t !== 'Custom::VpcRestrictDefaultSG'))).toEqual([])",
+      'expect(JSON.stringify(template)).not.toContain(\'"Fn::Transform"\')',
+    ]
+    const test = 'infra/src/workload/templates.test.ts'
+    expect(named.map(line => ruleFindings(test, line, LAMBDA_RULES).length)).toEqual([0, 0, 0])
+    expect(named.map(line => ruleFindings('infra/src/workload/templates.ts', line, LAMBDA_RULES).length)).toEqual([
+      1, 2, 1,
+    ])
+    const making = [
+      "this.templateOptions.transforms = ['AWS::Include']",
+      "new NodejsFunction(this, 'n', { entry: 'x.ts' })",
+    ]
+    expect(making.map(line => ruleFindings(test, line, LAMBDA_RULES).length)).toEqual([1, 1])
+    expect(ruleFindings('scripts/x.test.ts', named[0] ?? '', LAMBDA_RULES)).toHaveLength(1)
+    expect(testImportFindings('infra/bin/workload.ts', ['../src/workload/templates.test.ts', '../src/a.ts'])).toEqual([
+      'infra/bin/workload.ts: IG-11 imports ../src/workload/templates.test.ts, a test, which may name what a stack may not hold',
+    ])
+    expect(testImportFindings('infra/src/a.ts', ['./b.test', './c.test.js'])).toHaveLength(2)
+    expect(testImportFindings(test, ['../../testing/synth.ts', './other.test.ts'])).toEqual([])
+  })
+
+  it('no infra script makes one, and none but a test imports a test', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), LAMBDA_RULES))).toEqual([])
+    expect(infraScripts.flatMap(path => testImportFindings(path, importsOf(readRepoFile(path), path)))).toEqual([])
   })
 })

@@ -90,6 +90,10 @@ export interface CodeRule {
   id: string
   pattern: RegExp
   why: string
+  // The rule matches a CloudFormation type or key by name (`'Custom::…'`, `'Fn::Transform'`), which an
+  // assertion test names to look for it in a synthesised template, so it doesn't apply to one
+  // (isAssertionTest).
+  assertionsMayName?: true
 }
 
 // IG-02: no lookup. Every value comes from configuration, a profile or an SSM parameter by name, so
@@ -196,6 +200,7 @@ export const IMAGE_RULES: readonly CodeRule[] = [
   { id: 'IG-06', pattern: /\bfrom(?:DockerImageAsset|Tarball)\s*\(/, why: 'an image asset makes the CLI build one' },
   { id: 'IG-06', pattern: /\bAssetImage\b/, why: 'ecs.AssetImage makes a DockerImageAsset, which the CLI builds' },
   { id: 'IG-06', pattern: /['"`]aws-cdk-lib\/aws-ecr-assets['"`]/, why: 'an image asset makes the CLI build one' },
+  { id: 'IG-06', pattern: /\baws_ecr_assets\b/, why: 'an image asset makes the CLI build one' },
 ]
 
 // The one custom resource infra may synthesise: the VPC's default-security-group restriction, which
@@ -232,6 +237,7 @@ export const LAMBDA_RULES: readonly CodeRule[] = [
     id: 'IG-11',
     pattern: new RegExp(`['"\`]Custom::(?!${ALLOWED_CUSTOM_RESOURCE.slice('Custom::'.length)}['"\`])`),
     why: `the one custom resource allowed is ${ALLOWED_CUSTOM_RESOURCE}`,
+    assertionsMayName: true,
   },
   // Constructs whose CDK internals make a Lambda-backed custom resource, which the template-level
   // check (IAC-13) sees only in workload templates.
@@ -254,6 +260,15 @@ export const LAMBDA_RULES: readonly CodeRule[] = [
     id: 'IG-11',
     pattern: /['"`]aws-cdk-lib\/(?:triggers|aws-s3-deployment)['"`]/,
     why: 'triggers and bucket deployments run a Lambda',
+  },
+  // The same modules reached through aws-cdk-lib's root (`cdk.aws_lambda`, `import { custom_resources }
+  // from 'aws-cdk-lib'`), whose names nothing else in infra uses; `triggers`, a plain word, only as a
+  // namespace member or imported from the root.
+  {
+    id: 'IG-11',
+    pattern:
+      /\b(?:aws_lambda\w*|custom_resources|aws_s3_deployment)\b|\.\s*triggers\s*\.|\{[^}]*\btriggers\b[^}]*\}\s*from\s*['"`]aws-cdk-lib['"`]/,
+    why: "aws-cdk-lib's Lambda, custom resource, trigger and bucket deployment modules run a Lambda",
   },
   { id: 'IG-11', pattern: /\bBucketDeployment\b/, why: 'a bucket deployment runs a Lambda' },
   {
@@ -287,11 +302,25 @@ export const LAMBDA_RULES: readonly CodeRule[] = [
     id: 'IG-11',
     pattern: /['"`]AWS::(?:CloudFormation::CustomResource|Serverless)\b/,
     why: 'a custom resource or a SAM resource runs a Lambda',
+    assertionsMayName: true,
   },
   {
     id: 'IG-11',
-    pattern: /\baddTransform\s*\(/,
-    why: 'a transform rewrites the template at deploy, outside its review (SAM and hosted rotation make a Lambda)',
+    pattern: /['"`]aws-cdk-lib\/aws-sam['"`]|\baws_sam\b/,
+    why: "SAM's resources are expanded by its transform at deploy, and its functions and applications are Lambdas",
+  },
+  // A transform in each form aws-cdk-lib 2.274.0 documents: the stack's addTransform and its
+  // templateOptions' transforms (or the deprecated transform), and the Fn::Transform intrinsic.
+  {
+    id: 'IG-11',
+    pattern: /\b(?:addTransform\s*\(|templateOptions\s*(?:\.\s*|\[\s*['"`])transforms?\b|Fn\s*\.\s*transform\s*\()/,
+    why: 'a transform rewrites the template at deploy, outside its review (SAM and hosted rotation make a Lambda, AWS::Include pulls in a snippet)',
+  },
+  {
+    id: 'IG-11',
+    pattern: /['"`]Fn::Transform\b/,
+    why: 'a transform rewrites the template at deploy, outside its review (AWS::Include pulls in a snippet)',
+    assertionsMayName: true,
   },
   {
     id: 'IG-11',
@@ -306,9 +335,28 @@ export const LAMBDA_RULES: readonly CodeRule[] = [
   },
 ]
 
+// The assertion tests (infra/**/*.test.ts, IAC) synthesise templates and never deploy one: neither
+// entry imports a test (testImportFindings), so a rule marked assertionsMayName doesn't apply to them,
+// and they may name the types and keys the template-level check looks for.
+export function isAssertionTest(path: string): boolean {
+  return path.startsWith('infra/') && path.endsWith('.test.ts')
+}
+
+// Each test file an infra file that isn't one imports, which would carry an assertion test's names
+// into a stack.
+export function testImportFindings(path: string, specifiers: readonly string[]): Finding[] {
+  if (isAssertionTest(path)) return []
+  return specifiers
+    .filter(spec => /\.test(?:\.[cm]?[jt]sx?)?$/.test(spec))
+    .map(spec => `${path}: IG-11 imports ${spec}, a test, which may name what a stack may not hold`)
+}
+
 // Each rule a script's code breaks, as "path: id why".
 export function ruleFindings(path: string, code: string, rules: readonly CodeRule[]): Finding[] {
-  return rules.filter(rule => rule.pattern.test(code)).map(rule => `${path}: ${rule.id} ${rule.why}`)
+  return rules
+    .filter(rule => !(rule.assertionsMayName === true && isAssertionTest(path)))
+    .filter(rule => rule.pattern.test(code))
+    .map(rule => `${path}: ${rule.id} ${rule.why}`)
 }
 
 // --- IG-03: cdk.json and the context file ---------------------------------------------------------
@@ -481,7 +529,9 @@ const CDK_ALLOWED = new Set(['synth', 'synthesize', 'ls', 'list'])
 const CDK_BINARY = /(?:^|\/)(?:aws-)?cdk(?:@[\s\S]*)?$/
 // What may stand between the CLI and its subcommand, from aws-cdk 2.1146.1's own parser (yargs, which
 // isn't strict, so an option it doesn't know takes the next word as its value). Its global booleans,
-// and yargs's --version and --help, each of which takes a following true or false as yargs does:
+// and yargs's --version and --help, each of which takes a following true or false as yargs does (the
+// CLI's --no-color is no entry here: yargs reads any --no- form as one word, taking nothing after it,
+// and so does the guard, below):
 const CDK_FLAG_OPTIONS = new Set([
   '--trace',
   '--strict',
@@ -502,7 +552,6 @@ const CDK_FLAG_OPTIONS = new Set([
   '--asset-metadata',
   '--staging',
   '--notices',
-  '--no-color',
   '--color',
   '--ci',
   '--yes',
@@ -511,8 +560,9 @@ const CDK_FLAG_OPTIONS = new Set([
   '--help',
   '-h',
 ])
-// its global string and array options, each with the one word after it that doesn't start with -
-// (yargs takes no such word as a value);
+// its global string and array options, each with the one word after it that doesn't start with -. A
+// following word that does is read as an option of its own, so refused unless the guard reads past it,
+// even where yargs takes it as the value, as it takes a lone - or a negative number;
 const CDK_VALUE_OPTIONS = new Set([
   '--app',
   '-a',
@@ -532,10 +582,11 @@ const CDK_VALUE_OPTIONS = new Set([
   '--unstable',
   '--telemetry-file',
 ])
-// and any option written as one word: --name=value, -x=value or --no-name. Every other option before
-// the subcommand is refused, since the guard can't tell whether the CLI takes the next word as its
-// value: this is what keeps IG-07 fail-closed.
-const ONE_WORD_OPTION = /^(?:--[^=]+=|-[^-]=|--no-.)/
+// and any option written as one word: --name=value, -x=value with a value after the = (yargs reads a
+// bare -x= as x and then an option named =, which takes the next word as its value), or --no-name.
+// Every other option before the subcommand is refused, since the guard can't tell whether the CLI
+// takes the next word as its value: this is what keeps IG-07 fail-closed.
+const ONE_WORD_OPTION = /^(?:--[^=]+=|-[^-]=[\s\S]|--no-.)/
 
 // A command line split into commands, each a list of words, as a shell splits it for this purpose:
 // quotes group, a backslash escapes, a backslash before a newline joins the lines (unquoted or in
@@ -613,7 +664,8 @@ function refusedCdkRun(words: readonly string[], index: number): string | undefi
     if (ONE_WORD_OPTION.test(option)) next += 1
     else if (CDK_FLAG_OPTIONS.has(option)) next += /^(?:true|false)$/.test(words[next + 1] ?? '') ? 2 : 1
     else if (CDK_VALUE_OPTIONS.has(option)) next += (words[next + 1] ?? '-').startsWith('-') ? 1 : 2
-    else return `runs cdk with ${option} before its subcommand: the guard reads past only the CLI's own options`
+    else
+      return `runs cdk with ${option} before its subcommand: the guard reads past only the CLI's own options and options written as one word`
   }
   const subcommand = words[next]
   if (subcommand === undefined)
