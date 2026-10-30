@@ -17,6 +17,8 @@
 // or allow-list, and a YAML template is parsed with CloudFormation's short tags as intrinsics, never
 // as plain strings.
 
+import { grantsModelAction } from '../config/models.ts'
+
 // Where each resource type keeps its policy documents. `Policies` is a list of { PolicyDocument }.
 const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
   'AWS::IAM::Role': ['AssumeRolePolicyDocument', 'Policies'],
@@ -189,6 +191,17 @@ export function policyStatements(template: Record<string, unknown>): PolicyState
         } satisfies PolicyStatementAt,
       ]
     }),
+  )
+}
+
+// The Allow statements that can grant a model action (D41, IAC-01's check): one whose Action names
+// one (grantsModelAction, `*` included), and any with NotAction, which grants every action it doesn't
+// name, model actions among them, so the check refuses it rather than reason about what its list
+// leaves out. A conditional Allow counts, since a condition may put it there.
+export function modelGrants(statements: readonly PolicyStatementAt[]): PolicyStatementAt[] {
+  return statements.filter(
+    statement =>
+      statement.effect === 'Allow' && (statement.notActions.length > 0 || statement.actions.some(grantsModelAction)),
   )
 }
 

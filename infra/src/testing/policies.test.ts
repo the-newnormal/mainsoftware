@@ -9,7 +9,7 @@ import * as sso from 'aws-cdk-lib/aws-sso'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { grantsModelAction, MODEL_SERVICE_PREFIXES } from '../config/models.ts'
 import { REGION } from '../config/profiles.ts'
-import { policyDocuments, policyStatements, unreadablePolicies } from './policies.ts'
+import { modelGrants, policyDocuments, policyStatements, unreadablePolicies } from './policies.ts'
 import { cdkContext, resourcesOf, type Synthesised, synthesise, templateOf, testApp } from './synth.ts'
 
 const [firstPrefix = ''] = MODEL_SERVICE_PREFIXES
@@ -214,11 +214,7 @@ describe('C11-D70: the policy walker', () => {
 
   it('IAC-01 reads through it: denies may name a model service, no Allow here grants one', () => {
     const statements = policyStatements(template)
-    const allows = statements.filter(s => s.effect === 'Allow')
-    expect(allows.flatMap(s => s.actions).filter(grantsModelAction)).toEqual([])
-    // An Allow with NotAction grants everything it doesn't name, model actions included, so IAC-01
-    // refuses one rather than read it.
-    expect(allows.filter(s => s.notActions.length > 0)).toEqual([])
+    expect(modelGrants(statements)).toEqual([])
     // Only the denies no condition decides count as in place.
     const denies = statements.filter(s => s.effect === 'Deny' && s.actions.some(grantsModelAction))
     expect(denies.map(s => [s.logicalId.replace(/[0-9A-F]{8}$/, ''), s.conditional])).toEqual([
@@ -226,6 +222,52 @@ describe('C11-D70: the policy walker', () => {
       ['Scp', false],
       ['OnCondition', true],
     ])
+  })
+
+  // IAC-01's check on a template that breaks it: an Allow naming a model action, `*`, an Allow with
+  // NotAction (which grants every action it doesn't name, model actions included) and a conditional
+  // Allow are each found; an ordinary Allow and a Deny with NotAction aren't.
+  it('IAC-01: modelGrants finds every Allow that can grant a model action, NotAction included', () => {
+    const allow = (id: string, statement: Record<string, unknown>) => ({
+      [id]: {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Properties: { PolicyDocument: { Version: '2012-10-17', Statement: [{ Resource: '*', ...statement }] } },
+      },
+    })
+    const breaking = {
+      Resources: {
+        ...allow('Named', { Effect: 'Allow', Action: `${firstPrefix}:InvokeModel` }),
+        ...allow('Everything', { Effect: 'Allow', Action: '*' }),
+        ...allow('AllButIam', { Effect: 'Allow', NotAction: 'iam:*' }),
+        ...allow('Ordinary', { Effect: 'Allow', Action: ['s3:GetObject', 'logs:PutLogEvents'] }),
+        ...allow('DenyAllButIam', { Effect: 'Deny', NotAction: 'iam:*' }),
+        Conditional: {
+          Type: 'AWS::IAM::ManagedPolicy',
+          Properties: {
+            PolicyDocument: {
+              Version: '2012-10-17',
+              Statement: [
+                {
+                  'Fn::If': [
+                    'C',
+                    { Effect: 'Allow', Action: `${firstPrefix}:*`, Resource: '*' },
+                    { Ref: 'AWS::NoValue' },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      },
+    }
+    expect(unreadablePolicies(breaking)).toEqual([])
+    expect(modelGrants(policyStatements(breaking)).map(s => s.logicalId)).toEqual([
+      'Named',
+      'Everything',
+      'AllButIam',
+      'Conditional',
+    ])
+    expect(grantsModelAction('iam:*')).toBe(false)
   })
 
   it('reads an inline user policy, and reports an Organizations policy whose type only CloudFormation resolves', () => {
