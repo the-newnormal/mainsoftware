@@ -6,10 +6,11 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { LANDING_ZONE_TARGETS } from '../src/config/env.ts'
 
-const INFRA = new URL('..', import.meta.url).pathname
+const INFRA = fileURLToPath(new URL('..', import.meta.url))
 
 interface Ran {
   code: number

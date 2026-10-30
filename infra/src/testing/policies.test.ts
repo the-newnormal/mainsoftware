@@ -77,6 +77,42 @@ beforeAll(() => {
   // A document only CloudFormation can assemble, which a static reading must report, not skip.
   const joined = new iam.CfnManagedPolicy(stack, 'Joined', { policyDocument: { Version: '2012-10-17', Statement: [] } })
   joined.addPropertyOverride('PolicyDocument', { 'Fn::Join': ['', ['{"Version":"2012-10-17",', '"Statement":[]}']] })
+  // Documents that read as objects but hold what only CloudFormation can assemble: an Action built by
+  // an intrinsic (which would read as no model action), an Effect left to one, and a whole statement
+  // given as one.
+  new cdk.CfnCondition(stack, 'C', { expression: cdk.Fn.conditionEquals('a', 'a') })
+  new iam.CfnManagedPolicy(stack, 'JoinedAction', {
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: [{ 'Fn::Join': ['', [firstPrefix, ':*']] }], Resource: '*' }],
+    },
+  })
+  new iam.CfnManagedPolicy(stack, 'JoinedNotAction', {
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Deny', NotAction: { 'Fn::Join': ['', ['sts', ':*']] }, Resource: '*' }],
+    },
+  })
+  new iam.CfnManagedPolicy(stack, 'IntrinsicEffect', {
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: { 'Fn::If': ['C', 'Allow', 'Deny'] }, Action: 'sts:AssumeRole', Resource: '*' }],
+    },
+  })
+  new iam.CfnManagedPolicy(stack, 'IntrinsicStatement', {
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          'Fn::If': [
+            'C',
+            { Effect: 'Allow', Action: 'sts:AssumeRole', Resource: '*' },
+            { Effect: 'Deny', Action: 'sts:AssumeRole', Resource: '*' },
+          ],
+        },
+      ],
+    },
+  })
   synthesised = synthesise(app)
   template = templateOf(synthesised, 'Hearth-helper-test')
 }, 60_000)
@@ -138,6 +174,24 @@ describe('C11-D70: the policy walker', () => {
   })
 
   it('reports a document only CloudFormation can assemble, rather than skipping it', () => {
-    expect(unreadablePolicies(template)).toEqual(['Joined PolicyDocument'])
+    expect(unreadablePolicies(template)).toEqual([
+      'Joined PolicyDocument',
+      'JoinedAction PolicyDocument',
+      'JoinedNotAction PolicyDocument',
+      'IntrinsicEffect PolicyDocument',
+      'IntrinsicStatement PolicyDocument',
+    ])
+  })
+
+  // An Action an intrinsic builds would read as `[object Object]` and grant no model action, so the
+  // document holding it is reported, and IAC-01's check can't pass on it unseen.
+  it('reports a statement whose Effect, Action or NotAction only CloudFormation can assemble', () => {
+    const unreadable = new Set(unreadablePolicies(template).map(entry => entry.split(' ')[0]))
+    expect(
+      ['JoinedAction', 'JoinedNotAction', 'IntrinsicEffect', 'IntrinsicStatement'].every(id => unreadable.has(id)),
+    ).toBe(true)
+    expect(
+      ['Role', 'Managed', 'Scp', 'Set', 'LogsPolicy'].some(id => [...unreadable].some(u => u.startsWith(id))),
+    ).toBe(false)
   })
 })

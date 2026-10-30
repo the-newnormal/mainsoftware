@@ -456,7 +456,8 @@ const propertyName = (property: ts.ObjectLiteralElementLike): string | undefined
 // - a class extending a stack or stage is named …Stack or …Stage, so its constructions are seen;
 // - props are an object literal, or the enclosing stack's or stage's own constructor parameter passed
 //   on (read where that class is constructed), never another value;
-// - a spread in props is followed by env written out, which overrides whatever the spread held;
+// - a spread in props is followed by env written out, which overrides whatever the spread held, and a
+//   spread in env by its region written out;
 // - env and its region are written out, never by shorthand or as another value.
 // The templates' regions are IAC-13's, from C0.11 PR 3.
 export function regionFindings(path: string, source: string): Finding[] {
@@ -469,8 +470,14 @@ export function regionFindings(path: string, source: string): Finding[] {
     } else if (ts.isPropertyAssignment(env) && !ts.isObjectLiteralExpression(env.initializer)) {
       found.push(`${at(env)}: IG-05 env must be an object literal naming its region`)
     } else if (ts.isPropertyAssignment(env) && ts.isObjectLiteralExpression(env.initializer)) {
-      const region = env.initializer.properties.find(p => propertyName(p) === 'region')
-      if (region !== undefined && ts.isShorthandPropertyAssignment(region)) {
+      const inner = env.initializer.properties
+      const regionIndex = inner.findLastIndex(p => propertyName(p) === 'region')
+      const lastSpread = inner.findLastIndex(p => ts.isSpreadAssignment(p))
+      const region = inner[regionIndex]
+      const spread = inner[lastSpread]
+      if (spread !== undefined && regionIndex < lastSpread) {
+        found.push(`${at(spread)}: IG-05 write region out after the last spread, as env: { region: REGION }`)
+      } else if (region !== undefined && ts.isShorthandPropertyAssignment(region)) {
         found.push(`${at(region)}: IG-05 write region out, as env: { region: REGION }`)
       } else {
         const value = region !== undefined && ts.isPropertyAssignment(region) ? region.initializer : undefined

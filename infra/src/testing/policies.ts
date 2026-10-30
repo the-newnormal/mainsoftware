@@ -4,7 +4,9 @@
 // trusts and inline policies, managed and inline policy resources, bucket, key, topic, queue,
 // repository, secret and log resource policies, endpoint policies, SCPs and RCPs, and permission
 // sets' inline policies. A document given as an intrinsic (a Fn::Join building JSON) can't be read
-// statically, so it is returned as unreadable rather than skipped, and a test fails on it.
+// statically, so it is returned as unreadable rather than skipped, and a test fails on it; so is one
+// with a statement that isn't an object with a literal Effect, or an Action or NotAction entry that
+// isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action).
 
 // Where each resource type keeps its policy documents. `Policies` is a list of { PolicyDocument }.
 const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
@@ -103,8 +105,8 @@ export function policyDocuments(template: Record<string, unknown>): PolicyDocume
   return found
 }
 
-// Every statement of every readable document in a template. Documents that can't be read are left
-// to unreadablePolicies, which a test asserts empty.
+// Every statement of every readable document in a template. Documents that can't be read, or hold a
+// statement that can't, are left to unreadablePolicies, which a test asserts empty.
 export function policyStatements(template: Record<string, unknown>): PolicyStatementAt[] {
   return policyDocuments(template).flatMap(({ logicalId, type, where, document }) =>
     asList(document?.Statement).flatMap(statement => {
@@ -130,9 +132,22 @@ export function policyStatements(template: Record<string, unknown>): PolicyState
   )
 }
 
+// Whether every statement of a document is an object with a literal Effect and literal Action and
+// NotAction entries, so policyStatements reads it as CloudFormation will. A Resource, Principal or
+// Condition may hold intrinsics (a Ref, a GetAtt), which the tests read as values.
+function statementsReadable(document: { Statement?: unknown }): boolean {
+  return asList(document.Statement).every(
+    statement =>
+      isObject(statement) &&
+      (statement.Effect === 'Allow' || statement.Effect === 'Deny') &&
+      asList(statement.Action).every(action => typeof action === 'string') &&
+      asList(statement.NotAction).every(action => typeof action === 'string'),
+  )
+}
+
 // The documents no static reading resolves, as "logicalId where".
 export function unreadablePolicies(template: Record<string, unknown>): string[] {
   return policyDocuments(template)
-    .filter(found => found.document === undefined)
+    .filter(found => found.document === undefined || !statementsReadable(found.document))
     .map(found => `${found.logicalId} ${found.where}`)
 }

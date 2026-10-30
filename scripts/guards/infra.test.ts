@@ -294,6 +294,10 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
       "function make(app, p) { return new cdk.Stack(app, 'Hearth-x', p) }",
       "class WorkloadStage extends cdk.Stage { constructor(s, i, props: cdk.StageProps) { super(s, i, props); new PlatformStack(this, 'Platform', props) } }",
       "new cdk.Stack(app, 'Hearth-nonprod-Tools')",
+      // A spread in env after its region can override it; one before it can't.
+      "new cdk.Stack(app, 'Hearth-prod-Data', { env: { region: REGION, ...props.env } })",
+      "new cdk.Stack(app, 'Hearth-prod-Data', { env: { ...other } })",
+      "new cdk.Stack(app, 'Hearth-prod-Data', { env: { ...props.env, region: REGION } })",
     ].join('\n')
     expect(regionFindings('infra/bin/x.ts', planted)).toEqual([
       'infra/bin/x.ts:1: IG-05 a class extending a stack or stage is named …Stack or …Stage, so the guard reads its env',
@@ -305,6 +309,8 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
       'infra/bin/x.ts:13: IG-05 a class extending a stack or stage is named …Stack or …Stage, so the guard reads its env',
       "infra/bin/x.ts:14: IG-05 props must be an object literal with env written out, or the constructor's own props passed on",
       'infra/bin/x.ts:16: IG-05 a stack or stage with no env deploys wherever the CLI points; write env: { region: REGION }',
+      'infra/bin/x.ts:17: IG-05 write region out after the last spread, as env: { region: REGION }',
+      'infra/bin/x.ts:18: IG-05 write region out after the last spread, as env: { region: REGION }',
     ])
   })
 
