@@ -298,6 +298,8 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
       "new cdk.Stack(app, 'Hearth-prod-Data', { env: { region: REGION, ...props.env } })",
       "new cdk.Stack(app, 'Hearth-prod-Data', { env: { ...other } })",
       "new cdk.Stack(app, 'Hearth-prod-Data', { env: { ...props.env, region: REGION } })",
+      // An env given by a getter, which the guard can't read.
+      "new cdk.Stack(app, 'Hearth-prod-Data', { get env() { return { region: 'us-east-1' } } })",
     ].join('\n')
     expect(regionFindings('infra/bin/x.ts', planted)).toEqual([
       'infra/bin/x.ts:1: IG-05 a class extending a stack or stage is named …Stack or …Stage, so the guard reads its env',
@@ -311,6 +313,7 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
       'infra/bin/x.ts:16: IG-05 a stack or stage with no env deploys wherever the CLI points; write env: { region: REGION }',
       'infra/bin/x.ts:17: IG-05 write region out after the last spread, as env: { region: REGION }',
       'infra/bin/x.ts:18: IG-05 write region out after the last spread, as env: { region: REGION }',
+      'infra/bin/x.ts:20: IG-05 write env out, as env: { region: REGION }',
     ])
   })
 

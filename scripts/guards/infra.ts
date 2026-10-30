@@ -488,6 +488,8 @@ export function regionFindings(path: string, source: string): Finding[] {
               (value.text === 'ap-southeast-1' || (value.text === 'us-east-1' && isEdge(call)))))
         if (!ok) found.push(`${at(env)}: IG-05 env.region must be ap-southeast-1 (REGION)`)
       }
+    } else {
+      found.push(`${at(env)}: IG-05 write env out, as env: { region: REGION }`)
     }
   }
   const visit = (node: ts.Node): void => {

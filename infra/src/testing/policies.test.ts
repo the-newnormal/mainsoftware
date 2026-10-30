@@ -103,11 +103,35 @@ beforeAll(() => {
     policyDocument: {
       Version: '2012-10-17',
       Statement: [
+        { Effect: 'Allow', Action: 'sts:TagSession', Resource: '*' },
         {
           'Fn::If': [
             'C',
-            { Effect: 'Allow', Action: 'sts:AssumeRole', Resource: '*' },
-            { Effect: 'Deny', Action: 'sts:AssumeRole', Resource: '*' },
+            { Effect: 'Allow', Action: [{ 'Fn::Join': ['', [firstPrefix, ':*']] }], Resource: '*' },
+            { Ref: 'AWS::NoValue' },
+          ],
+        },
+      ],
+    },
+  })
+  // A trust the CDK CLI's bootstrap template writes (its publishing, lookup and deployment roles):
+  // the trusted accounts' statement is there only under a condition, its other branch no statement.
+  new iam.CfnRole(stack, 'ConditionalTrust', {
+    assumeRolePolicyDocument: {
+      Statement: [
+        { Action: 'sts:TagSession', Effect: 'Allow', Principal: { AWS: { Ref: 'AWS::AccountId' } } },
+        {
+          'Fn::If': [
+            'C',
+            { Action: ['sts:AssumeRole'], Effect: 'Allow', Principal: { AWS: { Ref: 'AWS::AccountId' } } },
+            { Ref: 'AWS::NoValue' },
+          ],
+        },
+        {
+          'Fn::If': [
+            'C',
+            { Action: 'sts:AssumeRole', Effect: 'Deny', Principal: { AWS: '*' } },
+            { Action: 'sts:TagSession', Effect: 'Deny', Principal: { AWS: '*' } },
           ],
         },
       ],
@@ -181,6 +205,28 @@ describe('C11-D70: the policy walker', () => {
       'IntrinsicEffect PolicyDocument',
       'IntrinsicStatement PolicyDocument',
     ])
+  })
+
+  // The CDK CLI's bootstrap template adds statements under a condition, which must read as each branch
+  // rather than make its trusts unreadable, and a check that a Deny is in place can't count one.
+  it('reads a statement given as Fn::If as each of its branches, marked conditional', () => {
+    const trust = policyStatements(template).filter(s => s.logicalId === 'ConditionalTrust')
+    expect(trust.map(s => [s.effect, s.actions, s.conditional])).toEqual([
+      ['Allow', ['sts:TagSession'], false],
+      ['Allow', ['sts:AssumeRole'], true],
+      ['Deny', ['sts:AssumeRole'], true],
+      ['Deny', ['sts:TagSession'], true],
+    ])
+    expect(unreadablePolicies(template).some(entry => entry.startsWith('ConditionalTrust'))).toBe(false)
+  })
+
+  // What unreadablePolicies reports is left out of policyStatements, so a check over the statements
+  // never passes on one it couldn't read.
+  it('leaves an unreadable statement out of the statements', () => {
+    const ids = new Set(policyStatements(template).map(s => s.logicalId))
+    expect(['JoinedAction', 'JoinedNotAction', 'IntrinsicEffect'].some(id => ids.has(id))).toBe(false)
+    const partly = policyStatements(template).filter(s => s.logicalId === 'IntrinsicStatement')
+    expect(partly.map(s => s.actions)).toEqual([['sts:TagSession']])
   })
 
   // An Action an intrinsic builds would read as `[object Object]` and grant no model action, so the

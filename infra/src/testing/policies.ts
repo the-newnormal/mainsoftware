@@ -6,7 +6,11 @@
 // sets' inline policies. A document given as an intrinsic (a Fn::Join building JSON) can't be read
 // statically, so it is returned as unreadable rather than skipped, and a test fails on it; so is one
 // with a statement that isn't an object with a literal Effect, or an Action or NotAction entry that
-// isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action).
+// isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action). A
+// statement given as Fn::If, as the CDK CLI's bootstrap template adds its trusted accounts' trust, is
+// read as each of its branches (AWS::NoValue dropped), marked conditional. aws-cdk-lib renders a log
+// resource policy whose statement holds a token (an ARN, an account) as a Fn::Join, so infra writes
+// those with literal values.
 
 // Where each resource type keeps its policy documents. `Policies` is a list of { PolicyDocument }.
 const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
@@ -46,6 +50,9 @@ export interface PolicyStatementAt {
   logicalId: string
   type: string
   where: string
+  // A branch of a statement given as Fn::If: a check that no Allow grants something reads it, but a
+  // check that a Deny is in place can't count it, since a condition decides whether it's there.
+  conditional: boolean
   sid: string | undefined
   effect: 'Allow' | 'Deny'
   actions: string[]
@@ -59,6 +66,39 @@ export interface PolicyStatementAt {
 
 const asList = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value])
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+const isNoValue = (value: unknown): boolean =>
+  isObject(value) && Object.keys(value).length === 1 && value.Ref === 'AWS::NoValue'
+
+// An Fn::If's two branches, or undefined when the value isn't one.
+function ifBranches(value: unknown): [unknown, unknown] | undefined {
+  if (!isObject(value) || Array.isArray(value) || Object.keys(value).length !== 1) return undefined
+  const args = value['Fn::If']
+  return Array.isArray(args) && args.length === 3 ? [args[1], args[2]] : undefined
+}
+
+// A document's statements, each with whether a condition decides it is there: a statement given as
+// Fn::If is each of its branches, read the same way, and an AWS::NoValue branch is none.
+function statementsOf(document: { Statement?: unknown }): { statement: unknown; conditional: boolean }[] {
+  const expand = (statement: unknown, conditional: boolean): { statement: unknown; conditional: boolean }[] => {
+    const branches = ifBranches(statement)
+    if (branches === undefined) return [{ statement, conditional }]
+    return branches.filter(branch => !isNoValue(branch)).flatMap(branch => expand(branch, true))
+  }
+  return asList(document.Statement).flatMap(statement => expand(statement, false))
+}
+
+// A statement policyStatements reads as CloudFormation will: an object with a literal Effect and
+// literal Action and NotAction entries. A Resource, Principal or Condition may hold intrinsics (a Ref,
+// a GetAtt), which the tests read as values.
+function isReadable(statement: unknown): statement is Record<string, unknown> & { Effect: 'Allow' | 'Deny' } {
+  return (
+    isObject(statement) &&
+    !Array.isArray(statement) &&
+    (statement.Effect === 'Allow' || statement.Effect === 'Deny') &&
+    asList(statement.Action).every(action => typeof action === 'string') &&
+    asList(statement.NotAction).every(action => typeof action === 'string')
+  )
+}
 
 // A document as a template gives it: an object, or JSON text (Organizations' Content, a permission
 // set's InlinePolicy and a log resource policy may be either). Anything else is an intrinsic.
@@ -105,20 +145,21 @@ export function policyDocuments(template: Record<string, unknown>): PolicyDocume
   return found
 }
 
-// Every statement of every readable document in a template. Documents that can't be read, or hold a
-// statement that can't, are left to unreadablePolicies, which a test asserts empty.
+// Every readable statement of every readable document in a template. A document that can't be read,
+// or a statement that can't, is left out here and reported by unreadablePolicies, which a test asserts
+// empty, so a check over these statements never passes on what it couldn't read.
 export function policyStatements(template: Record<string, unknown>): PolicyStatementAt[] {
   return policyDocuments(template).flatMap(({ logicalId, type, where, document }) =>
-    asList(document?.Statement).flatMap(statement => {
-      if (!isObject(statement)) return []
-      const effect = statement.Effect === 'Deny' ? 'Deny' : 'Allow'
+    (document === undefined ? [] : statementsOf(document)).flatMap(({ statement, conditional }) => {
+      if (!isReadable(statement)) return []
       return [
         {
           logicalId,
           type,
           where,
+          conditional,
           sid: typeof statement.Sid === 'string' ? statement.Sid : undefined,
-          effect,
+          effect: statement.Effect,
           actions: asList(statement.Action).map(String),
           notActions: asList(statement.NotAction).map(String),
           resources: asList(statement.Resource),
@@ -132,22 +173,12 @@ export function policyStatements(template: Record<string, unknown>): PolicyState
   )
 }
 
-// Whether every statement of a document is an object with a literal Effect and literal Action and
-// NotAction entries, so policyStatements reads it as CloudFormation will. A Resource, Principal or
-// Condition may hold intrinsics (a Ref, a GetAtt), which the tests read as values.
-function statementsReadable(document: { Statement?: unknown }): boolean {
-  return asList(document.Statement).every(
-    statement =>
-      isObject(statement) &&
-      (statement.Effect === 'Allow' || statement.Effect === 'Deny') &&
-      asList(statement.Action).every(action => typeof action === 'string') &&
-      asList(statement.NotAction).every(action => typeof action === 'string'),
-  )
-}
-
-// The documents no static reading resolves, as "logicalId where".
+// The documents no static reading resolves, or that hold a statement none does, as "logicalId where".
 export function unreadablePolicies(template: Record<string, unknown>): string[] {
   return policyDocuments(template)
-    .filter(found => found.document === undefined || !statementsReadable(found.document))
+    .filter(
+      found =>
+        found.document === undefined || !statementsOf(found.document).every(({ statement }) => isReadable(statement)),
+    )
     .map(found => `${found.logicalId} ${found.where}`)
 }
