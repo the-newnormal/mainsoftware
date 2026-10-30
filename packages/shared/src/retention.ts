@@ -105,6 +105,14 @@ const CLEANUP =
 const VALKEY = 'expiry is a security control, not a delete path; keyed hashes and ids only, never restored'
 // LH-48: the logs, traces and RUM age out at AWS; their facts are in the audit log, which holds cover.
 const AWS_LOGS = 'aged out by AWS; their facts are in the audit log, which holds cover'
+// C0.11 (C11-D32, C11-Q10; TECH-SPEC T24 item 9): the flow logs are exempt as LH-48's CloudWatch
+// logs are.
+const NETWORK_LOGS =
+  'aged out by AWS, as the CloudWatch logs are (LH-48); addresses, ports and accept or reject only, never content, and a sign-in’s address is also in the audit log, which holds cover'
+// C0.11 (C11-D13, C11-D22, C11-Q10; TECH-SPEC T24 item 9): the break-glass log is security audit,
+// locked for as long as the CloudTrail events it explains, which a hold can't lengthen or shorten.
+const BREAK_GLASS_LOG =
+  'security audit: each production access’s entries explain its CloudTrail events and are locked as long as they are, under an Object Lock nobody can lift, then expired by the bucket’s own retention'
 
 export const RETENTION_CLASSES = {
   // --- C0's data: every table of public, the migrator's ledger aside ------------------------------
@@ -859,7 +867,7 @@ export const RETENTION_CLASSES = {
   app_logs: {
     store: 'logs',
     tables: [],
-    covers: 'The CloudWatch log groups of every role, migrate included',
+    covers: 'The CloudWatch log groups of every role, the migrate, probe and bastion tasks included',
     purposes: ['service_operation', 'security_audit'],
     ai: false,
     stage: 'C0.11',
@@ -901,7 +909,8 @@ export const RETENTION_CLASSES = {
   cloudtrail: {
     store: 'logs',
     tables: [],
-    covers: 'The organisation trail in the log-archive account, with Object Lock',
+    covers:
+      'The organisation trail in the log-archive account, with Object Lock, and its CloudWatch Logs copy in the management account for the alarms and the quarterly review',
     purposes: ['security_audit'],
     ai: false,
     stage: 'C0.11',
@@ -910,7 +919,41 @@ export const RETENTION_CLASSES = {
     setBy: { who: 'code', from: 'C0.11' },
     indefinite: 'never',
     holds: { exempt: AWS_LOGS, decision: 'LH-48' },
+    deletedBy: 'the log-archive bucket’s retention, and CloudWatch’s for its copy',
+  },
+  // C0.11's two (C11-D22): stores outside Postgres, so they have no SQL mirror and add no migration.
+  // The DPO confirmed both, their periods and their exemption from holds, on 30 Oct 2026 (C11-Q10,
+  // TECH-SPEC T24 item 9), since both keep people's data: a case reference and a DPO's person id for
+  // 731 days under a lock nobody can lift, and client addresses for 90 days.
+  break_glass_log: {
+    store: 'logs',
+    tables: [],
+    covers:
+      'The break-glass log: each use’s open and close entries (the reason reference, the runbook followed, the modes run and the ids a run printed, a case reference and a DPO’s person id among them, never a name, number or address), in the log-archive account’s bucket with Object Lock',
+    purposes: ['security_audit'],
+    ai: false,
+    stage: 'C0.11',
+    period: { kind: 'days', days: 731, anchor: 'at' },
+    status: 'proposed',
+    setBy: { who: 'code', from: 'C0.11' },
+    indefinite: 'never',
+    holds: { exempt: BREAK_GLASS_LOG, decision: 'T24 item 9' },
     deletedBy: 'the log-archive bucket’s retention',
+  },
+  network_logs: {
+    store: 'logs',
+    tables: [],
+    covers:
+      'The VPC flow logs of every VPC: the address of every client that reaches the internet-facing load balancer, and internal addresses',
+    purposes: ['security_audit'],
+    ai: false,
+    stage: 'C0.11',
+    period: { kind: 'days', days: 90, anchor: 'at' },
+    status: 'proposed',
+    setBy: { who: 'code', from: 'C0.11' },
+    indefinite: 'never',
+    holds: { exempt: NETWORK_LOGS, decision: 'T24 item 9' },
+    deletedBy: 'CloudWatch’s retention',
   },
   backups: {
     store: 'backups',

@@ -70,6 +70,11 @@
       "description": "lucide-react is pinned in apps/web and demo/ so they share one copy; update both together.",
       "matchPackageNames": ["lucide-react"],
       "groupName": "lucide-react"
+    },
+    {
+      "description": "The CDK library, its CLI, constructs and cdk-nag in infra/ move together, so the CLI always reads the cloud assembly schema the library writes (C0.11, TECH-SPEC T24). The infra tests prove each update; from C0.11 PR 2 and PR 3 so do CI's synth steps, the inventory snapshot shows any new resource type, and the PR regenerates infra/bootstrap/ when the CLI's bootstrap template changes.",
+      "matchPackageNames": ["aws-cdk-lib", "aws-cdk", "constructs", "cdk-nag"],
+      "groupName": "CDK"
     }
   ]
 }

@@ -1,4 +1,13 @@
 {
+  // Node runs the CDK app's source as it is (C11-D23, as the server runs, T2), so tsc resolves
+  // imports the way Node does: relative imports name their .ts file, and aws-cdk-lib's CommonJS
+  // modules are imported by default or namespace. It covers every file in the workspace, bin/,
+  // src/ and the tests included (CLAUDE.md, Testing and CI); cdk.out/ is synth output.
   "extends": "../tsconfig.base.json",
-  "compilerOptions": { "types": ["node"] }
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"]
+  },
+  "exclude": ["node_modules", "cdk.out"]
 }
