@@ -186,12 +186,11 @@ describe('C11-D70: the policy walker', () => {
   // An Action an intrinsic builds would read as `[object Object]` and grant no model action, so the
   // document holding it is reported, and IAC-01's check can't pass on it unseen.
   it('reports a statement whose Effect, Action or NotAction only CloudFormation can assemble', () => {
-    const unreadable = new Set(unreadablePolicies(template).map(entry => entry.split(' ')[0]))
-    expect(
-      ['JoinedAction', 'JoinedNotAction', 'IntrinsicEffect', 'IntrinsicStatement'].every(id => unreadable.has(id)),
-    ).toBe(true)
-    expect(
-      ['Role', 'Managed', 'Scp', 'Set', 'LogsPolicy'].some(id => [...unreadable].some(u => u.startsWith(id))),
-    ).toBe(false)
+    const unreadable = unreadablePolicies(template)
+    for (const id of ['JoinedAction', 'JoinedNotAction', 'IntrinsicEffect', 'IntrinsicStatement']) {
+      expect(unreadable).toContain(`${id} PolicyDocument`)
+    }
+    // And nothing aws-cdk-lib's own constructs write, whose actions and effects are always literal.
+    expect(unreadable.filter(entry => /^(?:Role|Managed|Bucket|Scp|Set|LogsPolicy)/.test(entry))).toEqual([])
   })
 })
