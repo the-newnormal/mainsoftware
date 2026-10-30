@@ -80,7 +80,7 @@ beforeAll(() => {
   // Documents that read as objects but hold what only CloudFormation can assemble: an Action built by
   // an intrinsic (which would read as no model action), an Effect left to one, and a whole statement
   // given as one.
-  new cdk.CfnCondition(stack, 'C', { expression: cdk.Fn.conditionEquals('a', 'a') })
+  const condition = new cdk.CfnCondition(stack, 'C', { expression: cdk.Fn.conditionEquals('a', 'a') })
   new iam.CfnManagedPolicy(stack, 'JoinedAction', {
     policyDocument: {
       Version: '2012-10-17',
@@ -113,6 +113,28 @@ beforeAll(() => {
         },
       ],
     },
+  })
+  // A policy that exists only under a condition, as the bootstrap template's permissions boundary
+  // does, an inline user policy, and an Organizations policy whose type only CloudFormation resolves.
+  const onCondition = new iam.CfnManagedPolicy(stack, 'OnCondition', {
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Deny', Action: `${firstPrefix}:*`, Resource: '*' }],
+    },
+  })
+  onCondition.cfnOptions.condition = condition
+  new iam.CfnUserPolicy(stack, 'UserInline', {
+    userName: 'u',
+    policyName: 'p',
+    policyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action: 'sts:GetCallerIdentity', Resource: '*' }],
+    },
+  })
+  new organizations.CfnPolicy(stack, 'TypeByCondition', {
+    name: 'test-type',
+    type: cdk.Fn.conditionIf('C', 'SERVICE_CONTROL_POLICY', 'RESOURCE_CONTROL_POLICY').toString(),
+    content: { Version: '2012-10-17', Statement: [{ Effect: 'Deny', Action: `${firstPrefix}:*`, Resource: '*' }] },
   })
   // A trust the CDK CLI's bootstrap template writes (its publishing, lookup and deployment roles):
   // the trusted accounts' statement is there only under a condition, its other branch no statement.
@@ -194,7 +216,25 @@ describe('C11-D70: the policy walker', () => {
     const statements = policyStatements(template)
     const allows = statements.filter(s => s.effect === 'Allow')
     expect(allows.flatMap(s => s.actions).filter(grantsModelAction)).toEqual([])
-    expect(statements.filter(s => s.effect === 'Deny' && s.actions.some(grantsModelAction)).length).toBe(2)
+    // An Allow with NotAction grants everything it doesn't name, model actions included, so IAC-01
+    // refuses one rather than read it.
+    expect(allows.filter(s => s.notActions.length > 0)).toEqual([])
+    // Only the denies no condition decides count as in place.
+    const denies = statements.filter(s => s.effect === 'Deny' && s.actions.some(grantsModelAction))
+    expect(denies.map(s => [s.logicalId.replace(/[0-9A-F]{8}$/, ''), s.conditional])).toEqual([
+      ['Managed', false],
+      ['Scp', false],
+      ['OnCondition', true],
+    ])
+  })
+
+  it('reads an inline user policy, and reports an Organizations policy whose type only CloudFormation resolves', () => {
+    expect(
+      policyStatements(template)
+        .filter(s => s.logicalId === 'UserInline')
+        .map(s => s.actions),
+    ).toEqual([['sts:GetCallerIdentity']])
+    expect(unreadablePolicies(template)).toContain('TypeByCondition Content')
   })
 
   it('reports a document only CloudFormation can assemble, rather than skipping it', () => {
@@ -204,6 +244,7 @@ describe('C11-D70: the policy walker', () => {
       'JoinedNotAction PolicyDocument',
       'IntrinsicEffect PolicyDocument',
       'IntrinsicStatement PolicyDocument',
+      'TypeByCondition Content',
     ])
   })
 

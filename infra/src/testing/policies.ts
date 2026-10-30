@@ -8,9 +8,14 @@
 // with a statement that isn't an object with a literal Effect, or an Action or NotAction entry that
 // isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action). A
 // statement given as Fn::If, as the CDK CLI's bootstrap template adds its trusted accounts' trust, is
-// read as each of its branches (AWS::NoValue dropped), marked conditional. aws-cdk-lib renders a log
-// resource policy whose statement holds a token (an ARN, an account) as a Fn::Join, so infra writes
-// those with literal values.
+// read as each of its branches (AWS::NoValue dropped), marked conditional, and so is every statement
+// of a resource that carries a Condition; a Fn::If above a statement (around a whole document or a
+// Policies entry) is reported unreadable. aws-cdk-lib renders a log resource policy whose statement
+// holds a token (an ARN, an account) as a Fn::Join, so infra writes those with literal values.
+// The walker reads documents only: a managed policy attached by ARN (ManagedPolicyArns, a permission
+// set's ManagedPolicies) and an Allow's NotAction are for the check reading these statements to refuse
+// or allow-list, and a YAML template is parsed with CloudFormation's short tags as intrinsics, never
+// as plain strings.
 
 // Where each resource type keeps its policy documents. `Policies` is a list of { PolicyDocument }.
 const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
@@ -20,8 +25,12 @@ const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
   'AWS::IAM::Policy': ['PolicyDocument'],
   'AWS::IAM::ManagedPolicy': ['PolicyDocument'],
   'AWS::IAM::RolePolicy': ['PolicyDocument'],
+  'AWS::IAM::UserPolicy': ['PolicyDocument'],
+  'AWS::IAM::GroupPolicy': ['PolicyDocument'],
   'AWS::S3::BucketPolicy': ['PolicyDocument'],
   'AWS::KMS::Key': ['KeyPolicy'],
+  'AWS::KMS::ReplicaKey': ['KeyPolicy'],
+  'AWS::Backup::BackupVault': ['AccessPolicy'],
   'AWS::EC2::VPCEndpoint': ['PolicyDocument'],
   'AWS::SNS::TopicPolicy': ['PolicyDocument'],
   'AWS::SQS::QueuePolicy': ['PolicyDocument'],
@@ -43,6 +52,8 @@ export interface PolicyDocumentAt {
   where: string
   // The document, or undefined when it is an intrinsic no static reading can resolve.
   document: { Statement?: unknown } | undefined
+  // Whether the resource carries a Condition, which decides whether it, and so the document, exists.
+  conditional: boolean
 }
 
 // One statement, with its list fields normalised to arrays.
@@ -50,8 +61,9 @@ export interface PolicyStatementAt {
   logicalId: string
   type: string
   where: string
-  // A branch of a statement given as Fn::If: a check that no Allow grants something reads it, but a
-  // check that a Deny is in place can't count it, since a condition decides whether it's there.
+  // A branch of a statement given as Fn::If, or a statement of a resource that carries a Condition: a
+  // check that no Allow grants something reads it, but a check that a Deny is in place can't count it,
+  // since a condition decides whether it's there (even when both branches deny alike).
   conditional: boolean
   sid: string | undefined
   effect: 'Allow' | 'Deny'
@@ -123,6 +135,12 @@ export function policyDocuments(template: Record<string, unknown>): PolicyDocume
     if (!isObject(resource) || typeof resource.Type !== 'string') continue
     const type = resource.Type
     const properties = isObject(resource.Properties) ? resource.Properties : {}
+    const conditional = typeof resource.Condition === 'string'
+    if (type === 'AWS::Organizations::Policy' && typeof properties.Type !== 'string') {
+      // A policy type no static reading resolves may be an SCP or RCP, so its content is unreadable.
+      found.push({ logicalId, type, where: 'Content', document: undefined, conditional })
+      continue
+    }
     if (type === 'AWS::Organizations::Policy' && !IAM_ORGANIZATIONS_TYPES.has(String(properties.Type))) continue
     for (const property of DOCUMENT_PROPERTIES[type] ?? []) {
       const value = properties[property]
@@ -135,10 +153,11 @@ export function policyDocuments(template: Record<string, unknown>): PolicyDocume
             type,
             where: `Policies[${index}].PolicyDocument`,
             document: readDocument(document),
+            conditional,
           })
         }
       } else {
-        found.push({ logicalId, type, where: property, document: readDocument(value) })
+        found.push({ logicalId, type, where: property, document: readDocument(value), conditional })
       }
     }
   }
@@ -149,7 +168,7 @@ export function policyDocuments(template: Record<string, unknown>): PolicyDocume
 // or a statement that can't, is left out here and reported by unreadablePolicies, which a test asserts
 // empty, so a check over these statements never passes on what it couldn't read.
 export function policyStatements(template: Record<string, unknown>): PolicyStatementAt[] {
-  return policyDocuments(template).flatMap(({ logicalId, type, where, document }) =>
+  return policyDocuments(template).flatMap(({ logicalId, type, where, document, conditional: onCondition }) =>
     (document === undefined ? [] : statementsOf(document)).flatMap(({ statement, conditional }) => {
       if (!isReadable(statement)) return []
       return [
@@ -157,7 +176,7 @@ export function policyStatements(template: Record<string, unknown>): PolicyState
           logicalId,
           type,
           where,
-          conditional,
+          conditional: onCondition || conditional,
           sid: typeof statement.Sid === 'string' ? statement.Sid : undefined,
           effect: statement.Effect,
           actions: asList(statement.Action).map(String),
