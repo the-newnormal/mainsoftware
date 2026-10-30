@@ -16,7 +16,7 @@ describe('C11-D06: the model lists', () => {
     expect(MODEL_SERVICE_PREFIXES).toHaveLength(61)
   })
 
-  it('each model action names a service outside the prefix list, once, as service:Action: the 34 of 30 Oct 2026', () => {
+  it('each model action names a service outside the prefix list, once, as service:Action: the 38 of 30 Oct 2026', () => {
     for (const action of MODEL_ACTIONS) {
       expect(action).toMatch(/^[a-z][a-z0-9-]*:[A-Za-z*]+$/)
       const service = action.slice(0, action.indexOf(':'))
@@ -24,7 +24,7 @@ describe('C11-D06: the model lists', () => {
       expect(MODEL_SERVICE_PREFIXES as readonly string[]).not.toContain(service)
     }
     expect(new Set(MODEL_ACTIONS).size).toBe(MODEL_ACTIONS.length)
-    expect(MODEL_ACTIONS).toHaveLength(34)
+    expect(MODEL_ACTIONS).toHaveLength(38)
   })
 
   it('a deny renders every prefix as prefix:* and then every model action, in the lists’ order', () => {

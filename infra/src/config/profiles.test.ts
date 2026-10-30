@@ -128,7 +128,7 @@ describe('C11-D43: the domains and hosts', () => {
     expect(DOMAINS.app.endsWith(`.${DOMAINS.userContent}`)).toBe(false)
   })
 
-  it('C11-Q08 is open, so both domains are still placeholders, which the landing-zone entry refuses for a real target', () => {
+  it('C11-Q08’s names aren’t given yet, so both domains are still placeholders, which the landing-zone entry refuses for a real target', () => {
     expect(isPlaceholderDomain(DOMAINS.app)).toBe(true)
     expect(isPlaceholderDomain(DOMAINS.userContent)).toBe(true)
   })

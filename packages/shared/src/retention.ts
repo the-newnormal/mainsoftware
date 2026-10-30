@@ -112,7 +112,7 @@ const NETWORK_LOGS =
 // C0.11 (C11-D13, C11-D22, C11-Q10; TECH-SPEC T24 item 9): the break-glass log is security audit,
 // locked for as long as the CloudTrail events it explains, which a hold can't lengthen or shorten.
 const BREAK_GLASS_LOG =
-  'security audit: each production access’s entries explain its CloudTrail events and are locked as long as they are, under an Object Lock nobody can lift, then expired by the bucket’s own retention'
+  'security audit: each break-glass use’s entries explain its CloudTrail events and are locked as long as they are, under an Object Lock nobody can lift, then expired by the bucket’s own retention'
 
 export const RETENTION_CLASSES = {
   // --- C0's data: every table of public, the migrator's ledger aside ------------------------------
@@ -929,7 +929,7 @@ export const RETENTION_CLASSES = {
     store: 'logs',
     tables: [],
     covers:
-      'The break-glass log: each use’s open and close entries (the reason reference, the runbook followed, the modes run and the ids a run printed, a case reference and a DPO’s person id among them, never a name, number or address), in the log-archive account’s bucket with Object Lock',
+      'The break-glass log: each use’s open and close entries (the environment, the reason reference, the runbook followed, the modes run and the ids a run printed, a case reference and a DPO’s person id among them, never a name, number or address), in the log-archive account’s bucket with Object Lock',
     purposes: ['security_audit'],
     ai: false,
     stage: 'C0.11',

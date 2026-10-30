@@ -13,10 +13,10 @@
 export const REGION = 'ap-southeast-1'
 
 // The two registrable domains (C11-D43): the app's, and a separate one for user content, so user
-// content is never same-site with the app. The owner hasn't chosen them yet (C11-Q08), so these are
-// placeholders under the reserved .invalid top-level domain, which never resolves, and
-// bin/landing-zone.ts refuses them for a real target (isPlaceholderDomain). PR 2's zones are created
-// from the answer.
+// content is never same-site with the app. The owner chose two domains (C11-Q08, 30 Oct 2026) and
+// gives their names before PR 2 deploys, so until then these are placeholders under the reserved
+// .invalid top-level domain, which never resolves, and bin/landing-zone.ts refuses them for a real
+// target (isPlaceholderDomain). PR 2's zones are created from the names.
 export const DOMAINS = {
   app: 'hearth-app.invalid',
   userContent: 'hearth-content.invalid',

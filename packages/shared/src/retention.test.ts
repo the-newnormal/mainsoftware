@@ -344,6 +344,11 @@ describe('LH-03 LH-04 LH-05: the retention classes', () => {
       deletedBy: 'the log-archive bucket’s retention',
     })
     expect(RETENTION_CLASSES.break_glass_log.period).toEqual(RETENTION_CLASSES.cloudtrail.period)
+    // T24 item 9: an entry holds the environment first, and every account's break-glass uses land in
+    // the log, non-prod's included (C11-D11), so its exemption speaks of every use (R2DOCS-08).
+    expect(RETENTION_CLASSES.break_glass_log.covers).toMatch(/\(the environment, the reason reference, /)
+    const holds: RetentionClass['holds'] = RETENTION_CLASSES.break_glass_log.holds
+    expect(typeof holds === 'object' ? holds.exempt : '').toMatch(/^security audit: each break-glass use’s entries /)
     // C11-D32: every VPC's flow logs, 90 days in CloudWatch.
     expect(RETENTION_CLASSES.network_logs).toMatchObject({
       store: 'logs',

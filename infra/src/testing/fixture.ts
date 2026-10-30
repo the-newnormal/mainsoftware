@@ -59,8 +59,8 @@ export function fixtureConfig(): LandingZoneConfig {
         'repo:{repository}:environment:{environment}:job_workflow_ref:{repository}/.github/workflows/deploy.yml@refs/heads/main',
     },
     alertEmail: ['hearth-ops', 'example.invalid'].join('@'),
-    // C11-Q09's recommended amounts, as fictional as the rest.
-    budgetsUsd: { organisation: 550, management: 25, logArchive: 25, nonprod: 200, prod: 300 },
+    // C11-Q09's revised recommendation (the owner hasn't answered it), as fictional as the rest.
+    budgetsUsd: { organisation: 650, management: 25, logArchive: 25, nonprod: 250, prod: 350 },
   }
 }
 

@@ -19,7 +19,8 @@
 // found package joins scripts/guards/ai-free.ts.
 //
 // Last check, 30 Oct 2026, over all 457 services: every prefix below is one AWS publishes, and every
-// action pattern matches at least one action it publishes. The design's `qconnect` is no prefix
+// action pattern matches at least one action it publishes. A second read of the same scan's hits that
+// day added B2B Data Interchange's, End User Messaging's and Customer Profiles' model features below. The design's `qconnect` is no prefix
 // (Amazon Q in Connect's actions are `wisdom:`), nor is `bedrock-data-automation` (its actions are
 // `bedrock:`, denied whole). Read and left:
 // - machine learning on AWS's own telemetry, never content (the D41 note: GuardDuty; CloudWatch Logs'
@@ -127,7 +128,13 @@ export const MODEL_SERVICE_PREFIXES = [
 // - Amazon Connect's Contact Lens analytics (AI scoring of speech, D34) and AI agents;
 // - Amazon Q's code, metadata and SQL generation, agents and chat in DataZone (SageMaker Unified
 //   Studio), Glue (with Glue's own machine-learning transforms) and the SQL Workbench;
-// - Neptune ML's model training, transforms and endpoints.
+// - Neptune ML's model training, transforms and endpoints;
+// - B2B Data Interchange's AI-assisted mapping, which Amazon Bedrock generates;
+// - End User Messaging's voice messages, whose speech is synthesised from text in a chosen voice
+//   (Amazon Polly's, denied whole above; the SDK names Polly for SendVoiceMessage, and
+//   SendNotifyVoiceMessage takes a voice id for its template's text);
+// - Customer Profiles' recommenders, machine-learning models trained on profiles (retrained on new
+//   data, with training metrics, from Personalize-style recipes), and the recommendations they make.
 export const MODEL_ACTIONS = [
   'cloudwatch:GenerateQuery',
   'cloudwatch:GenerateQueryResultsSummary',
@@ -163,6 +170,10 @@ export const MODEL_ACTIONS = [
   'neptune-db:*MLModel*',
   'neptune-db:*MLEndpoint*',
   'neptune-db:*MLDataProcessing*',
+  'b2bi:GenerateMapping',
+  'sms-voice:Send*VoiceMessage',
+  'profile:*Recommender*',
+  'profile:GetProfileRecommendations',
 ] as const
 
 export type ModelServicePrefix = (typeof MODEL_SERVICE_PREFIXES)[number]

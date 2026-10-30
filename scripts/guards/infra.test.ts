@@ -219,6 +219,28 @@ describe('IG-04: nothing stateful or log-holding given away or made deletable', 
     ])
   })
 
+  // aws-cdk-lib 2.274.0's other ways to make something deletable, and a grants object destructured
+  // (R2GUARD-03).
+  it('finds a removal policy over a scope, an L1’s deletion attributes and a destructured grants object', () => {
+    const planted = [
+      'if (!profile.holdsRealData) cdk.RemovalPolicies.of(this).destroy()',
+      'MissingRemovalPolicies.of(this).destroy()',
+      'cfnLogGroup.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.DELETE',
+      "cfnBucket.cfnOptions.updateReplacePolicy = 'Delete' as cdk.CfnDeletionPolicy",
+      "cfnBucket.addOverride('DeletionPolicy', 'Delete')",
+      "cfnRepository.addDeletionOverride('UpdateReplacePolicy')",
+      'const { grants } = bucket; grants.write(role)',
+      'const { grants: g } = bucket',
+      'grants.delete(role)',
+      'cfnLogGroup.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.RETAIN',
+      "cfnBucket.addOverride('Properties.VersioningConfiguration.Status', 'Enabled')",
+      'bucket.grants.read(role)',
+    ]
+    expect(planted.map(line => ruleFindings('x.ts', line, DESTROY_RULES).length)).toEqual([
+      1, 1, 1, 1, 1, 1, 2, 1, 1, 0, 0, 0,
+    ])
+  })
+
   it('no infra script does', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), DESTROY_RULES))).toEqual([])
   })
@@ -281,7 +303,27 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
       'infra/bin/x.ts:10: IG-05 a class extending a stack or stage is named …Stack or …Stage, so the guard reads its env',
       'infra/bin/x.ts:13: IG-05 a class extending a stack or stage is named …Stack or …Stage, so the guard reads its env',
       "infra/bin/x.ts:14: IG-05 props must be an object literal with env written out, or the constructor's own props passed on",
+      'infra/bin/x.ts:16: IG-05 a stack or stage with no env deploys wherever the CLI points; write env: { region: REGION }',
     ])
+  })
+
+  // A stack or stage made with no env is environment-agnostic: it deploys into whatever region the
+  // CLI's profile names (R2DOCS-01).
+  it('refuses a stack or stage made with no env', () => {
+    const planted = [
+      "new cdk.Stack(app, 'Hearth-Foundation')",
+      "new cdk.Stack(app, 'Hearth-LogArchive', { description: 'x' })",
+      'class FoundationStack extends cdk.Stack { constructor(s, i) { super(s, i) } }',
+      "class LogArchiveStack extends cdk.Stack { constructor(s, i) { super(s, i, { description: 'x' }) } }",
+      "new cdk.Stage(app, 'S')",
+      'new cdk.Stack()',
+      "class ParentStack extends cdk.Stack { constructor(s, i, props: cdk.StackProps) { super(s, i, props); new cdk.NestedStack(this, 'N') } }",
+      "new cdk.Stack(app, 'Hearth-Foundation', { description: 'x', env: { region: REGION } })",
+    ].join('\n')
+    const why = 'IG-05 a stack or stage with no env deploys wherever the CLI points; write env: { region: REGION }'
+    expect(regionFindings('infra/bin/x.ts', planted)).toEqual(
+      [1, 2, 3, 4, 5, 6, 7].map(line => `infra/bin/x.ts:${line}: ${why}`),
+    )
   })
 
   it('every env in infra/ names ap-southeast-1', () => {
@@ -298,8 +340,11 @@ describe('IG-06 (C11-D44, C11-D76): the server image only by digest, never built
       "ecs.ContainerImage.fromTarball('image.tar')",
       "import * as assets from 'aws-cdk-lib/aws-ecr-assets'",
       'ecs.ContainerImage.fromEcrRepository(repository, release.digest)',
+      // aws-cdk-lib's own image-asset class, which makes a DockerImageAsset (R2GUARD-02).
+      "taskDefinition.addContainer('api', { image: new ecs.AssetImage('../apps/server') })",
+      "import { AssetImage } from 'aws-cdk-lib/aws-ecs'",
     ]
-    expect(planted.map(line => ruleFindings('x.ts', line, IMAGE_RULES).length)).toEqual([1, 1, 1, 1, 1, 0])
+    expect(planted.map(line => ruleFindings('x.ts', line, IMAGE_RULES).length)).toEqual([1, 1, 1, 1, 1, 0, 1, 1])
   })
 
   it('no infra script uses one', () => {
@@ -337,7 +382,7 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       a: 'cdk --app cdk.out deploy --all',
       b: 'npx cdk -a cdk.out deploy',
       c: 'npx cdk --profile x destroy',
-      d: 'cdk  --require-approval never deploy',
+      d: 'cdk --debug true deploy',
       e: 'npx cdk@2 deploy',
       f: 'cdk --profile p bootstrap',
       g: 'cdk synth && cdk --app cdk.out destroy -f',
@@ -350,7 +395,7 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       ok1: 'cdk synth --quiet',
       ok2: 'HEARTH_FIXTURE=1 cdk --app "node bin/landing-zone.ts" synth',
       ok3: 'cdk -a cdk.out ls && cdk --app=cdk.out list',
-      ok4: 'cdk --version',
+      ok4: 'cdk --json true --no-lookups -v --app=cdk.out --context a=b -c=x --strict --ci false synth',
       ok5: 'cdk synthesize --no-lookups',
       ok6: 'tsc --noEmit && vitest run',
     }
@@ -358,7 +403,7 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       'package.json: IG-07 script "a" runs cdk deploy: only synth or list',
       'package.json: IG-07 script "b" runs cdk deploy: only synth or list',
       'package.json: IG-07 script "c" runs cdk destroy: only synth or list',
-      'package.json: IG-07 script "d" runs cdk never: only synth or list',
+      'package.json: IG-07 script "d" runs cdk deploy: only synth or list',
       'package.json: IG-07 script "e" runs cdk deploy: only synth or list',
       'package.json: IG-07 script "f" runs cdk bootstrap: only synth or list',
       'package.json: IG-07 script "g" runs cdk destroy: only synth or list',
@@ -368,6 +413,75 @@ describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroy
       'package.json: IG-07 script "k" runs cdk gc: only synth or list',
       'package.json: IG-07 script "l" runs cdk diff: only synth or list',
       'package.json: IG-07 script "m" runs cdk deploy: only synth or list',
+    ])
+  })
+
+  // aws-cdk 2.1146.1's parser isn't strict, so an option it doesn't know takes the next word as its
+  // value: `cdk --toolkit-stack-name synth deploy` deploys (R2GUARD-01).
+  it('refuses an option before the subcommand that isn’t one of the CLI’s own, whose value it can’t tell from a subcommand', () => {
+    const scripts = {
+      a: 'cdk --toolkit-stack-name synth deploy',
+      b: 'npx cdk --change-set-name ls deploy --all',
+      c: 'cdk -O list deploy',
+      d: 'cdk --unknown-thing synth deploy',
+      e: 'cdk --roleArn synth deploy',
+      f: 'cdk -jo synth deploy',
+      g: 'cdk --telemetry-file --toolkit-stack-name synth deploy',
+      h: 'cdk  --require-approval never deploy',
+      ok1: 'cdk --toolkit-stack-name=x synth',
+      ok2: 'cdk -y --no-staging --profile p --region ap-southeast-1 -a cdk.out ls',
+    }
+    const why = "before its subcommand: the guard reads past only the CLI's own options"
+    expect(scriptFindings('package.json', { scripts })).toEqual([
+      `package.json: IG-07 script "a" runs cdk with --toolkit-stack-name ${why}`,
+      `package.json: IG-07 script "b" runs cdk with --change-set-name ${why}`,
+      `package.json: IG-07 script "c" runs cdk with -O ${why}`,
+      `package.json: IG-07 script "d" runs cdk with --unknown-thing ${why}`,
+      `package.json: IG-07 script "e" runs cdk with --roleArn ${why}`,
+      `package.json: IG-07 script "f" runs cdk with -jo ${why}`,
+      `package.json: IG-07 script "g" runs cdk with --toolkit-stack-name ${why}`,
+      `package.json: IG-07 script "h" runs cdk with --require-approval ${why}`,
+    ])
+  })
+
+  // npm appends a caller's words to a script, so `"c": "cdk"` and `"d": "npm run c deploy"` deploy, and
+  // `cdk --version` with `--no-version deploy` appended deploys too (R2BUILD-02).
+  it('refuses a run of the CLI with no subcommand, which would take a caller’s', () => {
+    const scripts = {
+      passThrough: 'cdk',
+      viaOtherScript: 'npm run passThrough deploy',
+      version: 'cdk --version',
+      npx: 'npx cdk',
+      options: 'cdk --app cdk.out',
+      valueLast: 'cdk --profile',
+      dashes: 'npm exec cdk --',
+    }
+    const why = "runs cdk with no subcommand: npm appends a caller's words, so name synth or list"
+    expect(scriptFindings('package.json', { scripts })).toEqual(
+      ['passThrough', 'version', 'npx', 'options', 'valueLast', 'dashes'].map(
+        name => `package.json: IG-07 script "${name}" ${why}`,
+      ),
+    )
+  })
+
+  // As a shell reads them: any npm spec after @, a backslash-newline joining the lines, and a
+  // redirection, which is no word of its command (R2GUARD-05).
+  it('reads the CLI however a script spells it', () => {
+    const scripts = {
+      range: "npx 'aws-cdk@>=2' deploy",
+      continued: 'c\\\ndk deploy --all',
+      continuedQuoted: '"c\\\ndk" deploy',
+      redirect: 'cdk>/dev/null deploy',
+      fd: 'cdk 2>/dev/null destroy',
+      ok1: 'cdk 2>/dev/null synth > out.txt',
+      ok2: 'cdk synth 2>&1 | tee synth.log',
+    }
+    expect(scriptFindings('package.json', { scripts })).toEqual([
+      'package.json: IG-07 script "range" runs cdk deploy: only synth or list',
+      'package.json: IG-07 script "continued" runs cdk deploy: only synth or list',
+      'package.json: IG-07 script "continuedQuoted" runs cdk deploy: only synth or list',
+      'package.json: IG-07 script "redirect" runs cdk deploy: only synth or list',
+      'package.json: IG-07 script "fd" runs cdk destroy: only synth or list',
     ])
   })
 
@@ -482,6 +596,33 @@ describe('IG-11 (C11-D29): no Lambda and no custom resource of infra’s own', (
     ]
     expect(planted.map(line => ruleFindings('x.ts', line, LAMBDA_RULES).length)).toEqual([
       1, 1, 1, 1, 2, 1, 1, 1, 1, 0, 0,
+    ])
+  })
+
+  // More of aws-cdk-lib 2.274.0's constructs that make a Lambda, and the custom-resource and SAM types
+  // the template-level check wouldn't see (R2GUARD-04).
+  it('finds log retention, certificate requests, rotation, AwsApi, transforms and the other constructs that make one', () => {
+    const planted = [
+      "new rds.DatabaseInstance(this, 'db', { cloudwatchLogsExports: ['postgresql'], cloudwatchLogsRetention: logs.RetentionDays.ONE_MONTH })",
+      "new logs.LogRetention(this, 'r', { logGroupName: 'x', retention: logs.RetentionDays.ONE_DAY })",
+      'bucket.enableEventBridgeNotification()',
+      "new acm.DnsValidatedCertificate(this, 'c', { domainName: 'x', hostedZone: zone, region: 'us-east-1' })",
+      "new targets.AwsApi({ service: 'ECS', action: 'updateService' })",
+      'secret.addRotationSingleUser()',
+      'secret.addRotationSchedule("r", { hostedRotation: secretsmanager.HostedRotation.postgreSqlSingleUser() })',
+      "new secretsmanager.SecretRotation(this, 'r', {})",
+      "new cdk.CfnResource(this, 'c', { type: 'AWS::CloudFormation::CustomResource', properties: {} })",
+      "new cdk.CfnResource(this, 'a', { type: 'AWS::Serverless::Application', properties: {} })",
+      "this.addTransform('AWS::SecretsManager-2024-09-16')",
+      "new cdk.Stack(app, 'Hearth-prod-Edge', { env: { region: 'us-east-1' }, crossRegionReferences: true })",
+      "new cdk.CfnJson(this, 'conditions', { value: { [key]: 'sts.amazonaws.com' } })",
+      "new route53.VpcEndpointServiceDomainName(this, 'd', {})",
+      "new cloudtrail.Trail(this, 't', { sendToCloudWatchLogs: true, cloudWatchLogsRetention: logs.RetentionDays.ONE_YEAR })",
+      "new logs.LogGroup(this, 'g', { retention: logs.RetentionDays.ONE_MONTH })",
+      "new acm.Certificate(this, 'c', { domainName: 'x', validation: acm.CertificateValidation.fromDns(zone) })",
+    ]
+    expect(planted.map(line => ruleFindings('x.ts', line, LAMBDA_RULES).length)).toEqual([
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0,
     ])
   })
 

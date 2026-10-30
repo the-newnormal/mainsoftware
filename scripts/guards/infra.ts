@@ -126,7 +126,17 @@ export const DESTROY_RULES: readonly CodeRule[] = [
   },
   {
     id: 'IG-04',
+    pattern: /(?<!\w|\.\s*)grants\s*\.\s*(?:readWrite|write|delete|putAcl|fullAccess)\s*\(/,
+    why: 'a broad or deleting grant; name the actions a role needs',
+  },
+  {
+    id: 'IG-04',
     pattern: /\.\s*grants\b(?!\s*\.\s*\w+\s*\()/,
+    why: "a grants object kept aside can't be read; call the one grant a role needs where it is made",
+  },
+  {
+    id: 'IG-04',
+    pattern: /\{[^{}]*\bgrants\b[^{}]*\}\s*=(?![=>])/,
     why: "a grants object kept aside can't be read; call the one grant a role needs where it is made",
   },
   {
@@ -154,6 +164,28 @@ export const DESTROY_RULES: readonly CodeRule[] = [
     pattern: /\b(?:removalPolicy\s*:|applyRemovalPolicy\s*\()\s*['"`]destroy['"`]/i,
     why: 'stateful and log-holding resources are retained',
   },
+  // aws-cdk-lib 2.274.0's ways round RemovalPolicy: one policy over a whole scope, and an L1's own
+  // deletion attributes, set or removed (which on an L2's resource undoes the Retain it sets).
+  {
+    id: 'IG-04',
+    pattern: /\b(?:Missing)?RemovalPolicies\s*\.\s*of\b/,
+    why: 'a removal policy over a whole scope can make stateful and log-holding resources deletable',
+  },
+  {
+    id: 'IG-04',
+    pattern: /\bCfnDeletionPolicy\s*\.\s*DELETE\b/,
+    why: 'stateful and log-holding resources are retained',
+  },
+  {
+    id: 'IG-04',
+    pattern: /\b(?:deletionPolicy|updateReplacePolicy)\s*[:=]\s*['"`]Delete['"`]/i,
+    why: 'stateful and log-holding resources are retained',
+  },
+  {
+    id: 'IG-04',
+    pattern: /\badd(?:Deletion)?Override\s*\(\s*['"`](?:DeletionPolicy|UpdateReplacePolicy)\b/,
+    why: 'an override of a deletion attribute can make a retained resource deletable',
+  },
 ]
 
 // IG-06: the server image is deployed only by digest, from the release the pipeline pushed, never
@@ -162,6 +194,7 @@ export const IMAGE_RULES: readonly CodeRule[] = [
   { id: 'IG-06', pattern: /\bfromAsset\s*\(/, why: 'an asset makes the CLI build or publish; use the release digest' },
   { id: 'IG-06', pattern: /\b(?:DockerImageAsset|TarballImageAsset)\b/, why: 'an image asset makes the CLI build one' },
   { id: 'IG-06', pattern: /\bfrom(?:DockerImageAsset|Tarball)\s*\(/, why: 'an image asset makes the CLI build one' },
+  { id: 'IG-06', pattern: /\bAssetImage\b/, why: 'ecs.AssetImage makes a DockerImageAsset, which the CLI builds' },
   { id: 'IG-06', pattern: /['"`]aws-cdk-lib\/aws-ecr-assets['"`]/, why: 'an image asset makes the CLI build one' },
 ]
 
@@ -230,8 +263,46 @@ export const LAMBDA_RULES: readonly CodeRule[] = [
   },
   {
     id: 'IG-11',
-    pattern: /\beventBridgeEnabled\s*:\s*true\b/,
+    pattern: /\b(?:eventBridgeEnabled\s*:\s*true\b|enableEventBridgeNotification\s*\()/,
     why: 'bucket notifications are made by a Lambda',
+  },
+  {
+    id: 'IG-11',
+    pattern: /\b(?:LogRetention\b|cloudwatchLogsRetention\s*:)/,
+    why: "log retention set this way is a Lambda; make the log group with its class's retention (IAC-07)",
+  },
+  {
+    id: 'IG-11',
+    pattern: /\bDnsValidatedCertificate\b/,
+    why: 'DnsValidatedCertificate requests the certificate from a Lambda; use acm.Certificate',
+  },
+  { id: 'IG-11', pattern: /\bAwsApi\b/, why: 'an AwsApi target runs a Lambda' },
+  {
+    id: 'IG-11',
+    pattern:
+      /\b(?:addRotation(?:SingleUser|MultiUser|Schedule)\s*\(|SecretRotation\b|HostedRotation\b|(?:Cfn)?RotationSchedule\b|hostedRotationLambda\s*:)/,
+    why: 'secret rotation runs a Lambda (a hosted one through a SAM application or transform)',
+  },
+  {
+    id: 'IG-11',
+    pattern: /['"`]AWS::(?:CloudFormation::CustomResource|Serverless)\b/,
+    why: 'a custom resource or a SAM resource runs a Lambda',
+  },
+  {
+    id: 'IG-11',
+    pattern: /\baddTransform\s*\(/,
+    why: 'a transform rewrites the template at deploy, outside its review (SAM and hosted rotation make a Lambda)',
+  },
+  {
+    id: 'IG-11',
+    pattern: /\bcrossRegionReferences\s*:\s*true\b/,
+    why: 'cross-region references are written and read by a Lambda',
+  },
+  { id: 'IG-11', pattern: /\bCfnJson\b/, why: 'CfnJson resolves its value in a Lambda' },
+  {
+    id: 'IG-11',
+    pattern: /\bVpcEndpointServiceDomainName\b/,
+    why: "an endpoint service's domain name is verified by a Lambda",
   },
 ]
 
@@ -327,10 +398,13 @@ function isEdge(call: ts.NewExpression | ts.CallExpression): boolean {
 const propertyName = (property: ts.ObjectLiteralElementLike): string | undefined =>
   property.name === undefined ? undefined : property.name.getText().replace(/['"]/g, '')
 
-// Each stack or stage `env` in a script that doesn't put it in ap-southeast-1, and each one the guard
-// can't read, as "path:line: why". An env is an object literal whose region is 'ap-southeast-1' or
-// profiles.ts's REGION; only C0.12's Hearth-…-Edge stack (CloudFront's certificate and WAF) may say
-// 'us-east-1'. So that every one is read:
+// Each stack or stage `env` in a script that doesn't put it in ap-southeast-1, each one the guard
+// can't read, and each construction with none, as "path:line: why". An env is an object literal whose
+// region is 'ap-southeast-1' or profiles.ts's REGION; only C0.12's Hearth-…-Edge stack (CloudFront's
+// certificate and WAF) may say 'us-east-1'. So that every one is read:
+// - every construction of a stack or stage has props with env written out (a stack in a stage too),
+//   since one without deploys into whatever region the CLI's profile names (a nested stack, whose
+//   props take no env, is refused too: none is planned, and the guard would learn one first);
 // - a class extending a stack or stage is named …Stack or …Stage, so its constructions are seen;
 // - props are an object literal, or the enclosing stack's or stage's own constructor parameter passed
 //   on (read where that class is constructed), never another value;
@@ -369,7 +443,10 @@ export function regionFindings(path: string, source: string): Finding[] {
     }
     const call = stackCall(node)
     const props = call?.arguments?.[2]
-    if (call !== undefined && props !== undefined) {
+    const noEnv = 'IG-05 a stack or stage with no env deploys wherever the CLI points; write env: { region: REGION }'
+    if (call !== undefined && props === undefined) {
+      found.push(`${at(call)}: ${noEnv}`)
+    } else if (call !== undefined && props !== undefined) {
       if (ts.isObjectLiteralExpression(props)) {
         const properties = props.properties
         const lastSpread = properties.findLastIndex(p => ts.isSpreadAssignment(p))
@@ -380,6 +457,8 @@ export function regionFindings(path: string, source: string): Finding[] {
           found.push(`${at(spread)}: IG-05 write env out after the last spread, as env: { region: REGION }`)
         } else if (env !== undefined) {
           checkEnv(call, env)
+        } else {
+          found.push(`${at(props)}: ${noEnv}`)
         }
       } else if (!isOwnProps(props, call)) {
         found.push(
@@ -396,13 +475,44 @@ export function regionFindings(path: string, source: string): Finding[] {
 // --- IG-07: no deploy, bootstrap or destroy script ------------------------------------------------
 
 // The CDK subcommands a package script may run: synth and list, which build or name stacks without
-// deploying anything. A cdk run with no subcommand (`cdk --version`) is let through too.
+// deploying anything.
 const CDK_ALLOWED = new Set(['synth', 'synthesize', 'ls', 'list'])
-// The CLI itself, however it is called: cdk or aws-cdk, by path, or pinned with @version.
-const CDK_BINARY = /(?:^|\/)(?:aws-)?cdk(?:@[\w.^~-]*)?$/
-// The CLI's global options that take the next word as their value (aws-cdk 2.1146.1's string and
-// array options). Any other option is taken as a flag, so a value it might take reads as the
-// subcommand and is refused: an unknown option fails closed.
+// The CLI itself, however it is called: cdk or aws-cdk, by path, or with any npm spec after @.
+const CDK_BINARY = /(?:^|\/)(?:aws-)?cdk(?:@[\s\S]*)?$/
+// What may stand between the CLI and its subcommand, from aws-cdk 2.1146.1's own parser (yargs, which
+// isn't strict, so an option it doesn't know takes the next word as its value). Its global booleans,
+// and yargs's --version and --help, each of which takes a following true or false as yargs does:
+const CDK_FLAG_OPTIONS = new Set([
+  '--trace',
+  '--strict',
+  '--lookups',
+  '--ignore-errors',
+  '--json',
+  '-j',
+  '--verbose',
+  '-v',
+  '--debug',
+  '--debug-app',
+  '--debug-cli',
+  '--ec2creds',
+  '-i',
+  '--version-reporting',
+  '--telemetry',
+  '--path-metadata',
+  '--asset-metadata',
+  '--staging',
+  '--notices',
+  '--no-color',
+  '--color',
+  '--ci',
+  '--yes',
+  '-y',
+  '--version',
+  '--help',
+  '-h',
+])
+// its global string and array options, each with the one word after it that doesn't start with -
+// (yargs takes no such word as a value);
 const CDK_VALUE_OPTIONS = new Set([
   '--app',
   '-a',
@@ -422,28 +532,40 @@ const CDK_VALUE_OPTIONS = new Set([
   '--unstable',
   '--telemetry-file',
 ])
+// and any option written as one word: --name=value, -x=value or --no-name. Every other option before
+// the subcommand is refused, since the guard can't tell whether the CLI takes the next word as its
+// value: this is what keeps IG-07 fail-closed.
+const ONE_WORD_OPTION = /^(?:--[^=]+=|-[^-]=|--no-.)/
 
 // A command line split into commands, each a list of words, as a shell splits it for this purpose:
-// quotes group, a backslash escapes, and ; & | ( ) ` and newlines end a command.
+// quotes group, a backslash escapes, a backslash before a newline joins the lines (unquoted or in
+// double quotes), a redirection (`>out`, `2>&1`, `<in`) is no word of its command, and ; & | ( ) `
+// and newlines end a command. It reads the words a script writes, not what a variable expands to.
 function shellCommands(line: string): string[][] {
   const commands: string[][] = []
   let words: string[] = []
   let word = ''
   let inWord = false
   let quote: string | undefined
+  // Whether the next word is a redirection's target.
+  let target = false
   const endWord = () => {
-    if (inWord) words.push(word)
+    if (inWord && !target) words.push(word)
+    if (inWord) target = false
     word = ''
     inWord = false
   }
   const endCommand = () => {
     endWord()
+    target = false
     if (words.length > 0) commands.push(words)
     words = []
   }
   for (let i = 0; i < line.length; i++) {
     const c = line[i] ?? ''
-    if (quote !== undefined) {
+    if (c === '\\' && line[i + 1] === '\n' && quote !== "'") {
+      i++
+    } else if (quote !== undefined) {
       if (c === quote) quote = undefined
       else if (c === '\\' && quote === '"' && i + 1 < line.length) word += line[++i]
       else word += c
@@ -455,6 +577,15 @@ function shellCommands(line: string): string[][] {
       inWord = true
     } else if (c === '\n' || ';&|()`'.includes(c)) {
       endCommand()
+    } else if (c === '<' || c === '>') {
+      // A file descriptor written against the operator is part of it, as is the rest of the operator.
+      if (inWord && /^\d+$/.test(word)) {
+        word = ''
+        inWord = false
+      }
+      endWord()
+      while ('<>&|'.includes(line[i + 1] ?? ' ')) i++
+      target = true
     } else if (/\s/.test(c)) {
       endWord()
     } else {
@@ -466,31 +597,49 @@ function shellCommands(line: string): string[][] {
   return commands
 }
 
-// Every cdk subcommand a command line runs that isn't synth or list, reading past the CLI's options
-// and their values, through chains, and into quoted command lines (`sh -c '…'`, `--app "…"`).
-function refusedCdkSubcommands(line: string): string[] {
+// What a run of the CLI at words[index] does that a script may not, or undefined: a subcommand but
+// synth or list, an option before the subcommand the guard can't read past, or no subcommand at all,
+// since npm appends a caller's words to a script (`npm run c deploy` runs `cdk deploy` when c is
+// `cdk`, and `cdk --version` with `--no-version deploy` appended deploys too).
+function refusedCdkRun(words: readonly string[], index: number): string | undefined {
+  let next = index + 1
+  while (next < words.length) {
+    const option = words[next] ?? ''
+    if (option === '--') {
+      next += 1
+      break
+    }
+    if (!option.startsWith('-')) break
+    if (ONE_WORD_OPTION.test(option)) next += 1
+    else if (CDK_FLAG_OPTIONS.has(option)) next += /^(?:true|false)$/.test(words[next + 1] ?? '') ? 2 : 1
+    else if (CDK_VALUE_OPTIONS.has(option)) next += (words[next + 1] ?? '-').startsWith('-') ? 1 : 2
+    else return `runs cdk with ${option} before its subcommand: the guard reads past only the CLI's own options`
+  }
+  const subcommand = words[next]
+  if (subcommand === undefined)
+    return "runs cdk with no subcommand: npm appends a caller's words, so name synth or list"
+  // `npx -p aws-cdk cdk …`: the second cdk is read on its own.
+  if (CDK_BINARY.test(subcommand) || CDK_ALLOWED.has(subcommand)) return undefined
+  return `runs cdk ${subcommand}: only synth or list`
+}
+
+// Every run of the CLI in a command line that a script may not make (refusedCdkRun), through chains
+// and into quoted command lines (`sh -c '…'`, `--app "…"`).
+function refusedCdkRuns(line: string): string[] {
   const found: string[] = []
   for (const words of shellCommands(line)) {
     for (const [index, word] of words.entries()) {
-      if (/[\s;&|()`]/.test(word)) found.push(...refusedCdkSubcommands(word))
+      if (/[\s;&|()`]/.test(word)) found.push(...refusedCdkRuns(word))
       if (!CDK_BINARY.test(word)) continue
-      let next = index + 1
-      while (next < words.length) {
-        const option = words[next] ?? ''
-        if (!option.startsWith('-')) break
-        next += CDK_VALUE_OPTIONS.has(option) ? 2 : 1
-      }
-      const subcommand = words[next]
-      // `npx -p aws-cdk cdk …`: the second cdk is read on its own.
-      if (subcommand === undefined || CDK_BINARY.test(subcommand)) continue
-      if (!CDK_ALLOWED.has(subcommand)) found.push(subcommand)
+      const refused = refusedCdkRun(words, index)
+      if (refused !== undefined) found.push(refused)
     }
   }
   return found
 }
 
-// Each script in a manifest that deploys, bootstraps or destroys, or runs any other cdk subcommand
-// than synth or list. Agents run package scripts, so none may reach an account (C11-D70).
+// Each script in a manifest that deploys, bootstraps or destroys, or runs the CDK CLI other than as
+// synth or list. Agents run package scripts, so none may reach an account (C11-D70).
 export function scriptFindings(path: string, manifest: unknown): Finding[] {
   const scripts = (manifest as { scripts?: Record<string, unknown> } | null)?.scripts ?? {}
   const found: Finding[] = []
@@ -498,10 +647,8 @@ export function scriptFindings(path: string, manifest: unknown): Finding[] {
     if (path === 'infra/package.json' && /deploy|bootstrap|destroy/i.test(name)) {
       found.push(`${path}: IG-07 script "${name}": no deploy, bootstrap or destroy script`)
     }
-    const refused = typeof command === 'string' ? refusedCdkSubcommands(command) : []
-    for (const subcommand of new Set(refused)) {
-      found.push(`${path}: IG-07 script "${name}" runs cdk ${subcommand}: only synth or list`)
-    }
+    const refused = typeof command === 'string' ? refusedCdkRuns(command) : []
+    for (const what of new Set(refused)) found.push(`${path}: IG-07 script "${name}" ${what}`)
   }
   return found
 }
