@@ -69,7 +69,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 ### Opening a session
 
 1. In your terminal, from the checkout's root: `infra/bin/break-glass.sh <nonprod|prod|log-archive> <reason>`, adding `--console` only if you need the AWS console. Anything it refuses, it refuses in its own fixed words, never repeating what you typed.
-2. Pick the runbook you follow from its numbered menu. Its default follows the reason: `bootstrap:` the set-up runbook, `recover:` Twilio withdrawn, `case:` the access request, `lz:` the AWS set-up, anything else this one.
+2. Pick the runbook you follow from its numbered menu of seven (this one, the security alert, the breach, the first Owner's set-up, Twilio withdrawn, the access request and the AWS set-up). Its default follows the reason: `bootstrap:` the first Owner's set-up (`first-owner-set-up.md`), `recover:` Twilio withdrawn (`twilio-withdrawn.md`), `case:` the access request (`access-request.md`), `lz:` the AWS set-up (`aws-account-set-up.md`), anything else this one.
 3. Sign in to the access portal in the browser it opens, with your security key.
 4. The helper checks that you signed in with `HearthBreakGlassEntry`, takes the role for at most an hour under your reason, with your sign-in name as the session's source identity (A1 alarms), and writes the open entry before anything else. If the open entry can't be written, it stops, and nothing was done.
 5. With `--console`, it prints a console sign-in link for the same session, good for 15 minutes. It sends the session to AWS's sign-in federation endpoint in the body of a request it reads from standard input, never in an argument, a file or the link; the link holds only the sign-in token. Use it at once, and copy it nowhere.
@@ -87,7 +87,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 2. For the ids, paste the Owner bootstrap script's `committed:` line whole, which the helper reads in the exact forms the script prints; or press Enter and type each id on its own line, each checked against its shape (a UUID, a date, a case reference, a PR number or a 40-character commit), then Enter on an empty line. Never a name, a number or an address.
 3. It writes the close entry and signs you out of the access portal.
 
-If the session passed its hour, the helper takes the role again under the same reason to write the close (A1 alarms again), writing a continuation entry first. If the helper is stopped (Ctrl-C at its own prompts, a closed terminal), it still writes a close entry, unprompted, with outcome `stopped` and no modes or ids, and signs out. If it says a close entry wasn't written, tell the second reviewer.
+If the close comes within two minutes of the session's hour, or after it, the helper takes the role again under the same reason to write the close (A1 alarms again), writing a continuation entry first under the new session's name. If the helper is stopped (Ctrl-C at its own prompts, a closed terminal), it still writes a close entry, unprompted, with outcome `stopped` and only the modes and ids you had already answered (none, if it stopped before the close's questions), and signs out. If it says a close entry wasn't written, tell the second reviewer.
 
 ### An id learnt later: an amend entry
 
@@ -95,8 +95,9 @@ An entry can never change, so an id learnt after the close (the DPO's person id,
 
 ### When it stops
 
-Its messages are fixed, and the AWS CLI's own errors are silenced, since they would print the account id, the bucket's name and your sign-in name. So check, in order:
+Its messages are fixed, and the AWS CLI's own errors are silenced, since they would print the account id, the bucket's name and your sign-in name; only the access portal's sign-in (`aws sso login`) prints its own. So check, in order:
 
+- "the sign-in didn't work", or "sign in with the HearthBreakGlassEntry permission set": the `hearth-<env>-entry` profile and its `sso-session` in the folder's `.aws/config`, and that you chose `HearthBreakGlassEntry` in the portal.
 - "the role wasn't assumed": the reason's exact form; that you signed in with `HearthBreakGlassEntry` through the right `hearth-<env>-entry` profile; that the account's Baseline is deployed.
 - "the break-glass-log bucket's parameter wasn't read": the account's `/hearth/break-glass/log-bucket` parameter exists (its Baseline, or `Hearth-LogArchive`, makes it).
 - "the open entry wasn't written": the CLI is new enough for `--if-none-match`; nothing was done, so open it again.
@@ -109,7 +110,8 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 ## Check it worked
 
 - A1's email arrived within minutes from the account's topic, and later from management's.
-- The open and close entries (and any continuation or amend entry) exist: `aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/<dd>/` lists them, each one JSON object of schema `hearth.break-glass.v1`, keyed `<session>-open.json`, `<session>-close.json`, `<session>-continuation.json` or `<amended session>-amend-<the amend's time>.json`.
+- The helper printed `open entry written for <session>` and then `close entry written` (or `amend entry written`).
+- The second reviewer, with `HearthSecurityReview` in log-archive, finds the entries: `aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/<dd>/` lists them, each one JSON object of schema `hearth.break-glass.v1`, keyed `<session>-open.json` and `<session>-close.json` (the session the helper opened), `<continuing session>-continuation.json` (under that session's own day) or `<amended session>-amend-<the amend's time>.json` (under the amended session's day).
 
 ## Afterwards
 

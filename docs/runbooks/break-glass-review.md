@@ -24,10 +24,10 @@
 
 1. In management, run each saved query on `/hearth/security/org-trail` over the quarter:
    - `hearth/review/break-glass-sessions`: every break-glass assumption, with its reason and source identity, refused ones included;
-   - `hearth/review/admin-sessions`: every `HearthOrgAdmin` and `HearthSetUp` session, and every assumption of `OrganizationAccountAccessRole`;
-   - `hearth/review/deploy-role-sessions`: the GitHub deploy roles' sessions, by environment;
+   - `hearth/review/admin-sessions`: every `HearthOrgAdmin` and `HearthSetUp` session, and every assumption of `OrganizationAccountAccessRole` or of a hearthbase role (`cdk-hearthbase-*`, what A15 alarms on);
+   - `hearth/review/deploy-role-sessions`: the GitHub roles' sessions (`hearth-gh-deploy` and `hearth-gh-diff`), by account;
    - `hearth/review/root-and-assume-root`: any root activity and `AssumeRoot`;
-   - `hearth/review/recovery-moves`: every account moved into or out of `Recovery`.
+   - `hearth/review/recovery-moves`: every account moved between OUs, with the ids of the OUs it left and joined, so the moves into and out of `Recovery` show by its id.
 2. In log-archive, list the quarter's break-glass entries (`aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/`), and read each one.
 3. For each break-glass session the first query lists, reconcile three sources: the trail's assumption, the entries, and the merged PRs (and, from C0.11 PR 4, the deploy history). Check:
    - an open entry and a close entry exist, keyed by the session's name (`hearth-bg-` and its time);
@@ -36,10 +36,11 @@
    - a `case:` reference is a real request (the DPO confirms it);
    - an `lz:pr-` number is a merged PR whose diff matches what was deployed;
    - the close entry's modes and ids fit the runbook, and hold no name, number or address;
-   - a session past its hour has a continuation entry, re-assumed under the same reason;
+   - a session closed within two minutes of its hour, or after it, has a continuation entry, re-assumed under the same reason;
+   - a close entry with outcome `stopped` and no modes was written by the helper on its own, as it stopped: note what stopped it;
    - an amend entry names both its own session and the one it amends, under the amended session's reason, and the amend's own session wrote nothing else;
    - a refused attempt with a reason that isn't a reference is a finding, since its tags stay in the trail.
-4. Each A15 has an `lz:` reason and a merged PR, a reviewed Foundation deploy (with its A3), the set-up's first deploys, or a recorded tier-2 change.
+4. Each hearthbase assumption (A15) the second query lists has an `lz:` reason and a merged PR, a reviewed Foundation deploy (with its A3), the set-up's first deploys, or a recorded tier-2 change.
 5. Each `HearthOrgAdmin` session and each assumption of `OrganizationAccountAccessRole` has a reason: a reviewed Foundation deploy, a tier-2 change, or the set-up. A `HearthSetUp` session after the set-up is a finding.
 6. Each deploy-role session matches the deploy history (from C0.11 PR 4).
 7. List the quarter's `HearthSecurityReview` sessions, your own included.
