@@ -16,8 +16,10 @@
 //   command class or a client method, in an import, a re-export, require(), vi.mock() or a string;
 //   and no CDK code in infra/ gives a lifecycle rule an expiry without a tag filter, so lifecycle
 //   rules only change storage class and an expiry is only ever the tag-filtered backstop (CLAUDE.md,
-//   Database, S3; PRD B.6). The allow-lists stay empty until C0.15 adds its S3 deletion module and
-//   C0.12 the tag-filtered backstop, each with its reason;
+//   Database, S3; PRD B.6). The one exception is the log-archive account's locked buckets (C0.11,
+//   C11-D19), whose file may hold exactly two untagged shapes: the exit rule at its class's own
+//   period, and the expired delete markers' rule. S3_ALLOWED stays empty until C0.15 adds its S3
+//   deletion module, with its reason;
 // - LCG-03, migrations: a migration numbered above 0013 holds, outside its function bodies (a DO
 //   block's body counts, since it runs in the migration), no TRUNCATE (but in a trigger's event list,
 //   which empties nothing, as check 8 reads it), DROP TABLE, DETACH PARTITION, DISABLE TRIGGER, DROP
@@ -62,9 +64,15 @@ const S3_CALL =
 // here (C0.11, C11-D08).
 const S3_ALLOWED: ReadonlyArray<{ path: string; why: string }> = []
 
-// The CDK files that may give a lifecycle rule an untagged expiry: none. C0.12's backstop carries a
-// tag filter, so it needs no entry.
-const LIFECYCLE_ALLOWED: ReadonlyArray<{ path: string; why: string }> = []
+// The CDK files that may give a lifecycle rule an untagged expiry, each with its reason: the one
+// exception, the log-archive account's locked buckets (C11-D19), and in it only the two shapes
+// lockedLogExpiryProblems allows. C0.12's backstop carries a tag filter, so it needs no entry.
+const LIFECYCLE_ALLOWED: ReadonlyArray<{ path: string; why: string }> = [
+  {
+    path: 'infra/src/foundation/log-archive.ts',
+    why: "the log-archive account's trail and break-glass-log buckets: each class's period is the bucket's own retention (cloudtrail, break_glass_log), every version locked for that period by Object Lock, holds exempt (LH-48; TECH-SPEC T24 item 9), so the expiry runs only after each version's lock; CloudTrail can't tag its objects, so the rule carries no tag filter (C11-D18, C11-D19)",
+  },
+]
 
 // Each S3 call a script names, as "path: name", comments stripped and strings kept.
 function s3Calls(files: ReadonlyMap<string, string>): string[] {
@@ -103,6 +111,59 @@ function untaggedExpiries(files: ReadonlyMap<string, string>): string[] {
         if (
           names.some(name => name !== undefined && EXPIRY.has(name)) &&
           !names.some(n => n !== undefined && TAG_FILTER.has(n))
+        ) {
+          found.push(`${path}:${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}`)
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(file)
+  }
+  return found
+}
+
+// A property's value as written, whitespace removed, or undefined for a property that isn't one
+// written out (a shorthand, a spread, a method).
+const valueText = (property: ts.ObjectLiteralElementLike): string | undefined =>
+  ts.isPropertyAssignment(property) ? property.initializer.getText().replace(/\s+/g, '') : undefined
+
+const EXIT_RULE_KEYS = new Set(['id', 'transitions', 'expiration', 'noncurrentVersionExpiration'])
+
+// Whether an object literal is one of the two untagged shapes an allowed file may hold (C11-D19):
+// - the exit rule, at most an id, transitions, its expiry and its noncurrent expiry, written out,
+//   whose expiry is a Duration of the class's own period (objectLockDays(…)) and whose noncurrent
+//   versions go a day after they stop being current;
+// - the expired delete markers' rule, an id and expiredObjectDeleteMarker: true alone.
+function isLockedLogExpiry(node: ts.ObjectLiteralExpression): boolean {
+  const properties = new Map(node.properties.map(property => [propertyName(property), property] as const))
+  if (properties.size !== node.properties.length || properties.has(undefined)) return false
+  const text = (name: string) => {
+    const property = properties.get(name)
+    return property === undefined ? undefined : valueText(property)
+  }
+  if (!node.properties.every(property => valueText(property) !== undefined)) return false
+  const names = [...properties.keys()]
+  const exit =
+    names.every(name => name !== undefined && EXIT_RULE_KEYS.has(name)) &&
+    /^(?:cdk\.)?Duration\.days\(objectLockDays\([^()]*\)\)$/.test(text('expiration') ?? '') &&
+    /^(?:cdk\.)?Duration\.days\(1\)$/.test(text('noncurrentVersionExpiration') ?? '')
+  const deleteMarkers = names.length === 2 && text('id') !== undefined && text('expiredObjectDeleteMarker') === 'true'
+  return exit || deleteMarkers
+}
+
+// Each object literal in an allowed file that sets an expiry with no tag filter beside it and isn't one
+// of the two shapes isLockedLogExpiry allows, as "path:line".
+function lockedLogExpiryProblems(files: ReadonlyMap<string, string>): string[] {
+  const found: string[] = []
+  for (const [path, text] of files) {
+    const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true)
+    const visit = (node: ts.Node): void => {
+      if (ts.isObjectLiteralExpression(node)) {
+        const names = node.properties.map(propertyName)
+        if (
+          names.some(name => name !== undefined && EXPIRY.has(name)) &&
+          !names.some(n => n !== undefined && TAG_FILTER.has(n)) &&
+          !isLockedLogExpiry(node)
         ) {
           found.push(`${path}:${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}`)
         }
@@ -154,6 +215,29 @@ describe('LCG-02 (C0.10 LH-33): no S3 delete, lifecycle or Object Lock call outs
     ])
   })
 
+  it("holds an allowed file to the locked log buckets' two untagged shapes (C11-D19), on planted files", () => {
+    const exit =
+      "{ id: 'retention-exit', transitions: [{ storageClass: s3.StorageClass.GLACIER_INSTANT_RETRIEVAL, transitionAfter: cdk.Duration.days(30) }], expiration: cdk.Duration.days(objectLockDays(logClass)), noncurrentVersionExpiration: cdk.Duration.days(1) }"
+    const markers = "{ id: 'expired-delete-markers', expiredObjectDeleteMarker: true }"
+    const planted = (lines: readonly string[]) =>
+      new Map([['infra/src/foundation/log-archive.ts', lines.map(line => `const r = [${line}]`).join('\n')]])
+    expect(lockedLogExpiryProblems(planted([exit, markers]))).toEqual([])
+    expect(
+      lockedLogExpiryProblems(
+        planted([
+          exit.replace('objectLockDays(logClass)', '731'),
+          exit.replace('cdk.Duration.days(1) }', 'cdk.Duration.days(2) }'),
+          exit.replace("id: 'retention-exit',", "id: 'retention-exit', expirationDate: when,"),
+          exit.replace("id: 'retention-exit',", '...more,'),
+          "{ id: 'x', expiration }",
+          "{ id: 'expired-delete-markers', expiredObjectDeleteMarker: true, prefix: 'a/' }",
+          "{ id: 'expired-delete-markers', expiredObjectDeleteMarker: false }",
+          '{ expiration: Duration.days(objectLockDays(logClass)) }',
+        ]),
+      ),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map(line => `infra/src/foundation/log-archive.ts:${line}`))
+  })
+
   // It reads every script in four folders, about 3 s alone, so Vitest's 5 s default is too close when
   // every workspace's tests share the machine, as for ai-free.test.ts's scan.
   it('no script in apps/, packages/, infra/ or scripts/ names one, and no CDK lifecycle rule expires untagged', () => {
@@ -171,6 +255,8 @@ describe('LCG-02 (C0.10 LH-33): no S3 delete, lifecycle or Object Lock call outs
         .map(path => [path, readRepoFile(path)] as const),
     )
     expect(untaggedExpiries(cdk)).toEqual([])
+    const allowedCdk = new Map(LIFECYCLE_ALLOWED.map(entry => [entry.path, readRepoFile(entry.path)] as const))
+    expect(lockedLogExpiryProblems(allowedCdk)).toEqual([])
     // Every allow-list entry gives its reason and names a file that exists.
     const all = new Set(repoFiles())
     for (const entry of [...S3_ALLOWED, ...LIFECYCLE_ALLOWED]) {
