@@ -178,7 +178,7 @@ export const GH_DEPLOY = roleArn('*', ROLE.ghDeploy)
 export const GH_ROLES = roleArn('*', 'hearth-gh-*')
 export const CDK_HEARTH = roleArn('*', 'cdk-hearth*')
 // A server role's task role in any environment, and the Rule 9 task's execution role (C11-D38).
-export const taskRolePattern = (kind: TaskRoleKind) => roleArn('*', `hearth-*-${kind}-task`)
+export const TASK_ROLE = (kind: TaskRoleKind) => roleArn('*', `hearth-*-${kind}-task`)
 export const RULE9_EXEC = roleArn('*', 'hearth-*-rule9-exec')
 
 // The Rule 9 module's secrets, by name and by tag, which no landing-zone principal reads (C11-D05,

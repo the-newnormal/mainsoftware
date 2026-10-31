@@ -17,8 +17,8 @@ import { fixtureAccount } from './fixture.ts'
 import {
   attachedPolicyName,
   isModelDenyInPlace,
-  managedPolicyAttachments,
   type ModelCheckAllowance,
+  managedPolicyAttachments,
   modelCheck,
   modelGrants,
   namesModelAction,
@@ -365,5 +365,546 @@ describe('C11-D70: the policy walker', () => {
     }
     // And nothing aws-cdk-lib's own constructs write, whose actions and effects are always literal.
     expect(unreadable.filter(entry => /^(?:Role|Managed|Bucket|Scp|Set|LogsPolicy)/.test(entry))).toEqual([])
+  })
+})
+
+// --- IAC-01's check and what it stands on, on planted templates ---------------------------------
+
+type Template = Record<string, unknown>
+
+// An IAM document, the in-place model deny, an Allow of everything, and an AWS-managed policy's ARN
+// joined from its parts.
+const doc = (...Statement: unknown[]) => ({ Version: '2012-10-17', Statement })
+const noModels = (): Record<string, unknown> => ({
+  Sid: 'NoModels',
+  Effect: 'Deny',
+  Action: modelDenyActions(),
+  Resource: '*',
+})
+const allowAll = (Sid = 'AllowAll') => ({ Sid, Effect: 'Allow', Action: '*', Resource: '*' })
+const awsPolicy = (name: string) => ['arn', 'aws', 'iam', '', 'aws', `policy/${name}`].join(':')
+const role = (statements: unknown[], properties: Record<string, unknown> = {}) => ({
+  Type: 'AWS::IAM::Role',
+  Properties: {
+    AssumeRolePolicyDocument: doc({
+      Effect: 'Allow',
+      Principal: { Service: 'ecs-tasks.amazonaws.com' },
+      Action: 'sts:AssumeRole',
+    }),
+    Policies: [{ PolicyName: 'inline', PolicyDocument: doc(...statements) }],
+    ...properties,
+  },
+})
+// A service-wide grant (`<service>:*` of a service with model actions) and a pattern naming a model
+// action by its first letters and `*`, built from the lists (IG-10).
+const serviceWide = `${actionService}:*`
+const actionPrefix = `${firstAction.slice(0, actionService.length + 4)}*`
+
+// A template that passes IAC-01: a role allowed everything beside its deny and attaching
+// AdministratorAccess (as HearthOrgAdmin's set does), hearth-boundary's shape (Allow everything,
+// deny models) bounding a role allowed everything, a permission set attaching ReadOnlyAccess beside
+// its inline deny, a bucket policy that only denies, and a role with an ordinary Allow.
+function passing(): Template {
+  return {
+    Parameters: { ExecutionPolicies: { Type: 'CommaDelimitedList', Default: '' } },
+    Conditions: { C: { 'Fn::Equals': ['a', 'a'] } },
+    Resources: {
+      Operator: role([allowAll(), noModels()], { ManagedPolicyArns: [awsPolicy('AdministratorAccess')] }),
+      Boundary: {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Properties: { ManagedPolicyName: 'hearth-boundary', PolicyDocument: doc(allowAll(), noModels()) },
+      },
+      Bounded: role([allowAll('Everything')], { PermissionsBoundary: { Ref: 'Boundary' } }),
+      Set: {
+        Type: 'AWS::SSO::PermissionSet',
+        Properties: { Name: 'Set', ManagedPolicies: [awsPolicy('ReadOnlyAccess')], InlinePolicy: doc(noModels()) },
+      },
+      Logs: {
+        Type: 'AWS::S3::BucketPolicy',
+        Properties: {
+          Bucket: 'logs',
+          PolicyDocument: doc({
+            Sid: 'TlsOnly',
+            Effect: 'Deny',
+            Principal: '*',
+            Action: 's3:*',
+            Resource: '*',
+            Condition: { Bool: { 'aws:SecureTransport': 'false' } },
+          }),
+        },
+      },
+      Deployer: role([{ Sid: 'Pass', Effect: 'Allow', Action: 'iam:PassRole', Resource: '*' }]),
+    },
+  }
+}
+const allowance: ModelCheckAllowance = {
+  grants: [],
+  attachments: [
+    { logicalId: 'Operator', policy: 'AdministratorAccess' },
+    { logicalId: 'Set', policy: 'ReadOnlyAccess' },
+  ],
+}
+// The passing template with some resources added or replaced.
+const planted = (resources: Record<string, unknown>): Template => {
+  const base = passing()
+  return { ...base, Resources: { ...(base.Resources as Record<string, unknown>), ...resources } }
+}
+// The passing template's Operator with its deny (or a broken one) and any other statement passed.
+const operator = (...extra: unknown[]) =>
+  role([allowAll(), ...extra], { ManagedPolicyArns: [awsPolicy('AdministratorAccess')] })
+// The problem an Allow of everything raises when its principal has no deny in place.
+const uncovered = (key: string, where = 'Operator Policies[0].PolicyDocument AllowAll') => [
+  `${where}: * can grant a model action, and ${key} has no model deny in place`,
+]
+
+describe('IAC-01 C11-D06: the managed policies a template attaches', () => {
+  it('reads a role’s, group’s and permission set’s attachments and boundaries, normalising each policy', () => {
+    const template: Template = {
+      Parameters: { ExecutionPolicies: { Type: 'CommaDelimitedList' } },
+      Resources: {
+        Own: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: doc(noModels()) } },
+        Exec: {
+          Type: 'AWS::IAM::Role',
+          Properties: {
+            ManagedPolicyArns: [
+              {
+                'Fn::Sub': ['arn', iamVariable('AWS::Partition'), 'iam', '', 'aws', 'policy/AdministratorAccess'].join(
+                  ':',
+                ),
+              },
+              awsPolicy('ReadOnlyAccess'),
+              { 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':iam::aws:policy/service-role/Example']] },
+              { Ref: 'ExecutionPolicies' },
+              { Ref: 'Own' },
+              ['arn', 'aws', 'iam', '', fixtureAccount(3), 'policy/hearth-boundary'].join(':'),
+              { 'Fn::GetAtt': ['Own', 'PolicyArn'] },
+            ],
+            PermissionsBoundary: { Ref: 'Own' },
+          },
+        },
+        Lookup: {
+          Type: 'AWS::IAM::Role',
+          Condition: 'C',
+          Properties: {
+            ManagedPolicyArns: {
+              'Fn::If': ['C', { Ref: 'ExecutionPolicies' }, [awsPolicy('ViewOnlyAccess')]],
+            },
+          },
+        },
+        Readers: {
+          Type: 'AWS::IAM::Group',
+          Properties: {
+            ManagedPolicyArns: [{ 'Fn::If': ['C', awsPolicy('ReadOnlyAccess'), { Ref: 'AWS::NoValue' }] }],
+          },
+        },
+        Set: {
+          Type: 'AWS::SSO::PermissionSet',
+          Properties: {
+            ManagedPolicies: [awsPolicy('job-function/Billing')],
+            CustomerManagedPolicyReferences: [{ Name: 'hearth-extra' }],
+            PermissionsBoundary: { ManagedPolicyArn: awsPolicy('PowerUserAccess') },
+          },
+        },
+        CustomerBounded: {
+          Type: 'AWS::SSO::PermissionSet',
+          Properties: { PermissionsBoundary: { CustomerManagedPolicyReference: { Name: 'hearth-boundary' } } },
+        },
+      },
+    }
+    const attachments = managedPolicyAttachments(template)
+    expect(attachments.map(a => [a.principal, a.where, a.conditional, a.policy])).toEqual([
+      ['role:Exec', 'ManagedPolicyArns[0]', false, { kind: 'aws', name: 'AdministratorAccess' }],
+      ['role:Exec', 'ManagedPolicyArns[1]', false, { kind: 'aws', name: 'ReadOnlyAccess' }],
+      ['role:Exec', 'ManagedPolicyArns[2]', false, { kind: 'aws', name: 'service-role/Example' }],
+      ['role:Exec', 'ManagedPolicyArns[3]', false, { kind: 'parameter', name: 'ExecutionPolicies' }],
+      ['role:Exec', 'ManagedPolicyArns[4]', false, { kind: 'template', logicalId: 'Own' }],
+      // An account's own policy, and an attribute no static reading resolves.
+      ['role:Exec', 'ManagedPolicyArns[5]', false, { kind: 'unreadable' }],
+      ['role:Exec', 'ManagedPolicyArns[6]', false, { kind: 'unreadable' }],
+      ['role:Exec', 'PermissionsBoundary', false, { kind: 'template', logicalId: 'Own' }],
+      // Each branch of an Fn::If, AWS::NoValue dropped, on a resource that carries a Condition.
+      ['role:Lookup', 'ManagedPolicyArns[0]', true, { kind: 'parameter', name: 'ExecutionPolicies' }],
+      ['role:Lookup', 'ManagedPolicyArns[1]', true, { kind: 'aws', name: 'ViewOnlyAccess' }],
+      ['group:Readers', 'ManagedPolicyArns[0]', true, { kind: 'aws', name: 'ReadOnlyAccess' }],
+      ['set:Set', 'ManagedPolicies[0]', false, { kind: 'aws', name: 'job-function/Billing' }],
+      ['set:Set', 'CustomerManagedPolicyReferences[0]', false, { kind: 'unreadable' }],
+      ['set:Set', 'PermissionsBoundary', false, { kind: 'aws', name: 'PowerUserAccess' }],
+      ['set:CustomerBounded', 'PermissionsBoundary', false, { kind: 'unreadable' }],
+    ])
+    // As modelCheck's allow-list names them; one no static reading resolves has no name.
+    expect(attachments.map(a => attachedPolicyName(a.policy))).toEqual([
+      'AdministratorAccess',
+      'ReadOnlyAccess',
+      'service-role/Example',
+      'parameter:ExecutionPolicies',
+      'template:Own',
+      undefined,
+      undefined,
+      'template:Own',
+      'parameter:ExecutionPolicies',
+      'ViewOnlyAccess',
+      'ReadOnlyAccess',
+      'job-function/Billing',
+      undefined,
+      'PowerUserAccess',
+      undefined,
+    ])
+  })
+})
+
+describe('IAC-01 C11-D06: whose statement it is', () => {
+  const template: Template = {
+    Resources: {
+      Named: { Type: 'AWS::IAM::Role', Properties: { RoleName: 'hearth-named' } },
+      Plain: role([allowAll()]),
+      Attached: {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Properties: { Roles: [{ Ref: 'Plain' }, 'hearth-named'], PolicyDocument: doc(noModels()) },
+      },
+      Loose: { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: doc(noModels()) } },
+      Elsewhere: {
+        Type: 'AWS::IAM::Policy',
+        Properties: { PolicyName: 'p', Roles: ['someone-else', { Ref: 'Loose' }], PolicyDocument: doc(allowAll()) },
+      },
+      Unlisted: {
+        Type: 'AWS::IAM::Policy',
+        Properties: { PolicyName: 'p', Roles: { Ref: 'AWS::NoValue' }, PolicyDocument: doc(allowAll()) },
+      },
+      Inline: {
+        Type: 'AWS::IAM::RolePolicy',
+        Properties: { RoleName: { Ref: 'Named' }, PolicyName: 'p', PolicyDocument: doc(allowAll()) },
+      },
+      Set: { Type: 'AWS::SSO::PermissionSet', Properties: { InlinePolicy: doc(noModels()) } },
+      Bucket: {
+        Type: 'AWS::S3::BucketPolicy',
+        Properties: { Bucket: 'b', PolicyDocument: doc({ ...allowAll(), Principal: '*' }) },
+      },
+      Scp: {
+        Type: 'AWS::Organizations::Policy',
+        Properties: { Type: 'SERVICE_CONTROL_POLICY', Content: doc(noModels()) },
+      },
+      Key: { Type: 'AWS::KMS::Key', Properties: { KeyPolicy: doc({ ...allowAll(), Principal: '*' }) } },
+    },
+  }
+
+  it('gives an identity statement its principals, and a trust, resource policy or SCP none', () => {
+    const owners = policyStatements(template).map(s => [s.logicalId, s.where, principalOf(s, template)])
+    expect(owners).toEqual([
+      ['Plain', 'AssumeRolePolicyDocument', undefined],
+      ['Plain', 'Policies[0].PolicyDocument', ['role:Plain']],
+      ['Attached', 'PolicyDocument', ['role:Plain', 'role:Named']],
+      ['Loose', 'PolicyDocument', ['managed:Loose']],
+      // A name no role of the template has, and a Ref to something that isn't a role, cover nobody.
+      ['Elsewhere', 'PolicyDocument', ['unresolved:Elsewhere.Roles[0]', 'unresolved:Elsewhere.Roles[1]']],
+      ['Unlisted', 'PolicyDocument', ['unresolved:Unlisted.Roles']],
+      ['Inline', 'PolicyDocument', ['role:Named']],
+      ['Set', 'InlinePolicy', ['set:Set']],
+      ['Bucket', 'PolicyDocument', undefined],
+      ['Scp', 'Content', undefined],
+      ['Key', 'KeyPolicy', undefined],
+    ])
+  })
+})
+
+describe('IAC-01 C11-D06: which deny counts as in place', () => {
+  const statementOf = (statement: unknown, resource: Record<string, unknown> = {}) => {
+    const template = {
+      Resources: {
+        P: { Type: 'AWS::IAM::ManagedPolicy', ...resource, Properties: { PolicyDocument: doc(statement) } },
+      },
+    }
+    const [found] = policyStatements(template)
+    if (found === undefined) throw new Error('no statement')
+    return found
+  }
+
+  it('is a Deny of every model action on everything, which no condition decides', () => {
+    expect(isModelDenyInPlace(statementOf(noModels()))).toBe(true)
+    // More actions beside the model list leave it in place.
+    expect(isModelDenyInPlace(statementOf({ ...noModels(), Action: [...modelDenyActions(), 'iam:CreateUser'] }))).toBe(
+      true,
+    )
+    const broken: Array<[string, unknown, Record<string, unknown>?]> = [
+      ['an Allow', { ...noModels(), Effect: 'Allow' }],
+      ['an IAM condition', { ...noModels(), Condition: { ArnLike: { 'aws:PrincipalArn': 'x' } } }],
+      ['one action short', { ...noModels(), Action: modelDenyActions().slice(1) }],
+      ['a resource narrower than *', { ...noModels(), Resource: 'hearth-*' }],
+      ['* among other resources', { ...noModels(), Resource: ['*', 'x'] }],
+      ['a NotResource', { Sid: 'NoModels', Effect: 'Deny', Action: modelDenyActions(), NotResource: 'x' }],
+      ['a NotAction', { Sid: 'NoModels', Effect: 'Deny', NotAction: 'iam:*', Resource: '*' }],
+      ['a statement under Fn::If', { 'Fn::If': ['C', noModels(), { Ref: 'AWS::NoValue' }] }],
+      ['a resource under a Condition', noModels(), { Condition: 'C' }],
+    ]
+    for (const [what, statement, resource] of broken) {
+      expect(isModelDenyInPlace(statementOf(statement, resource)), what).toBe(false)
+    }
+  })
+})
+
+describe('IAC-01 C11-D06: which Allow names a model action outright', () => {
+  it('any pattern but * whose service can be a model service, or whose action part can be a model action', () => {
+    for (const pattern of modelDenyActions()) expect(namesModelAction(pattern), pattern).toBe(true)
+    for (const prefix of MODEL_SERVICE_PREFIXES) expect(namesModelAction(`${prefix}:Describe*`), prefix).toBe(true)
+    const named = [
+      `${firstPrefix}:InvokeModel`,
+      firstAction.toUpperCase(),
+      actionPrefix,
+      's*:*',
+      '*:*',
+      `${actionService}:*${firstAction.slice(actionService.length + 2)}`,
+    ]
+    for (const pattern of named) expect(namesModelAction(pattern), pattern).toBe(true)
+    // `*` and an allowed service's `<service>:*` are the second rule's; ordinary reads name nothing.
+    const notNamed = ['*', serviceWide, 'cloudwatch:Get*', 'logs:StartQuery', 'cloudtrail:LookupEvents', 's3:GetObject']
+    for (const pattern of notNamed) expect(namesModelAction(pattern), pattern).toBe(false)
+    expect(grantsModelAction(serviceWide)).toBe(true)
+  })
+})
+
+describe('IAC-01 C11-D06: a value as CloudFormation renders it', () => {
+  const account = fixtureAccount(4)
+  const template: Template = {
+    Parameters: { Name: { Type: 'String' } },
+    Resources: {
+      Bucket: { Type: 'AWS::S3::Bucket', Properties: { BucketName: `hearth-org-trail-${account}` } },
+      Unnamed: { Type: 'AWS::S3::Bucket', Properties: {} },
+      Role: { Type: 'AWS::IAM::Role', Properties: { RoleName: 'hearth-break-glass', Path: '/team/' } },
+      Group: { Type: 'AWS::Logs::LogGroup', Properties: { LogGroupName: '/hearth/security/org-trail' } },
+      Topic: { Type: 'AWS::SNS::Topic', Properties: { TopicName: 'hearth-ops-alerts' } },
+      Provider: { Type: 'AWS::IAM::OIDCProvider', Properties: { Url: `https://${GITHUB_OIDC_HOST}` } },
+      Boundary: { Type: 'AWS::IAM::ManagedPolicy', Properties: { ManagedPolicyName: 'hearth-boundary' } },
+      Key: { Type: 'AWS::KMS::Key', Properties: {} },
+    },
+  }
+  const context = { account, region: REGION, template }
+  const arn = (...parts: string[]) => ['arn', 'aws', ...parts].join(':')
+  const bucket = `hearth-org-trail-${account}`
+
+  it('renders literals, pseudo-parameters, Fn::Join and Fn::Sub', () => {
+    const cases: Array<[unknown, string]> = [
+      ['text', 'text'],
+      [{ Ref: 'AWS::Partition' }, 'aws'],
+      [{ Ref: 'AWS::Region' }, REGION],
+      [{ Ref: 'AWS::AccountId' }, account],
+      [{ Ref: 'AWS::URLSuffix' }, 'amazonaws.com'],
+      [{ 'Fn::Join': [':', ['a', { Ref: 'AWS::Region' }, 'b']] }, `a:${REGION}:b`],
+      [{ 'Fn::Sub': ['x', iamVariable('AWS::AccountId'), 'y'].join('-') }, `x-${account}-y`],
+      [{ 'Fn::Sub': [`${iamVariable('Who')}/${iamVariable('AWS::Region')}`, { Who: 'me' }] }, `me/${REGION}`],
+      // ${!…} is CloudFormation's escape for a literal ${…}, as an IAM variable is written in a Sub.
+      [{ 'Fn::Sub': `${iamVariable('!aws:username')}` }, iamVariable('aws:username')],
+      [{ 'Fn::Sub': `${iamVariable('Bucket.Arn')}/*` }, `${arn('s3', '', '', bucket)}/*`],
+    ]
+    for (const [value, text] of cases) expect(renderedString(value, context), JSON.stringify(value)).toBe(text)
+  })
+
+  it('renders a reference or attribute whose resource’s properties fix it, and nothing else', () => {
+    const cases: Array<[unknown, string | undefined]> = [
+      [{ Ref: 'Bucket' }, bucket],
+      [{ 'Fn::GetAtt': ['Bucket', 'Arn'] }, arn('s3', '', '', bucket)],
+      [{ 'Fn::GetAtt': 'Bucket.Arn' }, arn('s3', '', '', bucket)],
+      [{ Ref: 'Role' }, 'hearth-break-glass'],
+      [{ 'Fn::GetAtt': ['Role', 'Arn'] }, arn('iam', '', account, 'role/team/hearth-break-glass')],
+      [{ Ref: 'Group' }, '/hearth/security/org-trail'],
+      [{ 'Fn::GetAtt': ['Group', 'Arn'] }, arn('logs', REGION, account, 'log-group:/hearth/security/org-trail:*')],
+      [{ Ref: 'Topic' }, arn('sns', REGION, account, 'hearth-ops-alerts')],
+      [{ 'Fn::GetAtt': ['Topic', 'TopicName'] }, 'hearth-ops-alerts'],
+      [{ Ref: 'Provider' }, arn('iam', '', account, `oidc-provider/${GITHUB_OIDC_HOST}`)],
+      [{ Ref: 'Boundary' }, arn('iam', '', account, 'policy/hearth-boundary')],
+      // Undefined is "could be anything": a key's id, a name CloudFormation makes up, a parameter, a
+      // pseudo-parameter that varies, a condition's choice or an import.
+      [{ Ref: 'Key' }, undefined],
+      [{ 'Fn::GetAtt': ['Key', 'Arn'] }, undefined],
+      [{ Ref: 'Unnamed' }, undefined],
+      [{ 'Fn::GetAtt': ['Unnamed', 'Arn'] }, undefined],
+      [{ Ref: 'Name' }, undefined],
+      [{ Ref: 'AWS::StackName' }, undefined],
+      [{ 'Fn::Join': ['', ['a', { Ref: 'Name' }]] }, undefined],
+      [{ 'Fn::Sub': `a-${iamVariable('Name')}` }, undefined],
+      [{ 'Fn::If': ['C', 'a', 'b'] }, undefined],
+      [{ 'Fn::ImportValue': 'x' }, undefined],
+      [['a'], undefined],
+      [42, undefined],
+    ]
+    for (const [value, text] of cases) expect(renderedString(value, context), JSON.stringify(value)).toBe(text)
+    // Without the stack's account, what needs it can't be rendered.
+    expect(renderedString({ Ref: 'AWS::AccountId' }, { template })).toBeUndefined()
+    expect(renderedString({ 'Fn::GetAtt': ['Role', 'Arn'] }, { region: REGION, template })).toBeUndefined()
+  })
+})
+
+describe('IAC-01 C11-D06, C11-D10, C11-D75: the model check on planted templates', () => {
+  it('passes the template with every deny in place', () => {
+    expect(modelCheck(passing(), allowance)).toEqual([])
+  })
+
+  it('finds a role attaching AdministratorAccess with no deny, then passes it with one', () => {
+    const admin = (...statements: unknown[]) =>
+      role([{ Sid: 'Read', Effect: 'Allow', Action: 's3:GetObject', Resource: '*' }, ...statements], {
+        ManagedPolicyArns: [awsPolicy('AdministratorAccess')],
+      })
+    const listed = {
+      ...allowance,
+      attachments: [...allowance.attachments, { logicalId: 'Admin', policy: 'AdministratorAccess' }],
+    }
+    expect(modelCheck(planted({ Admin: admin() }), listed)).toEqual([
+      'Admin ManagedPolicyArns[0]: attached to role:Admin, which has no model deny in place',
+    ])
+    expect(modelCheck(planted({ Admin: admin(noModels()) }), listed)).toEqual([])
+  })
+
+  it('finds a deny an IAM condition narrows, one under Fn::If and one an action short', () => {
+    const attached = 'Operator ManagedPolicyArns[0]: attached to role:Operator, which has no model deny in place'
+    const partial = [
+      { ...noModels(), Condition: { ArnLike: { 'aws:PrincipalArn': 'x' } } },
+      { 'Fn::If': ['C', noModels(), { Ref: 'AWS::NoValue' }] },
+      { ...noModels(), Action: modelDenyActions().slice(0, -1) },
+    ]
+    for (const deny of partial) {
+      expect(modelCheck(planted({ Operator: operator(deny) }), allowance)).toEqual([
+        ...uncovered('role:Operator'),
+        attached,
+      ])
+    }
+    expect(modelCheck(planted({ Operator: operator(noModels()) }), allowance)).toEqual([])
+  })
+
+  it('finds a customer-managed policy reference, an unlisted policy and an unreadable one', () => {
+    const set = (properties: Record<string, unknown>) => ({
+      Type: 'AWS::SSO::PermissionSet',
+      Properties: { Name: 'Set', InlinePolicy: doc(noModels()), ...properties },
+    })
+    expect(
+      modelCheck(planted({ Set: set({ CustomerManagedPolicyReferences: [{ Name: 'hearth-extra' }] }) }), allowance),
+    ).toEqual([
+      "Set CustomerManagedPolicyReferences[0]: a customer-managed policy reference, whose document isn't in the template",
+    ])
+    expect(modelCheck(planted({ Set: set({ ManagedPolicies: [awsPolicy('PowerUserAccess')] }) }), allowance)).toEqual([
+      "Set ManagedPolicies[0]: PowerUserAccess isn't on the allow-list",
+    ])
+    const own = ['arn', 'aws', 'iam', '', fixtureAccount(3), 'policy/hearth-extra'].join(':')
+    expect(modelCheck(planted({ Set: set({ ManagedPolicies: [own] }) }), allowance)).toEqual([
+      'Set ManagedPolicies[0]: a managed policy no static reading resolves',
+    ])
+    expect(modelCheck(planted({ Set: set({}) }), allowance)).toEqual([])
+    // A parameter the deployer fills is listed by name, as the bootstrap's execution policies are.
+    const exec = role([noModels()], { ManagedPolicyArns: { Ref: 'ExecutionPolicies' } })
+    expect(modelCheck(planted({ Exec: exec }), allowance)).toEqual([
+      "Exec ManagedPolicyArns[0]: parameter:ExecutionPolicies isn't on the allow-list",
+    ])
+    const withParameter = {
+      ...allowance,
+      attachments: [...allowance.attachments, { logicalId: 'Exec', policy: 'parameter:ExecutionPolicies' }],
+    }
+    expect(modelCheck(planted({ Exec: exec }), withParameter)).toEqual([])
+  })
+
+  it('finds an unlisted conditional Allow of everything, and lets one through only as listed and while its check holds', () => {
+    const conditional = {
+      Conditional: {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Condition: 'C',
+        Properties: { PolicyDocument: doc(allowAll('ExplicitAllowAll')) },
+      },
+    }
+    const problem = uncovered('managed:Conditional', 'Conditional PolicyDocument ExplicitAllowAll')
+    expect(modelCheck(planted(conditional), allowance)).toEqual(problem)
+    const onCondition = (t: Template) =>
+      ((t.Resources as Record<string, { Condition?: string }>).Conditional?.Condition ?? '') === 'C'
+    const listed = (grant: ModelCheckAllowance['grants'][number]) => ({ ...allowance, grants: [grant] })
+    expect(
+      modelCheck(
+        planted(conditional),
+        listed({ logicalId: 'Conditional', sid: 'ExplicitAllowAll', when: onCondition }),
+      ),
+    ).toEqual([])
+    expect(modelCheck(planted(conditional), listed({ logicalId: 'Conditional', when: () => false }))).toEqual(problem)
+    expect(modelCheck(planted(conditional), listed({ logicalId: 'Conditional', sid: 'Other' }))).toEqual(problem)
+  })
+
+  it('finds an Allow with NotAction, whatever deny sits beside it', () => {
+    const notAction = { Sid: 'AllButIam', Effect: 'Allow', NotAction: 'iam:*', Resource: '*' }
+    expect(modelCheck(planted({ Operator: operator(noModels(), notAction) }), allowance)).toEqual([
+      "Operator Policies[0].PolicyDocument AllButIam: an Allow with NotAction grants what it doesn't name",
+    ])
+  })
+
+  // Rule 1: a model action named outright is refused beside the deny and whatever the allowance says.
+  it('finds an Allow of a model action, or of a model service’s actions, beside the in-place deny', () => {
+    const everyGrant = { ...allowance, grants: [{ logicalId: 'Operator' }] }
+    for (const action of [firstAction, `${firstPrefix}:Get*`]) {
+      const allow = { Sid: 'Named', Effect: 'Allow', Action: ['s3:GetObject', action], Resource: '*' }
+      expect(modelCheck(planted({ Operator: operator(noModels(), allow) }), everyGrant)).toEqual([
+        `Operator Policies[0].PolicyDocument Named: an Allow names a model action (${action})`,
+      ])
+    }
+  })
+
+  // Rule 2: `*` and a `<service>:*` that overlaps a model action need the principal's own deny, or its
+  // boundary's.
+  it('finds a service-wide Allow without the principal’s deny, and a boundary that is conditional or denies nothing', () => {
+    const wide = { Sid: 'Wide', Effect: 'Allow', Action: serviceWide, Resource: '*' }
+    expect(modelCheck(planted({ Deployer: role([wide]) }), allowance)).toEqual([
+      `Deployer Policies[0].PolicyDocument Wide: ${serviceWide} can grant a model action, and role:Deployer has no model deny in place`,
+    ])
+    expect(modelCheck(planted({ Deployer: role([wide, noModels()]) }), allowance)).toEqual([])
+    const everything = uncovered('role:Bounded', 'Bounded Policies[0].PolicyDocument Everything')
+    const ifBounded = { 'Fn::If': ['C', { Ref: 'Boundary' }, { Ref: 'AWS::NoValue' }] }
+    expect(
+      modelCheck(planted({ Bounded: role([allowAll('Everything')], { PermissionsBoundary: ifBounded }) }), allowance),
+    ).toEqual(everything)
+    const allowOnly = {
+      Type: 'AWS::IAM::ManagedPolicy',
+      Properties: { ManagedPolicyName: 'hearth-boundary', PolicyDocument: doc(allowAll()) },
+    }
+    expect(modelCheck(planted({ Boundary: allowOnly }), allowance)).toEqual([
+      ...uncovered('managed:Boundary', 'Boundary PolicyDocument AllowAll'),
+      ...everything,
+    ])
+    // An AWS-managed boundary isn't one the template shows denying.
+    const awsBounded = role([allowAll('Everything')], { PermissionsBoundary: awsPolicy('PowerUserAccess') })
+    expect(modelCheck(planted({ Bounded: awsBounded }), allowance)).toEqual(everything)
+  })
+
+  it('covers a policy attached to a role by that role’s deny, and never one attached to a role it can’t resolve', () => {
+    const attached = (roles: unknown[]) => ({
+      Extra: {
+        Type: 'AWS::IAM::Policy',
+        Properties: { PolicyName: 'extra', Roles: roles, PolicyDocument: doc(allowAll()) },
+      },
+    })
+    expect(modelCheck(planted(attached([{ Ref: 'Operator' }])), allowance)).toEqual([])
+    expect(modelCheck(planted(attached([{ Ref: 'Operator' }, 'someone-else'])), allowance)).toEqual(
+      uncovered('unresolved:Extra.Roles[1]', 'Extra PolicyDocument AllowAll'),
+    )
+  })
+
+  it('finds a model grant in a resource policy or an SCP, which binds no principal of the template’s', () => {
+    const open = {
+      Logs: {
+        Type: 'AWS::S3::BucketPolicy',
+        Properties: { Bucket: 'logs', PolicyDocument: doc({ ...allowAll('Open'), Principal: { AWS: '*' } }) },
+      },
+      Scp: {
+        Type: 'AWS::Organizations::Policy',
+        Properties: {
+          Type: 'SERVICE_CONTROL_POLICY',
+          Content: JSON.stringify(doc({ Sid: 'Wide', Effect: 'Allow', Action: serviceWide, Resource: '*' })),
+        },
+      },
+    }
+    expect(modelCheck(planted(open), { ...allowance, grants: [{ logicalId: 'Logs' }, { logicalId: 'Scp' }] })).toEqual([
+      'Logs PolicyDocument Open: * in a trust, resource policy, SCP or RCP can grant a model action',
+      `Scp Content Wide: ${serviceWide} in a trust, resource policy, SCP or RCP can grant a model action`,
+    ])
+  })
+
+  it('finds a document no static reading resolves', () => {
+    const joined = {
+      Joined: {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Properties: { PolicyDocument: { 'Fn::Join': ['', ['{"Version":"2012-10-17",', '"Statement":[]}']] } },
+      },
+    }
+    expect(modelCheck(planted(joined), allowance)).toEqual(['Joined PolicyDocument: unreadable'])
   })
 })
