@@ -5,6 +5,12 @@
 // 80 % and 100 % of actual spend and at 100 % of forecast. Costs are counted before GST, the basis the
 // amounts were chosen on, so the 80 % alert keeps its headroom (TECH-SPEC T24's C11-Q09 entry).
 //
+// Each budget measures unblended cost and filters out the Tax record type, so credits, refunds,
+// support and discounts still count. AWS Budgets takes either Metrics with a FilterExpression or the
+// older CostTypes with CostFilters, never a mix, and the older pair is deprecated; every budget here
+// uses the newer one, the organisation's with only the tax filter and each account's with that filter
+// and its linked account.
+//
 // One anomaly monitor watches spend by service and alerts the topic at once on an anomaly whose total
 // impact is at least USD 10. Cost Explorer may already hold a default AWS-services monitor, which
 // would clash with this one, so the set-up runbook looks for it and removes it before Foundation's
@@ -21,6 +27,11 @@ import type { LandingZoneConfig } from '../config/env.ts'
 
 // The anomaly alert's floor, in US dollars of total impact.
 export const ANOMALY_IMPACT_USD = 10
+
+// Every charge but tax (C11-Q09's pre-GST basis).
+const NOT_TAX: budgets.CfnBudget.ExpressionProperty = {
+  not: { dimensions: { key: 'RECORD_TYPE', values: ['Tax'], matchOptions: ['EQUALS'] } },
+}
 
 export interface BudgetsProps {
   config: LandingZoneConfig
@@ -53,18 +64,20 @@ export class Budgets extends Construct {
           budgetType: 'COST',
           timeUnit: 'MONTHLY',
           budgetLimit: { amount: entry.amount, unit: 'USD' },
-          costTypes: { includeTax: false },
-          ...(entry.account === undefined
-            ? {}
-            : {
-                filterExpression: {
-                  dimensions: { key: 'LINKED_ACCOUNT', values: [entry.account], matchOptions: ['EQUALS'] },
+          metrics: ['UnblendedCost'],
+          filterExpression:
+            entry.account === undefined
+              ? NOT_TAX
+              : {
+                  and: [
+                    { dimensions: { key: 'LINKED_ACCOUNT', values: [entry.account], matchOptions: ['EQUALS'] } },
+                    NOT_TAX,
+                  ],
                 },
-              }),
         },
         notificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
       })
-      budget.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+      budget.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
       budget.node.addDependency(alerts.policyDependable)
     }
 

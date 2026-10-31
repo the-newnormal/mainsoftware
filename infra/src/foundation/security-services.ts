@@ -7,7 +7,9 @@
 //
 // The analyzer has no archive rule: one keyed on a principal would also hide a widened trust. Its
 // expected findings are hearth-gh-deploy and hearth-gh-diff trusting GitHub's token host with exactly
-// their environment's subject; any other federated principal is an incident (TECH-SPEC T24 item 7).
+// their environment's subject, and each AWSReservedSSO_<set>_… role Identity Center makes in an
+// account for a permission set assigned there, trusting only that account's own Identity Center SAML
+// provider; any other federated principal is an incident (TECH-SPEC T24 item 7).
 import * as cdk from 'aws-cdk-lib'
 import * as accessanalyzer from 'aws-cdk-lib/aws-accessanalyzer'
 import * as events from 'aws-cdk-lib/aws-events'
@@ -31,7 +33,7 @@ export class SecurityServices extends Construct {
       analyzerName: 'hearth-org-external',
       type: 'ORGANIZATION',
     })
-    this.analyzer.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+    this.analyzer.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
 
     // A service's events, so the rules stay ENABLED (no CloudTrail management events needed).
     const a9 = new events.Rule(this, 'A9GuardDuty', {

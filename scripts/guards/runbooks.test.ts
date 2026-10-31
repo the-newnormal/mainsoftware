@@ -30,7 +30,12 @@
 //   as the picker shows it (CASE_COPY.people.leftOn). While the dialog says to log someone it can't
 //   tell apart from another person as someone without a Hearth account (CASE_COPY.people.same),
 //   access-request.md and the README say that a request is never linked after it is logged (0012's
-//   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11).
+//   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11);
+// - RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone's runbooks keep the two
+//   steps no code can hold: security-alerts.md's containment (removing someone from a group stops
+//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones), and the set-up's
+//   step N confirming each alert subscription with authentication and reading it back
+//   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -49,6 +54,8 @@ const DIR = 'docs/runbooks/'
 const README = `${DIR}README.md`
 const ACCESS_REQUEST = `${DIR}access-request.md`
 const WITHDRAWAL = `${DIR}withdrawal-by-hand.md`
+const SECURITY_ALERTS = `${DIR}security-alerts.md`
+const AWS_SET_UP = `${DIR}aws-account-set-up.md`
 
 // The runbook folder's own Markdown files, README included.
 const isRunbook = (path: string) =>
@@ -653,5 +660,61 @@ describe('RB-06 (C0.10 review PRIVACY-02, LH-61): the runbooks say how a request
     expect(CASE_COPY.people.same).toMatch(/\bas someone without a Hearth account\b/)
     expect(linkProblems(readRepoFile(ACCESS_REQUEST), CASE_COPY.people)).toEqual([])
     expect(linkProblems(readRepoFile(README), { same: CASE_COPY.people.same })).toEqual([])
+  })
+})
+
+// --- RB-07: the landing zone's containment and authenticated subscriptions --------------------------
+
+// What security-alerts.md and the set-up runbook leave out of the two steps no code can hold
+// (C0.11 review 1 DETECTION-05, DETECTION-08; TECH-SPEC T24 items 4 and 5).
+function landingZoneProblems(alerts: string, setUp: string): string[] {
+  const found: string[] = []
+  const containment = alerts.split(/^### Containing an unexpected session$/m)[1]?.split(/^##+ /m)[0]
+  if (containment === undefined) found.push('security-alerts.md: no "### Containing an unexpected session"')
+  else {
+    if (!/\bstops only new sessions\b/.test(containment)) found.push('security-alerts.md: no "stops only new sessions"')
+    if (!containment.includes('aws:TokenIssueTime')) found.push('security-alerts.md: no aws:TokenIssueTime')
+  }
+  const stepN = setUp.split(/^### N\. .*$/m)[1]?.split(/^##+ /m)[0]
+  if (stepN === undefined) found.push('aws-account-set-up.md: no step N')
+  else {
+    if (!stepN.includes('--authenticate-on-unsubscribe true')) {
+      found.push('aws-account-set-up.md: step N has no --authenticate-on-unsubscribe true')
+    }
+    if (!stepN.includes('ConfirmationWasAuthenticated')) {
+      found.push('aws-account-set-up.md: step N reads no ConfirmationWasAuthenticated')
+    }
+  }
+  return found
+}
+
+describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone’s runbooks keep containment and authenticated subscriptions', () => {
+  it('finds each gap on planted text, and passes the right words', () => {
+    const alerts =
+      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions, so an SCP denies where `aws:TokenIssueTime` is before then.\n\n## Check it worked\n'
+    const setUp =
+      '### N. Confirm each email subscription\n\n`aws sns confirm-subscription --authenticate-on-unsubscribe true`, then `ConfirmationWasAuthenticated` prints `true`.\n\n### O. Next\n'
+    expect(landingZoneProblems(alerts, setUp)).toEqual([])
+    expect(landingZoneProblems(alerts.replace('stops only new sessions', 'ends every session'), setUp)).toEqual([
+      'security-alerts.md: no "stops only new sessions"',
+    ])
+    expect(landingZoneProblems(alerts.replace('aws:TokenIssueTime', 'aws:CurrentTime'), setUp)).toEqual([
+      'security-alerts.md: no aws:TokenIssueTime',
+    ])
+    expect(landingZoneProblems('## Steps\n', setUp)).toEqual([
+      'security-alerts.md: no "### Containing an unexpected session"',
+    ])
+    // Only step N counts: the same words in another step don't.
+    const moved =
+      '### N. Confirm each email subscription\n\nOpen the link.\n\n### O. Next\n\n`--authenticate-on-unsubscribe true` and `ConfirmationWasAuthenticated`\n'
+    expect(landingZoneProblems(alerts, moved)).toEqual([
+      'aws-account-set-up.md: step N has no --authenticate-on-unsubscribe true',
+      'aws-account-set-up.md: step N reads no ConfirmationWasAuthenticated',
+    ])
+    expect(landingZoneProblems(alerts, '## Steps\n')).toEqual(['aws-account-set-up.md: no step N'])
+  })
+
+  it('security-alerts.md and the set-up runbook hold both', () => {
+    expect(landingZoneProblems(readRepoFile(SECURITY_ALERTS), readRepoFile(AWS_SET_UP))).toEqual([])
   })
 })

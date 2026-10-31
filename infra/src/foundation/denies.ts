@@ -76,8 +76,12 @@ export const NO_LONG_LIVED_CREDENTIALS: readonly string[] = [
   'iam:CreateServiceSpecificCredential',
 ]
 
-// A new or changed identity provider, and Cognito's identity pools: a role trusting one would be a way
-// in that no AssumeRole fence sees (C11-D07, TECH-SPEC T24 items 2 and 32).
+// A new or changed identity provider, Cognito's identity pools, and the services that hand a role's
+// credentials to whoever holds a certificate or a code: IAM Roles Anywhere's trust anchors and
+// profiles, SSM's hybrid activations (and the role an activated machine takes), and IoT's role
+// aliases. A role trusting any of them would be a way in that no AssumeRole fence sees: the last three
+// assume it as a service principal, which the RCP's AssumeRole statement lets through (C11-D07,
+// TECH-SPEC T24 items 2 and 32). Hearth uses none of them, so Roles Anywhere is denied whole.
 export const NO_NEW_IDENTITY_PROVIDERS: readonly string[] = [
   'iam:CreateOpenIDConnectProvider',
   'iam:AddClientIDToOpenIDConnectProvider',
@@ -85,6 +89,11 @@ export const NO_NEW_IDENTITY_PROVIDERS: readonly string[] = [
   'iam:CreateSAMLProvider',
   'iam:UpdateSAMLProvider',
   'cognito-identity:*',
+  'rolesanywhere:*',
+  'ssm:CreateActivation',
+  'ssm:UpdateManagedInstanceRole',
+  'iot:CreateRoleAlias',
+  'iot:UpdateRoleAlias',
 ]
 
 // Closing an account or taking it out of the organisation, which would lift every SCP from it and end
@@ -170,6 +179,10 @@ export const EXEC_ROLE = `cdk-${QUALIFIER.base}-cfn-exec-role-*-${REGION}`
 export const APP_EXEC_ROLE = `cdk-${QUALIFIER.app}-cfn-exec-role-*-${REGION}`
 export const EXEC = roleArn('*', EXEC_ROLE)
 export const APP_EXEC = roleArn('*', APP_EXEC_ROLE)
+// Each qualifier's deploy role, the one that passes its execution role to CloudFormation in a
+// `cdk deploy` (C11-D26).
+export const BASE_DEPLOY = roleArn('*', `cdk-${QUALIFIER.base}-deploy-role-*-${REGION}`)
+export const APP_DEPLOY = roleArn('*', `cdk-${QUALIFIER.app}-deploy-role-*-${REGION}`)
 // The role Organizations makes in each member account (C11-D02).
 export const OAAR = roleArn('*', ROLE.oaar)
 export const BREAK_GLASS = roleArn('*', ROLE.breakGlass)

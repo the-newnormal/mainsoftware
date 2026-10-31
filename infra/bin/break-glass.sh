@@ -29,7 +29,9 @@
 #
 # No test runs it: IG-09 (scripts/guards/infra.test.ts) reads its text, parses it with bash -n and runs
 # only its pure functions, extracted. It runs top to bottom, each function defined before its first
-# use, so its text order is its run order, which IG-09 reads. It is on the owner's-read list (C11-D74).
+# use, so its text order is its run order, which IG-09 reads: a close's second sign-in (sign_in_again)
+# is defined after the first sign-in, since it only ever runs after it. It is on the owner's-read list
+# (C11-D74).
 set -euo pipefail
 umask 077
 IFS=$' \n\t'
@@ -59,11 +61,11 @@ usage: infra/bin/break-glass.sh <nonprod|prod|log-archive> <reason> [--console]
        infra/bin/break-glass.sh <nonprod|prod|log-archive> <reason> --amend <session>
 reason, exactly one of:
   case:XXXX-XXXX             a request's reference
-  incident:YYYY-MM-DD-NN     an incident, by date and number
+  incident:YYYY-MM-DD-NN     an incident, by the day it began in Singapore and its number that day
   bootstrap:set-up           the Owner bootstrap script's set-up
   bootstrap:correct-number   its correction of the founder's number
   recover:twilio             its Twilio Verify recovery
-  drill:YYYY-MM-DD           a drill, by date
+  drill:YYYY-MM-DD           a drill, by its day in Singapore
   lz:pr-N                    a landing-zone change, by PR number
 in log-archive, only incident: and drill:
 session (--amend): hearth-bg-YYYYMMDDTHHMMSSZ, as the entry being amended names it
@@ -97,7 +99,9 @@ require_terminal() {
 }
 
 # Whether a YYYY-MM-DD date is on the calendar (month lengths and leap years by arithmetic, since BSD
-# date can't parse one) and not after today, in UTC.
+# date can't parse one) and not after today in Singapore, where the day an incident or drill began is
+# counted: UTC+8 all year, written as a POSIX zone (SGT-8), which GNU and BSD date read with no time
+# zone database. A date after today says why, in words fixed here.
 valid_date() {
   local date="$1" form='^(20[0-9]{2})-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' year month day last today
   [[ $date =~ $form ]] || return 1
@@ -110,8 +114,11 @@ valid_date() {
     *) last=31 ;;
   esac
   ((day <= last)) || return 1
-  today="$(date -u +%Y-%m-%d)"
-  [[ ! $date > $today ]]
+  today="$(TZ=SGT-8 date +%Y-%m-%d)"
+  if [[ $date > $today ]]; then
+    printf "break-glass: a reason's date is never after today in Singapore\n" >&2
+    return 1
+  fi
 }
 
 # Whether a reason matches exactly one form, and its date, if it has one, is real and not in the future.
@@ -405,13 +412,20 @@ open_session() {
   printf 'break-glass: open entry written for %s\n' "$session"
 }
 
-# The close entry, for the first session. Past its hour the role is taken again under the same reason,
-# which raises A1 again, and that session writes a continuation entry naming the first before it
-# writes the close.
+# The close entry, for the first session. Within two minutes of its hour, or past it, the role is taken
+# again under the same reason, which raises A1 again, and that session writes a continuation entry
+# naming the first before it writes the close. The access portal's session began at the sign-in,
+# before the role was taken, and lasts an hour too, so by then it may have ended: a close the person
+# is there for then asks them to sign in again (sign_in_again), and one that stops unprompted can't,
+# so its close isn't written and the reviewer is told.
 close_session() {
   local key
   if [ "$1" = prompted ]; then collect_close; fi
   if [ "$(date -u +%s)" -ge $((expires_at - 120)) ]; then
+    if ! aws sts get-caller-identity --profile "$profile" >/dev/null 2>&1; then
+      [ "$1" = prompted ] || return 1
+      sign_in_again || return 1
+    fi
     assume_role || return 1
     jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg session "$session" \
       --arg continues "$first_session" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg expires "$expires" \
@@ -503,9 +517,14 @@ RC
 
 # However it ends: a close entry, unprompted (stopped, with no modes or ids), if the session opened
 # and none was written; the credentials dropped, its files removed, and the access portal signed out.
+# Once it has begun, a second Ctrl-C, a hang-up, a TERM or a Ctrl-\ is ignored, by this script and by
+# the commands it runs, which inherit that, so nothing can stop the close or the sign-out part way;
+# and with errexit off, a print to a terminal that has gone doesn't end it early either.
 on_exit() {
   local status=$?
-  trap - EXIT INT TERM HUP
+  trap '' INT TERM HUP QUIT
+  trap - EXIT
+  set +e
   if [ "$opened" = yes ] && [ "$closed" = no ]; then
     close_session unprompted || printf "break-glass: the close entry wasn't written; tell the reviewer (docs/runbooks/break-glass-review.md)\n" >&2
   fi
@@ -540,6 +559,21 @@ esac
 user="${assumed#*/}"
 [[ $user =~ $SOURCE_IDENTITY_FORM ]] || refuse "refused: your sign-in name can't be a session's source identity"
 role="arn:$partition:iam::$account:role/hearth-break-glass"
+
+# A new sign-in for a close past the access portal's hour (close_session), which must be the same
+# person with the same permission set in the same account, or the close isn't written. It is defined
+# here, after the first sign-in, because it only ever runs after it.
+sign_in_again() {
+  local again_account again_caller
+  printf "break-glass: the access portal's hour has ended too; sign in again, as yourself, to write the close\n"
+  aws sso login --profile "$profile" || return 1
+  read -r again_account again_caller < <(aws sts get-caller-identity --profile "$profile" --query '[Account,Arn]' \
+    --output text 2>/dev/null) || return 1
+  if [ "$again_account" != "$account" ] || [ "${again_caller#*:assumed-role/}" != "$assumed" ]; then
+    printf "break-glass: that sign-in isn't the one the session opened under, so the close entry wasn't written\n" >&2
+    return 1
+  fi
+}
 
 if [ -n "$amend" ]; then
   amend_session

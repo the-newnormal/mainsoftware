@@ -35,7 +35,9 @@ export class ServerRepository extends Construct {
           maxImageCount: 50,
         },
       ],
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // Retained once made, but deleted when the create that made it rolls back, so a failed first
+      // deploy leaves nothing behind to refuse its retry by name.
+      removalPolicy: cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
     })
     this.repository.addToResourcePolicy(
       new iam.PolicyStatement({

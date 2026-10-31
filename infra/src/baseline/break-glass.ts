@@ -11,8 +11,8 @@
 // - a workload account's role reads logs, describes the stacks and services, operates the services,
 //   runs the bastion and its port forward, connects to the bootstrap login under a bootstrap: or
 //   recover: reason and to the read-only login under a case: reason, reads the Owner bootstrap
-//   script's input under a bootstrap: reason, and assumes the hearthbase deploy and publishing roles
-//   under an lz:pr- reason (C11-D12, C11-D78);
+//   script's input under a bootstrap: reason, and assumes the hearthbase deploy and file-publishing
+//   roles, carrying its source identity into them, under an lz:pr- reason (C11-D12, C11-D78);
 // - log-archive's role writes its own entries and triages: GuardDuty and Access Analyzer reads,
 //   CloudTrail's event history and the trail's status, and the configuration of the trail and
 //   break-glass-log buckets and of the keys, never the trail's objects (the reviewer is their only
@@ -329,11 +329,14 @@ function workloadStatements(props: BreakGlassRoleProps, workloadAccount: 'nonpro
       },
     },
     // Landing-zone administration through hearthbase (C11-D27), under an lz:pr- reason alone; never
-    // the lookup role, whose ReadOnlyAccess reads objects and logs.
+    // the lookup role, whose ReadOnlyAccess reads objects and logs. The session's source identity,
+    // which the trust requires, carries into the role it assumes, and STS refuses that chain unless
+    // the caller's policy and the role's trust both allow sts:SetSourceIdentity: here, and in the two
+    // roles' trust, which the bootstrap template gives it (infra/scripts/bootstrap-template.ts).
     {
       Sid: 'LandingZone',
       Effect: 'Allow',
-      Action: 'sts:AssumeRole',
+      Action: ['sts:AssumeRole', 'sts:SetSourceIdentity'],
       Resource: [hearthbase('deploy-role'), hearthbase('file-publishing-role')],
       Condition: { StringLike: { [`aws:PrincipalTag/${REASON_TAG}`]: [...LZ_REASON_SHAPES] } },
     },

@@ -247,7 +247,7 @@ describe('C11-D10: the permission sets', () => {
     ])
   })
 
-  it('C11-D10 C11-D11: each set has its session, its managed policy and exactly its inline policy, on the instance, retained', () => {
+  it('C11-D10 C11-D11: each set has its session, its managed policy and exactly its inline policy, on the instance, retained once made (never on a rolled-back create)', () => {
     const sets = ofType(foundation, 'AWS::SSO::PermissionSet')
     expect(sets.map(([, r]) => r.Properties?.Name)).toEqual(Object.keys(SETS))
     for (const [, set] of sets) {
@@ -260,7 +260,7 @@ describe('C11-D10: the permission sets', () => {
       expect(set.Properties?.PermissionsBoundary, name).toBeUndefined()
       expect(set.Properties?.InlinePolicy, name).toEqual({ Version: '2012-10-17', Statement: expected?.inline })
       expect(String(set.Properties?.Description), name).toMatch(/\((?:C11-D\d{2}, )*C11-D\d{2}\)$/)
-      expect(set.DeletionPolicy, name).toBe('Retain')
+      expect(set.DeletionPolicy, name).toBe('RetainExceptOnCreate')
       expect(set.UpdateReplacePolicy, name).toBe('Retain')
     }
   })

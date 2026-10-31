@@ -1,12 +1,13 @@
 // Hearth-LogArchive (C11-D13, C11-D17 to C11-D21; TECH-SPEC T24 items 6 and 7), the evidence the rest
 // of the organisation can't reach:
 // - IAC-05: its three buckets, and no bucket anywhere else: private, encrypted under their own key
-//   with a bucket key, versioned, owner-enforced, retained, and each policy refusing plain HTTP and
-//   TLS below 1.2;
+//   (with a bucket key but for the trail's, since a trail can't be made over one without a decrypt
+//   grant nobody else holds), versioned, owner-enforced, retained once made, and each policy refusing plain
+//   HTTP and TLS below 1.2;
 // - IAC-06: every version of the trail and break-glass-log buckets locked for its class's period in
 //   the mode configured (a variant shows COMPLIANCE), then expired by exactly two lifecycle rules
 //   with no tag filter, LCG-02's one exception; the archive locked with no default and no rule;
-// - the keys: rotated, a 30-day deletion window, tagged hearth-sec and retained, each policy exactly
+// - the keys: rotated, a 30-day deletion window, tagged hearth-sec and retained once made, each policy exactly
 //   as written here, so neither carries the account root's kms:*;
 // - IAC-23: nothing reads the archive bucket or can use the archive key, in any template; every grant
 //   on log-archive's keys by pattern is bounded by an encryption context naming only the trail or the
@@ -107,8 +108,11 @@ describe('IAC-05 C11-D17: the log-archive buckets', () => {
     ).toEqual(['TrailBucket', 'BreakGlassLogBucket', 'ArchiveBucket'])
   })
 
-  it('IAC-05: each is private, encrypted under its own key with a bucket key (the log buckets under hearth-sec, the archive under hearth-archive), versioned, owner-enforced and retained', () => {
+  it('IAC-05: each is private, encrypted under its own key (the log buckets under hearth-sec, the archive under hearth-archive) with a bucket key but for the trail’s, versioned, owner-enforced and retained once made', () => {
     const keyFor = { trail: 'alias/hearth-sec', breakGlass: 'alias/hearth-sec', archive: 'alias/hearth-archive' }
+    // With a bucket key, making or updating an SSE-KMS trail needs kms:Decrypt, which hearth-sec gives
+    // neither CloudTrail nor management's execution role, so the trail's bucket has none.
+    const bucketKey = { trail: false, breakGlass: true, archive: true }
     for (const [kind, name] of Object.entries(BUCKET) as Array<[keyof typeof BUCKET, string]>) {
       const [, bucket] = bucketOf(template, name)
       expect(bucket.Properties, name).toMatchObject({
@@ -121,7 +125,7 @@ describe('IAC-05 C11-D17: the log-archive buckets', () => {
         BucketEncryption: {
           ServerSideEncryptionConfiguration: [
             {
-              BucketKeyEnabled: true,
+              BucketKeyEnabled: bucketKey[kind],
               ServerSideEncryptionByDefault: {
                 SSEAlgorithm: 'aws:kms',
                 KMSMasterKeyID: { 'Fn::GetAtt': [keyOf(template, keyFor[kind]), 'Arn'] },
@@ -133,7 +137,7 @@ describe('IAC-05 C11-D17: the log-archive buckets', () => {
         OwnershipControls: { Rules: [{ ObjectOwnership: 'BucketOwnerEnforced' }] },
       })
       expect(bucket.Properties?.LoggingConfiguration, name).toBeUndefined()
-      expect(bucket.DeletionPolicy, name).toBe('Retain')
+      expect(bucket.DeletionPolicy, name).toBe('RetainExceptOnCreate')
       expect(bucket.UpdateReplacePolicy, name).toBe('Retain')
     }
   })
@@ -306,7 +310,7 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
     expect(bucketOf(compliance, BUCKET.archive)[1]).toEqual(bucketOf(template, BUCKET.archive)[1])
   }, 60_000)
 
-  it('IAC-06 C11-D17 C11-D21: both keys rotate, keep a 30-day deletion window, carry the hearth-sec tag the floor protects them by, and are retained', () => {
+  it('IAC-06 C11-D17 C11-D21: both keys rotate, keep a 30-day deletion window, carry the hearth-sec tag the floor protects them by, and are retained once made', () => {
     for (const alias of ['alias/hearth-sec', 'alias/hearth-archive']) {
       const [, key] = resourcesIn(template).find(([id]) => id === keyOf(template, alias)) as [string, Resource]
       expect(key.Properties, alias).toMatchObject({
@@ -314,7 +318,7 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
         PendingWindowInDays: 30,
         Tags: [{ Key: 'hearth-sec', Value: 'true' }],
       })
-      expect(key.DeletionPolicy, alias).toBe('Retain')
+      expect(key.DeletionPolicy, alias).toBe('RetainExceptOnCreate')
       expect(key.UpdateReplacePolicy, alias).toBe('Retain')
     }
     expect(['SecKey', 'ArchiveKey'].map(id => lz.stacks.logArchive?.node.tryFindChild(id)?.node.id)).toEqual([
@@ -1046,12 +1050,13 @@ describe('C11-D16 C11-D20: log-archive’s alarms', () => {
     ])
   })
 
-  it('C11-D20: one organisation analyzer of external access, with no archive rule, retained, beside the alarms and the role by their construct ids', () => {
+  it('C11-D20: one organisation analyzer of external access, with no archive rule, retained once made, beside the alarms and the role by their construct ids', () => {
     const analyzers = ofType(template, 'AWS::AccessAnalyzer::Analyzer')
     expect(analyzers.map(([, r]) => r.Properties)).toEqual([
       { AnalyzerName: 'hearth-org-external', Type: 'ORGANIZATION' },
     ])
-    expect(analyzers[0]?.[1].DeletionPolicy).toBe('Retain')
+    expect(analyzers[0]?.[1].DeletionPolicy).toBe('RetainExceptOnCreate')
+    expect(analyzers[0]?.[1].UpdateReplacePolicy).toBe('Retain')
     const childrenOf = (id: string) =>
       lz.stacks.logArchive?.node.tryFindChild(id)?.node.children.map(child => child.node.id)
     expect(childrenOf('SecurityServices')).toEqual(['Analyzer', 'A9GuardDuty', 'A10AccessAnalyzer'])

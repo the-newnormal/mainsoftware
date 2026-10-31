@@ -1,6 +1,7 @@
 // A workload account's public hosted zones (C11-D43, C11-Q08): prod holds the two registrable
 // domains (DOMAINS), the app's and user content's, and non-prod holds `nonprod.` under each. Each
-// zone allows only Amazon's certificate authority (CAA) and is retained. Prod delegates `nonprod.` to
+// zone allows only Amazon's certificate authority (CAA) and is retained once made (a create that
+// rolls back deletes it, so a failed first deploy's retry isn't refused). Prod delegates `nonprod.` to
 // non-prod's zones by NS records whose values are committed in profiles.ts after non-prod's Baseline
 // first deploys and prints its name servers, never looked up or delegated by a Lambda (IG-02,
 // IG-11); until then prod renders none. The zone ids sit in SSM parameters for the workload stacks
@@ -29,7 +30,7 @@ export class Zones extends Construct {
     const zone = (zoneId: string, zoneName: string | undefined) => {
       if (zoneName === undefined) throw new Error(`${environment} has no ${zoneId} host`)
       const made = new route53.PublicHostedZone(this, zoneId, { zoneName, caaAmazon: true })
-      made.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+      made.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
       return made
     }
     this.app = zone('App', appHost(environment))

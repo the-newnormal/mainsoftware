@@ -1,9 +1,13 @@
 // The CDK bootstrap template Hearth deploys in every account, for both qualifiers (C11-D26, C11-D75;
-// TECH-SPEC T24 item 11): the pinned CLI's own template with one change that matters, an inline
-// hearth-no-models policy denying every model action (models.ts) on each of its five roles, so the
+// TECH-SPEC T24 item 11): the pinned CLI's own template with two changes that matter. Each of its
+// five roles gets an inline hearth-no-models policy denying every model action (models.ts), so the
 // roles cdk deploy assumes can never call a model, whatever the managed policies they're given
-// allow. The only other change is BootstrapVariant's default, so a stock `cdk bootstrap` refuses to
-// replace a Hearth toolkit stack without --force.
+// allow. And the deploy and file-publishing roles' same-account trust also allows
+// sts:SetSourceIdentity beside sts:TagSession: a break-glass session always carries a source
+// identity, which persists into every role it chains into, and STS refuses that chain unless the
+// target's trust allows the action, so without it `cdk deploy` under an lz:pr- reason couldn't take
+// the roles it needs (C11-D11, C11-D27). The only other change is BootstrapVariant's default, so a
+// stock `cdk bootstrap` refuses to replace a Hearth toolkit stack without --force.
 //
 // It reads the CLI's YAML through aws-cdk-lib's CfnInclude, which turns CloudFormation's short tags
 // into intrinsics, and throws on any YAML warning (an unknown tag would otherwise read as a plain
@@ -19,6 +23,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import * as cdk from 'aws-cdk-lib'
 import { CfnInclude } from 'aws-cdk-lib/cloudformation-include'
 import { modelDenyActions } from '../src/config/models.ts'
@@ -66,6 +71,14 @@ export const BOOTSTRAP_ROLES = [
 // The one managed policy the stock template may make (sic, the CLI's spelling): the example
 // permissions boundary, created only when a person asks for it.
 export const EXAMPLE_BOUNDARY = 'CdkBoostrapPermissionsBoundaryPolicy'
+
+// The roles a break-glass session chains into under an lz:pr- reason (infra/src/baseline/break-glass.ts,
+// its LandingZone statement), whose same-account trust statement for sts:TagSession, exactly as the
+// stock template writes it, also gets sts:SetSourceIdentity. The lookup and image-publishing roles,
+// which break-glass never takes, and every cross-account statement stay as they are.
+export const SOURCE_IDENTITY_ROLES = ['FilePublishingRole', 'DeploymentActionRole'] as const
+const STOCK_TAG_SESSION = { Action: 'sts:TagSession', Effect: 'Allow', Principal: { AWS: { Ref: 'AWS::AccountId' } } }
+export const SOURCE_IDENTITY_ACTIONS = ['sts:TagSession', 'sts:SetSourceIdentity'] as const
 
 export const NO_MODELS_POLICY = 'hearth-no-models'
 export const NO_MODELS_SID = 'HearthNoModels'
@@ -130,7 +143,8 @@ function noModelsPolicy(): Record<string, unknown> {
   }
 }
 
-// The CLI's template with the deny on every role and the variant's default changed. It refuses, naming
+// The CLI's template with the deny on every role, sts:SetSourceIdentity in the two roles' same-account
+// trust and the variant's default changed. It refuses, naming
 // what changed, anything it wasn't written for, so a CLI upgrade that moves the template is read by a
 // person before it is deployed.
 export function withModelDeny(cli: CfnTemplate): CfnTemplate {
@@ -169,6 +183,22 @@ export function withModelDeny(cli: CfnTemplate): CfnTemplate {
       continue
     }
     properties.Policies = [...policies, noModelsPolicy()]
+  }
+  // The trust widened in place, only where the one stock same-account TagSession statement is found.
+  for (const logicalId of SOURCE_IDENTITY_ROLES) {
+    const resource = resources[logicalId]
+    const properties = isObject(resource) && isObject(resource.Properties) ? resource.Properties : {}
+    const trust = isObject(properties.AssumeRolePolicyDocument) ? properties.AssumeRolePolicyDocument : {}
+    const statements = Array.isArray(trust.Statement) ? trust.Statement : []
+    const matching = statements.filter(statement => isDeepStrictEqual(statement, STOCK_TAG_SESSION))
+    const named = statements.filter(statement => JSON.stringify(statement).includes('sts:SetSourceIdentity'))
+    if (matching.length !== 1 || named.length > 0) {
+      problems.push(
+        `${logicalId}'s trust doesn't hold exactly one same-account sts:TagSession statement as the stock template wrote it, and none naming sts:SetSourceIdentity`,
+      )
+      continue
+    }
+    ;(matching[0] as Record<string, unknown>).Action = [...SOURCE_IDENTITY_ACTIONS]
   }
   const outputs = isObject(template.Outputs) ? template.Outputs : {}
   const output = isObject(outputs.BootstrapVersion) ? outputs.BootstrapVersion.Value : undefined

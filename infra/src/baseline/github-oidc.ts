@@ -9,9 +9,10 @@
 // the workload's stacks, and runs, watches and stops the migrate and probe one-off tasks; it reads
 // nothing else (no secret, log, object, session or database login) and assumes no other role.
 // hearth-gh-diff reads the prod stacks' templates and nothing else. The provider keeps its default
-// removal policy, under the stack's termination protection and the guardrails' protected names, since
-// a retained provider would make a failed first deploy's retry fail (TECH-SPEC T24 item 11). This file
-// holds who may deploy, so it is on the owner's-read list (C11-D74).
+// removal policy, under the stack's termination protection and the guardrails' protected names: it
+// holds nothing to keep, so, like the roles that trust it, it goes only with its stack, and a failed
+// first deploy's rollback deletes it (TECH-SPEC T24 item 11). This file holds who may deploy, so it is
+// on the owner's-read list (C11-D74).
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { Construct } from 'constructs'

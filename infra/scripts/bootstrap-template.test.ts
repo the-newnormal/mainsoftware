@@ -1,17 +1,20 @@
 // IAC-24 and IAC-01 over the CDK bootstrap template Hearth deploys (C11-D26, C11-D75; TECH-SPEC T24
 // item 11): the committed infra/bootstrap/hearth-bootstrap.yaml is strict JSON, is exactly what the
 // generator makes from the pinned CLI's own template, differs from that template only by the model
-// deny on each of its five roles and the variant's default, fits the landing zone's bootstrap version
-// and qualifier, keeps the stock template's S3 delete grants and lifecycle rules where they were, and
-// passes IAC-01's model check and its own copy of the template check (no Lambda, custom resource,
-// transform or import, its one export pinned). The generator's refusals are proved on planted CLI
-// templates. A CDK upgrade whose CLI template changed fails here until a person runs
+// deny on each of its five roles, sts:SetSourceIdentity in the deploy and file-publishing roles'
+// same-account trust (which a break-glass session's chain into them needs: C11-D11, C11-D27) and the
+// variant's default, fits the landing zone's bootstrap version and qualifier, keeps the stock
+// template's S3 delete grants and lifecycle rules where they were, passes IAC-01's model check and
+// its own copy of the template check (no Lambda, custom resource, transform or import, its one export
+// pinned), and fits the request body `cdk bootstrap` sends. The generator's refusals are proved on
+// planted CLI templates. A CDK upgrade whose CLI template changed fails here until a person runs
 // `node infra/scripts/bootstrap-template.ts` on its branch and reads the change. This file holds
 // IAC-24's rules, so it is on the owner's-read list (C11-D74). Model actions come from the lists,
 // never written (IG-10).
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { globsOverlap, modelDenyActions } from '../src/config/models.ts'
@@ -46,6 +49,13 @@ const NO_MODELS = {
   },
 }
 const VARIANT = 'Hearth: AWS CDK default resources with no model actions on any role (C11-D75)'
+
+// The roles a break-glass session chains into under an lz:pr- reason, written out here rather than
+// taken from the generator, and the stock same-account statement whose action list gains
+// sts:SetSourceIdentity in each.
+const SOURCE_IDENTITY_ROLES = ['DeploymentActionRole', 'FilePublishingRole']
+const SAME_ACCOUNT = { AWS: { Ref: 'AWS::AccountId' } }
+const STOCK_TAG_SESSION = { Action: 'sts:TagSession', Effect: 'Allow', Principal: SAME_ACCOUNT }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -87,8 +97,15 @@ function differences(before: unknown, after: unknown, path = ''): Difference[] {
   return [{ path, before, after }]
 }
 
-// The differences the deny and the variant make, and nothing else: each role's deny appended to its
-// Policies (the list made where the stock role has none), and the variant's default.
+// A role's trust statements, as the template holds them.
+const trustStatements = (template: CfnTemplate, role: string): unknown[] => {
+  const trust = propertiesOf(template, role).AssumeRolePolicyDocument
+  return isObject(trust) && Array.isArray(trust.Statement) ? trust.Statement : []
+}
+
+// The differences the deny, the trust and the variant make, and nothing else: each role's deny
+// appended to its Policies (the list made where the stock role has none), the two roles' stock
+// same-account TagSession statement given sts:SetSourceIdentity too, and the variant's default.
 function expectedDifferences(stock: CfnTemplate): Difference[] {
   const roles = BOOTSTRAP_ROLES.map(role => {
     const stockPolicies = propertiesOf(stock, role).Policies
@@ -96,10 +113,56 @@ function expectedDifferences(stock: CfnTemplate): Difference[] {
       ? { path: `Resources.${role}.Properties.Policies[${stockPolicies.length}]`, before: undefined, after: NO_MODELS }
       : { path: `Resources.${role}.Properties.Policies`, before: undefined, after: [NO_MODELS] }
   })
+  const trusts = SOURCE_IDENTITY_ROLES.map(role => {
+    const index = trustStatements(stock, role).findIndex(statement => isDeepStrictEqual(statement, STOCK_TAG_SESSION))
+    return {
+      path: `Resources.${role}.Properties.AssumeRolePolicyDocument.Statement[${index}].Action`,
+      before: 'sts:TagSession',
+      after: ['sts:TagSession', 'sts:SetSourceIdentity'],
+    }
+  })
   const parameters = isObject(stock.Parameters) ? stock.Parameters : {}
   const variant = isObject(parameters.BootstrapVariant) ? parameters.BootstrapVariant.Default : undefined
-  return [...roles, { path: 'Parameters.BootstrapVariant.Default', before: variant, after: VARIANT }]
+  return [...roles, ...trusts, { path: 'Parameters.BootstrapVariant.Default', before: variant, after: VARIANT }]
 }
+
+// IAC-24 (j): each role's trust statements that name sts:SetSourceIdentity, as "the account" for an
+// unconditional Allow to the account itself and "elsewhere" for any other (a cross-account statement
+// under Fn::If, a condition, another principal).
+function sourceIdentityTrust(template: CfnTemplate): Record<string, string[]> {
+  return Object.fromEntries(
+    typesOf(template, 'AWS::IAM::Role').map(role => [
+      role,
+      trustStatements(template, role)
+        .filter(statement => JSON.stringify(statement).includes('sts:SetSourceIdentity'))
+        .map(statement =>
+          isObject(statement) &&
+          statement.Effect === 'Allow' &&
+          statement.Condition === undefined &&
+          isDeepStrictEqual(statement.Principal, SAME_ACCOUNT)
+            ? 'the account'
+            : 'elsewhere',
+        ),
+    ]),
+  )
+}
+
+// IAC-24 (k): `cdk bootstrap --template` sends the template as YAML in the request's body, and above
+// 50 KiB (51,200 characters) asks the account for a toolkit bucket to upload it to, which a bootstrap
+// never has, so it fails with a message blaming the CLI (aws-cdk's makeBodyParameter). The template is
+// rendered here by aws-cdk-lib's own CloudFormation YAML writer, with the CLI's settings (the YAML 1.1
+// schema, no line folding), which renders this template to the length the CLI's does; 1 KiB of the
+// limit is kept spare for any difference between the two writers. Every model action the lists gain
+// costs about 200 characters, once in each of the five roles' deny.
+const TEMPLATE_BODY_LIMIT = 50 * 1024
+const WRITER_MARGIN = 1024
+const resolveFrom = createRequire(import.meta.url)
+const cfnYaml = resolveFrom(
+  join(dirname(resolveFrom.resolve('aws-cdk-lib/package.json')), 'core/lib/private/yaml-cfn.js'),
+) as {
+  serialize: (value: unknown) => string
+}
+const bodyLength = (template: CfnTemplate): number => cfnYaml.serialize(template).length
 
 // IAC-24 (e): each role's model denies in place, as "role: count Sid", where one with Sid
 // HearthNoModels and modelDenyActions() in order is the only answer that passes.
@@ -264,13 +327,19 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(render(missing)).not.toBe(render(withModelDeny(stock)))
   })
 
-  it('(d) it differs from the CLI’s template by the five denies and the variant’s default alone', () => {
+  it('(d) it differs from the CLI’s template by the five denies, the two roles’ trust and the variant’s default alone', () => {
     const byPath = (list: Difference[]) => [...list].sort((a, b) => a.path.localeCompare(b.path))
     expect(byPath(differences(stock, committed))).toEqual(byPath(expectedDifferences(stock)))
     const missing = structuredClone(committed)
     const policies = propertiesOf(missing, 'DeploymentActionRole').Policies as unknown[]
     propertiesOf(missing, 'DeploymentActionRole').Policies = policies.slice(0, -1)
     expect(byPath(differences(stock, missing))).not.toEqual(byPath(expectedDifferences(stock)))
+    // So does a trust widened anywhere else: the lookup role's same-account statement.
+    const lookup = structuredClone(committed)
+    const statement = trustStatements(lookup, 'LookupRole').find(s => isDeepStrictEqual(s, STOCK_TAG_SESSION))
+    expect(statement).toBeDefined()
+    ;(statement as Record<string, unknown>).Action = ['sts:TagSession', 'sts:SetSourceIdentity']
+    expect(byPath(differences(stock, lookup))).not.toEqual(byPath(expectedDifferences(stock)))
   })
 
   it('(e) every role holds exactly one model deny in place, Sid HearthNoModels, every model action in order', () => {
@@ -378,6 +447,48 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     const outputs = committed.Outputs as Record<string, { Export?: { Name?: unknown } }>
     expect(outputs.FileAssetKeyArn?.Export?.Name).toEqual(FILE_ASSET_KEY_EXPORT)
   })
+
+  it('(j) the deploy and file-publishing roles’ same-account trust allows sts:SetSourceIdentity, which a break-glass session’s chain into them needs, and no other statement names it', () => {
+    const expected = {
+      CloudFormationExecutionRole: [],
+      DeploymentActionRole: ['the account'],
+      FilePublishingRole: ['the account'],
+      ImagePublishingRole: [],
+      LookupRole: [],
+    }
+    expect(sourceIdentityTrust(committed)).toEqual(expected)
+    // The stock template names it nowhere, so a chained deploy under lz:pr- would be refused.
+    expect(sourceIdentityTrust(stock)).not.toEqual(expected)
+    // A cross-account statement naming it is found as one.
+    const crossAccount = structuredClone(committed)
+    const conditional = trustStatements(crossAccount, 'DeploymentActionRole').find(
+      s => isObject(s) && JSON.stringify(s).includes('TrustedAccounts') && JSON.stringify(s).includes('sts:TagSession'),
+    ) as { 'Fn::If': [string, Record<string, unknown>, unknown] } | undefined
+    expect(conditional).toBeDefined()
+    if (conditional !== undefined) conditional['Fn::If'][1].Action = ['sts:TagSession', 'sts:SetSourceIdentity']
+    expect(sourceIdentityTrust(crossAccount).DeploymentActionRole).toEqual(['the account', 'elsewhere'])
+  })
+
+  it('(k) it fits the request body `cdk bootstrap` sends, with 1 KiB of the limit to spare, proved on a planted template first', () => {
+    // The writer has the CLI's settings: no folding of a long line, and YAML 1.1's booleans quoted.
+    expect(cfnYaml.serialize({ a: `${'word '.repeat(40)}end` })).toBe(`a: ${'word '.repeat(40)}end\n`)
+    expect(cfnYaml.serialize({ a: 'on' })).not.toBe('a: on\n')
+    const ceiling = TEMPLATE_BODY_LIMIT - WRITER_MARGIN
+    const spare = (template: CfnTemplate) =>
+      `${ceiling - bodyLength(template)} characters to spare under ${ceiling}: past ${TEMPLATE_BODY_LIMIT}, \`cdk bootstrap --template\` fails with BootstrapStackRequired`
+    // Forty more actions in every role's deny pass it.
+    const planted = structuredClone(committed)
+    for (const role of BOOTSTRAP_ROLES) {
+      const policies = propertiesOf(planted, role).Policies as Array<typeof NO_MODELS>
+      const deny = policies.find(policy => policy.PolicyName === NO_MODELS.PolicyName)?.PolicyDocument.Statement[0]
+      deny?.Action.push(...Array.from({ length: 40 }, (_, i) => `planted:PlantedActionNumber${i}`))
+    }
+    expect(bodyLength(planted)).toBeGreaterThan(ceiling)
+    expect(bodyLength(committed), spare(committed)).toBeLessThanOrEqual(ceiling)
+    // And what the generator makes from the CLI's template now, should it differ from the committed file.
+    const generated = withModelDeny(stock)
+    expect(bodyLength(generated), spare(generated)).toBeLessThanOrEqual(ceiling)
+  })
 })
 
 describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t written for, naming what changed', () => {
@@ -393,7 +504,7 @@ describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t wri
     expect(differences(readCloudFormationFile(STOCK_TEMPLATE), stock)).toEqual([])
   })
 
-  it('refuses a sixth role, Policies given as Fn::If, an existing hearth-no-models, a user, another managed policy and a version mismatch', () => {
+  it('refuses a sixth role, Policies given as Fn::If, an existing hearth-no-models, a user, another managed policy, a version mismatch and a trust it wasn’t written for', () => {
     const cases: Array<[string, CfnTemplate, RegExp]> = [
       [
         'a sixth role',
@@ -440,6 +551,33 @@ describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t wri
           propertiesOf(t, 'CdkBootstrapVersion').Value = '999'
         }),
         /BootstrapVersion output isn't the CdkBootstrapVersion parameter's value/,
+      ],
+      [
+        'a deploy role with no same-account TagSession statement',
+        plant(t => {
+          const trust = propertiesOf(t, 'DeploymentActionRole').AssumeRolePolicyDocument as { Statement: unknown[] }
+          trust.Statement = trust.Statement.filter(s => !isDeepStrictEqual(s, STOCK_TAG_SESSION))
+        }),
+        /DeploymentActionRole's trust doesn't hold exactly one same-account sts:TagSession statement/,
+      ],
+      [
+        'a file-publishing role whose same-account TagSession statement has a condition',
+        plant(t => {
+          const statement = trustStatements(t, 'FilePublishingRole').find(s => isDeepStrictEqual(s, STOCK_TAG_SESSION))
+          if (isObject(statement)) statement.Condition = { Bool: { 'aws:SecureTransport': 'true' } }
+        }),
+        /FilePublishingRole's trust doesn't hold exactly one same-account sts:TagSession statement/,
+      ],
+      [
+        'a deploy role whose trust already names sts:SetSourceIdentity',
+        plant(t => {
+          trustStatements(t, 'DeploymentActionRole').push({
+            Action: 'sts:SetSourceIdentity',
+            Effect: 'Allow',
+            Principal: SAME_ACCOUNT,
+          })
+        }),
+        /DeploymentActionRole's trust doesn't hold exactly one/,
       ],
     ]
     for (const [name, template, message] of cases) {

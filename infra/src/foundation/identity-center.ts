@@ -284,7 +284,9 @@ export class IdentityCenter extends Construct {
         ...(spec.managed.length > 0 ? { managedPolicies: spec.managed.map(awsManagedPolicyArn) } : {}),
         inlinePolicy: inline,
       })
-      set.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+      // Retained once made, but deleted when the create that made it rolls back, so a failed first
+      // deploy leaves no set behind to refuse its retry by name.
+      set.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
       sets.set(spec.id, set)
     }
     this.permissionSets = sets

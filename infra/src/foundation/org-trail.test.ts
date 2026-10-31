@@ -1,9 +1,10 @@
 // IAC-18, IAC-07 and the A12 budgets (C11-D16, C11-D17, C11-D20, C11-Q09; TECH-SPEC T24 items 5 and 6),
 // as Hearth-Foundation renders them:
 // - the organisation trail: every account and Region, management events and the log buckets' data
-//   events (the trail bucket's own writes but CloudTrail's deliveries), validated, delivered to the
-//   bucket LogArchive names under hearth-sec's alias in log-archive, copied to CloudWatch through a
-//   role that may only write that copy's streams, and retained;
+//   events (the trail bucket's writes but PutObject, which leaves out CloudTrail's deliveries and
+//   anyone else's PutObject), validated, delivered to the bucket LogArchive names under hearth-sec's
+//   alias in log-archive, copied to CloudWatch through a role that may only write that copy's
+//   streams, and retained once made;
 // - the assured alarms: each filter pattern exactly as written here from the fixture's accounts, each
 //   within CloudWatch Logs' 1,024 characters, and one alarm per id emailing management's topic;
 // - the reviewer's five saved queries over the copy alone;
@@ -98,13 +99,14 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
       // (a) the audit services' writes
       '{ (($.eventSource = "cloudtrail.amazonaws.com") || ($.eventSource = "guardduty.amazonaws.com") || ($.eventSource = "access-analyzer.amazonaws.com")) && ($.readOnly IS FALSE) }',
       // (b) long-lived credentials, identity providers and Cognito identity pools, flow logs
-      '{ (($.eventSource = "iam.amazonaws.com") && (($.eventName = "CreateUser") || ($.eventName = "CreateAccessKey") || ($.eventName = "CreateLoginProfile") || ($.eventName = "CreateServiceSpecificCredential"))) || (($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*OpenIDConnectProvider*") || ($.eventName = "*SAMLProvider*"))) || (($.eventSource = "cognito-identity.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "ec2.amazonaws.com") && ($.eventName = "DeleteFlowLogs")) }',
+      '{ (($.eventSource = "iam.amazonaws.com") && (($.eventName = "CreateUser") || ($.eventName = "CreateAccessKey") || ($.eventName = "CreateLoginProfile") || ($.eventName = "CreateServiceSpecificCredential"))) || (($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*OpenIDConnectProvider*") || ($.eventName = "*SAMLProvider*"))) || (($.eventSource = "cognito-identity.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "rolesanywhere.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "ssm.amazonaws.com") && (($.eventName = "CreateActivation") || ($.eventName = "UpdateManagedInstanceRole"))) || (($.eventSource = "iot.amazonaws.com") && (($.eventName = "CreateRoleAlias") || ($.eventName = "UpdateRoleAlias"))) || (($.eventSource = "ec2.amazonaws.com") && ($.eventName = "DeleteFlowLogs")) }',
       // (c) the fast alarms' rules
       '{ ($.eventSource = "events.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.name = "hearth-sec-*") || ($.requestParameters.rule = "hearth-sec-*")) }',
       // (d) the alarm topics and their subscriptions
-      '{ ($.eventSource = "sns.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.topicArn = "*:hearth-ops-alerts") || ($.requestParameters.subscriptionArn = "*:hearth-ops-alerts:*") || ($.requestParameters.name = "hearth-ops-alerts")) }',
-      // (e) the security log groups
-      '{ ($.eventSource = "logs.amazonaws.com") && ($.readOnly IS FALSE) && ($.eventName != "CreateLogStream") && ($.requestParameters.logGroupName = "/hearth/security/*") }',
+      '{ ($.eventSource = "sns.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.topicArn = "*:hearth-ops-alerts") || ($.requestParameters.subscriptionArn = "*:hearth-ops-alerts:*") || ($.requestParameters.name = "hearth-ops-alerts") || ($.requestParameters.resourceArn = "*:hearth-ops-alerts")) }',
+      // (e) the security log groups, named or given by ARN in any of the fields Logs' writes use, so
+      // turning off the copy's deletion protection (logGroupIdentifier) is seen too
+      '{ ($.eventSource = "logs.amazonaws.com") && ($.readOnly IS FALSE) && ($.eventName != "CreateLogStream") && (($.requestParameters.logGroupName = "/hearth/security/*") || ($.requestParameters.logGroupIdentifier = "/hearth/security/*") || ($.requestParameters.logGroupIdentifier = "*:log-group:/hearth/security/*") || ($.requestParameters.resourceIdentifier = "*:log-group:/hearth/security/*") || ($.requestParameters.resourceArn = "*:log-group:/hearth/security/*")) }',
       // (f) the log-archive keys' administration
       `{ ($.eventSource = "kms.amazonaws.com") && ($.recipientAccountId = "${logArchive}") && (($.eventName = "PutKeyPolicy") || ($.eventName = "ScheduleKeyDeletion") || ($.eventName = "CancelKeyDeletion") || ($.eventName = "DisableKey") || ($.eventName = "EnableKey") || ($.eventName = "DisableKeyRotation") || ($.eventName = "CreateGrant") || ($.eventName = "TagResource") || ($.eventName = "UntagResource") || ($.eventName = "CreateAlias") || ($.eventName = "UpdateAlias") || ($.eventName = "DeleteAlias")) }`,
       // (g) the log buckets' configuration
@@ -180,7 +182,7 @@ beforeAll(() => {
 }, 60_000)
 
 describe('IAC-18 C11-D17: the organisation trail', () => {
-  it('IAC-18: one trail for every account and Region, logging, validated, to LogArchive’s trail bucket under hearth-sec’s alias in log-archive, copied to CloudWatch, retained', () => {
+  it('IAC-18: one trail for every account and Region, logging, validated, to LogArchive’s trail bucket under hearth-sec’s alias in log-archive, copied to CloudWatch, retained once made', () => {
     const trails = ofType(foundation, 'AWS::CloudTrail::Trail')
     expect(trails).toHaveLength(1)
     const [, trail] = trails[0] as [string, Resource]
@@ -206,11 +208,11 @@ describe('IAC-18 C11-D17: the organisation trail', () => {
     expect(trail.Properties?.InsightSelectors).toBeUndefined()
     expect(trail.Properties?.EventSelectors).toBeUndefined()
     expect(trail.DependsOn).toEqual([role])
-    expect(trail.DeletionPolicy).toBe('Retain')
+    expect(trail.DeletionPolicy).toBe('RetainExceptOnCreate')
     expect(trail.UpdateReplacePolicy).toBe('Retain')
   })
 
-  it('IAC-18 C11-D17: it records every management event, the trail bucket’s reads and its writes but CloudTrail’s own deliveries, and every read and write on the break-glass-log and archive buckets', () => {
+  it('IAC-18 C11-D17: it records every management event, the trail bucket’s reads and its writes but PutObject (so not CloudTrail’s own deliveries), and every read and write on the break-glass-log and archive buckets', () => {
     const [, trail] = ofType(foundation, 'AWS::CloudTrail::Trail')[0] as [string, Resource]
     const objects = (...buckets: string[]) => [
       { Field: 'eventCategory', Equals: ['Data'] },
@@ -392,7 +394,7 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
 })
 
 describe('IAC-07 C11-D17: log groups', () => {
-  it('IAC-07: every log group in every landing-zone template is in its retention class, kept that long, retained, protected from deletion and of the standard class', () => {
+  it('IAC-07: every log group in every landing-zone template is in its retention class, kept that long, retained even when a create rolls back (CloudFormation can’t delete a protected group), protected from deletion and of the standard class', () => {
     const groups = Object.values(lz.templates).flatMap(template => ofType(template, 'AWS::Logs::LogGroup'))
     expect(groups.map(([, r]) => r.Properties?.LogGroupName)).toEqual(['/hearth/security/org-trail'])
     for (const [, group] of groups) {
@@ -419,7 +421,7 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
     expect(fixture.budgetsUsd).toEqual({ organisation: 650, management: 25, logArchive: 25, nonprod: 250, prod: 350 })
   })
 
-  it('C11-D20 A12: five monthly cost budgets, the organisation’s and each account’s, before tax, each alerting management’s topic at 80 % and 100 % of actual spend and 100 % of forecast, retained', () => {
+  it('C11-D20 A12: five monthly cost budgets, the organisation’s and each account’s, before tax, each alerting management’s topic at 80 % and 100 % of actual spend and 100 % of forecast, retained once made', () => {
     const budgets = lz.stacks.foundation?.node.tryFindChild('Budgets')
     expect(budgets?.node.children.map(child => child.node.id)).toEqual([
       'Organisation',
@@ -434,18 +436,19 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
       Notification: { NotificationType, ComparisonOperator: 'GREATER_THAN', Threshold, ThresholdType: 'PERCENTAGE' },
       Subscribers: [{ SubscriptionType: 'SNS', Address: { Ref: topic } }],
     })
+    // Unblended cost of every record type but tax, the organisation's whole and each account's alone.
+    const notTax = { Not: { Dimensions: { Key: 'RECORD_TYPE', Values: ['Tax'], MatchOptions: ['EQUALS'] } } }
     const budget = (name: string, amount: number, account?: string) => ({
       Budget: {
         BudgetName: name,
         BudgetType: 'COST',
         TimeUnit: 'MONTHLY',
         BudgetLimit: { Amount: amount, Unit: 'USD' },
-        CostTypes: { IncludeTax: false },
-        ...(account === undefined
-          ? {}
-          : {
-              FilterExpression: { Dimensions: { Key: 'LINKED_ACCOUNT', Values: [account], MatchOptions: ['EQUALS'] } },
-            }),
+        Metrics: ['UnblendedCost'],
+        FilterExpression:
+          account === undefined
+            ? notTax
+            : { And: [{ Dimensions: { Key: 'LINKED_ACCOUNT', Values: [account], MatchOptions: ['EQUALS'] } }, notTax] },
       },
       NotificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
     })
@@ -459,8 +462,22 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
       budget('hearth-prod', budgetsUsd.prod, prod),
     ])
     for (const [, r] of found) {
-      expect(r.DeletionPolicy).toBe('Retain')
+      expect(r.DeletionPolicy).toBe('RetainExceptOnCreate')
+      expect(r.UpdateReplacePolicy).toBe('Retain')
       expect(r.DependsOn).toEqual([topicPolicy])
+    }
+  })
+
+  it('C11-D20 A12: every budget in every landing-zone template uses one of AWS Budgets’ two pairs, Metrics with a FilterExpression or CostTypes with CostFilters, never a mix, which CreateBudget refuses', () => {
+    const budgets = Object.values(lz.templates).flatMap(template => ofType(template, 'AWS::Budgets::Budget'))
+    expect(budgets).toHaveLength(5)
+    for (const [id, r] of budgets) {
+      const data = (r.Properties?.Budget ?? {}) as Record<string, unknown>
+      const has = (key: string) => data[key] !== undefined
+      const newer = has('Metrics') || has('FilterExpression')
+      const older = has('CostTypes') || has('CostFilters')
+      expect(newer && older, `${id} mixes the two pairs`).toBe(false)
+      if (has('FilterExpression')) expect(has('Metrics'), `${id}: a FilterExpression needs its Metrics`).toBe(true)
     }
   })
 

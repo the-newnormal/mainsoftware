@@ -8,9 +8,12 @@
 // The trail is L1: the L2 Trail has no advanced event selectors, wants a key object rather than
 // another account's alias, and sets its log group's retention through a Lambda (IG-11). It records:
 // - every management event, read and write;
-// - the trail bucket's object reads, and its object writes but CloudTrail's own deliveries (each
-//   delivery logged would be delivered and logged again), so a delete, a retention or legal-hold call
-//   or anyone else's write is recorded, allowed or denied;
+// - the trail bucket's object reads, and its object writes but PutObject, which leaves out
+//   CloudTrail's own deliveries (each delivery logged would be delivered and logged again): a delete,
+//   a retention or legal-hold call, or any other write (a copy, a multipart upload, a tag or ACL
+//   change) is recorded, allowed or denied. A PutObject is recorded for nobody, CloudTrail or anyone
+//   else: log file validation shows a delivered file overwritten, but not a file added beside the
+//   digests;
 // - every object read and write on the break-glass-log and archive buckets.
 // The key is named by its alias's ARN in log-archive, since its id exists only once LogArchive deploys
 // (TECH-SPEC T24 item 6); whether CloudTrail takes another account's alias at create is proved at the
@@ -101,6 +104,9 @@ export class OrgTrail extends Construct {
     super(scope, id)
     const { management, logArchive } = props.config.accounts
 
+    // Retained even when the create that made it rolls back: CloudFormation can't delete a group under
+    // deletion protection, so the rollback would fail instead. The set-up runbook's "A first deploy
+    // failed" turns the protection off and deletes the empty group by hand before the retry.
     this.logGroup = new logs.LogGroup(this, 'TrailCopy', {
       logGroupName: SECURITY_LOG_GROUP,
       retention: cloudWatchRetention('cloudtrail'),
@@ -174,7 +180,9 @@ export class OrgTrail extends Construct {
       ],
     })
     this.trail.addResourceDependency(role)
-    this.trail.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+    // Retained once made, but deleted when the create that made it rolls back, so a failed first
+    // deploy leaves no trail behind to refuse its retry by name.
+    this.trail.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
 
     for (const query of REVIEW_QUERIES) {
       new logs.CfnQueryDefinition(this, query.id, {

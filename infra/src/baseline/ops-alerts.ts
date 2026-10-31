@@ -4,6 +4,12 @@
 // (aws:SourceAccount) and, where the service sets one, to its own resources (aws:SourceArn), so no
 // other account's rule or alarm can post to it.
 //
+// The email subscription is the topic's one way out. Confirmed from the email's link, it could be
+// ended by anyone who follows the unsubscribe link in any alert's footer, or by a mail scanner, with no
+// credentials, which no guardrail can refuse. CloudFormation can't ask for authentication on
+// unsubscribe, so the set-up runbook confirms each subscription by command with it and checks
+// ConfirmationWasAuthenticated (TECH-SPEC T24 item 5).
+//
 // The topic is unencrypted, with TLS enforced: EventBridge, CloudWatch, Budgets and Cost Anomaly
 // Detection can't publish under the AWS-managed SNS key, and the alerts carry only ids, an operator's
 // sign-in name and references, and leave by email anyway (C11-D16, TECH-SPEC T24 item 5).
@@ -58,6 +64,8 @@ export class OpsAlerts extends Construct {
     }
     if (dependable === undefined) throw new Error("OpsAlerts: the topic's policy was not made")
     this.policyDependable = dependable
+    // Confirmed by command with authentication on unsubscribe (the set-up runbook's step N), which
+    // CloudFormation can't ask for (see above).
     this.topic.addSubscription(new subs.EmailSubscription(props.alertEmail))
   }
 }

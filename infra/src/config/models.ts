@@ -36,6 +36,12 @@
 //   statement on AWS's own machine learning (the D41 note) to settle;
 // - chatbot, whose actions only configure chat channels (asking Amazon Q there needs `q:`).
 // The owner decides these with PR 2 (TECH-SPEC T24, C11-D06).
+//
+// Each entry added here costs about 207 characters of the bootstrap template's request body, since
+// the deny repeats on its five roles. IAC-24 (k) holds that body to 51,200 characters less 1,024
+// kept spare, about 18 entries away today; past that, collapse entries into wildcard patterns or move
+// the deny into one managed policy the five roles attach. After any change to these lists, run
+// `node infra/scripts/bootstrap-template.ts` and commit the template it writes (IAC-24).
 // This file is on the owner's-read list (C11-D74).
 
 // Whole services whose purpose is a model, an AI agent or machine learning: every action under each

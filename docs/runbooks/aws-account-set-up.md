@@ -76,6 +76,15 @@ Every deploy below runs these three parts, in this order, so no repository code 
 2. Still there, the asset check, which runs no repository code: `jq -s -e 'map([(.files // {})[] | .source | select(has("executable"))] + [(.dockerImages // {})[]]) | flatten | length == 0' cdk.out/*.assets.json` must print `true`. Anything else (`false`, or an error because no manifest matched) stops the deploy.
 3. In the credentialed shell, from its own folder, which holds no `cdk.json`, with the checkout's own CLI and the assembly's path (`CHECKOUT` is the checkout's path, as in step G): `"$CHECKOUT/node_modules/.bin/cdk" diff --app "$CHECKOUT/infra/cdk.out"`, read it whole, then `"$CHECKOUT/node_modules/.bin/cdk" deploy --app "$CHECKOUT/infra/cdk.out"`. Both read the synthesised assembly and run no repository code. Never run them from `infra/`: beside a `cdk.json` the CLI first runs any `build` command it names, with your credentials. Never use `npx` there, which outside the checkout would fetch the CLI from the registry, and never pass `--app` the entry itself.
 
+**A first deploy failed.** A create that rolls back deletes what it made, the retained resources included (each is retained once made, `RetainExceptOnCreate`), with one exception: `Hearth-Foundation`'s `/hearth/security/org-trail` log group, under deletion protection, which CloudFormation can't delete, so its events name it `DELETE_SKIPPED`. In that stack's account, with the session that ran the deploy:
+
+1. Read the stack's events (`aws cloudformation describe-stack-events --stack-name <the stack> --query 'StackEvents[].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' --output text`), and fix the cause by a reviewed PR.
+2. Turn termination protection off for that stack alone: `aws cloudformation update-termination-protection --no-enable-termination-protection --stack-name <the stack>`.
+3. Remove each `DELETE_SKIPPED` leftover the events name (an exception *Don't* names): for the trail's copy, while it holds nothing, `aws logs put-log-group-deletion-protection --log-group-identifier /hearth/security/org-trail --no-deletion-protection-enabled`, then `aws logs delete-log-group --log-group-name /hearth/security/org-trail`.
+4. Run step F again from part 1: the CLI deletes the failed stack before it makes it anew, with termination protection on again.
+
+First deploys run in the root (log-archive and the workload accounts through OAAR before their moves, management with `HearthSetUp`), where no `Workloads` fence binds. In a workload account already in `Workloads`, `HearthbaseStacksOnlyItsDeploy` lets only hearthbase's deploy role change a Baseline's termination protection, so a failed Baseline create there is cleared as tier 2. Note each step for the quarterly review.
+
 ### G. Bootstrapping an account
 
 In the credentialed shell, from a folder with no `cdk.json` (beside one, the CLI would synthesise the app with your credentials), with the checkout's own CLI and the account read from the session, never typed:
@@ -88,7 +97,7 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
   --termination-protection --public-access-block-configuration true --no-notices
 ```
 
-`CHECKOUT` is the checkout's path. Management and log-archive take `hearthbase` alone. The workload accounts also take `hearthapp`, once their Baseline has made `hearth-boundary` (step L): `--qualifier hearthapp --toolkit-stack-name CDKToolkit-hearthapp --custom-permissions-boundary hearth-boundary`, the rest the same. Each qualifier has its own toolkit stack, so the second never replaces the first. Never pass `--cloudformation-execution-policies`. Once an account sits in its OU, a bootstrap upgrade is tier 2 (step Q).
+`CHECKOUT` is the checkout's path. Management and log-archive take `hearthbase` alone. The workload accounts also take `hearthapp`, once their Baseline has made `hearth-boundary` (step L): `--qualifier hearthapp --toolkit-stack-name CDKToolkit-hearthapp --custom-permissions-boundary hearth-boundary`, the rest the same. Each qualifier has its own toolkit stack, so the second never replaces the first. Never pass `--cloudformation-execution-policies`. Every account is bootstrapped from this committed template, whose deploy and file-publishing roles' trust takes a break-glass session's source identity, which an `lz:pr-` deploy needs (TECH-SPEC T24 item 11); an account bootstrapped from an older template is bootstrapped again from the committed one before step J or L moves it. Once an account sits in its OU, a bootstrap upgrade is tier 2 (step Q).
 
 ### H. The set-up permission set
 
@@ -113,7 +122,8 @@ Log-archive comes before Foundation: the trail Foundation makes needs its bucket
 3. From management, make log-archive the delegated administrator of GuardDuty, in ap-southeast-1 and in us-east-1, and of IAM Access Analyzer.
 4. Deploy `Hearth-LogArchive` (step F, target `log-archive`).
 5. Through OAAR in log-archive, in both Regions: GuardDuty's organisation configuration auto-enables `ALL` accounts, with the foundational sources and S3 Protection; Runtime Monitoring stays off.
-6. Move log-archive into `Security`. From then on nobody administers it, its own break-glass role included; `Hearth-LogArchive` changes only as tier 2 (step Q). Steps 1, 3 and 5 can't be done after this move.
+6. Through OAAR in log-archive: confirm its topic's subscription (step N), and read back what nobody can read there once it sits in `Security` (*Check it worked*, "In log-archive"): GuardDuty's organisation configuration in both Regions, `CDKToolkit-hearthbase` and its roles, and the archive bucket's Object Lock configuration.
+7. Move log-archive into `Security`. From then on nobody administers it, its own break-glass role included; `Hearth-LogArchive` changes only as tier 2 (step Q). Steps 1, 3, 5 and 6 can't be done after this move.
 
 ### K. Foundation, in management
 
@@ -121,7 +131,8 @@ Log-archive comes before Foundation: the trail Foundation makes needs its bucket
 2. Bootstrap `hearthbase` in management (step G), with `HearthSetUp`.
 3. Deploy `Hearth-Foundation` (step F, target `foundation`), with `HearthSetUp`. It attaches the guardrails, makes the five permission sets and their assignments, the trail and its copy, the assured alarms, the budgets and management's topic.
 4. Sign in with `HearthOrgAdmin` and confirm it works.
-5. Unassign `HearthSetUp` and delete it. A4 alarms: note it as the first entry for the quarterly review.
+5. With `HearthOrgAdmin`, confirm management's topic's subscription (step N).
+6. Unassign `HearthSetUp` and delete it. A4 alarms: note it as the first entry for the quarterly review.
 
 Later deploys of `Hearth-Foundation`, after a reviewed PR, are the same step F under `HearthOrgAdmin` (A3 alarms on each session).
 
@@ -134,7 +145,8 @@ For non-prod first, then prod:
 3. Deploy its Baseline (step F, target `nonprod-baseline` or `prod-baseline`). It makes GitHub's OIDC provider and roles, `hearth-break-glass`, `hearth-boundary`, the fast alarms, the topic, the image repository, the zones and the parameters.
 4. Bootstrap `hearthapp` with `--custom-permissions-boundary hearth-boundary` (step G).
 5. Read back the S3 prefix list: `aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.ap-southeast-1.s3 --query 'PrefixLists[].PrefixListId' --output text` prints the id `infra/src/config/profiles.ts` holds. A different id stops here, for a reviewed PR to the profile.
-6. Move the account into `Workloads`. From then on its Baseline changes only under break-glass with an `lz:pr-` reason ([Reaching production: the break-glass role](break-glass.md)), and a bootstrap upgrade only as tier 2.
+6. Through OAAR: confirm its topic's subscription (step N), and read back what nobody can read there once it sits in `Workloads` (*Check it worked*, "In each workload account"): both bootstrap stacks and their roles, and the image registry's scanning configuration. For prod, also read each zone's name servers, for step M: the zone's id from SSM (`aws ssm get-parameter --name /hearth/prod/zone/app --query Parameter.Value --output text`, then `/hearth/prod/zone/usercontent`), then `aws route53 get-hosted-zone --id <the zone's id> --query 'DelegationSet.NameServers'`. Write them down for step M; name servers are public, not secret.
+7. Move the account into `Workloads`. From then on its Baseline changes only under break-glass with an `lz:pr-` reason ([Reaching production: the break-glass role](break-glass.md)), and a bootstrap upgrade only as tier 2. Step 6 can't be done after this move.
 
 Between non-prod and prod, the delegation of `nonprod.`:
 
@@ -144,11 +156,19 @@ Between non-prod and prod, the delegation of `nonprod.`:
 
 ### M. The domains at the registrar
 
-Point each registrable domain at prod's zone's name servers at the registrar, and turn on registry lock where the registrar offers it.
+Point each registrable domain, at the registrar, at the name servers step L read for prod's zones before prod moved into `Workloads` (no identity reads prod's zones after that move), and turn on registry lock where the registrar offers it.
 
 ### N. Confirm each email subscription
 
-Each of the four `hearth-ops-alerts` topics (management, log-archive, non-prod, prod) emails the ops mailbox, which receives a confirmation for each. Confirm all four, then check: `aws sns list-subscriptions-by-topic --topic-arn <the topic>` in each account shows the email subscription confirmed, never `PendingConfirmation`.
+Each of the four `hearth-ops-alerts` topics emails the ops mailbox a confirmation when its stack first deploys: log-archive's in step J, management's in step K, non-prod's and prod's in step L. Each is confirmed in that account's own step, within two days of the deploy (the confirmation's token expires) and before the account moves into its OU, since it needs that account's own credentials: OAAR in a member account, `HearthOrgAdmin` in management.
+
+Ask for the ops mailbox's link scanning (a mail service's safe-links or preview fetches) to be off for AWS's notification address, since a scanner that follows the link confirms the subscription unauthenticated. Never confirm one by opening the email's link. A subscription confirmed by its link takes an unsubscribe from anyone holding any later alert email, by the unsigned link at its foot, which no guardrail can refuse; one confirmed with a signed call refuses every unsubscribe that isn't signed by its account, and CloudFormation can't ask for that itself.
+
+1. Copy the confirmation link from the email without opening it (and with nothing previewing it), and take its `Token` parameter's value.
+2. In that account, read the topic's ARN (`aws sns list-topics --query "Topics[?ends_with(TopicArn, ':hearth-ops-alerts')].TopicArn" --output text`), then confirm: `aws sns confirm-subscription --topic-arn <the topic> --token <the token> --authenticate-on-unsubscribe true`.
+3. Check: `aws sns list-subscriptions-by-topic --topic-arn <the topic> --query 'Subscriptions[].SubscriptionArn' --output text` names one subscription, not `PendingConfirmation`, and `aws sns get-subscription-attributes --subscription-arn <it> --query 'Attributes.[PendingConfirmation,ConfirmationWasAuthenticated]' --output text` prints `false` and `true`.
+
+If it prints `false` for `ConfirmationWasAuthenticated` (the link was opened first, by a person or by a mail scanner), replace the subscription in the same account and step, before the move: remove it with a signed call, `aws sns unsubscribe --subscription-arn <it>`, then subscribe the mailbox again, `aws sns subscribe --topic-arn <the topic> --protocol email --notification-endpoint <the ops mailbox>`, which sends a new confirmation, and confirm that as above. If the token expired before you confirmed, subscribe the mailbox again the same way. The topic's stack still records the subscription it made, so note the replacement for the quarterly review. Once management's alarms exist (step K), A6 alarms on each confirmation, unsubscribe and subscribe: expected here, and noted the same way.
 
 ### O. The RCP, staged
 
@@ -161,9 +181,10 @@ After a week of clean non-prod deploys (from C0.11 PR 4), a reviewed PR moves th
 
 ### P. The A1 drill
 
-1. The person on call runs `infra/bin/break-glass.sh nonprod drill:<today>` with `--console` once, then exits ([Reaching production: the break-glass role](break-glass.md)). This first run proves what no test can: the sign-in profiles, the source identity matching the person's `hearth-user` tag, the entries written once each under Object Lock, and the console link.
-2. Then the same on prod: `infra/bin/break-glass.sh prod drill:<today>`.
+1. The person on call runs `infra/bin/break-glass.sh nonprod drill:<today's date in Singapore>` with `--console` once, then exits ([Reaching production: the break-glass role](break-glass.md)). This first run proves what no test can: the sign-in profiles, the source identity matching the person's `hearth-user` tag, the entries written once each under Object Lock, and the console link.
+2. Then the same on prod: `infra/bin/break-glass.sh prod drill:<today's date in Singapore>`.
 3. A1's email arrives within minutes from the account's topic (fast) and again from management's (assured), for each run. The open and close entries exist under `break-glass/<account>/<yyyy>/<mm>/<dd>/` in the break-glass-log bucket.
+4. In non-prod, before step L's prod move relies on it, prove the chain an `lz:pr-` session takes into hearthbase: open a session with `lz:pr-<the PR that last changed non-prod's Baseline>` and, as [Reaching production: the break-glass role](break-glass.md)'s *A Baseline deploy under `lz:pr-N`* says, run a deploy of the unchanged non-prod Baseline from that PR's synth (a no-op). The CLI must print no warning that the session "could not be used to assume" `cdk-hearthbase-deploy-role-…` or `cdk-hearthbase-file-publishing-role-…` ("Proceeding anyway"); one naming the lookup role is expected. `cdk diff` alone isn't enough, since it can read through the session's own credentials. Then find the deploy in `/hearth/security/org-trail` and note whether CloudFormation's use of the hearthbase execution role carries the session's source identity, for TECH-SPEC T24 item 4's unproved list, by a PR.
 
 ### Q. A week later, COMPLIANCE, as tier 2
 
@@ -178,23 +199,46 @@ The same four steps make every later tier-2 change: any `Hearth-LogArchive` chan
 
 ## Check it worked
 
-Read each back with a `--query` that prints only the fields you need. Never paste the output anywhere.
+Read each back with a `--query` that prints only the fields you need. Never paste the output anywhere. Each group names who reads it: once log-archive and prod sit in their OUs, nobody can read most of what they hold, so steps J and L read it, through OAAR, before each move.
 
-- Every account's parent: `aws organizations list-parents --child-id <account>` (log-archive in `Security`, non-prod and prod in `Workloads`, `Recovery` empty).
-- The policies on each target: `aws organizations list-policies-for-target --target-id <target> --filter SERVICE_CONTROL_POLICY` shows five at the root (`FullAWSAccess`, `hearth-baseline`, `hearth-baseline-2`, `hearth-no-models`, `hearth-region`), `hearth-log-protect` on `Security`, both `hearth-workload-fences` policies on `Workloads`. The same command with `--filter RESOURCE_CONTROL_POLICY` shows the RCP on non-prod's account (then on the root), and with `--filter AISERVICES_OPT_OUT_POLICY` the AI opt-out on the root. The three policy types are enabled on the root.
-- The delegated administrators: log-archive for GuardDuty in both Regions and for Access Analyzer.
-- GuardDuty's organisation configuration in both Regions: auto-enable `ALL`, S3 Protection on, Runtime Monitoring off.
-- Each bootstrap stack's `BootstrapVariant` parameter reads Hearth's own variant (`aws cloudformation describe-stacks --stack-name CDKToolkit-hearthbase`, and `CDKToolkit-hearthapp`), and each bootstrap role holds the inline policy `hearth-no-models` (`aws iam get-role-policy --role-name <the role> --policy-name hearth-no-models`, its one statement `HearthNoModels`, a Deny on `*`).
-- The image registry's scanning configuration in each workload account is the default, basic scanning on push (`aws ecr get-registry-scanning-configuration`).
-- The trail is logging: `aws cloudtrail get-trail-status --name hearth-org-trail`, and the trail's stored key is the `hearth-sec` alias's (`aws cloudtrail get-trail --name hearth-org-trail --query 'Trail.KmsKeyId'`).
-- The three log buckets' Object Lock configuration (`aws s3api get-object-lock-configuration --bucket <bucket>`): the trail and break-glass-log buckets in GOVERNANCE for 731 days (COMPLIANCE after step Q), the archive with no default retention.
-- The second reviewer, with `HearthSecurityReview`, decrypts the first trail file and the drill's entries.
-- Each permission set's session duration (1 hour, but the non-prod operator's 8 and the reviewer's 4), and the access portal's 1 hour.
-- Every fast rule's pattern, tried on a recorded event of the kind it should match and one it shouldn't: `aws events test-event-pattern --event-pattern <the rule's pattern> --event <the recorded event>`. This proves the patterns no test can (`$or`, `exists`, `anything-but` with `wildcard`, ECS's rollback event) and that a member account receives management events.
-- Every metric filter's pattern, the 22 in `/hearth/security/org-trail` (`aws logs describe-metric-filters --log-group-name /hearth/security/org-trail` lists them, each named `hearth-sec-` and its alarm, with `-a`, `-b` and so on where an alarm has several), tried on recorded events: `aws logs test-metric-filter --filter-pattern <the pattern> --log-event-messages <recorded events>`, the one it should match and one it shouldn't.
-- Each of the five saved queries in `/hearth/security/org-trail` run once over the set-up's events.
-- Each budget's amount and its three notifications (`aws budgets describe-budgets`), and the one anomaly monitor and its subscription.
-- The S3 prefix list's id in each workload account equals the profile's (step L).
+- With `HearthOrgAdmin` in management:
+  - Every account's parent: `aws organizations list-parents --child-id <account>` (log-archive in `Security`, non-prod and prod in `Workloads`, `Recovery` empty).
+  - The policies on each target: `aws organizations list-policies-for-target --target-id <target> --filter SERVICE_CONTROL_POLICY` shows five at the root (`FullAWSAccess`, `hearth-baseline`, `hearth-baseline-2`, `hearth-no-models`, `hearth-region`), `hearth-log-protect` on `Security`, both `hearth-workload-fences` policies on `Workloads`. The same command with `--filter RESOURCE_CONTROL_POLICY` shows the RCP on non-prod's account (then on the root), and with `--filter AISERVICES_OPT_OUT_POLICY` the AI opt-out on the root. The three policy types are enabled on the root.
+  - The delegated administrators: log-archive for GuardDuty in both Regions (`aws guardduty list-organization-admin-accounts`) and for Access Analyzer (`aws organizations list-delegated-administrators`).
+  - Management's bootstrap stack and its roles (*Each bootstrap stack*, below).
+  - After Foundation's first deploy, the trail was made and delivers: its `CreateTrail` succeeded (the stack's events), `aws cloudtrail get-trail-status --name hearth-org-trail --query '[IsLogging,LatestDeliveryError,LatestDigestDeliveryError]'` prints `true` and no error, a log file and a digest file have landed in the trail bucket, and the reviewer decrypts one (below). The trail's stored key is the `hearth-sec` alias's (`aws cloudtrail get-trail --name hearth-org-trail --query 'Trail.KmsKeyId'`).
+  - Each permission set's session duration (1 hour, but the non-prod operator's 8 and the reviewer's 4), and the access portal's 1 hour.
+  - Every fast rule's pattern, tried on a recorded event of the kind it should match and one it shouldn't: `aws events test-event-pattern --event-pattern <the rule's pattern> --event <the recorded event>`, which reads no account's rule. This proves the patterns no test can (`$or`, `exists`, `anything-but` with `wildcard`, ECS's rollback event) and that a member account receives management events. For `hearth-sec-a07-run-environment`, a recorded `RunTask` that overrides a container's environment must match, in whichever shape CloudTrail recorded it, and the probe run by `hearth-gh-deploy` must not.
+  - Every metric filter's pattern, the 22 in `/hearth/security/org-trail` (`aws logs describe-metric-filters --log-group-name /hearth/security/org-trail` lists them, each named `hearth-sec-` and its alarm, with `-a`, `-b` and so on where an alarm has several), tried on recorded events: `aws logs test-metric-filter --filter-pattern <the pattern> --log-event-messages <recorded events>`, the one it should match and one it shouldn't. A6 (e) (`hearth-sec-a06-tampering-e`) must match `PutLogGroupDeletionProtection` naming the copy by name and by ARN, and `PutTransformer`.
+  - Each assured alarm is on and emails management's topic alone: `aws cloudwatch describe-alarms --alarm-name-prefix hearth-sec- --query 'MetricAlarms[].[AlarmName,ActionsEnabled,length(AlarmActions)]' --output text` lists ten alarms, each `True` and `1`.
+  - Each of the five saved queries in `/hearth/security/org-trail` run once over the set-up's events.
+  - Each budget's amount and its three notifications (`aws budgets describe-budgets`), and the one anomaly monitor and its subscription.
+  - Management's subscription, as step N checks it.
+- In log-archive, through OAAR, in step J before its move:
+  - GuardDuty's organisation configuration in both Regions: auto-enable `ALL`, S3 Protection on, Runtime Monitoring off (`aws guardduty describe-organization-configuration --detector-id <the Region's detector, from aws guardduty list-detectors>`).
+  - Its bootstrap stack and its roles (*Each bootstrap stack*, below).
+  - The archive bucket's Object Lock configuration (`aws s3api get-object-lock-configuration --bucket <bucket>`): enabled, with no default retention.
+  - Its subscription, as step N checks it.
+- In each workload account, through OAAR, in step L before its move:
+  - Both bootstrap stacks and their roles (*Each bootstrap stack*, below).
+  - The image registry's scanning configuration is the default, basic scanning on push (`aws ecr get-registry-scanning-configuration`).
+  - The S3 prefix list's id equals the profile's (step L).
+  - Its subscription, as step N checks it.
+- *Each bootstrap stack:* its `BootstrapVariant` parameter reads Hearth's own variant (`aws cloudformation describe-stacks --stack-name CDKToolkit-hearthbase`, and `CDKToolkit-hearthapp`), and each of its roles holds the inline policy `hearth-no-models` (`aws iam get-role-policy --role-name <the role> --policy-name hearth-no-models`, its one statement `HearthNoModels`, a Deny on `*`).
+- By the second reviewer, with `HearthSecurityReview` in log-archive:
+  - The trail and break-glass-log buckets' Object Lock configuration (`aws s3api get-object-lock-configuration --bucket <bucket>`): GOVERNANCE for 731 days (COMPLIANCE after step Q).
+  - Decrypting the first trail file and the drill's entries.
+
+### The quarterly read-backs
+
+Each quarter, read back again everything listed for management (with `HearthOrgAdmin`), the two buckets the reviewer reads, and non-prod's list with `HearthNonprodOperator` while it is assigned. The rest of log-archive's and the workload accounts' lists can be read there only as tier 2, so instead the second reviewer or an Owner runs this query on `/hearth/security/org-trail` in management over the quarter. It lists any change to those since steps J and L read them; none is expected, and each one is explained by a recorded tier-2 change or a reviewed Baseline deploy under its `lz:pr-` reason, or is a finding for [the quarterly review](break-glass-review.md):
+
+```
+fields @timestamp, recipientAccountId, eventSource, eventName, errorCode
+| filter eventName not like /^(Get|List|Describe)/
+| filter (eventSource = "guardduty.amazonaws.com" and eventName like /OrganizationConfiguration/) or eventName = "PutRegistryScanningConfiguration" or eventName = "PutObjectLockConfiguration" or (eventSource = "iam.amazonaws.com" and requestParameters.roleName like /^cdk-hearth/) or (eventSource = "cloudformation.amazonaws.com" and requestParameters.stackName like /CDKToolkit-hearth/) or (eventSource = "sns.amazonaws.com" and (requestParameters.topicArn like /:hearth-ops-alerts$/ or requestParameters.subscriptionArn like /:hearth-ops-alerts:/))
+| sort @timestamp desc
+```
 
 ## Afterwards
 
@@ -209,7 +253,8 @@ Closing a Hearth account, or taking it out of the organisation, would lift every
 ## Don't
 
 - Run `cdk bootstrap`, `cdk diff` or `cdk deploy` from `infra/` (or any folder holding a `cdk.json`), or with `--app` naming the entry, or synthesise in a credentialed shell: each runs repository code under credentials.
-- Edit an SCP, the RCP, a permission set, a topic, a rule or an alarm in the console. Every change is a reviewed PR.
+- Edit an SCP, the RCP, a permission set, a topic, a rule or an alarm in the console. Every change is a reviewed PR, with three exceptions: step N's confirmation or replacement of a subscription; a security alert's containment ([A security alert](security-alerts.md#containing-an-unexpected-session)); and step F's *A first deploy failed*, which turns one failed stack's termination protection off and removes what its rolled-back create left, nothing else.
+- Open the link in a subscription's confirmation email, or the unsubscribe link in any alert email.
 - Use `CfnAccount` or Control Tower.
 - Add an SMS subscription to any topic.
 - Paste an account id, an ARN, a `.env.local` line or a command's output into a chat, an issue, a PR or a coding agent's session.

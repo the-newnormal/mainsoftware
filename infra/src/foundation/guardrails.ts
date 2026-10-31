@@ -22,9 +22,11 @@
 //
 // Each policy's Content is its document as minified JSON text, so what IAC-02 measures is exactly
 // what Organizations receives: the props take the object (their validator refuses a string), and an
-// override then replaces it with the text. No document holds a token. Each policy is retained, and
-// the SCP, RCP and opt-out policy types are enabled on Root by hand first (the set-up runbook). This
-// file decides what nobody in the organisation may do, so it is on the owner's-read list (C11-D74).
+// override then replaces it with the text. No document holds a token. Each policy is retained once
+// made, but deleted when the create that made it rolls back (RetainExceptOnCreate), so a failed first
+// deploy leaves no policy behind to refuse its retry by name. The SCP, RCP and opt-out policy types
+// are enabled on Root by hand first (the set-up runbook). This file decides what nobody in the
+// organisation may do, so it is on the owner's-read list (C11-D74).
 import * as cdk from 'aws-cdk-lib'
 import * as organizations from 'aws-cdk-lib/aws-organizations'
 import { Construct } from 'constructs'
@@ -33,6 +35,7 @@ import { arnPattern } from '../config/arns.ts'
 import { githubSubject, type LandingZoneConfig } from '../config/env.ts'
 import {
   BOUNDARY,
+  baselineStackName,
   DB_LOGIN,
   GITHUB_OIDC_HOST,
   KEY_ALIAS,
@@ -44,12 +47,16 @@ import {
   SECURITY_LOG_GROUP_PREFIX,
   SSO_ROLE_PATH,
   TAG_KEY,
+  TOOLKIT_STACK,
 } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 import {
+  APP_DEPLOY,
   APP_EXEC,
+  BASE_DEPLOY,
   BREAK_GLASS,
   CDK_HEARTH,
+  CFN_WRITE_ACTIONS,
   document,
   EXEC,
   GH_DEPLOY,
@@ -228,7 +235,9 @@ function baselineStatements(): IamStatement[] {
       Resource: '*',
       Condition: exceptFor(EXEC, OAAR),
     },
-    // The fast alarms, their topic and the security log groups (C11-D16).
+    // The fast alarms, their topic and its subscriptions, and the security log groups (C11-D16): a
+    // subscription's filter policy or the topic's data protection policy would mute the topic as surely
+    // as deleting it.
     {
       Sid: 'ProtectAlarms',
       Effect: 'Deny',
@@ -244,6 +253,8 @@ function baselineStatements(): IamStatement[] {
         'sns:RemovePermission',
         'sns:Subscribe',
         'sns:Unsubscribe',
+        'sns:SetSubscriptionAttributes',
+        'sns:PutDataProtectionPolicy',
         'logs:Delete*',
         'logs:Put*',
         'logs:Disassociate*',
@@ -465,10 +476,11 @@ function workloadFenceStatements(): IamStatement[] {
 
 // hearth-workload-fences-2 (Workloads OU): secrets the pipeline never reads, the bootstrap input and
 // Rule 9's secrets to their own roles, hearthbase to break-glass under a landing-zone reason, hearthapp
-// to the deploy role, Rule 9's roles unchangeable, every role hearthapp makes bounded, no route out,
-// and no new identity provider but GitHub's, made by hearthbase (C11-D05, C11-D07, C11-D12, C11-D26,
-// C11-D29). A workload role is created with its boundary, never given one later, since only the
-// hearthbase execution role may put a boundary on a role.
+// to the deploy role, each execution role passed only by its own deploy role and hearthbase's stacks
+// changed only by its deploy role, Rule 9's roles unchangeable, every role hearthapp makes bounded, no
+// route out, and no new identity provider but GitHub's, made by hearthbase (C11-D05, C11-D07, C11-D12,
+// C11-D26, C11-D29). A workload role is created with its boundary, never given one later, since only
+// the hearthbase execution role may put a boundary on a role.
 function workloadFence2Statements(): IamStatement[] {
   const rule9Roles = [TASK_ROLE('rule9'), RULE9_EXEC]
   return [
@@ -524,6 +536,35 @@ function workloadFence2Statements(): IamStatement[] {
       Resource: HEARTHAPP_ROLES,
       Condition: exceptFor(GH_DEPLOY),
     },
+    // CloudFormation assumes a role passed to it as the service, which no AssumeRole fence above sees,
+    // so each execution role is passed only by its own deploy role, as `cdk deploy` passes it.
+    {
+      Sid: 'HearthbaseExecOnlyItsDeploy',
+      Effect: 'Deny',
+      Action: 'iam:PassRole',
+      Resource: EXEC,
+      Condition: exceptFor(BASE_DEPLOY),
+    },
+    {
+      Sid: 'HearthappExecOnlyItsDeploy',
+      Effect: 'Deny',
+      Action: 'iam:PassRole',
+      Resource: APP_EXEC,
+      Condition: exceptFor(APP_DEPLOY),
+    },
+    // A stack keeps the role it was deployed with, and anyone who may update the stack uses that role
+    // without passing it, so the Baselines, deployed with the hearthbase execution role, and
+    // hearthbase's toolkit stack change only through its deploy role.
+    {
+      Sid: 'HearthbaseStacksOnlyItsDeploy',
+      Effect: 'Deny',
+      Action: CFN_WRITE_ACTIONS,
+      Resource: [
+        anywhere('cloudformation', `stack/${baselineStackName('*')}/*`),
+        anywhere('cloudformation', `stack/${TOOLKIT_STACK.base}/*`),
+      ],
+      Condition: exceptFor(BASE_DEPLOY),
+    },
     { Sid: 'Rule9RolesFenced', Effect: 'Deny', Action: RULE9_ROLE_WRITES, Resource: anyIam('role/hearth-*-rule9-*') },
     {
       Sid: 'AppRolesBounded',
@@ -555,11 +596,14 @@ function workloadFence2Statements(): IamStatement[] {
 }
 
 // hearth-data-perimeter (the RCP, C11-D07): every statement names Principal `*`, as RCPs require. Only
-// the organisation's principals (or an AWS service acting for one) reach Hearth's buckets, keys and
+// the organisation's principals, or any AWS service principal, reach Hearth's buckets, keys and
 // secrets or assume its roles, S3 only over TLS, and a web identity only as GitHub's token for one of
 // the three subjects the deploy roles trust: a token from any other provider lacks the key, so
-// StringNotEquals holds and it is denied too. Whether an RCP reaches web-identity federation and this
-// provider-named key is proved on non-prod first (TECH-SPEC T24 items 2 and 32).
+// StringNotEquals holds and it is denied too. The service exception doesn't ask whom a service acts
+// for: each bucket, key and topic policy's own source conditions stop a confused deputy, and the
+// services that would assume a role for an outside party are fenced by NoNewIdentityProviders instead.
+// Whether an RCP reaches web-identity federation and this provider-named key is proved on non-prod
+// first (TECH-SPEC T24 items 2 and 32).
 function dataPerimeterStatements(config: LandingZoneConfig): IamStatement[] {
   const orgOnly = {
     StringNotEqualsIfExists: { 'aws:PrincipalOrgID': config.organization.id },
@@ -736,7 +780,7 @@ export class Guardrails extends Construct {
         targetIds: [...policy.targets],
       })
       made.addPropertyOverride('Content', content)
-      made.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+      made.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
       return made
     })
   }

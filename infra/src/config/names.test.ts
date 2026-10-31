@@ -48,6 +48,7 @@ describe('C11-D27: the names that cross stacks and PRs', () => {
     expect(execRoleName('prod', 'migrate')).toBe('hearth-prod-migrate-exec')
     expect(SSM_PARAMETER.zoneUserContent('nonprod')).toBe('/hearth/nonprod/zone/usercontent')
     expect(baselineStackName('nonprod')).toBe('Hearth-nonprod-Baseline')
+    expect(baselineStackName('*')).toBe('Hearth-*-Baseline')
   })
 
   it('C11-D09 C11-D11: the tag keys a policy matches and another stack, the helper or C0.12 sets', () => {

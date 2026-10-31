@@ -233,7 +233,10 @@
               }
             },
             {
-              "Action": "sts:TagSession",
+              "Action": [
+                "sts:TagSession",
+                "sts:SetSourceIdentity"
+              ],
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -1510,7 +1513,10 @@
               }
             },
             {
-              "Action": "sts:TagSession",
+              "Action": [
+                "sts:TagSession",
+                "sts:SetSourceIdentity"
+              ],
               "Effect": "Allow",
               "Principal": {
                 "AWS": {

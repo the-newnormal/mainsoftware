@@ -4,7 +4,9 @@
 // from the fixture and literal lists: the evidence floor, the protected names, the Region fence, the
 // log-archive and workload fences and the data perimeter. Every exception names one of the listed
 // role patterns and nothing wider; the floor binds everyone, keyed on nothing but a key's tag; the
-// log-protect SCP excepts nobody; the RCP's STS statements reach one call each. Root holds four of
+// log-protect SCP excepts nobody; the RCP's STS statements reach one call each. A small evaluator
+// replays the requests that would mute an alarm, hand a role outside, or reach the hearthbase
+// execution role through CloudFormation against the SCPs binding a workload account. Root holds four of
 // Hearth's SCPs beside AWS's FullAWSAccess, the five Organizations allows, so a later step merges into
 // one of them. The floor's bucket patterns are checked against LogArchive's actual bucket names, so the
 // two can't drift apart. The pure scpProblems() is proved on planted contents first, and the RCP's
@@ -55,11 +57,13 @@ const secret = (name: string) => anywhere('secretsmanager', `secret:${name}`)
 const taskDefinitions = (family: string) => anywhere('ecs', `task-definition/${family}:*`)
 
 // The role patterns an SCP may name in a principal condition (C11-D05, C11-D26): each qualifier's
-// CloudFormation execution role, OrganizationAccountAccessRole, break-glass, GitHub's deploy role and
-// both GitHub roles, every hearth bootstrap role, the server task roles by kind and Rule 9's execution
-// role, each in any account.
+// CloudFormation execution role and deploy role, OrganizationAccountAccessRole, break-glass, GitHub's
+// deploy role and both GitHub roles, every hearth bootstrap role, the server task roles by kind and
+// Rule 9's execution role, each in any account.
 const EXEC = role('cdk-hearthbase-cfn-exec-role-*-ap-southeast-1')
 const APP_EXEC = role('cdk-hearthapp-cfn-exec-role-*-ap-southeast-1')
+const BASE_DEPLOY = role('cdk-hearthbase-deploy-role-*-ap-southeast-1')
+const APP_DEPLOY = role('cdk-hearthapp-deploy-role-*-ap-southeast-1')
 const OAAR = role('OrganizationAccountAccessRole')
 const BREAK_GLASS = role('hearth-break-glass')
 const GH_DEPLOY = role('hearth-gh-deploy')
@@ -71,6 +75,8 @@ const ALLOWED_PRINCIPAL_PATTERNS: readonly string[] = [
   OAAR,
   EXEC,
   APP_EXEC,
+  BASE_DEPLOY,
+  APP_DEPLOY,
   BREAK_GLASS,
   GH_DEPLOY,
   GH_ROLES,
@@ -124,6 +130,28 @@ const NEW_IDENTITY_PROVIDERS = [
   'iam:CreateSAMLProvider',
   'iam:UpdateSAMLProvider',
   'cognito-identity:*',
+  'rolesanywhere:*',
+  'ssm:CreateActivation',
+  'ssm:UpdateManagedInstanceRole',
+  'iot:CreateRoleAlias',
+  'iot:UpdateRoleAlias',
+]
+const CFN_WRITES = [
+  'cloudformation:Create*',
+  'cloudformation:Update*',
+  'cloudformation:Delete*',
+  'cloudformation:Execute*',
+  'cloudformation:Continue*',
+  'cloudformation:Rollback*',
+  'cloudformation:Set*',
+  'cloudformation:Import*',
+  'cloudformation:Tag*',
+  'cloudformation:Untag*',
+  'cloudformation:Activate*',
+  'cloudformation:Deactivate*',
+  'cloudformation:Register*',
+  'cloudformation:Deregister*',
+  'cloudformation:Publish*',
 ]
 const REGION_NOT_ACTIONS = [
   'iam:*',
@@ -228,6 +256,8 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
           'sns:RemovePermission',
           'sns:Subscribe',
           'sns:Unsubscribe',
+          'sns:SetSubscriptionAttributes',
+          'sns:PutDataProtectionPolicy',
           'logs:Delete*',
           'logs:Put*',
           'logs:Disassociate*',
@@ -523,6 +553,30 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
         Condition: except(GH_DEPLOY),
       },
       {
+        Sid: 'HearthbaseExecOnlyItsDeploy',
+        Effect: 'Deny',
+        Action: 'iam:PassRole',
+        Resource: EXEC,
+        Condition: except(BASE_DEPLOY),
+      },
+      {
+        Sid: 'HearthappExecOnlyItsDeploy',
+        Effect: 'Deny',
+        Action: 'iam:PassRole',
+        Resource: APP_EXEC,
+        Condition: except(APP_DEPLOY),
+      },
+      {
+        Sid: 'HearthbaseStacksOnlyItsDeploy',
+        Effect: 'Deny',
+        Action: CFN_WRITES,
+        Resource: [
+          anywhere('cloudformation', 'stack/Hearth-*-Baseline/*'),
+          anywhere('cloudformation', 'stack/CDKToolkit-hearthbase/*'),
+        ],
+        Condition: except(BASE_DEPLOY),
+      },
+      {
         Sid: 'Rule9RolesFenced',
         Effect: 'Deny',
         Action: [
@@ -759,7 +813,7 @@ describe('IAC-02 C11-D05: scpProblems', () => {
 })
 
 describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders them', () => {
-  it('IAC-02: seven SCPs, one RCP and one AI opt-out, each a construct of Guardrails, retained, with a description citing its decision', () => {
+  it('IAC-02: seven SCPs, one RCP and one AI opt-out, each a construct of Guardrails, retained once made (never on a rolled-back create, so a failed first deploy can be retried), with a description citing its decision', () => {
     const guardrails = lz.stacks.foundation?.node.tryFindChild('Guardrails')
     expect(guardrails?.node.children.map(child => child.node.id)).toEqual([
       'Baseline',
@@ -776,7 +830,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     expect([...policies.keys()]).toEqual(Object.keys(EXPECTED))
     for (const [name, policy] of policies) {
       expect(policy.Properties?.Type, name).toBe(EXPECTED[name]?.type)
-      expect(policy.DeletionPolicy, name).toBe('Retain')
+      expect(policy.DeletionPolicy, name).toBe('RetainExceptOnCreate')
       expect(policy.UpdateReplacePolicy, name).toBe('Retain')
       expect(String(policy.Properties?.Description), name).toMatch(/\(C11-D\d{2}[,)]/)
     }
@@ -846,6 +900,9 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'hearth-workload-fences-2 HearthbaseOnlyBreakGlass ArnNotLike aws:PrincipalArn: hearth-break-glass',
       `hearth-workload-fences-2 HearthbaseOnlyLzReason StringNotLike aws:PrincipalTag/hearth-reason: ${lz}`,
       'hearth-workload-fences-2 HearthappOnlyDeploy ArnNotLike aws:PrincipalArn: hearth-gh-deploy',
+      'hearth-workload-fences-2 HearthbaseExecOnlyItsDeploy ArnNotLike aws:PrincipalArn: cdk-hearthbase-deploy-role-*-ap-southeast-1',
+      'hearth-workload-fences-2 HearthappExecOnlyItsDeploy ArnNotLike aws:PrincipalArn: cdk-hearthapp-deploy-role-*-ap-southeast-1',
+      'hearth-workload-fences-2 HearthbaseStacksOnlyItsDeploy ArnNotLike aws:PrincipalArn: cdk-hearthbase-deploy-role-*-ap-southeast-1',
       'hearth-workload-fences-2 AppRolesBounded ArnLike aws:PrincipalArn: cdk-hearthapp-cfn-exec-role-*-ap-southeast-1',
       'hearth-workload-fences-2 BoundaryOnlyHearthbase ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1',
       'hearth-workload-fences-2 NoNewIdentityProviders ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
@@ -951,6 +1008,148 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     expect(attached.get(`${rootId} AISERVICES_OPT_OUT_POLICY`)).toEqual(['hearth-ai-opt-out'])
     // Each type's AWS-managed default takes a slot on every target (none for the opt-out).
     for (const [key, names] of attached) expect(names.length + 1, key).toBeLessThanOrEqual(5)
+  })
+})
+
+// A request as the SCPs binding a workload account see it: its action, its resource, and the
+// principal's ARN, with the Region fixed at Hearth's and any other context key the case names.
+interface Request {
+  action: string
+  resource: string
+  principal: string
+  context?: Record<string, string>
+}
+
+// Whether one condition holds, by IAM's rules for the operators these SCPs use: a key missing from
+// the request satisfies a negated operator or an IfExists one, and no other; a Like operator matches
+// a glob, and ForAnyValue any one value.
+function conditionHolds(operator: string, key: string, expected: string | string[], request: Request): boolean {
+  const context: Record<string, string | undefined> = {
+    'aws:PrincipalArn': request.principal,
+    'aws:RequestedRegion': 'ap-southeast-1',
+    ...request.context,
+  }
+  const actual = context[key]
+  const values = list(expected)
+  if (operator === 'Null') return (actual === undefined) === (values[0] === 'true')
+  const base = operator.replace(/^ForAnyValue:/, '').replace(/IfExists$/, '')
+  const negated = base.includes('Not')
+  if (actual === undefined) return negated || operator.endsWith('IfExists')
+  const hit = values.some(value => (/Like$/.test(base) ? globsOverlap(value, actual) : value === actual))
+  return negated ? !hit : hit
+}
+
+// The statements that deny a request: those whose action, resource and every condition match. Actions
+// match whatever their case; ARNs as written.
+function denyingStatements(statements: readonly Statement[], request: Request): string[] {
+  const actionMatches = (pattern: string) => globsOverlap(pattern.toLowerCase(), request.action.toLowerCase())
+  const resourceMatches = (pattern: string) => globsOverlap(pattern, request.resource)
+  return statements
+    .filter(statement => statement.Effect === 'Deny')
+    .filter(statement =>
+      statement.NotAction === undefined
+        ? list(statement.Action).some(actionMatches)
+        : !list(statement.NotAction).some(actionMatches),
+    )
+    .filter(statement =>
+      statement.NotResource === undefined
+        ? list(statement.Resource).some(resourceMatches)
+        : !list(statement.NotResource).some(resourceMatches),
+    )
+    .filter(statement =>
+      Object.entries(statement.Condition ?? {}).every(([operator, keys]) =>
+        Object.entries(keys).every(([key, value]) => conditionHolds(operator, key, value, request)),
+      ),
+    )
+    .map(statement => statement.Sid ?? '(no Sid)')
+}
+
+describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the SCPs binding a workload account', () => {
+  const prod = fixture.accounts.prod
+  const prodRole = (name: string) => arn('iam', '', prod, `role/${name}`)
+  const task = prodRole('hearth-prod-api-task')
+  const exec = prodRole(`cdk-hearthbase-cfn-exec-role-${prod}-ap-southeast-1`)
+  const appExec = prodRole(`cdk-hearthapp-cfn-exec-role-${prod}-ap-southeast-1`)
+  const baseDeploy = prodRole(`cdk-hearthbase-deploy-role-${prod}-ap-southeast-1`)
+  const appDeploy = prodRole(`cdk-hearthapp-deploy-role-${prod}-ap-southeast-1`)
+  const stack = (name: string) => arn('cloudformation', 'ap-southeast-1', prod, `stack/${name}/0a1b2c3d`)
+  const topic = arn('sns', 'ap-southeast-1', prod, 'hearth-ops-alerts')
+  // The statements of every SCP at Root and on the Workloads OU, which together bind a workload account.
+  let binding: Statement[]
+  beforeAll(() => {
+    binding = [...policiesIn(foundation).values()]
+      .filter(policy => policy.Properties?.Type === 'SERVICE_CONTROL_POLICY')
+      .filter(policy => {
+        const targets = (policy.Properties?.TargetIds ?? []) as string[]
+        return targets.includes(rootId) || targets.includes(workloads)
+      })
+      .flatMap(policy => (JSON.parse(String(policy.Properties?.Content)) as { Statement: Statement[] }).Statement)
+  })
+  const denied = (request: Request) => denyingStatements(binding, request)
+
+  it('IAC-02 C11-D26: an execution role is passed to CloudFormation only by its own deploy role, and the Baselines and hearthbase’s toolkit stack change only through hearthbase’s deploy role, which a stack’s stored role would otherwise sidestep', () => {
+    expect(denied({ action: 'iam:PassRole', resource: exec, principal: task })).toEqual(['HearthbaseExecOnlyItsDeploy'])
+    expect(denied({ action: 'iam:PassRole', resource: appExec, principal: task })).toEqual([
+      'HearthappExecOnlyItsDeploy',
+    ])
+    expect(denied({ action: 'iam:PassRole', resource: exec, principal: appDeploy })).toEqual([
+      'HearthbaseExecOnlyItsDeploy',
+    ])
+    expect(denied({ action: 'iam:PassRole', resource: exec, principal: baseDeploy })).toEqual([])
+    expect(denied({ action: 'iam:PassRole', resource: appExec, principal: appDeploy })).toEqual([])
+    for (const action of [
+      'cloudformation:CreateChangeSet',
+      'cloudformation:ExecuteChangeSet',
+      'cloudformation:UpdateStack',
+      'cloudformation:DeleteStack',
+      'cloudformation:UpdateTerminationProtection',
+      'cloudformation:SetStackPolicy',
+    ]) {
+      for (const name of ['Hearth-prod-Baseline', 'CDKToolkit-hearthbase']) {
+        expect(denied({ action, resource: stack(name), principal: task }), `${action} ${name}`).toEqual([
+          'HearthbaseStacksOnlyItsDeploy',
+        ])
+        expect(denied({ action, resource: stack(name), principal: appDeploy }), `${action} ${name}`).toEqual([
+          'HearthbaseStacksOnlyItsDeploy',
+        ])
+        expect(denied({ action, resource: stack(name), principal: baseDeploy }), `${action} ${name}`).toEqual([])
+      }
+      // The workload's own stacks are hearthapp's deploy role's to change.
+      expect(denied({ action, resource: stack('Hearth-prod-Workload'), principal: appDeploy }), action).toEqual([])
+    }
+  })
+
+  it('IAC-02 C11-D16: no workload principal mutes hearth-ops-alerts through its subscription’s filter or the topic’s data protection policy, but the hearthbase execution role may', () => {
+    const subscription = `${topic}:0a1b2c3d`
+    for (const [action, resource] of [
+      ['sns:SetSubscriptionAttributes', subscription],
+      ['sns:SetSubscriptionAttributes', topic],
+      ['sns:PutDataProtectionPolicy', topic],
+      ['sns:Unsubscribe', subscription],
+    ] as const) {
+      expect(denied({ action, resource, principal: task }), action).toEqual(['ProtectAlarms'])
+      expect(denied({ action, resource, principal: exec }), action).toEqual([])
+    }
+    // Publishing to the topic stays open, so the replay isn't denying everything.
+    expect(denied({ action: 'sns:Publish', resource: topic, principal: task })).toEqual([])
+  })
+
+  it('IAC-02 C11-D07: no workload principal makes a way to hand a role outside, by provider, certificate, activation or role alias, but the hearthbase execution role may', () => {
+    const at = (service: string, resource: string) => arn(service, 'ap-southeast-1', prod, resource)
+    for (const [action, resource] of [
+      ['iam:CreateOpenIDConnectProvider', arn('iam', '', prod, 'oidc-provider/example.invalid')],
+      ['cognito-identity:CreateIdentityPool', at('cognito-identity', 'identitypool/x')],
+      ['rolesanywhere:CreateTrustAnchor', at('rolesanywhere', 'trust-anchor/x')],
+      ['rolesanywhere:CreateProfile', at('rolesanywhere', 'profile/x')],
+      ['rolesanywhere:DisableCrl', at('rolesanywhere', 'crl/x')],
+      ['ssm:CreateActivation', '*'],
+      ['ssm:UpdateManagedInstanceRole', at('ssm', 'managed-instance/mi-0a1b2c3d')],
+      ['iot:CreateRoleAlias', at('iot', 'rolealias/x')],
+      ['iot:UpdateRoleAlias', at('iot', 'rolealias/x')],
+    ] as const) {
+      expect(denied({ action, resource, principal: task }), action).toEqual(['NoNewIdentityProviders'])
+      expect(denied({ action, resource, principal: exec }), action).toEqual([])
+    }
   })
 })
 

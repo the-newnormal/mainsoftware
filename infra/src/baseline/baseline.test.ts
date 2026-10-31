@@ -3,16 +3,19 @@
 // - IAC-11: hearth-break-glass's trust (the entry set's role in its own account, the person's sign-in
 //   name as source identity, one reason tag of a reason's shape) and its scope, each grant under the
 //   reason it needs: the bootstrap login and input under bootstrap: or recover:, the read-only login
-//   under case:, the hearthbase roles under lz:pr- alone; and every deny unconditional;
+//   under case:, the hearthbase roles under lz:pr- alone, each taking the session's source identity
+//   on both sides, its grant and the role's trust in the committed bootstrap template; and every deny
+//   unconditional;
 // - IAC-10: GitHub's provider and roles, each trust exactly one environment's subject of the deploy
 //   workflow on main; hearth-gh-deploy stops and tags only its own one-off tasks and assumes only the
 //   two hearthapp roles; hearth-gh-diff reads the prod stacks and nothing else; hearth-boundary's
 //   statements, NoNewIdentityProviders among them, within a managed policy's limit;
 // - the fast rules each account holds, their patterns, states and inputs, and the topic they email;
-// - C11-D43: the zones, Amazon's CAA alone, retained, and prod's `nonprod.` delegation only once its
+// - C11-D43: the zones, Amazon's CAA alone, retained once made, and prod's `nonprod.` delegation only once its
 //   name servers are committed, which a variant shows; C11-D44: the server image's repository.
 // prod's statements also name the restore stage, which lives in its account (C11-Q02). Expected ARNs
 // are joined from their parts (IG-01) and the model deny comes from the lists (IG-10).
+import { readFileSync } from 'node:fs'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DEPLOY_WORKFLOW_REF, githubSubject } from '../config/env.ts'
 import { modelDenyActions } from '../config/models.ts'
@@ -296,7 +299,7 @@ function breakGlassStatements(kind: Kind): unknown[] {
     {
       Sid: 'LandingZone',
       Effect: 'Allow',
-      Action: 'sts:AssumeRole',
+      Action: ['sts:AssumeRole', 'sts:SetSourceIdentity'],
       Resource: [hearthbase('deploy-role'), hearthbase('file-publishing-role')],
       Condition: { StringLike: { 'aws:PrincipalTag/hearth-reason': [...LZ_REASON_SHAPES] } },
     },
@@ -396,6 +399,67 @@ function breakGlassStatements(kind: Kind): unknown[] {
 const INLINE_LIMIT = 10_240
 const TRUST_LIMIT = 2_048
 
+// The committed bootstrap template (strict JSON, IAC-24), whose roles a break-glass session chains into.
+const BOOTSTRAP: Template = JSON.parse(
+  readFileSync(new URL('../../bootstrap/hearth-bootstrap.yaml', import.meta.url), 'utf8'),
+) as Template
+interface Statement {
+  Sid?: string
+  Effect?: string
+  Principal?: unknown
+  Action?: string | string[]
+  Resource?: string | string[]
+}
+const listOf = (value: string | string[] | undefined): string[] =>
+  value === undefined ? [] : Array.isArray(value) ? value : [value]
+const SAME_ACCOUNT = { AWS: { Ref: 'AWS::AccountId' } }
+
+// C11-D11 and C11-D27: a break-glass session always carries a source identity (its trust requires
+// one), and STS carries it into any role the session assumes, refusing the assumption unless both
+// sides allow sts:SetSourceIdentity: the grant, and the target role's trust, here the bootstrap
+// template's role whose name renders, for hearthbase in this account, to the granted ARN. The roles
+// reached, by logical id, and each side's gap as "<Sid or logical id>: <what is missing>".
+function chain(statements: Statement[], template: Template, account: string) {
+  const roles = resourcesIn(template).filter(([, r]) => r.Type === 'AWS::IAM::Role')
+  const named = (name: string) =>
+    roles.find(([, r]) => {
+      const sub = (r.Properties?.RoleName as { 'Fn::Sub'?: unknown } | undefined)?.['Fn::Sub']
+      return (
+        typeof sub === 'string' &&
+        sub
+          .replaceAll(variable('Qualifier'), 'hearthbase')
+          .replaceAll(variable('AWS::AccountId'), account)
+          .replaceAll(variable('AWS::Region'), REGION) === name
+      )
+    })
+  const reached: string[] = []
+  const gaps: string[] = []
+  for (const statement of statements) {
+    if (statement.Effect !== 'Allow' || !listOf(statement.Action).includes('sts:AssumeRole')) continue
+    if (!listOf(statement.Action).includes('sts:SetSourceIdentity')) {
+      gaps.push(`${statement.Sid}: no sts:SetSourceIdentity`)
+    }
+    for (const target of listOf(statement.Resource)) {
+      const found = named(target.split(':role/')[1] ?? '')
+      if (found === undefined) {
+        gaps.push(`${target}: no bootstrap role`)
+        continue
+      }
+      const [logicalId, role] = found
+      reached.push(logicalId)
+      const trust = (role.Properties?.AssumeRolePolicyDocument as { Statement?: Statement[] } | undefined)?.Statement
+      const admits = (trust ?? []).some(
+        s =>
+          s.Effect === 'Allow' &&
+          JSON.stringify(s.Principal) === JSON.stringify(SAME_ACCOUNT) &&
+          listOf(s.Action).includes('sts:SetSourceIdentity'),
+      )
+      if (!admits) gaps.push(`${logicalId}: its trust allows the account no sts:SetSourceIdentity`)
+    }
+  }
+  return { reached, gaps }
+}
+
 describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind => {
   it('IAC-11 C11-D11: its trust admits the entry set’s role in its own account alone, with the person’s sign-in name as source identity and one reason tag of a reason’s shape, in ap-southeast-1, for an hour', () => {
     const [, role] = roleIn(kind, 'hearth-break-glass')
@@ -414,6 +478,47 @@ describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind =
     expect(denies.filter(s => s.conditional || s.condition !== undefined).map(s => s.sid)).toEqual([
       'NoRule9SecretByTag',
     ])
+  })
+
+  it('IAC-11 C11-D11 C11-D27: each role it may assume, the hearthbase deploy and file-publishing roles, takes its source identity on both sides, its grant and the role’s trust in the committed bootstrap template, proved on planted gaps first', () => {
+    const [, role] = roleIn(kind, 'hearth-break-glass')
+    const policies = role.Properties?.Policies as Array<{ PolicyDocument: { Statement: Statement[] } }>
+    const statements = policies.flatMap(policy => policy.PolicyDocument.Statement)
+    const account = ACCOUNT[kind]
+    // A grant of sts:AssumeRole alone is found, and so is the stock template's trust.
+    const grantOnly = structuredClone(statements)
+    for (const s of grantOnly) if (s.Sid === 'LandingZone') s.Action = 'sts:AssumeRole'
+    expect(chain(grantOnly, BOOTSTRAP, account).gaps).toEqual(['LandingZone: no sts:SetSourceIdentity'])
+    const stockTrust = structuredClone(BOOTSTRAP)
+    for (const [, r] of resourcesIn(stockTrust)) {
+      const trust = (r.Properties?.AssumeRolePolicyDocument as { Statement?: Statement[] } | undefined)?.Statement
+      for (const s of trust ?? []) {
+        if (listOf(s.Action).includes('sts:SetSourceIdentity')) {
+          s.Action = listOf(s.Action).filter(action => action !== 'sts:SetSourceIdentity')
+        }
+      }
+    }
+    expect(chain(statements, stockTrust, account).gaps).toEqual([
+      'DeploymentActionRole: its trust allows the account no sts:SetSourceIdentity',
+      'FilePublishingRole: its trust allows the account no sts:SetSourceIdentity',
+    ])
+    // So is a grant widened to the lookup role, whose trust takes no source identity.
+    const lookup = structuredClone(statements)
+    for (const s of lookup) {
+      if (s.Sid === 'LandingZone') {
+        s.Resource = [
+          ...listOf(s.Resource),
+          arn('iam', '', account, `role/cdk-hearthbase-lookup-role-${account}-${REGION}`),
+        ]
+      }
+    }
+    expect(chain(lookup, BOOTSTRAP, account).gaps).toEqual([
+      'LookupRole: its trust allows the account no sts:SetSourceIdentity',
+    ])
+    expect(chain(statements, BOOTSTRAP, account)).toEqual({
+      reached: ['DeploymentActionRole', 'FilePublishingRole'],
+      gaps: [],
+    })
   })
 
   it('IAC-10 C11-D12: its inline policy and its trust fit IAM’s limits', () => {
@@ -702,6 +807,11 @@ function boundaryStatements(account: string): unknown[] {
         'iam:CreateSAMLProvider',
         'iam:UpdateSAMLProvider',
         'cognito-identity:*',
+        'rolesanywhere:*',
+        'ssm:CreateActivation',
+        'ssm:UpdateManagedInstanceRole',
+        'iot:CreateRoleAlias',
+        'iot:UpdateRoleAlias',
       ],
       Resource: '*',
     },
@@ -731,7 +841,12 @@ function boundaryStatements(account: string): unknown[] {
         iam('role/aws-reserved/sso.amazonaws.com/*'),
       ],
     },
-    { Sid: 'Rule9PassRole', Effect: 'Deny', Action: 'iam:PassRole', Resource: iam('role/hearth-*-rule9-*') },
+    {
+      Sid: 'FencedPassRole',
+      Effect: 'Deny',
+      Action: 'iam:PassRole',
+      Resource: [iam('role/hearth-*-rule9-*'), iam('role/cdk-*')],
+    },
     ...RULE9_SECRETS,
     { Sid: 'NoAudit', Effect: 'Deny', Action: ['cloudtrail:*', 'guardduty:*', 'organizations:*'], Resource: '*' },
     {
@@ -785,14 +900,15 @@ function boundaryStatements(account: string): unknown[] {
 const MANAGED_LIMIT = 6_144
 
 describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
-  it('IAC-10 C11-D26: it allows everything and denies, unconditionally but for BoundedRolesOnly, exactly these, NoNewIdentityProviders among them; it is attached to no Baseline role and retained', () => {
+  it('IAC-10 C11-D26: it allows everything and denies, unconditionally but for BoundedRolesOnly, exactly these, NoNewIdentityProviders among them; it is attached to no Baseline role and retained once made (never on a rolled-back create)', () => {
     const [, boundary] = one(templateOf(kind), 'AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'hearth-boundary')
     expect(boundary.Properties).toEqual({
       ManagedPolicyName: 'hearth-boundary',
       Description: 'The permissions boundary of every workload role (C11-D26)',
       PolicyDocument: document(boundaryStatements(ACCOUNT[kind])),
     })
-    expect(boundary.DeletionPolicy).toBe('Retain')
+    expect(boundary.DeletionPolicy).toBe('RetainExceptOnCreate')
+    expect(boundary.UpdateReplacePolicy).toBe('Retain')
     for (const [, role] of ofType(templateOf(kind), 'AWS::IAM::Role')) {
       expect(role.Properties?.PermissionsBoundary, String(role.Properties?.RoleName)).toBeUndefined()
     }
@@ -877,17 +993,29 @@ const FAST_RULES: Record<string, { pattern: unknown; state: string; paths: unkno
     paths: CALLER.paths,
     inputTemplate: CALLER.template('A7'),
   },
+  // The environment override as the API's name and value pairs (`exists` on a pair's name, since it
+  // matches only a leaf) or redacted to one string, each paired with each way out of the probe's
+  // exception, since a pattern holds one `$or`.
   'hearth-sec-a07-run-environment': {
     pattern: {
       source: ['aws.ecs'],
       'detail-type': [CLOUDTRAIL],
       detail: {
         ...RUN_TASK,
-        requestParameters: { overrides: { containerOverrides: { environment: [{ exists: true }] } } },
-        $or: [
-          { requestParameters: { taskDefinition: [{ 'anything-but': { wildcard: '*hearth-prod-probe*' } }] } },
-          { userIdentity: { arn: [{ 'anything-but': { wildcard: '*:assumed-role/hearth-gh-deploy/*' } }] } },
-        ],
+        $or: [{ environment: { name: [{ exists: true }] } }, { environment: [{ exists: true }] }].flatMap(
+          environment => [
+            {
+              requestParameters: {
+                overrides: { containerOverrides: environment },
+                taskDefinition: [{ 'anything-but': { wildcard: '*hearth-prod-probe*' } }],
+              },
+            },
+            {
+              requestParameters: { overrides: { containerOverrides: environment } },
+              userIdentity: { arn: [{ 'anything-but': { wildcard: '*:assumed-role/hearth-gh-deploy/*' } }] },
+            },
+          ],
+        ),
       },
     },
     state: CLOUDTRAIL_STATE,
@@ -1021,12 +1149,12 @@ describe('C11-D16 C11-Q07: every alert leaves by email alone', () => {
 describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters', kind => {
   const host = { app: appHost(kind), userContent: userContentHost(kind) }
 
-  it('C11-D43: two public zones, the app’s and user content’s, each allowing Amazon’s certificate authority alone and retained, and no NS record until the delegation is committed', () => {
+  it('C11-D43: two public zones, the app’s and user content’s, each allowing Amazon’s certificate authority alone and retained once made, and no NS record until the delegation is committed', () => {
     const template = templateOf(kind)
     const zones = ofType(template, 'AWS::Route53::HostedZone')
     expect(zones.map(([, r]) => r.Properties)).toEqual([{ Name: `${host.app}.` }, { Name: `${host.userContent}.` }])
     for (const [, zone] of zones) {
-      expect(zone.DeletionPolicy).toBe('Retain')
+      expect(zone.DeletionPolicy).toBe('RetainExceptOnCreate')
       expect(zone.UpdateReplacePolicy).toBe('Retain')
     }
     expect(ofType(template, 'AWS::Route53::RecordSet').map(([, r]) => r.Properties)).toEqual(
@@ -1058,7 +1186,7 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
     ])
   })
 
-  it('C11-D44: hearth-server’s repository keeps tags fixed, scans every push, keeps the newest 50 images, lets hearth-gh-deploy alone push and nobody delete an image, and is retained', () => {
+  it('C11-D44: hearth-server’s repository keeps tags fixed, scans every push, keeps the newest 50 images, lets hearth-gh-deploy alone push and nobody delete an image, and is retained once made', () => {
     const [, repository] = one(templateOf(kind), 'AWS::ECR::Repository', 'RepositoryName', 'hearth-server')
     const { LifecyclePolicy, ...properties } = repository.Properties ?? {}
     expect(properties).toEqual({
@@ -1088,7 +1216,7 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
         },
       ],
     })
-    expect(repository.DeletionPolicy).toBe('Retain')
+    expect(repository.DeletionPolicy).toBe('RetainExceptOnCreate')
     expect(repository.UpdateReplacePolicy).toBe('Retain')
   })
 })

@@ -4,7 +4,8 @@
 // Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script and ci.yml step.
 // This file and infra.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
@@ -33,6 +34,7 @@ import {
   modelStringFindings,
   ORGANIZATIONS_ID,
   packageFindings,
+  RESERVED_FUNCTION_NAMES,
   readsForIdentifying,
   reasonFormLines,
   regionFindings,
@@ -748,7 +750,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
   const HELPER = 'infra/bin/break-glass.sh'
   const helper = readRepoFile(HELPER)
   const rules = (text: string) =>
-    [...new Set(breakGlassFindings(HELPER, text).map(f => /IG-09[a-p]/.exec(f)?.[0]))].sort()
+    [...new Set(breakGlassFindings(HELPER, text).map(f => /IG-09[a-q]/.exec(f)?.[0]))].sort()
   // A planted copy: the helper with one text changed, which must be there exactly once.
   const plant = (from: string, to: string, base = helper) => {
     expect(base.split(from).length - 1, from).toBe(1)
@@ -790,7 +792,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['a: xtrace through shopt', plant('set -f\n', 'set -f\nshopt -s -o xtrace\n'), ['IG-09a']],
       ['a: a traced shell', plant('bash --rcfile "$rc" -i || true', 'bash --rcfile "$rc" -ix || true'), ['IG-09a']],
       ['b: a marker missing', plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), ['IG-09b']],
-      ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b']],
+      ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b', 'IG-09o']],
       [
         'b: refused after the first aws command',
         plant(
@@ -798,6 +800,27 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
           'aws sso login --profile "$profile"\nrefuse_agents\n',
           plant('\nrefuse_agents\nrequire_terminal\n', '\nrequire_terminal\n'),
         ),
+        ['IG-09b'],
+      ],
+      [
+        'b: the agents check inside a block that never runs',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nif false; then\n  refuse_agents\nfi\nrequire_terminal\n'),
+        ['IG-09b'],
+      ],
+      ['b: no terminal check', plant('\nrefuse_agents\nrequire_terminal\n', '\nrefuse_agents\n'), ['IG-09b']],
+      [
+        'b: the terminal check skipped by the line before',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nrefuse_agents\ntrue ||\n  require_terminal\n'),
+        ['IG-09b'],
+      ],
+      [
+        'b: the terminal check inverted',
+        plant('if ! [ -t 0 ] || ! [ -t 1 ]; then', 'if [ -t 0 ] && [ -t 1 ]; then'),
+        ['IG-09b'],
+      ],
+      [
+        'b: the terminal check only warns',
+        plant("output both a terminal\\n' >&2\n    exit 3\n", "output both a terminal\\n' >&2\n"),
         ['IG-09b'],
       ],
       ['c: no C locale', plant('export LC_ALL=C\n', ''), ['IG-09c']],
@@ -817,6 +840,19 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ),
         ['IG-09d'],
       ],
+      [
+        'd: the reason check’s answer ignored',
+        plant('if ! valid_reason "$reason"; then usage; fi\n', 'valid_reason "$reason" || true\n'),
+        ['IG-09d'],
+      ],
+      [
+        'd: the reason check only warns',
+        plant(
+          'if ! valid_reason "$reason"; then usage; fi\n',
+          'if ! valid_reason "$reason"; then printf \'break-glass: odd reason\\n\'; fi\n',
+        ),
+        ['IG-09d'],
+      ],
       ['e: no regional STS', plant('export AWS_STS_REGIONAL_ENDPOINTS=regional\n', ''), ['IG-09e']],
       ['e: the caller’s HOME', plant('export HOME="$BG_HOME"\n', ''), ['IG-09e']],
       [
@@ -832,8 +868,27 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ),
         ['IG-09f'],
       ],
+      [
+        'f: the mode check’s refusal made inert',
+        plant("  refuse 'refused: make its folder first", "  : 'refused: make its folder first"),
+        ['IG-09f'],
+      ],
+      ['f: the mode check inverted', plant('if [ -z "$(find "$BG_HOME"', 'if ! [ -z "$(find "$BG_HOME"'), ['IG-09f']],
       ['g: a pager', plant('export AWS_PAGER=\n', ''), ['IG-09g']],
       ['g: history unchecked', helper.replaceAll('get cli_history', 'get cli_pager'), ['IG-09g']],
+      [
+        'g: the history check’s refusal made inert',
+        plant('  refuse "refused: the AWS CLI\'s history', '  : "refused: the AWS CLI\'s history'),
+        ['IG-09g'],
+      ],
+      [
+        'g: the entry profile’s history unchecked',
+        plant(
+          ' ||\n  [ "$(aws configure get cli_history --profile "$profile"',
+          ' &&\n  [ "$(aws configure get cli_history --profile "$profile"',
+        ),
+        ['IG-09g'],
+      ],
       [
         'h: the trap after the sign-in',
         plant(
@@ -845,6 +900,21 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       [
         'h: no sign-out',
         plant('  aws sso logout >/dev/null 2>&1 || true\n  exit "$status"', '  exit "$status"'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the handler gives the signals their default action back',
+        plant("  trap '' INT TERM HUP QUIT\n  trap - EXIT\n", '  trap - EXIT INT TERM HUP\n'),
+        ['IG-09h'],
+      ],
+      ['h: errexit left on in the handler', plant('  trap - EXIT\n  set +e\n', '  trap - EXIT\n'), ['IG-09h']],
+      ['h: a hang-up not ignored', plant("  trap '' INT TERM HUP QUIT\n", "  trap '' INT TERM QUIT\n"), ['IG-09h']],
+      [
+        'h: the signals ignored only after the close',
+        plant(
+          "  trap '' INT TERM HUP QUIT\n  trap - EXIT\n  set +e\n",
+          "  trap - EXIT\n  set +e\n  close_session unprompted || true\n  trap '' INT TERM HUP QUIT\n",
+        ),
         ['IG-09h'],
       ],
       ['i: a credential printed', afterAssume('echo "$AWS_SESSION_TOKEN"'), ['IG-09i', 'IG-09o']],
@@ -863,11 +933,58 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ],
       ['i: a config write', afterAssume('aws configure set region ap-southeast-1'), ['IG-09i']],
       [
+        'i: the credentials exported by the CLI',
+        afterAssume(
+          'AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" aws configure export-credentials',
+        ),
+        ['IG-09i'],
+      ],
+      [
+        'i: jq prints a credential from its environment',
+        afterAssume(`AWS_SESSION_TOKEN="$st" jq -rn 'env.AWS_SESSION_TOKEN'`),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: jq prints a credential through $ENV',
+        afterAssume(`AWS_SESSION_TOKEN="$st" jq -rn '$ENV.AWS_SESSION_TOKEN'`),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: a credential written through a function',
+        plant(
+          'assume_role || exit 1\nopen_session\n',
+          'assume_role || exit 1\nsecret_json >"$BG_HOME/k.json"\nopen_session\n',
+          plant(
+            '# The open entry, written before',
+            `secret_json() {\n  AWS_SECRET_ACCESS_KEY="$sk" jq -n '{k: env.AWS_SECRET_ACCESS_KEY}'\n}\n\n# The open entry, written before`,
+          ),
+        ),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: the console’s session printed, not sent',
+        plant("sessionToken: env.AWS_SESSION_TOKEN}' |\n", "sessionToken: env.AWS_SESSION_TOKEN}' >&2\n"),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
         'j: no reason tag',
         plant('--source-identity "$user" --tags "Key=hearth-reason,Value=$reason" \\', '--source-identity "$user" \\'),
         ['IG-09j'],
       ],
       ['j: two hours', plant('--duration-seconds 3600 --query', '--duration-seconds 7200 --query'), ['IG-09j']],
+      [
+        'j: the role’s answer kept in a file',
+        plant('--output text 2>/dev/null); then', '--output text 2>/dev/null | tee "$BG_HOME/role"); then'),
+        ['IG-09i', 'IG-09j'],
+      ],
+      [
+        'j: the role’s answer written to a file, with no query naming the credentials',
+        plant(
+          "--query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \\\n    --output text 2>/dev/null); then",
+          '--output json >"$BG_HOME/role" 2>/dev/null); then',
+        ),
+        ['IG-09j'],
+      ],
       [
         'j: a second assumption',
         afterAssume('aws sts assume-role --role-arn "$role" --role-session-name x >/dev/null'),
@@ -903,6 +1020,46 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09k'],
       ],
       [
+        'k: a failed open entry ignored',
+        plant(
+          `put_entry "$key" || refuse "the open entry wasn't written, so nothing was done; see docs/runbooks/break-glass.md"`,
+          'put_entry "$key" || true',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a failed open entry only warned of',
+        plant(
+          `put_entry "$key" || refuse "the open entry wasn't written, so nothing was done; see docs/runbooks/break-glass.md"`,
+          `put_entry "$key" || printf 'break-glass: the open entry failed\\n' >&2`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close entry never put',
+        plant('  put_entry "$key" || return 1\n  closed=yes\n', '  closed=yes\n'),
+        ['IG-09k'],
+      ],
+      [
+        'k: opened=yes before the put',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  opened=yes\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a failed put ignored inside put_entry',
+        plant("--if-none-match '*' >/dev/null 2>&1\n}", "--if-none-match '*' >/dev/null 2>&1 || true\n}"),
+        ['IG-09k'],
+      ],
+      [
+        'k: put_entry succeeds whatever the put',
+        plant("--if-none-match '*' >/dev/null 2>&1\n}", "--if-none-match '*' >/dev/null 2>&1\n  return 0\n}"),
+        ['IG-09k'],
+      ],
+      ['k: the open entry called under ||', plant('\nopen_session\n', '\nopen_session || true\n'), ['IG-09k']],
+      [
         'k: the open entry after the shell',
         plant(
           'open_session\nif [ "$console" = yes ]; then open_console; fi\nrun_shell\n',
@@ -926,7 +1083,8 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
           'https://signin.aws.amazon.com/federation 2>/dev/null',
           'https://sign-in.example.org/federation 2>/dev/null',
         ),
-        ['IG-09l'],
+        // The console's exchange is the one into the sign-in endpoint, so its jq and prefixes are found too.
+        ['IG-09i', 'IG-09l', 'IG-09o'],
       ],
       [
         'l: the link printed always',
@@ -1007,6 +1165,18 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09o'],
       ],
       ['o: a credential as an argument', afterAssume('aws s3 ls --secret "$sk"'), ['IG-09o']],
+      ['o: a credential read by another name', afterAssume(`n=sk\naws s3 ls --x "\${!n}"`), ['IG-09o']],
+      ['o: a nameref to a credential', afterAssume('declare -n r=sk\naws s3 ls --x "$r"'), ['IG-09o']],
+      [
+        'o: a credential handed to awk',
+        afterAssume(`AWS_SESSION_TOKEN="$st" awk 'BEGIN { print ENVIRON["AWS_SESSION_TOKEN"] }'`),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential handed to python',
+        afterAssume(`AWS_SESSION_TOKEN="$st" python3 -c 'import os; print(os.environ["AWS_SESSION_TOKEN"])'`),
+        ['IG-09o'],
+      ],
       [
         'o: a prefix after another assignment passes',
         afterAssume('HISTFILE=/dev/null AWS_SESSION_TOKEN="$st" aws sts get-caller-identity >/dev/null'),
@@ -1074,6 +1244,51 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ),
         ['IG-09p'],
       ],
+      [
+        'q: refuse_agents defined again, inert, before its call',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          `\nrefuse_agents() {\n  local name\n  for name in ${AGENT_MARKERS.join(' ')}; do\n    if [ -n "\${!name+x}" ] && false; then\n      exit 3\n    fi\n  done\n}\n\nrefuse_agents\nrequire_terminal\n`,
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: valid_reason defined again on one line',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          '\nvalid_reason() { return 0; }\nrefuse_agents\nrequire_terminal\n',
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: refuse_agents defined again with the function keyword',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          '\nfunction refuse_agents {\n  :\n}\nrefuse_agents\nrequire_terminal\n',
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: valid_date defined twice',
+        plant('\nvalid_reason() {\n', '\nvalid_date() {\n  return 0\n}\n\nvalid_reason() {\n'),
+        ['IG-09q'],
+      ],
+      ['q: a definition in another form', plant('refuse_agents() {', 'refuse_agents () {'), ['IG-09b', 'IG-09q']],
+      [
+        'q: a builtin replaced',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nexit() {\n  :\n}\n\nrefuse_agents\nrequire_terminal\n'),
+        ['IG-09q'],
+      ],
+      ['q: aliases on', plant('set -f\n', 'set -f\nshopt -s expand_aliases\n'), ['IG-09q']],
+      [
+        'q: refuse returns',
+        plant(
+          `printf 'break-glass: %s\\n' "$1" >&2\n  exit 2\n}`,
+          `printf 'break-glass: %s\\n' "$1" >&2\n  return 0\n}`,
+        ),
+        ['IG-09q'],
+      ],
+      ['q: usage carries on', plant('USAGE\n  exit 2\n}', 'USAGE\n  return 0\n}'), ['IG-09q']],
     ]
     for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
   })
@@ -1089,6 +1304,46 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     // A planted copy missing a marker lets it through, which the case above would catch.
     const missing = shellFunction(plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), 'refuse_agents') ?? ''
     expect(run(`${missing}\nrefuse_agents`, [], { GITHUB_ACTIONS: 'true' })).toBe(0)
+  })
+
+  it('b: require_terminal, run on its own with standard input and output piped, refuses', () => {
+    const fn = shellFunction(helper, 'require_terminal') ?? ''
+    expect(fn).toContain('require_terminal() {')
+    expect(run(`${fn}\nrequire_terminal`)).toBe(3)
+    // An inverted copy lets a piped run through, which the case above would catch.
+    const inverted = plant('if ! [ -t 0 ] || ! [ -t 1 ]; then', 'if [ -t 0 ] && [ -t 1 ]; then')
+    expect(run(`${shellFunction(inverted, 'require_terminal') ?? ''}\nrequire_terminal`)).toBe(0)
+  })
+
+  it('q: usage and refuse, run on their own, exit non-zero, so every refusal ends the run', () => {
+    const usage = shellFunction(helper, 'usage') ?? ''
+    const refuse = shellFunction(helper, 'refuse') ?? ''
+    expect(usage).toContain('usage() {')
+    expect(refuse).toContain('refuse() {')
+    expect(run(`${usage}\nusage\nexit 0`)).toBe(2)
+    expect(run(`${refuse}\nrefuse 'refused'\nexit 0`)).toBe(2)
+    const returns = plant(
+      `printf 'break-glass: %s\\n' "$1" >&2\n  exit 2\n}`,
+      `printf 'break-glass: %s\\n' "$1" >&2\n}`,
+    )
+    expect(run(`${shellFunction(returns, 'refuse') ?? ''}\nrefuse 'refused'\nexit 0`)).toBe(0)
+  })
+
+  it('q: a function defined twice is not extracted, so no test runs a body bash wouldn’t', () => {
+    const twice = plant(
+      '\nrefuse_agents\nrequire_terminal\n',
+      '\nrefuse_agents() {\n  :\n}\n\nrefuse_agents\nrequire_terminal\n',
+    )
+    expect(shellFunction(twice, 'refuse_agents')).toBeUndefined()
+    expect(shellFunction(plant('refuse_agents() {', 'function refuse_agents {'), 'refuse_agents')).toBeUndefined()
+    expect(shellFunction(helper, 'valid_reason')).toContain('valid_reason() {')
+  })
+
+  it('q: no function may take the name of a builtin or keyword bash lists', () => {
+    const listed = spawnSync('bash', ['-c', 'compgen -b; compgen -k'], { encoding: 'utf8' }).stdout.split('\n')
+    const names = listed.map(name => name.trim()).filter(name => name !== '')
+    expect(names.length).toBeGreaterThan(50)
+    expect(names.filter(name => !RESERVED_FUNCTION_NAMES.includes(name))).toEqual([])
   })
 
   it('d: valid_reason, run on its own, takes each reason form, refuses every near miss, an impossible date and a future one', () => {
@@ -1160,6 +1415,37 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     ]
     for (const reason of good) expect(run(check, [reason]), reason).toBe(0)
     for (const reason of bad) expect(run(check, [reason]), JSON.stringify(reason)).not.toBe(0)
+  })
+
+  it('d: a reason’s date is never after today in Singapore, so in the evening, UTC, Singapore’s next day is taken and the day after refused', () => {
+    const check = [shellFunction(helper, 'valid_date'), 'valid_date "$1"'].join('\n')
+    // A date shim first on PATH that runs the real date at 18:00 UTC on 31 Oct 2026, 02:00 on
+    // 1 Nov in Singapore, honouring TZ and -u as the real one does (GNU's -d @, else BSD's -r).
+    const real = execFileSync('bash', ['-c', 'command -v date'], { encoding: 'utf8' }).trim()
+    const epoch = Date.UTC(2026, 9, 31, 18) / 1000
+    const shims = mkdtempSync(join(tmpdir(), 'ig09-date-'))
+    try {
+      writeFileSync(
+        join(shims, 'date'),
+        [
+          '#!/bin/bash',
+          `if '${real}' -d @0 +%s >/dev/null 2>&1; then exec '${real}' -d @${epoch} "$@"; fi`,
+          `exec '${real}' -r ${epoch} "$@"`,
+          '',
+        ].join('\n'),
+      )
+      chmodSync(join(shims, 'date'), 0o755)
+      const pinned = { PATH: `${shims}:${process.env.PATH ?? ''}` }
+      expect(execFileSync(join(shims, 'date'), ['-u', '+%Y-%m-%d'], { encoding: 'utf8' }).trim()).toBe('2026-10-31')
+      for (const date of ['2026-10-31', '2026-11-01']) expect(run(check, [date], pinned), date).toBe(0)
+      for (const date of ['2026-11-02', '2027-01-01']) expect(run(check, [date], pinned), date).not.toBe(0)
+      // A copy that counts the day in UTC refuses Singapore's day, so this case would catch it.
+      const utc = check.replace('TZ=SGT-8 date +%Y-%m-%d', 'date -u +%Y-%m-%d')
+      expect(utc).not.toBe(check)
+      expect(run(utc, ['2026-11-01'], pinned)).not.toBe(0)
+    } finally {
+      rmSync(shims, { recursive: true, force: true })
+    }
   })
 
   it('n: bash parses it, a planted syntax error fails, and its mode is executable', () => {
@@ -1321,6 +1607,26 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
       '.github/workflows/ci.yml: C11-D62 no job may ask for an id-token',
       '.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone',
     ])
+    // A job's own permissions, in every spelling that grants an id-token, a uses: job's included.
+    const idToken = ['.github/workflows/ci.yml: C11-D62 no job may ask for an id-token']
+    const check = '  check:\n    needs: [secrets, audit]\n'
+    expect(planted(check, `${check}    permissions: write-all\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions:\n      "id-token": write\n`)).toEqual(idToken)
+    expect(
+      planted(
+        '  secrets:\n    uses: ./.github/workflows/secrets.yml\n',
+        '  secrets:\n    permissions:\n      id-token: write\n    uses: ./.github/workflows/secrets.yml\n',
+      ),
+    ).toEqual(idToken)
+    // An escape spells either word unseen, in a key or a value.
+    const escaped = [
+      '.github/workflows/ci.yml: C11-D62 no key or value is spelled with an escape, which could name id-token or write-all unseen',
+    ]
+    expect(planted(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual(escaped)
+    expect(planted(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual(escaped)
+    expect(planted(check, `${check}    permissions: "write\\x2Dall"\n`)).toEqual(escaped)
     expect(
       planted('      - run: npm ci\n', '      - uses: aws-actions/configure-aws-credentials@v4\n      - run: npm ci\n'),
     ).toEqual(['.github/workflows/ci.yml: C11-D62 no step takes AWS credentials'])

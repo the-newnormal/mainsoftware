@@ -1,7 +1,12 @@
 // The assured alarms (C11-D16), in Hearth-Foundation: metric filters on the organisation trail's
 // CloudWatch copy (org-trail.ts) and one alarm each, emailing management's hearth-ops-alerts topic.
 // They see every account's calls, a member account's fast rule or not, so they are the path that holds
-// when a fast rule's delivery fails (TECH-SPEC T24 item 5):
+// when a fast rule's delivery fails (TECH-SPEC T24 item 5). They can't report tampering with
+// themselves from inside management, which no guardrail binds: a HearthOrgAdmin session or
+// management's root can turn off the alarms' actions, delete them, or unsubscribe or delete the topic
+// before the copy receives those calls, minutes after they are made, so A6, and A3 for the session
+// itself, may then email nobody. The trail's files in log-archive, under Object Lock, still record
+// those calls for the quarterly review. The alarms:
 // - A1 break-glass assumed, refused attempts included (C11-D11);
 // - A2 a root sign-in or action, or a centralised root session;
 // - A3 an administrator session: HearthOrgAdmin, the first deploys' HearthSetUp, or
@@ -159,7 +164,9 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           ]),
           WRITE,
         )} }`,
-        // (b) long-lived credentials, identity providers and Cognito identity pools, flow logs
+        // (b) long-lived credentials, identity providers and Cognito identity pools, the services
+        // that hand a role's credentials to a certificate or a code (IAM Roles Anywhere, SSM's hybrid
+        // activations and the role an activated machine takes, IoT's role aliases), flow logs
         `{ ${any(
           all(
             is('eventSource', 'iam.amazonaws.com'),
@@ -176,6 +183,12 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
             oneOf('eventName', ['*OpenIDConnectProvider*', '*SAMLProvider*']),
           ),
           all(is('eventSource', 'cognito-identity.amazonaws.com'), WRITE),
+          all(is('eventSource', 'rolesanywhere.amazonaws.com'), WRITE),
+          all(
+            is('eventSource', 'ssm.amazonaws.com'),
+            oneOf('eventName', ['CreateActivation', 'UpdateManagedInstanceRole']),
+          ),
+          all(is('eventSource', 'iot.amazonaws.com'), oneOf('eventName', ['CreateRoleAlias', 'UpdateRoleAlias'])),
           all(is('eventSource', 'ec2.amazonaws.com'), is('eventName', 'DeleteFlowLogs')),
         )} }`,
         // (c) the fast alarms' rules
@@ -184,7 +197,9 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           WRITE,
           any(is('requestParameters.name', `${SEC_RULE_PREFIX}*`), is('requestParameters.rule', `${SEC_RULE_PREFIX}*`)),
         )} }`,
-        // (d) the alarm topics and their subscriptions
+        // (d) the alarm topics and their subscriptions, by whichever field the call names one in:
+        // topicArn, subscriptionArn (a subscription's filter policy among its attributes), name (a
+        // create), or resourceArn (the topic's data protection policy, tags)
         `{ ${all(
           is('eventSource', 'sns.amazonaws.com'),
           WRITE,
@@ -192,14 +207,24 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
             is('requestParameters.topicArn', `*:${OPS_TOPIC}`),
             is('requestParameters.subscriptionArn', `*:${OPS_TOPIC}:*`),
             is('requestParameters.name', OPS_TOPIC),
+            is('requestParameters.resourceArn', `*:${OPS_TOPIC}`),
           ),
         )} }`,
-        // (e) the security log groups
+        // (e) the security log groups, by whichever field the call names one in: logGroupName (a
+        // delete, a filter, retention), logGroupIdentifier, a name or an ARN (deletion protection, the
+        // data-protection, transformer and index policies), resourceIdentifier (a key by ARN) or
+        // resourceArn (tags)
         `{ ${all(
           is('eventSource', 'logs.amazonaws.com'),
           WRITE,
           '$.eventName != "CreateLogStream"',
-          is('requestParameters.logGroupName', `${SECURITY_LOG_GROUP_PREFIX}*`),
+          any(
+            is('requestParameters.logGroupName', `${SECURITY_LOG_GROUP_PREFIX}*`),
+            is('requestParameters.logGroupIdentifier', `${SECURITY_LOG_GROUP_PREFIX}*`),
+            ...['logGroupIdentifier', 'resourceIdentifier', 'resourceArn'].map(field =>
+              is(`requestParameters.${field}`, `*:log-group:${SECURITY_LOG_GROUP_PREFIX}*`),
+            ),
+          ),
         )} }`,
         // (f) the log-archive keys' administration
         `{ ${all(

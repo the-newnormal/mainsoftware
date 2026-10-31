@@ -7,10 +7,12 @@
 //
 // Patterns: a Match helper is the whole value it matches with, never wrapped in another list, and a
 // raw matcher (`[{ exists: false }]`) is written as a list itself, so no pattern holds a list inside
-// a list, which EventBridge would never match. A rule matching CloudTrail's management events is
-// switched on for them (ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS); a service event's rule stays
-// ENABLED. `$or`, `exists` and `anything-but` with `wildcard`, and ECS's rollback event, are proved by
-// a person with `aws events test-event-pattern` before they are relied on (the set-up runbook).
+// a list, which EventBridge would never match. `exists` matches only a leaf, never an object or a
+// list of objects, so a field holding objects is matched by a leaf inside them. A rule matching
+// CloudTrail's management events is switched on for them
+// (ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS); a service event's rule stays ENABLED. `$or`,
+// `exists` and `anything-but` with `wildcard`, and ECS's rollback event, are proved by a person with
+// `aws events test-event-pattern` before they are relied on (the set-up runbook).
 import * as events from 'aws-cdk-lib/aws-events'
 import type * as sns from 'aws-cdk-lib/aws-sns'
 import { Construct } from 'constructs'
@@ -52,6 +54,15 @@ const callerInput = (alarm: string) =>
 
 // An ECS RunTask call, by CloudTrail.
 const RUN_TASK = { eventSource: ['ecs.amazonaws.com'], eventName: ['RunTask'] }
+
+// A container's environment overridden, in either shape CloudTrail may record it: the API's list of
+// name and value pairs, matched by a pair's name since `exists` sees only a leaf, or that list
+// redacted to one string, since the API marks it sensitive. Which one a real RunTask carries is
+// proved with `aws events test-event-pattern` (the set-up runbook).
+const ENVIRONMENT_OVERRIDDEN = [
+  { overrides: { containerOverrides: { environment: { name: [{ exists: true }] } } } },
+  { overrides: { containerOverrides: { environment: [{ exists: true }] } } },
+]
 
 interface FastRule {
   id: string
@@ -136,7 +147,8 @@ function rulesFor(id: FastRuleId): FastRule[] {
           cloudTrail: true,
         },
         // A task run with its environment overridden, unless it is prod's readiness probe started by
-        // hearth-gh-deploy, whose override holds only the probe's targets (C11-D53).
+        // hearth-gh-deploy, whose override holds only the probe's targets (C11-D53). A pattern has one
+        // `$or`, so each shape of the override is paired with each way out of the exception.
         {
           id: 'A7RunEnvironment',
           name: `${SEC_RULE_PREFIX}a07-run-environment`,
@@ -145,15 +157,18 @@ function rulesFor(id: FastRuleId): FastRule[] {
             detailType: [CLOUDTRAIL],
             detail: {
               ...RUN_TASK,
-              requestParameters: { overrides: { containerOverrides: { environment: [{ exists: true }] } } },
-              $or: [
+              $or: ENVIRONMENT_OVERRIDDEN.flatMap(overridden => [
                 {
                   requestParameters: {
+                    ...overridden,
                     taskDefinition: [{ 'anything-but': { wildcard: `*${taskFamily('prod', 'probe')}*` } }],
                   },
                 },
-                { userIdentity: { arn: [{ 'anything-but': { wildcard: `*:assumed-role/${ROLE.ghDeploy}/*` } }] } },
-              ],
+                {
+                  requestParameters: overridden,
+                  userIdentity: { arn: [{ 'anything-but': { wildcard: `*:assumed-role/${ROLE.ghDeploy}/*` } }] },
+                },
+              ]),
             },
           },
           input: callerInput('A7'),

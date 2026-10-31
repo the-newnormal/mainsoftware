@@ -19,7 +19,8 @@ export const TOOLKIT_STACK = { base: 'CDKToolkit-hearthbase', app: 'CDKToolkit-h
 
 // The landing zone's stacks (C11-D27).
 export const STACK = { foundation: 'Hearth-Foundation', logArchive: 'Hearth-LogArchive' } as const
-export const baselineStackName = (account: 'nonprod' | 'prod') => `Hearth-${account}-Baseline`
+// A workload account's Baseline, or `*` for every Baseline, as hearth-workload-fences-2 names them.
+export const baselineStackName = (account: 'nonprod' | 'prod' | '*') => `Hearth-${account}-Baseline`
 
 // The roles the landing zone makes or fences by name: break-glass in every member account (C11-D11),
 // GitHub's deploy and plan roles in the workload accounts (C11-D55), the trail's delivery role in

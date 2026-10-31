@@ -53,13 +53,13 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 | Reason | When | What it reaches, beyond operating |
 |---|---|---|
 | `case:XXXX-XXXX` | A request's extraction: its reference from the queue, from C0.12 | The read-only login, `hearth_breakglass_read`, which C0.12 makes; never content |
-| `incident:YYYY-MM-DD-NN` | An incident, by the day it began and its number that day (`01` the first) | From C0.12, the master secret, for incident repair alone |
+| `incident:YYYY-MM-DD-NN` | An incident, by the day it began in Singapore and its number that day (`01` the first) | From C0.12, the master secret, for incident repair alone |
 | `bootstrap:set-up`, `bootstrap:correct-number` | The Owner bootstrap script's set-up, or its correction of the founder's number | The bootstrap login, `hearth_bootstrap`, and the bootstrap input secret, only to load it into the run |
 | `recover:twilio` | The Owner bootstrap script's Twilio re-clear | The bootstrap login; its document is typed, never stored |
-| `drill:YYYY-MM-DD` | A drill | Nothing more |
+| `drill:YYYY-MM-DD` | A drill, by its day in Singapore | Nothing more |
 | `lz:pr-N` | A Baseline deploy of the merged PR numbered `N` (no leading zero); from C0.12, its infra SQL | In a workload account alone, the hearthbase deploy and publishing roles, which administer the account (A15); from C0.12, the master secret |
 
-- A case reference uses the queue's own alphabet, which has no vowels, so it can't spell a name. A date is a real day, never after today.
+- A case reference uses the queue's own alphabet, which has no vowels, so it can't spell a name. A date is a real day, never after today, counted in Singapore (UTC+8): between midnight and 8 a.m. there, Singapore's date is a day ahead of UTC's, and it is the one to give.
 - In log-archive the helper takes only `incident:` and `drill:`.
 - Every session may read the stage's logs and run queries, describe the stacks, services and networking, read `/hearth/*` parameters, update a service (an incident rollback to an earlier task definition included) and stop a task; from C0.11 PR 3, run the bastion, exec into it and forward a port through it. Log-archive's role writes its own entries and triages instead: GuardDuty's and Access Analyzer's findings, CloudTrail's event history, and the configuration of the trail and break-glass-log buckets and of the keys. It reads no trail file and nothing of the archive bucket, and administers nothing.
 - The master secret, from C0.12, is for C0.12's infra SQL and incident repair alone, never to read anyone's data.
@@ -80,6 +80,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 1. In the credential-free shell, from a fresh checkout of `main` at the merged PR, synthesise the Baseline and run the asset check, as [the set-up runbook's step F](aws-account-set-up.md#f-the-landing-zone-shell-the-synth-and-the-asset-check) says.
 2. Open a session in that workload account with `lz:pr-N` (A1 and A15 alarm).
 3. In the break-glass shell, from a folder with no `cdk.json` (never that checkout's `infra/`: beside a `cdk.json` the CLI first runs any `build` command it names, with the session's credentials), with that checkout's own CLI and the assembly's path, `CHECKOUT` being the checkout's path: `"$CHECKOUT/node_modules/.bin/cdk" diff --app "$CHECKOUT/infra/cdk.out"`, read it whole, then `"$CHECKOUT/node_modules/.bin/cdk" deploy --app "$CHECKOUT/infra/cdk.out"`. Never use `npx` there, which outside the checkout would fetch the CLI from the registry, and never pass `--app` the entry itself.
+4. Watch the CLI's warnings. One that the session's credentials "could not be used to assume" `cdk-hearthbase-lookup-role-…` and it is "Proceeding anyway" is expected: the role never takes the lookup role. The same warning naming `cdk-hearthbase-deploy-role-…` or `cdk-hearthbase-file-publishing-role-…` means the chain into hearthbase was refused, and the deploy will fail on CloudFormation's AccessDenied: stop, and check (*When it stops*).
 
 ### Closing a session
 
@@ -87,7 +88,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 2. For the ids, paste the Owner bootstrap script's `committed:` line whole, which the helper reads in the exact forms the script prints; or press Enter and type each id on its own line, each checked against its shape (a UUID, a date, a case reference, a PR number or a 40-character commit), then Enter on an empty line. Never a name, a number or an address.
 3. It writes the close entry and signs you out of the access portal.
 
-If the close comes within two minutes of the session's hour, or after it, the helper takes the role again under the same reason to write the close (A1 alarms again), writing a continuation entry first under the new session's name. If the helper is stopped (Ctrl-C at its own prompts, a closed terminal), it still writes a close entry, unprompted, with outcome `stopped` and only the modes and ids you had already answered (none, if it stopped before the close's questions), and signs out. If it says a close entry wasn't written, tell the second reviewer.
+If the close comes within two minutes of the session's hour, or after it, the helper takes the role again under the same reason to write the close (A1 alarms again), writing a continuation entry first under the new session's name. If the access portal's hour has ended too, it asks you to sign in to the portal again, as yourself, with your security key, and refuses any other sign-in (another person, another permission set or another account), in which case the close isn't written. If the helper is stopped (Ctrl-C at its own prompts, a closed terminal), it still writes a close entry, unprompted, with outcome `stopped` and only the modes and ids you had already answered (none, if it stopped before the close's questions), and signs out; but a close that stops unprompted after the hour can't sign in again, so its close isn't written. Once the helper is closing, a further Ctrl-C or a closed terminal no longer stops it: it finishes the close and signs out. If it says a close entry wasn't written, tell the second reviewer.
 
 ### An id learnt later: an amend entry
 
@@ -98,10 +99,13 @@ An entry can never change, so an id learnt after the close (the DPO's person id,
 Its messages are fixed, and the AWS CLI's own errors are silenced, since they would print the account id, the bucket's name and your sign-in name; only the access portal's sign-in (`aws sso login`) prints its own. So check, in order:
 
 - "the sign-in didn't work", or "sign in with the HearthBreakGlassEntry permission set": the `hearth-<env>-entry` profile and its `sso-session` in the folder's `.aws/config`, and that you chose `HearthBreakGlassEntry` in the portal.
+- "a reason's date is never after today in Singapore": the reason's date is a later day than today in Singapore; give the day it began there. Any other reason it refuses prints only its usage: compare yours with the forms it lists.
 - "the role wasn't assumed": the reason's exact form; that you signed in with `HearthBreakGlassEntry` through the right `hearth-<env>-entry` profile; that the account's Baseline is deployed.
 - "the break-glass-log bucket's parameter wasn't read": the account's `/hearth/break-glass/log-bucket` parameter exists (its Baseline, or `Hearth-LogArchive`, makes it).
 - "the open entry wasn't written": the CLI is new enough for `--if-none-match`; nothing was done, so open it again.
 - "the close entry wasn't written": tell the second reviewer, who reconciles the session from the trail.
+- "the access portal's hour has ended too; sign in again": sign in to the portal as yourself, with your security key and `HearthBreakGlassEntry`; "that sign-in isn't the one the session opened under" means another person, set or account signed in, and the close wasn't written.
+- In a Baseline deploy under `lz:pr-N`, the CLI's warning that the session "could not be used to assume" `cdk-hearthbase-deploy-role-…` or `cdk-hearthbase-file-publishing-role-…`, "Proceeding anyway", then AccessDenied from CloudFormation: the hop into hearthbase was refused, and nothing was deployed. Check that the reason is `lz:pr-N` and the account a workload account, and that the account was bootstrapped from the committed template, whose deploy and file-publishing roles' trust takes the session's source identity ([the set-up runbook's step G](aws-account-set-up.md#g-bootstrapping-an-account)); if it wasn't, its bootstrap upgrade is tier 2.
 
 ## Tier 2
 

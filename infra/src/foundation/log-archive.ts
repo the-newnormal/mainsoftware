@@ -157,7 +157,7 @@ export class LogArchiveStack extends cdk.Stack {
       description: 'The organisation trail and the break-glass entries (C11-D13, C11-D17)',
       enableKeyRotation: true,
       pendingWindow: cdk.Duration.days(30),
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
       policy: new iam.PolicyDocument({
         minimize: false,
         statements: [
@@ -227,14 +227,16 @@ export class LogArchiveStack extends cdk.Stack {
       description: "The deletion log's archive, used by nobody until C0.17 names its readers (C11-D21)",
       enableKeyRotation: true,
       pendingWindow: cdk.Duration.days(30),
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
       policy: new iam.PolicyDocument({ minimize: false, statements: [keyAdministration, readBack] }),
     })
     cdk.Tags.of(archiveKey).add(SEC_TAG, 'true')
 
     // What every log bucket is (C11-D17, C11-D18): versioned and under Object Lock, encrypted under
-    // its key with a bucket key, private, TLS only and 1.2 or later (enforceSSL and minimumTLSVersion
-    // each write a deny into its policy), owner-enforced and retained.
+    // its key with a bucket key (but the trail's, below), private, TLS only and 1.2 or later
+    // (enforceSSL and minimumTLSVersion each write a deny into its policy), owner-enforced, and retained
+    // once made: a create that rolls back deletes it, empty, so a failed first deploy's retry isn't
+    // refused by its name. The keys are retained the same way.
     const logBucket = (kind: 'trail' | 'breakGlass' | 'archive', encryptionKey: kms.IKey): s3.BucketProps => ({
       bucketName: logBucketName(kind, account),
       versioned: true,
@@ -246,7 +248,7 @@ export class LogArchiveStack extends cdk.Stack {
       enforceSSL: true,
       minimumTLSVersion: 1.2,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE,
     })
     // Each version locked for its class's period, in the mode the owner chose (C11-D18).
     const lock = (days: number) =>
@@ -255,9 +257,14 @@ export class LogArchiveStack extends cdk.Stack {
         : s3.ObjectLockRetention.governance(cdk.Duration.days(days))
 
     // The organisation trail's files (C11-D17): CloudTrail checks the bucket's ACL and writes the
-    // organisation's and management's own files, each only for the organisation trail.
+    // organisation's and management's own files, each only for the organisation trail. This bucket
+    // alone has no bucket key: with one, making or updating a trail encrypted under SSE-KMS needs
+    // kms:Decrypt, which hearth-sec gives neither CloudTrail nor management's execution role, since
+    // that would make either a reader of the trail beside the reviewer. Each delivery then asks the
+    // key for its own data key, which at this trail's rate costs next to nothing.
     const trailBucket = new s3.Bucket(this, 'TrailBucket', {
       ...logBucket('trail', secKey),
+      bucketKeyEnabled: false,
       objectLockDefaultRetention: lock(objectLockDays('cloudtrail')),
       lifecycleRules: lockedBucketRules('cloudtrail'),
     })

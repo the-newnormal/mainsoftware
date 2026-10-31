@@ -108,7 +108,7 @@ export class BaselineStack extends cdk.Stack {
 // else (AllowAll is the one Allow of * on * the landing zone holds, IAC-10), and denies, with no
 // caller excepted: every model action; changing or detaching itself, and making a role without it;
 // long-lived credentials and new identity providers; IAM writes to the roles and names the
-// guardrails protect, and passing a Rule 9 role; the Rule 9 secrets; the audit services; deletes and
+// guardrails protect, and passing a Rule 9 or CDK role; the Rule 9 secrets; the audit services; deletes and
 // lock changes on the log-archive buckets; a route out of the VPC; and AWS's own SMS. A role takes
 // one boundary, so it can't be split: it stays within a managed policy's 6,144 characters, which
 // IAC-10 measures, and were it to grow past them, the SMS statements go first and then the route-out
@@ -167,7 +167,14 @@ class Boundary extends Construct {
             iamArn(`role/${SSO_ROLE_PATH}*`),
           ],
         },
-        { Sid: 'Rule9PassRole', Effect: 'Deny', Action: 'iam:PassRole', Resource: iamArn('role/hearth-*-rule9-*') },
+        // Passing a Rule 9 role, or a CDK role: CloudFormation or another service would then act as it,
+        // which no AssumeRole fence sees.
+        {
+          Sid: 'FencedPassRole',
+          Effect: 'Deny',
+          Action: 'iam:PassRole',
+          Resource: [iamArn('role/hearth-*-rule9-*'), iamArn('role/cdk-*')],
+        },
         ...rule9SecretDenies(),
         {
           Sid: 'NoAudit',
@@ -180,6 +187,8 @@ class Boundary extends Construct {
         ...smsDenies(),
       ]),
     })
-    this.policy.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN)
+    // Retained once made, but deleted when the create that made it rolls back, so a failed first
+    // deploy leaves no policy behind to refuse its retry by name.
+    this.policy.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
   }
 }
