@@ -40,7 +40,9 @@ jobs:
   # (npm run db:reset), the integration tests (npm run test:integration), the server's start-up
   # check (scripts/check-server.sh) from source and from the image, and the image's migrate step.
   # The tests include the guards in scripts/guards/ (no AI packages, no secret-shaped VITE_
-  # variables, files the server loads that Node can run). Keep CLAUDE.md (Testing and CI) in step
+  # variables, files the server loads that Node can run). From C0.11 PR 2 it also synthesises the
+  # landing-zone entry over the fixture with the CDK CLI (npm run synth:lz -w @hearth/infra) straight
+  # after the tests, credential-free and offline (C11-D62). Keep CLAUDE.md (Testing and CI) in step
   # with this job. It waits for secrets and audit, so it gates merging on them too. From C0.8 it
   # also installs Playwright's browsers, checks the web bundle against its budget and scans what it
   # ships (scripts/check-web-dist.ts) straight after the build, and runs the web app's end-to-end
@@ -78,6 +80,12 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      # The landing-zone entry over the fictional fixture (C0.11 PR 2, C11-D62): the CDK CLI proves Node
+      # loads bin/landing-zone.ts and that aws-cdk-lib and the CLI agree; infra's assertion tests already
+      # ran in npm test. No AWS call: the script drops every inherited variable but PATH and HOME, points
+      # the AWS config and credentials files at /dev/null and turns off lookups, notices, telemetry and the
+      # version check. PR 3 adds the workload entry's synth beside it.
+      - run: npm run synth:lz -w @hearth/infra
       # The Rule 1-9 access suite, case by case, todos included, so CI lists every rule
       # (BUILD-PLAN C0.4, T10). `npm test` above already ran it; this prints the names.
       - run: npx vitest run packages/access/rules.test.ts --reporter=verbose

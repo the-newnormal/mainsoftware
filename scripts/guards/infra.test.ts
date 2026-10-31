@@ -1,18 +1,24 @@
 // The infra source guard (IG, C0.11; TECH-SPEC T24 item 28): what the CDK app's source must and
 // mustn't hold, before any template is synthesised. Each case is first proved on planted text, then
 // held over the repository. The templates themselves are the assertion tests' (IAC, infra/**/*.test.ts).
-// Cases so far: IG-01 to IG-08 and IG-11; IG-09, IG-10 and IG-12 join with C0.11 PR 2. This file and
-// infra.ts are on the owner's-read list (C11-D74).
-import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script and ci.yml step.
+// This file and infra.ts are on the owner's-read list (C11-D74).
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
+import { CASE_REFERENCE_PATTERN, type CaseReference, formatCaseReference } from '../../packages/shared/src/cases.ts'
+import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import type { Workspace } from './boundaries'
 import { ACCOUNT_ID, PHONE_NUMBER } from './identifying'
 import { importsOf, withoutComments } from './imports'
 import {
   ALLOWED_CUSTOM_RESOURCE,
+  ASSET_RULES,
+  breakGlassFindings,
   cdkJsonProblems,
+  ciSynthProblems,
   DESTROY_RULES,
   GROUP_ID,
   IDENTITY_CENTER_ID,
@@ -22,16 +28,23 @@ import {
   infraImportProblem,
   LAMBDA_RULES,
   LOOKUP_RULES,
+  MODEL_MODULES,
+  modelModuleFindings,
+  modelStringFindings,
   ORGANIZATIONS_ID,
   packageFindings,
   readsForIdentifying,
+  reasonFormLines,
   regionFindings,
   ruleFindings,
   scriptFindings,
+  shellFunction,
+  synthScriptProblems,
   testImportFindings,
   workloadGraphFindings,
 } from './infra'
 import { isScript, readRepoFile, repoFiles, root } from './repo-files'
+import { workflowJobs } from './workflow'
 
 const files = repoFiles()
 const infraScripts = files.filter(path => path.startsWith('infra/') && isScript(path))
@@ -44,7 +57,7 @@ const workspaces: Workspace[] = files
   })
 
 describe('IG: the guard reads the infra workspace', () => {
-  it('finds both entries, the configuration and its tests, so no rule passes by reading nothing', () => {
+  it('finds both entries, the configuration and its tests, the landing zone, the helper and the bootstrap template, so no rule passes by reading nothing', () => {
     expect(infraScripts).toEqual(
       expect.arrayContaining([
         'infra/bin/workload.ts',
@@ -53,8 +66,14 @@ describe('IG: the guard reads the infra workspace', () => {
         'infra/src/config/models.ts',
         'infra/src/config/profiles.ts',
         'infra/src/testing/fixture.ts',
+        'infra/scripts/bootstrap-template.ts',
+        'infra/src/foundation/guardrails.ts',
+        'infra/src/foundation/log-archive.ts',
+        'infra/src/baseline/break-glass.ts',
+        'infra/src/aspects/nag.ts',
       ]),
     )
+    expect(files).toEqual(expect.arrayContaining(['infra/bin/break-glass.sh', 'infra/bootstrap/hearth-bootstrap.yaml']))
   })
 })
 
@@ -214,9 +233,12 @@ describe('IG-04: nothing stateful or log-holding given away or made deletable', 
       "new ecr.Repository(this, 'r', { emptyOnDelete: true })",
       'bucket.grants.read(role)',
       'bucket.grantRead(role)',
+      // ECR's auto-delete, which empties a repository through a Lambda (C11-D44).
+      "new ecr.Repository(this, 'r', { autoDeleteImages: true })",
+      "new ecr.Repository(this, 'r', { imageScanOnPush: true })",
     ]
     expect(planted.map(line => ruleFindings('x.ts', line, DESTROY_RULES).length)).toEqual([
-      1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+      1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0,
     ])
   })
 
@@ -719,5 +741,469 @@ describe('IG-11 (C11-D29): no Lambda and no custom resource of infra’s own', (
   it('no infra script makes one, and none but a test imports a test', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), LAMBDA_RULES))).toEqual([])
     expect(infraScripts.flatMap(path => testImportFindings(path, importsOf(readRepoFile(path), path)))).toEqual([])
+  })
+})
+
+describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, isolates itself, and never exposes a credential', () => {
+  const HELPER = 'infra/bin/break-glass.sh'
+  const helper = readRepoFile(HELPER)
+  const rules = (text: string) =>
+    [...new Set(breakGlassFindings(HELPER, text).map(f => /IG-09[a-p]/.exec(f)?.[0]))].sort()
+  // A planted copy: the helper with one text changed, which must be there exactly once.
+  const plant = (from: string, to: string, base = helper) => {
+    expect(base.split(from).length - 1, from).toBe(1)
+    return base.replace(from, () => to)
+  }
+  // The helper's functions run on their own, as bash runs them, with nothing inherited but PATH and
+  // what the case sets: CI sets CI and GITHUB_ACTIONS, and a Claude Code shell its own markers, so an
+  // inherited environment would refuse the case with none.
+  const run = (script: string, args: readonly string[] = [], env: Record<string, string> = {}) =>
+    spawnSync(
+      'env',
+      [
+        '-i',
+        `PATH=${process.env.PATH ?? ''}`,
+        ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+        'bash',
+        '-c',
+        script,
+        '_',
+        ...args,
+      ],
+      { encoding: 'utf8' },
+    ).status
+
+  it('the helper passes every rule', () => {
+    expect(breakGlassFindings(HELPER, helper)).toEqual([])
+  })
+
+  it('finds each breakage planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const cases: Array<[string, string, string[]]> = [
+      ['a: another first statement', plant('set -euo pipefail\n', 'set -eu\n'), ['IG-09a']],
+      ['a: a trace', plant('set -f\n', 'set -f\nset -x\n'), ['IG-09a']],
+      ['a: a trace descriptor', plant('set -f\n', 'set -f\nexport BASH_XTRACEFD=7\n'), ['IG-09a']],
+      ['b: a marker missing', plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), ['IG-09b']],
+      ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b']],
+      [
+        'b: refused after the first aws command',
+        plant(
+          'aws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\nrefuse_agents\n',
+          plant('\nrefuse_agents\nrequire_terminal\n', '\nrequire_terminal\n'),
+        ),
+        ['IG-09b'],
+      ],
+      ['c: no C locale', plant('export LC_ALL=C\n', ''), ['IG-09c']],
+      ['c: no umask', plant('umask 077\n', ''), ['IG-09c']],
+      [
+        'd: a check that names aws',
+        plant('local reason="$1" form matches=0 rest', 'local reason="$1" form matches=0 rest cli=aws'),
+        ['IG-09d'],
+      ],
+      ['d: no date check', plant('valid_date() {', 'check_date() {'), ['IG-09d']],
+      [
+        'd: the reason checked after the first aws command',
+        plant(
+          "command -v jq >/dev/null 2>&1 || refuse 'refused: it needs jq'\n",
+          'command -v jq >/dev/null 2>&1 || refuse \'refused: it needs jq\'\nif ! valid_reason "$reason"; then usage; fi\n',
+          plant('if ! valid_reason "$reason"; then usage; fi\n', ''),
+        ),
+        ['IG-09d'],
+      ],
+      ['e: no regional STS', plant('export AWS_STS_REGIONAL_ENDPOINTS=regional\n', ''), ['IG-09e']],
+      ['e: the caller’s HOME', plant('export HOME="$BG_HOME"\n', ''), ['IG-09e']],
+      [
+        'e: a profile inherited',
+        plant('unset AWS_PROFILE AWS_DEFAULT_PROFILE ', 'unset AWS_DEFAULT_PROFILE '),
+        ['IG-09e'],
+      ],
+      [
+        'f: no mode check',
+        plant(
+          'if [ -z "$(find "$BG_HOME" -maxdepth 0 -type d -user "$(id -u)" -perm 700 2>/dev/null)" ]; then',
+          'if [ ! -d "$BG_HOME" ]; then',
+        ),
+        ['IG-09f'],
+      ],
+      ['g: a pager', plant('export AWS_PAGER=\n', ''), ['IG-09g']],
+      ['g: history unchecked', helper.replaceAll('get cli_history', 'get cli_pager'), ['IG-09g']],
+      [
+        'h: the trap after the sign-in',
+        plant(
+          'trap \'on_exit\' EXIT INT TERM HUP\naws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\ntrap \'on_exit\' EXIT INT TERM HUP\n',
+        ),
+        ['IG-09h'],
+      ],
+      [
+        'h: no sign-out',
+        plant('  aws sso logout >/dev/null 2>&1 || true\n  exit "$status"', '  exit "$status"'),
+        ['IG-09h'],
+      ],
+      ['i: a credential printed', afterAssume('echo "$AWS_SESSION_TOKEN"'), ['IG-09i', 'IG-09o']],
+      ['i: a credential exported', afterAssume('export AWS_SESSION_TOKEN'), ['IG-09i']],
+      ['i: a credential written', afterAssume('printf \'%s\' "$sk" >"$entry_file"'), ['IG-09i', 'IG-09o']],
+      ['i: eval', afterAssume('eval "$reason"'), ['IG-09i']],
+      ['i: env alone', afterAssume('env'), ['IG-09i']],
+      ['i: declare -p', afterAssume('declare -p'), ['IG-09i']],
+      [
+        'i: --debug',
+        plant('aws sso login --profile "$profile"\n', 'aws sso login --profile "$profile" --debug\n'),
+        ['IG-09i'],
+      ],
+      ['i: a config write', afterAssume('aws configure set region ap-southeast-1'), ['IG-09i']],
+      [
+        'j: no reason tag',
+        plant('--source-identity "$user" --tags "Key=hearth-reason,Value=$reason" \\', '--source-identity "$user" \\'),
+        ['IG-09j'],
+      ],
+      ['j: two hours', plant('--duration-seconds 3600 --query', '--duration-seconds 7200 --query'), ['IG-09j']],
+      [
+        'j: a second assumption',
+        afterAssume('aws sts assume-role --role-arn "$role" --role-session-name x >/dev/null'),
+        ['IG-09j'],
+      ],
+      [
+        'k: an entry as JSON text',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  printf \'%s\' "{\\"reason\\":\\"$reason\\"}" >"$entry_file"\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: an entry that may overwrite',
+        plant("--checksum-algorithm SHA256 --if-none-match '*' >/dev/null", '--checksum-algorithm SHA256 >/dev/null'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the open entry after the shell',
+        plant(
+          'open_session\nif [ "$console" = yes ]; then open_console; fi\nrun_shell\n',
+          'run_shell\nopen_session\nif [ "$console" = yes ]; then open_console; fi\n',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close entry before the shell',
+        plant('run_shell\nclose_session prompted\n', 'close_session prompted\nrun_shell\n'),
+        ['IG-09k'],
+      ],
+      [
+        'l: curl outside the console',
+        afterAssume("curl -fsS --data-urlencode 'Session@-' https://signin.aws.amazon.com/federation"),
+        ['IG-09l'],
+      ],
+      [
+        'l: curl elsewhere',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://sign-in.example.org/federation 2>/dev/null',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: the link printed always',
+        plant('if [ "$console" = yes ]; then open_console; fi\n', 'open_console\n'),
+        ['IG-09l'],
+      ],
+      [
+        'm: another environment',
+        plant('nonprod | prod | log-archive) ;;', 'nonprod | prod | log-archive | dev) ;;'),
+        ['IG-09m'],
+      ],
+      [
+        'm: log-archive takes any reason',
+        plant('incident:* | drill:*) ;;', 'incident:* | drill:* | lz:*) ;;'),
+        ['IG-09m'],
+      ],
+      [
+        'o: a credential through env',
+        afterAssume('env AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      ['o: a credential as an argument', afterAssume('aws s3 ls --secret "$sk"'), ['IG-09o']],
+      [
+        'o: the session in curl’s arguments',
+        plant("--data-urlencode 'Session@-'", '--data-urlencode "Session=$st"'),
+        ['IG-09o'],
+      ],
+      [
+        'p: the amend starts the shell',
+        plant(
+          "  printf 'break-glass: amend entry written\\n'\n",
+          "  printf 'break-glass: amend entry written\\n'\n  run_shell\n",
+        ),
+        ['IG-09k', 'IG-09p'],
+      ],
+      [
+        'p: the amend opens the console',
+        plant(
+          "  printf 'break-glass: amend entry written\\n'\n",
+          "  printf 'break-glass: amend entry written\\n'\n  open_console\n",
+        ),
+        ['IG-09p'],
+      ],
+      [
+        'p: the amend stays signed in',
+        plant("  st=''\n  aws sso logout >/dev/null 2>&1 || true\n}\n\n# A console", "  st=''\n}\n\n# A console"),
+        ['IG-09p'],
+      ],
+      [
+        'p: --console beside --amend',
+        plant(
+          'if [ -n "$amend" ] && [ "$console" = yes ]; then refuse \'refused: --amend opens no console\'; fi\n',
+          '',
+        ),
+        ['IG-09p'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  })
+
+  it('b: refuse_agents names exactly the Owner bootstrap script’s agent markers, refuses each set alone, even empty, and passes with none', () => {
+    const fn = shellFunction(helper, 'refuse_agents') ?? ''
+    expect(fn).toContain('refuse_agents() {')
+    expect(run(`${fn}\nrefuse_agents`)).toBe(0)
+    for (const marker of AGENT_MARKERS) {
+      expect(run(`${fn}\nrefuse_agents`, [], { [marker]: '' }), marker).not.toBe(0)
+      expect(run(`${fn}\nrefuse_agents`, [], { [marker]: '1' }), marker).not.toBe(0)
+    }
+    // A planted copy missing a marker lets it through, which the case above would catch.
+    const missing = shellFunction(plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), 'refuse_agents') ?? ''
+    expect(run(`${missing}\nrefuse_agents`, [], { GITHUB_ACTIONS: 'true' })).toBe(0)
+  })
+
+  it('d: valid_reason, run on its own, takes each reason form, refuses every near miss, an impossible date and a future one', () => {
+    const check = [
+      ...reasonFormLines(helper),
+      shellFunction(helper, 'valid_date'),
+      shellFunction(helper, 'valid_reason'),
+      'valid_reason "$1"',
+    ].join('\n')
+    expect(reasonFormLines(helper)).toHaveLength(6)
+    // References made from CASE_REFERENCE_PATTERN's own alphabet, each letter it allows first.
+    const [letters = '', symbols = ''] = [...CASE_REFERENCE_PATTERN.source.matchAll(/\[([^\]]+)\]/g)].map(([, body]) =>
+      (body ?? '').replace(/(.)-(.)/g, (_, a: string, b: string) =>
+        Array.from({ length: b.charCodeAt(0) - a.charCodeAt(0) + 1 }, (_, i) =>
+          String.fromCharCode(a.charCodeAt(0) + i),
+        ).join(''),
+      ),
+    )
+    const references = [...letters].map((first, i) => {
+      const pick = (k: number) => symbols[(i * 5 + k) % symbols.length] ?? ''
+      const reference = `${first}${pick(1)}${pick(2)}${pick(3)}${letters[(i + 2) % letters.length]}${pick(4)}${pick(5)}${pick(6)}`
+      expect(CASE_REFERENCE_PATTERN.test(reference), reference).toBe(true)
+      return `case:${formatCaseReference(reference as CaseReference)}`
+    })
+    const future = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10)
+    const good = [
+      ...references,
+      'incident:2026-10-31-01',
+      'bootstrap:set-up',
+      'bootstrap:correct-number',
+      'recover:twilio',
+      'drill:2026-10-31',
+      'drill:2024-02-29',
+      'lz:pr-1',
+      'lz:pr-42',
+      'lz:pr-99999',
+    ]
+    const bad = [
+      'Jane Tan',
+      'case:BACD-FGHJ',
+      'case:BYCD-FGHJ',
+      'case:B0CD-FGHJ',
+      'case:B1CD-FGHJ',
+      'case:BLCD-FGHJ',
+      'case:b2cd-fghj',
+      'case:2BCD-FGHJ',
+      'case:Jane-Tans',
+      'incident:2026-1-31-01',
+      'incident:2026-02-30-01',
+      'drill:2025-02-29',
+      'drill:2026-13-01',
+      `drill:${future}`,
+      `incident:${future}-01`,
+      'lz:pr-0',
+      'lz:pr-123456',
+      'bootstrap:other',
+      'recover:aws',
+      'recover:twilio ',
+      'lz:pr-1\nlz:pr-2',
+      'incident:٢٠٢٦-10-31-01',
+      '',
+    ]
+    for (const reason of good) expect(run(check, [reason]), reason).toBe(0)
+    for (const reason of bad) expect(run(check, [reason]), JSON.stringify(reason)).not.toBe(0)
+  })
+
+  it('n: bash parses it, a planted syntax error fails, and its mode is executable', () => {
+    expect(spawnSync('bash', ['-n', join(root, HELPER)]).status).toBe(0)
+    expect(spawnSync('bash', ['-n', '-c', plant('\nrun_shell\n', '\nif run_shell\n')]).status).not.toBe(0)
+    const staged = execFileSync('git', ['ls-files', '-s', HELPER], { cwd: root, encoding: 'utf8' })
+    if (staged === '') expect(statSync(join(root, HELPER)).mode & 0o111).toBe(0o111)
+    else expect(staged.startsWith('100755 ')).toBe(true)
+  })
+})
+
+describe('IG-10 (C11-D06): the model lists live in infra/src/config/models.ts alone', () => {
+  const [prefix = ''] = MODEL_SERVICE_PREFIXES
+  const [action = ''] = MODEL_ACTIONS
+  const moduleName = prefix.replace(/-/g, '')
+  // A pattern that overlaps the first model action without naming it whole: its service and the start
+  // of its action, then a wildcard.
+  const overlapping = `${action.slice(0, action.indexOf(':') + 4)}*`
+
+  it('finds a model string in TypeScript, shell and YAML, built from the lists, and lets the rest through', () => {
+    const typescript = [
+      `const a = '${prefix}:Invoke'`,
+      `const b = \`${action}\``,
+      "const c = 'sts:AssumeRole'",
+      "const d = 'sms-voice:*'",
+      "const e = 'cloudwatch:*'",
+      `// ${action}, named in a comment`,
+      // A template whose service is a hole names no service, which keeps models.test.ts legal.
+      `const f = \`\${p}:*\``,
+      `const g = '${overlapping}'`,
+    ].join('\n')
+    const found = modelStringFindings('infra/src/x.ts', typescript).map(f => /:(\d+):/.exec(f)?.[1])
+    expect(found).toEqual(['1', '2', '8'])
+    expect(modelStringFindings('infra/bin/x.sh', `# ${action}\nX='${prefix}:*'\n`)).toHaveLength(2)
+    expect(modelStringFindings('infra/bootstrap/x.yaml', `Action: ${prefix}:*\n`)).toHaveLength(1)
+    expect(modelStringFindings('infra/src/config/models.ts', `const a = '${prefix}:*'`)).toEqual([])
+    expect(modelStringFindings('infra/bootstrap/hearth-bootstrap.yaml', `"${prefix}:*"`)).toEqual([])
+    expect(modelStringFindings('apps/server/src/x.ts', `const a = '${prefix}:*'`)).toEqual([])
+  })
+
+  it('finds a model service’s aws-cdk-lib module, imported or reached through the root', () => {
+    const planted = [
+      `import * as m from 'aws-cdk-lib/aws-${moduleName}'`,
+      `export { CfnX } from 'aws-cdk-lib/aws-${moduleName}'`,
+      `new cdk.aws_${moduleName}.CfnX(this, 'x', {})`,
+      "import * as s3 from 'aws-cdk-lib/aws-s3'",
+      "import * as chime from 'aws-cdk-lib/aws-chime'",
+      `// aws_${moduleName} in a comment`,
+    ]
+    expect(
+      planted.map(line => modelModuleFindings('infra/src/x.ts', line, withoutComments('infra/src/x.ts', line)).length),
+    ).toEqual([1, 1, 1, 0, 0, 0])
+  })
+
+  it('refuses real aws-cdk-lib modules, so the derivation isn’t vacuous, and leaves services with only some model actions', () => {
+    const exported = Object.keys(JSON.parse(readRepoFile('node_modules/aws-cdk-lib/package.json')).exports)
+      .filter(key => key.startsWith('./aws-'))
+      .map(key => key.slice('./aws-'.length))
+    const refused = exported.filter(name => MODEL_MODULES.includes(name))
+    for (const name of [
+      'bedrock',
+      'bedrockagentcore',
+      'bedrockmantle',
+      'sagemaker',
+      'qbusiness',
+      'quicksight',
+      'transcribe',
+      'wisdom',
+      'devopsagent',
+    ]) {
+      expect(refused, name).toContain(name)
+    }
+    for (const name of ['chime', 'connect', 'glue', 'datazone', 'neptune', 'cloudwatch', 'iotsitewise']) {
+      expect(exported, name).toContain(name)
+      expect(refused, name).not.toContain(name)
+    }
+  })
+
+  it('no file under infra/ but models.ts and the generated template names one, and no infra script imports one', () => {
+    const read = files.filter(path => path.startsWith('infra/'))
+    expect(read).toEqual(
+      expect.arrayContaining(['infra/bin/break-glass.sh', 'infra/cdk.json', 'infra/src/config/models.test.ts']),
+    )
+    expect(read.flatMap(path => modelStringFindings(path, readRepoFile(path)))).toEqual([])
+    expect(infraScripts.flatMap(path => modelModuleFindings(path, readRepoFile(path), code(path)))).toEqual([])
+  })
+})
+
+describe('IG-12 (C11-D76): no asset the CLI would run or build', () => {
+  it('finds each on planted code, and lets the rest through', () => {
+    const planted = [
+      "stack.synthesizer.addFileAsset({ sourceHash: h, executable: ['sh', '-c', 'x'] })",
+      "stack.synthesizer.addDockerImageAsset({ sourceHash: h, directoryName: '.' })",
+      'const source = { executable }',
+      "source['executable'] = []",
+      "new NodejsFunction(this, 'f', { bundling: { minify: true } })",
+      "const image = cdk.DockerImage.fromBuild('.')",
+      "stack.synthesizer.addFileAsset({ sourceHash: h, fileName: 'a.template.json' })",
+      '// an executable is never set',
+      'const runnable = isExecutable(source)',
+    ]
+    expect(
+      planted.map(line => ruleFindings('infra/src/x.ts', withoutComments('infra/src/x.ts', line), ASSET_RULES).length),
+    ).toEqual([1, 2, 1, 1, 1, 1, 0, 0, 0])
+    // An assertion test names what IAC-22 looks for in an asset manifest; it may not make one.
+    const test = 'infra/bin/entries.test.ts'
+    expect(ruleFindings(test, 'expect(source.executable).toBeUndefined()', ASSET_RULES)).toEqual([])
+    expect(ruleFindings(test, 'stack.synthesizer.addDockerImageAsset({ sourceHash: h })', ASSET_RULES)).toHaveLength(1)
+  })
+
+  it('no infra script but a test names one', () => {
+    expect(infraScripts.flatMap(path => ruleFindings(path, code(path), ASSET_RULES))).toEqual([])
+  })
+})
+
+describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it after the tests with no AWS credential', () => {
+  const synth: string = JSON.parse(readRepoFile('infra/package.json')).scripts['synth:lz']
+
+  it('the script drops the environment, makes a HOME, and synthesises the landing-zone entry with no lookups', () => {
+    expect(synthScriptProblems(synth)).toEqual([])
+    expect(scriptFindings('infra/package.json', { scripts: { 'synth:lz': synth } })).toEqual([])
+  })
+
+  it('finds each change planted in a copy', () => {
+    const changed = (from: string, to: string) => {
+      expect(synth).toContain(from)
+      return synthScriptProblems(synth.replace(from, () => to))
+    }
+    const env = expect.stringMatching(/C11-D62 sets exactly /)
+    expect(changed('HEARTH_FIXTURE=1', 'AWS_PROFILE=x HEARTH_FIXTURE=1')).toEqual([env])
+    expect(changed('HOME="$(mktemp -d)"', 'HOME="$HOME"')).toEqual([env])
+    expect(changed(' --no-lookups', '')).toEqual(['infra/package.json synth:lz: C11-D62 passes --no-lookups'])
+    expect(changed(' --quiet', ' --quiet --profile x')).toEqual([
+      'infra/package.json synth:lz: C11-D62 passes no --profile',
+    ])
+    expect(changed('env -i ', '')).toEqual([
+      'infra/package.json synth:lz: C11-D62 starts with env -i, dropping every inherited variable',
+      env,
+    ])
+    expect(changed("--app 'node bin/landing-zone.ts'", "--app 'node bin/workload.ts'")).toEqual([
+      "infra/package.json synth:lz: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'",
+    ])
+  })
+
+  it('ci.yml runs it straight after npm test, and holds no id-token, credentials action or AWS_ variable', () => {
+    const ci = readRepoFile('.github/workflows/ci.yml')
+    const stepsOf = (text: string) => workflowJobs(text).find(job => job.id === 'check')?.steps ?? []
+    expect(stepsOf(ci).length).toBeGreaterThan(10)
+    expect(ciSynthProblems(ci, stepsOf(ci))).toEqual([])
+    const planted = (from: string, to: string) => {
+      expect(ci).toContain(from)
+      const text = ci.replace(from, () => to)
+      return ciSynthProblems(text, stepsOf(text))
+    }
+    expect(planted('      - run: npm run synth:lz -w @hearth/infra\n', '')).toEqual([
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test',
+    ])
+    expect(planted('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n')).toEqual([
+      '.github/workflows/ci.yml: C11-D62 no job may ask for an id-token',
+      '.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone',
+    ])
+    expect(
+      planted('      - run: npm ci\n', '      - uses: aws-actions/configure-aws-credentials@v4\n      - run: npm ci\n'),
+    ).toEqual(['.github/workflows/ci.yml: C11-D62 no step takes AWS credentials'])
+    expect(
+      planted('      - run: npm ci\n', '      - run: npm ci\n        env:\n          AWS_REGION: ap-southeast-1\n'),
+    ).toEqual(['.github/workflows/ci.yml: C11-D62 no line sets an AWS_ variable'])
   })
 })

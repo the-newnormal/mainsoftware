@@ -2,14 +2,14 @@
 // proves each on planted text and then holds the repository to it. This file and infra.test.ts are on
 // the owner's-read list (C11-D74): they hold the rules every infra change is checked against.
 //
-// Cases so far (C0.11 PR 1): IG-01 to IG-08 and IG-11. IG-09 (the break-glass helper), IG-10 (the
-// model lists' one home) and IG-12 (no executable assets) join with C0.11 PR 2, which brings the code
-// they read.
+// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12.
 import { posix } from 'node:path'
 import ts from 'typescript'
+import { globsOverlap, MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
+import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { boundaryBreach, landsIn, type Workspace } from './boundaries'
 import { identifyingMatches } from './identifying'
-import { packageOf } from './imports'
+import { importsOf, packageOf } from './imports'
 
 // One finding: where, and the rule's reason. Never the value that matched.
 export type Finding = string
@@ -157,6 +157,11 @@ export const DESTROY_RULES: readonly CodeRule[] = [
     id: 'IG-04',
     pattern: /\bautoDeleteObjects\b/,
     why: 'auto-delete empties a bucket through a Lambda, outside the deletion code',
+  },
+  {
+    id: 'IG-04',
+    pattern: /\bautoDeleteImages\b/,
+    why: 'auto-delete empties a repository through a Lambda, outside the deletion code',
   },
   {
     id: 'IG-04',
@@ -781,6 +786,576 @@ export function packageFindings(specifiers: ReadonlyMap<string, readonly string[
       const name = packageOf(spec)
       if (name !== undefined) found.push(`${path}: IG-08 loads ${name}, but runs without npm ci`)
     }
+  }
+  return found
+}
+
+// --- IG-09: the break-glass helper (infra/bin/break-glass.sh; C11-D11 to C11-D15) ---------------
+
+// The helper's commands as IG-09 reads them: whole-line comments dropped (the shebang kept), lines
+// continued by a trailing backslash joined, and a here-document's body joined to the command that
+// opens it (it is that command's input), each with the number of its first line. The helper runs top
+// to bottom with every function defined before its first use, so a line's place in this list is its
+// place in the run, which the order rules read.
+export interface ShellLine {
+  line: number
+  text: string
+}
+
+const HEREDOC = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_]\w*)\2/
+
+export function shellLines(text: string): ShellLine[] {
+  const raw = text.split('\n')
+  const lines: ShellLine[] = []
+  let current: ShellLine | undefined
+  for (let i = 0; i < raw.length; i++) {
+    const line = raw[i] ?? ''
+    if (current === undefined && /^\s*#/.test(line) && !(i === 0 && line.startsWith('#!'))) continue
+    if (current === undefined && line.trim() === '') continue
+    const part = (line.endsWith('\\') ? line.slice(0, -1) : line).trim()
+    current = current === undefined ? { line: i + 1, text: part } : { ...current, text: `${current.text} ${part}` }
+    if (line.endsWith('\\')) continue
+    const heredoc = HEREDOC.exec(current.text)
+    if (heredoc !== null) {
+      const strip = heredoc[1] === '-'
+      while (i + 1 < raw.length) {
+        i += 1
+        const body = raw[i] ?? ''
+        if ((strip ? body.replace(/^\t+/, '') : body) === heredoc[3]) break
+        current.text += `\n${body}`
+      }
+    }
+    lines.push(current)
+    current = undefined
+  }
+  if (current !== undefined) lines.push(current)
+  return lines
+}
+
+// Each function the helper defines, `name() {` to the next line that is `}` alone, by name, as the
+// indices of its body's lines.
+export function shellFunctions(lines: readonly ShellLine[]): Map<string, { start: number; end: number }> {
+  const found = new Map<string, { start: number; end: number }>()
+  for (let i = 0; i < lines.length; i++) {
+    const name = /^([A-Za-z_]\w*)\(\) \{$/.exec(lines[i]?.text ?? '')?.[1]
+    if (name === undefined) continue
+    const end = lines.findIndex((line, j) => j > i && line.text === '}')
+    if (end < 0) break
+    found.set(name, { start: i + 1, end })
+    i = end
+  }
+  return found
+}
+
+// A function's text as the helper writes it, definition and all, for IG-09 to run on its own, or
+// undefined when the helper has no such function.
+export function shellFunction(text: string, name: string): string | undefined {
+  const lines = text.split('\n')
+  const start = lines.indexOf(`${name}() {`)
+  if (start < 0) return undefined
+  const end = lines.indexOf('}', start + 1)
+  return end < 0 ? undefined : lines.slice(start, end + 1).join('\n')
+}
+
+// The helper's REASON_FORM_* assignments, which its reason check reads.
+export const reasonFormLines = (text: string): string[] =>
+  text.split('\n').filter(line => /^REASON_FORM_[A-Z]+='[^']*'$/.test(line))
+
+// An `aws` command word: aws then a space, not part of a longer word or path (aws-cli/2. is a version
+// string, and no message or here-document in the helper says "aws ").
+const AWS_WORD = /(?<![\w./-])aws\s/
+const CREDENTIAL_ENV = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'] as const
+const CREDENTIAL_NAMES =
+  /\b(?:AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AccessKeyId|SecretAccessKey|SessionToken)\b/
+// A command that writes: echo, printf, cat, tee or logger, or a redirect to a file. A redirect to
+// /dev/null, or from one descriptor to another, writes nowhere.
+const WRITER = /(?:^|[\s;&|(])(?:echo|printf|cat|tee|logger)(?=\s|$)/
+const REDIRECT = /&?>>?\s*(&?)([^\s;&|)<>]*)/g
+const writes = (text: string): boolean =>
+  WRITER.test(text) || [...text.matchAll(REDIRECT)].some(([, dup, target]) => dup !== '&' && target !== '/dev/null')
+// What the helper may never run: a trace, anything that prints the environment or variables, a
+// debug flag, eval, or a change to the CLI's configuration.
+const TRACE = /\bset\s+(?:-[A-Za-z]*x|-o\s+xtrace)|\bbash\s+-[A-Za-z]*x|BASH_XTRACEFD/
+const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
+  [/(?:^|[\s;&|(])(?:env|printenv)\s*(?:$|[;&|)])/m, 'env or printenv alone prints every variable'],
+  [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
+  [/\b(?:declare|typeset|export|readonly)\s+-[A-Za-z]*p\b/, 'it prints variables'],
+  [/(?:^|[;&|]\s*|\bthen\s+|\bdo\s+|\belse\s+)set\s*(?:$|[;&|])/m, 'set alone prints every variable'],
+  [/--debug\b/, '--debug prints requests, credentials among them'],
+  [/(?:^|[\s;&|(])eval(?:\s|$)/, 'eval runs text as code'],
+  [/\baws\s+configure\s+set\b/, 'aws configure set writes to the CLI configuration'],
+]
+
+// The variables the helper reads the role's credentials into: the first three a `read -r` on the
+// assume-role line fills, which its --query lists as the key id, the secret and the token.
+function credentialVariables(lines: readonly ShellLine[]): string[] {
+  const assume = lines.find(line => /\baws\s+sts\s+assume-role\b/.test(line.text))
+  const read = assume === undefined ? null : /\bread\s+-r\s+(\w+)\s+(\w+)\s+(\w+)/.exec(assume.text)
+  return read === null ? [] : [read[1] ?? '', read[2] ?? '', read[3] ?? '']
+}
+
+// Each IG-09 rule the helper's text breaks, as "path: IG-09<x> why". The rules that run bash (b and d
+// extracted, n's parse and mode) are infra.test.ts's, which uses shellFunction and reasonFormLines.
+export function breakGlassFindings(path: string, text: string): Finding[] {
+  const found: Finding[] = []
+  const fail = (rule: string, why: string) => found.push(`${path}: IG-09${rule} ${why}`)
+  const lines = shellLines(text)
+  const functions = shellFunctions(lines)
+  const inFunction = (index: number) => [...functions.values()].some(({ start, end }) => index >= start && index < end)
+  const bodyOf = (name: string): ShellLine[] => {
+    const range = functions.get(name)
+    return range === undefined ? [] : lines.slice(range.start, range.end)
+  }
+  const defined = new Set(functions.keys())
+  const isDefinition = (text: string) => /^[A-Za-z_]\w*\(\) \{$/.test(text)
+  // The helper's own top-level commands, by index, and the functions a line calls.
+  const main = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line, index }) => !inFunction(index) && !isDefinition(line.text) && line.text !== '}')
+  const calls = (text: string) => [...defined].filter(name => new RegExp(`(?<![\\w-])${name}(?![\\w-])`).test(text))
+  // Whether a line holds a pattern itself, or reaches it through the functions it calls.
+  const reaches = (text: string, pattern: RegExp, seen = new Set<string>()): boolean =>
+    pattern.test(text) ||
+    calls(text).some(name => {
+      if (seen.has(name)) return false
+      seen.add(name)
+      return bodyOf(name).some(line => reaches(line.text, pattern, seen))
+    })
+  const firstMain = (pattern: RegExp) => main.find(({ line }) => reaches(line.text, pattern))?.index ?? -1
+  const firstLine = (pattern: RegExp) => lines.findIndex(line => pattern.test(line.text))
+  const firstAws = firstLine(AWS_WORD)
+  const before = (index: number, limit: number) => index >= 0 && (limit < 0 || index < limit)
+
+  // a: strict from the first statement, and nothing traces.
+  const statements = lines.filter((line, index) => !(index === 0 && line.text.startsWith('#!')))
+  if (statements[0]?.text !== 'set -euo pipefail') fail('a', 'its first statement is set -euo pipefail')
+  if (lines.some(line => TRACE.test(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
+
+  // b: a coding agent or CI refused before the first aws command, by exactly the markers the Owner
+  // bootstrap script refuses, set or empty.
+  const agents = bodyOf('refuse_agents').map(line => line.text)
+  const markers = agents
+    .map(line => /\bfor\s+\w+\s+in\s+([^;]+);\s*do\b/.exec(line)?.[1])
+    .find(list => list !== undefined)
+  if (
+    markers === undefined ||
+    JSON.stringify(markers.trim().split(/\s+/).sort()) !== JSON.stringify([...AGENT_MARKERS].sort()) ||
+    !agents.some(line => /\$\{!\w+\+x\}/.test(line)) ||
+    !agents.some(line => /\bexit\s+[1-9]/.test(line))
+  ) {
+    fail('b', `refuse_agents refuses each of ${AGENT_MARKERS.join(', ')}, set even empty, and exits non-zero`)
+  }
+  if (!before(main.find(({ line }) => /^refuse_agents$/.test(line.text))?.index ?? -1, firstAws)) {
+    fail('b', 'refuse_agents runs before the first aws command')
+  }
+
+  // c: the C locale and the umask before the reason is checked.
+  const reasonCheck = main.find(({ line }) => /\bvalid_reason\b/.test(line.text))?.index ?? -1
+  for (const [statement, why] of [
+    [/^export LC_ALL=C$/, "export LC_ALL=C, so a character class never matches another locale's characters"],
+    [/^umask 077$/, 'umask 077, so every file it writes is its own'],
+  ] as const) {
+    if (!before(main.find(({ line }) => statement.test(line.text))?.index ?? -1, reasonCheck)) {
+      fail('c', `${why}, before the reason is checked`)
+    }
+  }
+
+  // d: the reason and its date checked by pure functions, before the first aws command.
+  for (const name of ['valid_reason', 'valid_date']) {
+    if (!functions.has(name)) fail('d', `${name} is defined`)
+    else if (bodyOf(name).some(line => /\baws\b/.test(line.text))) fail('d', `${name} runs no aws command`)
+  }
+  if (!before(reasonCheck, firstAws)) fail('d', 'valid_reason checks the reason before the first aws command')
+
+  // e: its own folder, config and region, and nothing inherited, before the first aws command.
+  const exported = (assignment: string) =>
+    main.find(({ line }) => /^export\s/.test(line.text) && line.text.split(/\s+/).includes(assignment))?.index ?? -1
+  for (const assignment of [
+    'AWS_STS_REGIONAL_ENDPOINTS=regional',
+    'AWS_REGION=ap-southeast-1',
+    'HOME="$BG_HOME"',
+    'AWS_CONFIG_FILE="$BG_HOME/.aws/config"',
+    'AWS_SHARED_CREDENTIALS_FILE=/dev/null',
+    'AWS_EC2_METADATA_DISABLED=true',
+  ]) {
+    if (!before(exported(assignment), firstAws)) fail('e', `export ${assignment} before the first aws command`)
+  }
+  const unset = main.find(({ line }) => /^unset\s/.test(line.text))
+  const unsetNames = unset?.line.text.split(/\s+/) ?? []
+  if (
+    !before(unset?.index ?? -1, firstAws) ||
+    !['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', ...CREDENTIAL_ENV].every(name => unsetNames.includes(name))
+  ) {
+    fail('e', 'unset every inherited credential and profile variable before the first aws command')
+  }
+
+  // f: its folder is the caller's own, mode 700, before HOME moves there.
+  const modeCheck = main.find(({ line }) =>
+    /\bfind\s+"\$BG_HOME"\s+-maxdepth\s+0\b.*-user\s+"\$\(id -u\)".*-perm\s+700\b/.test(line.text),
+  )?.index
+  if (!before(modeCheck ?? -1, exported('HOME="$BG_HOME"'))) {
+    fail('f', 'its folder is checked to be the caller’s own, mode 700, before HOME is exported')
+  }
+
+  // g: no CLI history, no pager.
+  if (!lines.some(line => /\baws\s+configure\s+get\s+cli_history\b/.test(line.text) && /\benabled\b/.test(line.text))) {
+    fail('g', "the CLI's history is refused when enabled")
+  }
+  if (!before(main.find(({ line }) => /^export\s+AWS_PAGER=(?:''|"")?$/.test(line.text))?.index ?? -1, firstAws)) {
+    fail('g', 'export AWS_PAGER= before the first aws command')
+  }
+
+  // h: a trap on every way out, set before the first sign-in, that signs out.
+  const trap = main.find(({ line }) => /^trap\s+'?\w+'?\s+EXIT\s+INT\s+TERM\s+HUP$/.test(line.text))
+  const handler = trap === undefined ? undefined : /^trap\s+'?(\w+)/.exec(trap.line.text)?.[1]
+  if (trap === undefined || !before(trap.index, firstLine(/\baws\s+sso\s+login\b/))) {
+    fail('h', "trap '<handler>' EXIT INT TERM HUP is set before the first aws sso login")
+  }
+  if (handler === undefined || !bodyOf(handler).some(line => /\baws\s+sso\s+logout\b/.test(line.text))) {
+    fail('h', 'the trap’s handler runs aws sso logout')
+  }
+
+  // i: no credential written or printed, and nothing that would print one.
+  const credentials = credentialVariables(lines)
+  const credentialExpansion = new RegExp(`\\$\\{?(?:${[...CREDENTIAL_ENV, ...credentials].join('|')})\\b`)
+  for (const line of lines) {
+    if (writes(line.text) && (CREDENTIAL_NAMES.test(line.text) || credentialExpansion.test(line.text))) {
+      fail('i', `line ${line.line} writes or prints a credential`)
+    }
+    for (const [pattern, why] of EXPOSING) if (pattern.test(line.text)) fail('i', `line ${line.line}: ${why}`)
+    const exports = /\b(?:export|declare\s+-[A-Za-z]*x|typeset\s+-[A-Za-z]*x)\s+(.*)$/.exec(line.text)?.[1] ?? ''
+    if (exports.split(/\s+/).some(word => [...CREDENTIAL_ENV, ...credentials].includes(word.split('=')[0] ?? ''))) {
+      fail('i', `line ${line.line} exports a credential, which every command would then hold`)
+    }
+  }
+
+  // j: one assumption of the role, an hour at most, with the person's source identity and the reason.
+  const assumes = lines.filter(line => /\baws\s+sts\s+assume-role\b/.test(line.text))
+  const assume = assumes[0]?.text ?? ''
+  const duration = /--duration-seconds\s+["']?(\d+)/.exec(assume)?.[1]
+  if (
+    assumes.length !== 1 ||
+    !/--source-identity\s/.test(assume) ||
+    !/--tags\s+["']?Key=hearth-reason,Value=/.test(assume) ||
+    !/--role-session-name\s/.test(assume) ||
+    duration === undefined ||
+    Number(duration) > 3600
+  ) {
+    fail(
+      'j',
+      'exactly one aws sts assume-role, with --source-identity, --tags Key=hearth-reason,Value=…, --role-session-name and --duration-seconds of at most 3600',
+    )
+  }
+
+  // k: entries built by jq from arguments, never as JSON text; never over another; the open entry
+  // before the shell, the close after it.
+  if (lines.some(line => /\\?"[\w-]+\\?"\s*:/.test(line.text))) {
+    fail('k', 'an entry is built by jq -n --arg, never by writing fields into JSON text')
+  }
+  if (!lines.some(line => /\bjq\s+-[a-z]*n[a-z]*\s.*--arg\s/.test(line.text))) {
+    fail('k', 'entries are built by jq -n --arg')
+  }
+  if (
+    lines.some(
+      line =>
+        /\bput-object\b/.test(line.text) &&
+        !(/--if-none-match\s/.test(line.text) && /--checksum-algorithm\s/.test(line.text)),
+    )
+  ) {
+    fail('k', 'each put-object carries --if-none-match and --checksum-algorithm')
+  }
+  const shell = firstMain(/\bbash\s+--rcfile\b/)
+  const open = firstMain(/\bentry:\s*"open"/)
+  const closes = main.filter(({ line }) => reaches(line.text, /\bentry:\s*"close"/)).map(({ index }) => index)
+  if (shell < 0 || !before(open, shell) || !closes.some(index => index > shell)) {
+    fail('k', 'the open entry is written before the shell opens, and the close entry after it ends')
+  }
+
+  // l: curl only in the console function, only to the sign-in endpoint, its link printed only when
+  // --console asks.
+  // A run of curl, not the check that it is installed.
+  const curls = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /(?:^|[\s;&|(])curl\s/.test(line.text.replace(/\bcommand\s+-v\s+curl\b/g, '')))
+  const consoleFns = [...functions].filter(([, { start, end }]) =>
+    curls.some(({ index }) => index >= start && index < end),
+  )
+  const consoleFn = consoleFns[0]?.[0]
+  if (
+    curls.length > 0 &&
+    (consoleFns.length !== 1 ||
+      curls.some(({ index }) => !consoleFns.some(([, r]) => index >= r.start && index < r.end)))
+  ) {
+    fail('l', 'curl runs only in the console function')
+  }
+  for (const { line } of curls) {
+    const urls = line.text.match(/https?:\/\/[^\s'")]+/g) ?? []
+    if (urls.length === 0 || urls.some(url => url !== 'https://signin.aws.amazon.com/federation')) {
+      fail('l', `line ${line.line}: curl goes only to https://signin.aws.amazon.com/federation`)
+    }
+  }
+  const signIn = lines.map((line, index) => ({ line, index })).filter(({ line }) => /\bAction=login\b/.test(line.text))
+  const consoleRange = consoleFn === undefined ? undefined : functions.get(consoleFn)
+  if (
+    signIn.some(({ index }) => consoleRange === undefined || index < consoleRange.start || index >= consoleRange.end) ||
+    (consoleFn !== undefined &&
+      main.some(({ line }) => calls(line.text).includes(consoleFn) && !/\$console\b/.test(line.text)))
+  ) {
+    fail('l', 'the sign-in link is made and printed only when --console asks')
+  }
+
+  // m: the environment is one of three, and log-archive takes only an incident or a drill.
+  const flat = lines
+    .map(line => line.text)
+    .join('\n')
+    .replace(/\s+/g, ' ')
+  if (!lines.some(line => /^nonprod \| prod \| log-archive\) ;;$/.test(line.text))) {
+    fail('m', 'the environment is checked against exactly nonprod, prod and log-archive')
+  }
+  if (!flat.includes('if [ "$environment" = log-archive ]; then case "$reason" in incident:* | drill:*) ;; *)')) {
+    fail('m', 'in log-archive only an incident: or drill: reason is taken')
+  }
+
+  // o: a credential reaches a command only as a bash prefix assignment, never as an argument, through
+  // env, or to curl at all.
+  const prefix = new RegExp(
+    `(^|[\\s(;|&])(?:${CREDENTIAL_ENV.join('|')})="\\$\\{?(?:${credentials.join('|') || '(?!)'})\\}?"(?=\\s)`,
+    'g',
+  )
+  for (const line of lines) {
+    if (credentialExpansion.test(line.text.replace(prefix, '$1'))) {
+      fail('o', `line ${line.line}: a credential reaches a command other than by a prefix assignment`)
+    }
+    if (/(?:^|[\s;&|(])(?:\/usr\/bin\/env|command\s+env|env)\s+(?:-\S+\s+)*AWS_/.test(line.text)) {
+      fail('o', `line ${line.line}: a credential is passed through env, which puts it in an argument`)
+    }
+  }
+  for (const { line } of curls) {
+    if (credentialExpansion.test(line.text) || /Session=/.test(line.text) || !/Session@/.test(line.text)) {
+      fail(
+        'o',
+        `line ${line.line}: curl reads the session only from a file (Session@…), never from a variable or an argument`,
+      )
+    }
+  }
+
+  // p: --amend writes its one entry and signs out: no shell, no console, no open or close entry, and
+  // never beside --console.
+  const amend = [...functions.keys()].find(name => bodyOf(name).some(line => /\bentry:\s*"amend"/.test(line.text)))
+  const amendBody = amend === undefined ? [] : bodyOf(amend)
+  if (
+    amend === undefined ||
+    amendBody.some(line =>
+      reaches(line.text, /\bbash\s+--rcfile\b|(?:^|[\s;&|(])curl\s|\bentry:\s*"(?:open|close)"/),
+    ) ||
+    !/^aws\s+sso\s+logout\b/.test(amendBody.at(-1)?.text ?? '')
+  ) {
+    fail(
+      'p',
+      'the amend writes its one entry and ends in aws sso logout, reaching no shell, no console and no open or close entry',
+    )
+  }
+  if (
+    !lines.some(
+      line =>
+        /\$amend\b/.test(line.text) && /\$console\b/.test(line.text) && /\b(?:refuse|usage|exit)\b/.test(line.text),
+    )
+  ) {
+    fail('p', '--console beside --amend is refused')
+  }
+  return found
+}
+
+// --- IG-10: the model lists' one home (C11-D06) -------------------------------------------------
+
+// The files whose model strings are held elsewhere: models.ts, the lists themselves, and the
+// generated bootstrap template, which IAC-24 holds byte for byte to what the generator renders from
+// them.
+export const MODEL_STRINGS_EXEMPT = ['infra/src/config/models.ts', 'infra/bootstrap/hearth-bootstrap.yaml'] as const
+
+// A service:action token, as an IAM action pattern is written.
+const MODEL_TOKEN = /(?<![\w-])([a-z][a-z0-9-]*):([A-Za-z0-9*?]+)/gi
+
+// Whether a token names a model service or action: its service is a model prefix, whatever its
+// action, or its action isn't exactly `*` and can match a model action.
+export function namesModel(service: string, action: string): boolean {
+  const lower = `${service}:${action}`.toLowerCase()
+  if (MODEL_SERVICE_PREFIXES.some(prefix => prefix === service.toLowerCase())) return true
+  return action !== '*' && MODEL_ACTIONS.some(model => globsOverlap(lower, model.toLowerCase()))
+}
+
+// The text IG-10 reads of a file: a script's string literals and template text, so a comment or an
+// object key is no finding; any other file whole.
+function modelTexts(path: string, text: string): Array<{ line: number; text: string }> {
+  if (!/\.[cm]?[jt]sx?$/.test(path)) return text.split('\n').map((line, index) => ({ line: index + 1, text: line }))
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true)
+  const found: Array<{ line: number; text: string }> = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isStringLiteralLike(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node)
+    ) {
+      found.push({ line: file.getLineAndCharacterOfPosition(node.getStart()).line + 1, text: node.text })
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return found
+}
+
+// Each place a file under infra/ names a model service or action, as "path:line: IG-10 why". The
+// deny renders modelDenyActions(), and a test builds what it plants from the lists.
+export function modelStringFindings(path: string, text: string): Finding[] {
+  if (!path.startsWith('infra/') || (MODEL_STRINGS_EXEMPT as readonly string[]).includes(path)) return []
+  const found = new Set<string>()
+  for (const { line, text: value } of modelTexts(path, text)) {
+    for (const [, service = '', action = ''] of value.matchAll(MODEL_TOKEN)) {
+      if (namesModel(service, action)) {
+        found.add(
+          `${path}:${line}: IG-10 names a model service or action; the lists live in infra/src/config/models.ts alone`,
+        )
+      }
+    }
+  }
+  return [...found]
+}
+
+// The aws-cdk-lib modules of the model services, which infra never imports: each prefix with its
+// hyphens dropped, and AWS DevOps Agent's, whose IAM prefix is aidevops.
+export const MODEL_MODULES: readonly string[] = [
+  ...new Set([...MODEL_SERVICE_PREFIXES.map(prefix => prefix.replace(/-/g, '')), 'devopsagent']),
+]
+
+// Each model service module a script imports, re-exports or reaches through aws-cdk-lib's root.
+export function modelModuleFindings(path: string, source: string, code: string): Finding[] {
+  const found: Finding[] = []
+  for (const spec of importsOf(source, path)) {
+    const module = /^aws-cdk-lib\/aws-([a-z0-9]+)$/.exec(spec)?.[1]
+    if (module !== undefined && MODEL_MODULES.includes(module)) {
+      found.push(`${path}: IG-10 imports aws-cdk-lib's ${module} module, a model service's`)
+    }
+  }
+  for (const [, module = ''] of code.matchAll(/\baws_([a-z0-9]+)\b/g)) {
+    if (MODEL_MODULES.includes(module))
+      found.push(`${path}: IG-10 uses aws-cdk-lib's ${module} module, a model service's`)
+  }
+  return found
+}
+
+// --- IG-12: no executable assets (C11-D76) ------------------------------------------------------
+
+// An asset the CDK CLI would build or run where deploy credentials exist: a file source's executable,
+// a Docker image's build folder, the synthesizer's image asset, bundling, and an image built at synth.
+// The assertion tests name the first two, to look for them in an asset manifest (IAC-22).
+export const ASSET_RULES: readonly CodeRule[] = [
+  {
+    id: 'IG-12',
+    pattern: /\bexecutable\b/,
+    why: "an asset source's executable makes the CDK CLI run a command where deploy credentials exist",
+    assertionsMayName: true,
+  },
+  {
+    id: 'IG-12',
+    pattern: /\bdirectoryName\b/,
+    why: "a Docker image asset's build folder makes the CLI run docker build",
+    assertionsMayName: true,
+  },
+  { id: 'IG-12', pattern: /\baddDockerImageAsset\s*\(/, why: 'an image asset makes the CLI build one' },
+  { id: 'IG-12', pattern: /\bbundling\s*:/, why: 'bundling runs code or Docker at synth' },
+  { id: 'IG-12', pattern: /\bDockerImage\s*\.\s*fromBuild\s*\(/, why: 'an image built at synth runs Docker' },
+]
+
+// --- C11-D62: the landing-zone synth runs credential-free and offline ---------------------------
+
+// A command line's words as written, quotes kept, split at whitespace outside quotes.
+function rawWords(command: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote: string | undefined
+  for (const c of command) {
+    if (quote !== undefined) {
+      word += c
+      if (c === quote) quote = undefined
+    } else if (c === "'" || c === '"') {
+      quote = c
+      word += c
+    } else if (/\s/.test(c)) {
+      if (word !== '') words.push(word)
+      word = ''
+    } else {
+      word += c
+    }
+  }
+  if (word !== '') words.push(word)
+  return words
+}
+
+// The environment synth:lz runs in: every inherited variable dropped (env -i) but PATH, a HOME made
+// for the run (so the CLI reads no ~/.cdk.json and loads no plugin), both AWS files pointed at
+// /dev/null, the metadata service, telemetry and the version check off, and the fixture.
+export const SYNTH_LZ_ENVIRONMENT = [
+  'PATH="$PATH"',
+  'HOME="$(mktemp -d)"',
+  'AWS_CONFIG_FILE=/dev/null',
+  'AWS_SHARED_CREDENTIALS_FILE=/dev/null',
+  'AWS_EC2_METADATA_DISABLED=true',
+  'CDK_DISABLE_CLI_TELEMETRY=true',
+  'CDK_DISABLE_VERSION_CHECK=true',
+  'HEARTH_FIXTURE=1',
+] as const
+
+// What's wrong with infra's synth:lz script: it must run the CLI in exactly that environment, as
+// synth of the landing-zone entry with no lookups, notices or output, and with no profile, role or
+// instance credentials.
+export function synthScriptProblems(command: string): Finding[] {
+  const found: Finding[] = []
+  const at = 'infra/package.json synth:lz'
+  const words = rawWords(command)
+  if (words[0] !== 'env' || words[1] !== '-i')
+    found.push(`${at}: C11-D62 starts with env -i, dropping every inherited variable`)
+  const cdk = words.indexOf('cdk')
+  const assignments = words.slice(2, cdk < 0 ? undefined : cdk)
+  if (JSON.stringify([...assignments].sort()) !== JSON.stringify([...SYNTH_LZ_ENVIRONMENT].sort())) {
+    found.push(`${at}: C11-D62 sets exactly ${SYNTH_LZ_ENVIRONMENT.join(' ')}`)
+  }
+  const cli = cdk < 0 ? [] : words.slice(cdk)
+  if (cli.slice(0, 4).join(' ') !== "cdk synth --app 'node bin/landing-zone.ts'") {
+    found.push(`${at}: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'`)
+  }
+  for (const flag of ['--no-lookups', '--no-notices', '--quiet']) {
+    if (!cli.includes(flag)) found.push(`${at}: C11-D62 passes ${flag}`)
+  }
+  for (const flag of ['--profile', '--role-arn', '--ec2creds']) {
+    if (cli.some(word => word === flag || word.startsWith(`${flag}=`))) found.push(`${at}: C11-D62 passes no ${flag}`)
+  }
+  return found
+}
+
+// What's wrong with ci.yml for the landing zone's synth (C11-D62): the check job runs synth:lz
+// straight after npm test, and the workflow can hold no AWS credential: no id-token permission, only
+// contents: read at the top, no credentials action and no AWS_ variable. DPW-02 (C0.11 PR 4) takes
+// the id-token clause over for every workflow.
+export function ciSynthProblems(text: string, steps: readonly string[]): Finding[] {
+  const found: Finding[] = []
+  const test = steps.findIndex(step => /^run: npm test$/m.test(step))
+  if (test < 0 || !/^run: npm run synth:lz -w @hearth\/infra$/m.test(steps[test + 1] ?? '')) {
+    found.push(
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test',
+    )
+  }
+  if (text.split('\n').some(line => /^\s*id-token\s*:/.test(line))) {
+    found.push('.github/workflows/ci.yml: C11-D62 no job may ask for an id-token')
+  }
+  if (!/^permissions:\n {2}contents: read\n(?! )/m.test(text)) {
+    found.push('.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone')
+  }
+  if (/aws-actions\/configure-aws-credentials/.test(text)) {
+    found.push('.github/workflows/ci.yml: C11-D62 no step takes AWS credentials')
+  }
+  if (text.split('\n').some(line => !/^\s*#/.test(line) && /(?:^|[\s'"])AWS_[A-Z0-9_]*\s*[:=]/.test(line))) {
+    found.push('.github/workflows/ci.yml: C11-D62 no line sets an AWS_ variable')
   }
   return found
 }
