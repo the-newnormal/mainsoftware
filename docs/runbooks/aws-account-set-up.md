@@ -74,7 +74,7 @@ Every deploy below runs these three parts, in this order, so no repository code 
 
 1. In the credential-free shell, from `infra/` in the checkout: `HEARTH_TARGET=<target> npx cdk synth --app "node --env-file=.env.local bin/landing-zone.ts" --no-lookups`, with `<target>` one of `foundation`, `log-archive`, `nonprod-baseline` or `prod-baseline`. Its one line on standard error names the target; a refusal names a variable and what it must be, never its value.
 2. Still there, the asset check, which runs no repository code: `jq -s -e 'map([(.files // {})[] | .source | select(has("executable"))] + [(.dockerImages // {})[]]) | flatten | length == 0' cdk.out/*.assets.json` must print `true`. Anything else (`false`, or an error because no manifest matched) stops the deploy.
-3. In the credentialed shell, from the same `infra/` folder's `cdk.out`: `npx cdk diff --app cdk.out`, read it whole, then `npx cdk deploy --app cdk.out`. Both read the synthesised assembly and run no repository code. Never pass `--app` the entry itself.
+3. In the credentialed shell, from its own folder, which holds no `cdk.json`, with the checkout's own CLI and the assembly's path (`CHECKOUT` is the checkout's path, as in step G): `"$CHECKOUT/node_modules/.bin/cdk" diff --app "$CHECKOUT/infra/cdk.out"`, read it whole, then `"$CHECKOUT/node_modules/.bin/cdk" deploy --app "$CHECKOUT/infra/cdk.out"`. Both read the synthesised assembly and run no repository code. Never run them from `infra/`: beside a `cdk.json` the CLI first runs any `build` command it names, with your credentials. Never use `npx` there, which outside the checkout would fetch the CLI from the registry, and never pass `--app` the entry itself.
 
 ### G. Bootstrapping an account
 
@@ -208,7 +208,7 @@ Closing a Hearth account, or taking it out of the organisation, would lift every
 
 ## Don't
 
-- Run `cdk bootstrap`, `cdk diff` or `cdk deploy` from `infra/`'s folder with `--app` naming the entry, or synthesise in a credentialed shell: either runs repository code under credentials.
+- Run `cdk bootstrap`, `cdk diff` or `cdk deploy` from `infra/` (or any folder holding a `cdk.json`), or with `--app` naming the entry, or synthesise in a credentialed shell: each runs repository code under credentials.
 - Edit an SCP, the RCP, a permission set, a topic, a rule or an alarm in the console. Every change is a reviewed PR.
 - Use `CfnAccount` or Control Tower.
 - Add an SMS subscription to any topic.

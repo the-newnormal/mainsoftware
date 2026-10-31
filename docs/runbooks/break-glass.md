@@ -79,7 +79,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 
 1. In the credential-free shell, from a fresh checkout of `main` at the merged PR, synthesise the Baseline and run the asset check, as [the set-up runbook's step F](aws-account-set-up.md#f-the-landing-zone-shell-the-synth-and-the-asset-check) says.
 2. Open a session in that workload account with `lz:pr-N` (A1 and A15 alarm).
-3. In the break-glass shell, from that checkout's `infra/` folder: `npx cdk diff --app cdk.out`, read it whole, then `npx cdk deploy --app cdk.out`. Never pass `--app` the entry itself.
+3. In the break-glass shell, from a folder with no `cdk.json` (never that checkout's `infra/`: beside a `cdk.json` the CLI first runs any `build` command it names, with the session's credentials), with that checkout's own CLI and the assembly's path, `CHECKOUT` being the checkout's path: `"$CHECKOUT/node_modules/.bin/cdk" diff --app "$CHECKOUT/infra/cdk.out"`, read it whole, then `"$CHECKOUT/node_modules/.bin/cdk" deploy --app "$CHECKOUT/infra/cdk.out"`. Never use `npx` there, which outside the checkout would fetch the CLI from the registry, and never pass `--app` the entry itself.
 
 ### Closing a session
 
