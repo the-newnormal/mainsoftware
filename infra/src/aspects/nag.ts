@@ -4,17 +4,19 @@
 //   construct path of the resource it is raised on, with its reason. cdk-nag 3.0.2 runs only in
 //   nag.test.ts (IAC-15), which applies these: no entry loads cdk-nag, a devDependency, and cdk-nag 3's
 //   own acknowledgements name each finding by an id holding the fixture's account ids, which no source
-//   may hold (IG-01). One allowance covers every finding of its rule on its resource (each wildcard
-//   statement is one finding of AwsSolutions-IAM5), and IAC-16 holds each to being used;
+//   may hold (IG-01). One allowance covers every finding of its rule on its resource (AwsSolutions-IAM5
+//   raises one for each wildcard action or resource), and IAC-16 holds each to being used;
 // - VALIDATE_ACKNOWLEDGEMENTS: each CloudFormation Validate finding (cdk.json's
 //   validateAgainstDefaultRules) kept, acknowledged on its construct by acknowledgeValidate(), which
-//   addLandingZone() calls, so the CLI's synth and the tests see the same. Expected empty: a finding is
-//   fixed rather than kept, and one raised on a stack can't be acknowledged, since an acknowledgement
-//   on a stack would cover all of it.
+//   addLandingZone() calls, so the CLI's synth and the tests see the same. It holds only reviewed
+//   exceptions, today the two E3510s on the account variable below: any other finding is fixed rather
+//   than kept, and one raised on a stack is always fixed, since an acknowledgement on a stack would
+//   cover all of it.
 // Every reason is at least 20 characters and cites the C11 decision that keeps the finding. This file
-// imports aws-cdk-lib alone. It decides which findings the landing zone keeps, so it is on the
-// owner's-read list (C11-D74).
+// imports aws-cdk-lib and the stacks' names alone, never cdk-nag. It decides which findings the
+// landing zone keeps, so it is on the owner's-read list (C11-D74).
 import * as cdk from 'aws-cdk-lib'
+import { baselineStackName, STACK } from '../config/names.ts'
 
 export interface NagAllowance {
   // The AwsSolutions rule, without the finding's bracketed detail (`AwsSolutions-IAM5`).
@@ -85,15 +87,32 @@ export const VALIDATE_ACKNOWLEDGEMENTS: readonly ValidateAcknowledgement[] = [
   },
 ]
 
-// Acknowledges each CloudFormation Validate finding on its own construct, which must be exactly one
-// construct under the app and neither the app nor a stack, so no acknowledgement covers more than
-// the resource it names.
+// The stacks the landing zone builds (C11-D27), each in its own run but the fixture's.
+const LANDING_ZONE_STACKS: readonly string[] = [
+  STACK.foundation,
+  STACK.logArchive,
+  baselineStackName('nonprod'),
+  baselineStackName('prod'),
+]
+
+// Acknowledges each CloudFormation Validate finding on its own construct. An entry belongs to the
+// stack its path starts with, and a person's run builds one target, so it applies only in a run that
+// builds that stack (every run of the fixture's does). There its path must be exactly one construct,
+// neither the app nor a stack, so no acknowledgement covers more than the resource it names. An entry
+// whose path starts with no landing-zone stack is refused in every run, so a misspelt stack can't
+// leave it waiting for a run that never comes.
 export function acknowledgeValidate(
   app: cdk.App,
   acknowledgements: readonly ValidateAcknowledgement[] = VALIDATE_ACKNOWLEDGEMENTS,
 ): void {
+  const built = new Set(app.node.children.filter(child => cdk.Stack.isStack(child)).map(stack => stack.node.id))
   const all = app.node.findAll()
   for (const entry of acknowledgements) {
+    const stack = entry.path.split('/')[0] ?? ''
+    if (!LANDING_ZONE_STACKS.includes(stack)) {
+      throw new Error(`${entry.id} names ${entry.path}, in no stack the landing zone builds`)
+    }
+    if (!built.has(stack)) continue
     const found = all.filter(construct => construct.node.path === entry.path)
     const target = found[0]
     if (found.length !== 1 || target === undefined) {

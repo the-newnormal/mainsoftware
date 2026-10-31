@@ -288,7 +288,9 @@ export class IdentityCenter extends Construct {
     }
     this.permissionSets = sets
 
-    // An account whose profile holds real data takes no standing set but the break-glass entry.
+    // An account whose profile holds real data takes no standing set but the break-glass entry. Unlike
+    // the sets, the assignments are never retained: one that leaves the template, as NonprodOperator's
+    // does when nonprod comes to hold real data, must leave AWS too (C11-D69, IAC-19).
     const realData: ReadonlySet<AccountName> = new Set(
       (['nonprod', 'prod'] as const).filter(account => options.holdsRealData[account]),
     )

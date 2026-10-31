@@ -4,15 +4,21 @@
 // passes it (CDK_CONTEXT_JSON), so it builds what the CLI builds, CloudFormation Validate included,
 // and writes its assembly to a temporary folder. The workload entry has no stack until C0.11 PR 3, so
 // the CLI would refuse to synthesise it (C11-D62); the landing-zone entry builds its four over the
-// fixture, which is also what CI's synth:lz builds.
+// fixture, which is also what CI's synth:lz builds. A person's run builds one target (checkRun), and
+// the entry refuses every real one while the committed domains are placeholders (C11-Q08), so each
+// target is also built alone in-process, from the fixture's values read as a person's configuration,
+// and must synthesise, CloudFormation Validate included, what the four-target build holds.
 import { execFile } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { LANDING_ZONE_TARGETS } from '../src/config/env.ts'
-import { cdkContext } from '../src/testing/synth.ts'
+import { checkRun, LANDING_ZONE_TARGETS, type LandingZoneTarget, parseLandingZoneEnv } from '../src/config/env.ts'
+import { addLandingZone } from '../src/foundation/landing-zone.ts'
+import { configEnvironment, fixtureConfig } from '../src/testing/fixture.ts'
+import { synthLandingZone } from '../src/testing/landing-zone.ts'
+import { cdkContext, synthesise, templateOf, testApp } from '../src/testing/synth.ts'
 
 const INFRA = fileURLToPath(new URL('..', import.meta.url))
 
@@ -138,4 +144,31 @@ describe('C11-D23: the entries run under plain Node', () => {
     expect(none.code).toBe(1)
     expect(none.stderr).toContain('HEARTH_TARGET: is not set')
   }, 60_000)
+})
+
+// The stack each target builds.
+const STACK_OF: Record<LandingZoneTarget, string> = {
+  foundation: 'Hearth-Foundation',
+  'log-archive': 'Hearth-LogArchive',
+  'nonprod-baseline': 'Hearth-nonprod-Baseline',
+  'prod-baseline': 'Hearth-prod-Baseline',
+}
+
+describe("C11-D25: a person's run builds one target", () => {
+  it.each(LANDING_ZONE_TARGETS)(
+    '%s alone synthesises, Validate included, the template the four-target build holds (C11-D27)',
+    target => {
+      // The committed domains are still placeholders (C11-Q08), so checkRun is given none to refuse.
+      const run = checkRun(parseLandingZoneEnv(configEnvironment(fixtureConfig())), target, {})
+      expect(run.targets).toEqual([target])
+      const app = testApp()
+      addLandingZone(app, run)
+      const synthesised = synthesise(app)
+      expect(synthesised.stacks.map(stack => stack.stackName)).toEqual([STACK_OF[target]])
+      expect(templateOf(synthesised, STACK_OF[target])).toEqual(
+        templateOf(synthLandingZone().synthesised, STACK_OF[target]),
+      )
+    },
+    60_000,
+  )
 })
