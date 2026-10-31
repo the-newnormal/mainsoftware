@@ -784,6 +784,11 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['a: another first statement', plant('set -euo pipefail\n', 'set -eu\n'), ['IG-09a']],
       ['a: a trace', plant('set -f\n', 'set -f\nset -x\n'), ['IG-09a']],
       ['a: a trace descriptor', plant('set -f\n', 'set -f\nexport BASH_XTRACEFD=7\n'), ['IG-09a']],
+      ['a: a trace after another option', plant('set -f\n', 'set -f\nset -e -x\n'), ['IG-09a']],
+      ['a: xtrace after another -o', plant('set -f\n', 'set -f\nset -o errexit -o xtrace\n'), ['IG-09a']],
+      ['a: xtrace taken by a joined -o', plant('set -f\n', 'set -f\nset -eo xtrace\n'), ['IG-09a']],
+      ['a: xtrace through shopt', plant('set -f\n', 'set -f\nshopt -s -o xtrace\n'), ['IG-09a']],
+      ['a: a traced shell', plant('bash --rcfile "$rc" -i || true', 'bash --rcfile "$rc" -ix || true'), ['IG-09a']],
       ['b: a marker missing', plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), ['IG-09b']],
       ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b']],
       [
@@ -926,6 +931,27 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09l'],
       ],
       [
+        'l: a call that only mentions --console',
+        plant(
+          'if [ "$console" = yes ]; then open_console; fi\n',
+          'if [ "$console" = yes ]; then :; fi; open_console\n',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: the link printed from the shell’s function',
+        plant("  trap ':' INT\n", "  open_console\n  trap ':' INT\n"),
+        ['IG-09l'],
+      ],
+      [
+        'l: the link printed from the open entry’s function',
+        plant(
+          '  printf \'break-glass: open entry written for %s\\n\' "$session"\n',
+          '  printf \'break-glass: open entry written for %s\\n\' "$session"\n  open_console\n',
+        ),
+        ['IG-09l'],
+      ],
+      [
         'm: another environment',
         plant('nonprod | prod | log-archive) ;;', 'nonprod | prod | log-archive | dev) ;;'),
         ['IG-09m'],
@@ -951,7 +977,50 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         afterAssume('env AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
         ['IG-09o'],
       ],
+      [
+        'o: a credential through env after another assignment',
+        afterAssume('env -i PATH="$PATH" AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential through env after an option’s value',
+        afterAssume('env -u HISTFILE AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential through sudo',
+        afterAssume('sudo AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential as a later argument in assignment form',
+        afterAssume('aws sts get-caller-identity AWS_SESSION_TOKEN="$st" --output text'),
+        ['IG-09o'],
+      ],
+      ['o: an assignment form inside quotes', afterAssume('aws s3 ls "x; AWS_SESSION_TOKEN="$st" y"'), ['IG-09o']],
+      [
+        'o: an assignment form after an escaped separator',
+        afterAssume('aws s3 ls x\\; AWS_SESSION_TOKEN="$st" y'),
+        ['IG-09o'],
+      ],
       ['o: a credential as an argument', afterAssume('aws s3 ls --secret "$sk"'), ['IG-09o']],
+      [
+        'o: a prefix after another assignment passes',
+        afterAssume('HISTFILE=/dev/null AWS_SESSION_TOKEN="$st" aws sts get-caller-identity >/dev/null'),
+        [],
+      ],
+      [
+        'o: a prefix in a command substitution passes',
+        afterAssume(
+          'caller="$(AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" aws sts get-caller-identity)"',
+        ),
+        [],
+      ],
+      [
+        'o: a prefix after if ! passes',
+        afterAssume('if ! AWS_SESSION_TOKEN="$st" aws sts get-caller-identity >/dev/null; then exit 1; fi'),
+        [],
+      ],
       [
         'o: the session in curl’s arguments',
         plant("--data-urlencode 'Session@-'", '--data-urlencode "Session=$st"'),
@@ -971,7 +1040,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
           "  printf 'break-glass: amend entry written\\n'\n",
           "  printf 'break-glass: amend entry written\\n'\n  open_console\n",
         ),
-        ['IG-09p'],
+        ['IG-09l', 'IG-09p'],
       ],
       [
         'p: the amend stays signed in',

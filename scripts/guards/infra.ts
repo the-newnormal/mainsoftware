@@ -874,8 +874,18 @@ const REDIRECT = /&?>>?\s*(&?)([^\s;&|)<>]*)/g
 const writes = (text: string): boolean =>
   WRITER.test(text) || [...text.matchAll(REDIRECT)].some(([, dup, target]) => dup !== '&' && target !== '/dev/null')
 // What the helper may never run: a trace, anything that prints the environment or variables, a
-// debug flag, eval, or a change to the CLI's configuration.
-const TRACE = /\bset\s+(?:-[A-Za-z]*x|-o\s+xtrace)|\bbash\s+-[A-Za-z]*x|BASH_XTRACEFD/
+// debug flag, eval, or a change to the CLI's configuration. A trace is an x in any option word of a
+// set, bash or sh command (set -e -x, bash -ix), xtrace named anywhere (set -o, a joined -eo, shopt -o,
+// SHELLOPTS), or BASH_XTRACEFD.
+const TRACE_NAMED = /\bxtrace\b|BASH_XTRACEFD/
+const TRACE_RUN = /(?:^|[\s;&|(!/"'])(?:set|bash|sh)(?=\s)/g
+const traces = (text: string): boolean =>
+  TRACE_NAMED.test(text) ||
+  [...text.matchAll(TRACE_RUN)].some(run =>
+    wordsAsWritten(text.slice((run.index ?? 0) + run[0].length)).some(word =>
+      /^-[A-Za-z]*x/.test(word.replace(/["']/g, '')),
+    ),
+  )
 const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?:^|[\s;&|(])(?:env|printenv)\s*(?:$|[;&|)])/m, 'env or printenv alone prints every variable'],
   [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
@@ -970,6 +980,48 @@ function credentialVariables(lines: readonly ShellLine[]): string[] {
   return read === null ? [] : [read[1] ?? '', read[2] ?? '', read[3] ?? '']
 }
 
+// Whether a place in a line sits inside quotes. A ( … ) outside quotes, and a command substitution,
+// $( … ), even inside double quotes, hold commands whose quotes start afresh; a backslash escapes the
+// next character outside single quotes.
+function quotedAt(text: string, offset: number): boolean {
+  const outer: Array<string | undefined> = []
+  let quote: string | undefined
+  for (let i = 0; i < offset; i++) {
+    const c = text[i]
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\') i += 1
+    else if (quote === '"') {
+      if (c === '"') quote = undefined
+      else if (c === '$' && text[i + 1] === '(') {
+        outer.push(quote)
+        quote = undefined
+        i += 1
+      }
+    } else if (c === '"' || c === "'") quote = c
+    else if (c === '(') outer.push(undefined)
+    else if (c === ')' && outer.length > 0) quote = outer.pop()
+  }
+  return quote !== undefined
+}
+
+// A credential's prefix assignment as bash takes one, NAME="$var" outside quotes, before a simple
+// command's command word: at the start of the command (the line's start; after an unescaped ;, & or |
+// that isn't part of a redirect; after (, so $( and <( too; or after !, {, then, do, else, if, elif,
+// while or until), with nothing between but other assignments. Anywhere else the same text is an
+// argument: env's, sudo's, or the command's own.
+const ASSIGNMENT_WORD = `[A-Za-z_]\\w*=(?:"(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\\\.|[^\\s"'\\\\;&|()<>])*`
+const COMMAND_START = `(?:^|(?<![\\\\<>])[;&|]|(?<!\\\\)\\(|(?:^|\\s)(?:!|\\{|then|do|else|if|elif|while|until)\\s)`
+function credentialPrefixes(credentials: readonly string[]): RegExp {
+  const name = CREDENTIAL_ENV.join('|')
+  const value = `"\\$\\{?(?:${credentials.join('|') || '(?!)'})\\}?"`
+  return new RegExp(`(?<=${COMMAND_START}\\s*(?:${ASSIGNMENT_WORD}\\s+)*)(?:${name})=${value}(?=\\s)`, 'g')
+}
+const withoutPrefixes = (text: string, prefixes: RegExp): string =>
+  text.replace(prefixes, (assignment: string, offset: number) => (quotedAt(text, offset) ? assignment : ''))
+// A run of env (or /usr/bin/env, command env) or sudo: any AWS_ word among its arguments is in its argv.
+const ENV_RUN = /(?:^|[\s;&|(!])(?:\/usr\/bin\/env|command\s+env|env|sudo)(?=\s)/g
+
 // Each IG-09 rule the helper's text breaks, as "path: IG-09<x> why". The rules that run bash (b and d
 // extracted, n's parse and mode) are infra.test.ts's, which uses shellFunction and reasonFormLines.
 export function breakGlassFindings(path: string, text: string): Finding[] {
@@ -1005,7 +1057,7 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   // a: strict from the first statement, and nothing traces.
   const statements = lines.filter((line, index) => !(index === 0 && line.text.startsWith('#!')))
   if (statements[0]?.text !== 'set -euo pipefail') fail('a', 'its first statement is set -euo pipefail')
-  if (lines.some(line => TRACE.test(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
+  if (lines.some(line => traces(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
 
   // b: a coding agent or CI refused before the first aws command, by exactly the markers the Owner
   // bootstrap script refuses, set or empty.
@@ -1173,12 +1225,18 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       fail('l', `line ${line.line}: curl goes only to https://signin.aws.amazon.com/federation`)
     }
   }
+  // The console function runs only from a main-flow line that asks for --console, written
+  // `if [ "$console" = yes ]; then <function>; fi`, and no other function calls it, since the run calls
+  // those whatever --console says.
   const signIn = lines.map((line, index) => ({ line, index })).filter(({ line }) => /\bAction=login\b/.test(line.text))
   const consoleRange = consoleFn === undefined ? undefined : functions.get(consoleFn)
+  const consoleCall = (text: string) => consoleFn !== undefined && calls(text).includes(consoleFn)
   if (
     signIn.some(({ index }) => consoleRange === undefined || index < consoleRange.start || index >= consoleRange.end) ||
-    (consoleFn !== undefined &&
-      main.some(({ line }) => calls(line.text).includes(consoleFn) && !/\$console\b/.test(line.text)))
+    main.some(({ line }) => consoleCall(line.text) && line.text !== `if [ "$console" = yes ]; then ${consoleFn}; fi`) ||
+    [...functions].some(
+      ([name, { start, end }]) => name !== consoleFn && lines.slice(start, end).some(line => consoleCall(line.text)),
+    )
   ) {
     fail('l', 'the sign-in link is made and printed only when --console asks')
   }
@@ -1201,17 +1259,18 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   }
 
   // o: a credential reaches a command only as a bash prefix assignment, never as an argument, through
-  // env, or to curl at all.
-  const prefix = new RegExp(
-    `(^|[\\s(;|&])(?:${CREDENTIAL_ENV.join('|')})="\\$\\{?(?:${credentials.join('|') || '(?!)'})\\}?"(?=\\s)`,
-    'g',
-  )
+  // env or sudo, or to curl at all.
+  const prefixes = credentialPrefixes(credentials)
   for (const line of lines) {
-    if (credentialExpansion.test(line.text.replace(prefix, '$1'))) {
+    if (credentialExpansion.test(withoutPrefixes(line.text, prefixes))) {
       fail('o', `line ${line.line}: a credential reaches a command other than by a prefix assignment`)
     }
-    if (/(?:^|[\s;&|(])(?:\/usr\/bin\/env|command\s+env|env)\s+(?:-\S+\s+)*AWS_/.test(line.text)) {
-      fail('o', `line ${line.line}: a credential is passed through env, which puts it in an argument`)
+    if (
+      [...line.text.matchAll(ENV_RUN)].some(run =>
+        wordsAsWritten(line.text.slice((run.index ?? 0) + run[0].length)).some(word => word.includes('AWS_')),
+      )
+    ) {
+      fail('o', `line ${line.line}: an AWS_ variable is passed through env or sudo, which puts it in an argument`)
     }
   }
   for (const { line } of curls) {
