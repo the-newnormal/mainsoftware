@@ -26,12 +26,25 @@ export function testApp(context: Record<string, unknown> = {}): cdk.App {
   })
 }
 
-// One synthesised stack: its path in the assembly (Stage/Stack), its CloudFormation name and its
-// template as JSON.
+// What the cloud assembly says of one stack beyond its template, which a person's deploy acts on: the
+// account and Region it goes to, whether termination protection is on, the role the CLI assumes to
+// deploy it, and the bootstrap version and SSM parameter it checks (IAC-24 reads the last two).
+export interface StackArtifactFacts {
+  account: string
+  region: string
+  terminationProtection: boolean
+  assumeRoleArn?: string
+  requiresBootstrapStackVersion?: number
+  bootstrapStackVersionSsmParameter?: string
+}
+
+// One synthesised stack: its path in the assembly (Stage/Stack), its CloudFormation name, its
+// template as JSON, and its artifact's facts.
 export interface SynthesisedStack {
   id: string
   stackName: string
   template: Record<string, unknown>
+  artifact: StackArtifactFacts
 }
 
 export interface Synthesised {
@@ -56,6 +69,15 @@ export function synthesise(app: cdk.App): Synthesised {
     id: stack.hierarchicalId,
     stackName: stack.stackName,
     template: stack.template as Record<string, unknown>,
+    artifact: {
+      account: stack.environment.account,
+      region: stack.environment.region,
+      // The artifact leaves it out when it is off.
+      terminationProtection: stack.terminationProtection ?? false,
+      assumeRoleArn: stack.assumeRoleArn,
+      requiresBootstrapStackVersion: stack.requiresBootstrapStackVersion,
+      bootstrapStackVersionSsmParameter: stack.bootstrapStackVersionSsmParameter,
+    },
   }))
   const assetManifests = new Map(
     filesEndingWith(assembly.directory, '.assets.json').map(path => [

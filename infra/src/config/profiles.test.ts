@@ -8,6 +8,7 @@ import {
   isPlaceholderDomain,
   LOG_ARCHIVE,
   NOFILE_LIMIT,
+  NONPROD_NAME_SERVERS,
   originHost,
   PROFILES,
   REALTIME_HEAP_MIB,
@@ -15,6 +16,23 @@ import {
   ROLES,
   userContentHost,
 } from './profiles.ts'
+
+// What's wrong with a zone's name servers as committed: none yet, or exactly Route 53's four, each
+// `ns-<n>.awsdns-<nn>.` under com, net, org or co.uk, all different. The shape is all a test can check:
+// any account can make a zone for the name and get four such servers, so the values themselves are the
+// owner's read and the set-up runbook's comparison with non-prod's own zone (C11-D43).
+function nameServerProblems(servers: readonly string[]): string[] {
+  if (servers.length === 0) return []
+  const problems: string[] = []
+  if (servers.length !== 4) problems.push(`holds ${servers.length} name servers, not Route 53's 4`)
+  if (new Set(servers).size !== servers.length) problems.push('repeats a name server')
+  for (const [index, server] of servers.entries()) {
+    if (!/^ns-\d{1,4}\.awsdns-\d{2}\.(?:com|net|org|co\.uk)$/.test(server)) {
+      problems.push(`server ${index + 1} isn't a Route 53 name server`)
+    }
+  }
+  return problems
+}
 
 // A CIDR's first and last addresses as numbers.
 function range(cidr: string): [number, number] {
@@ -126,6 +144,22 @@ describe('C11-D43: the domains and hosts', () => {
     expect(DOMAINS.app).not.toBe(DOMAINS.userContent)
     expect(DOMAINS.userContent.endsWith(`.${DOMAINS.app}`)).toBe(false)
     expect(DOMAINS.app.endsWith(`.${DOMAINS.userContent}`)).toBe(false)
+  })
+
+  it('the non-prod name servers prod delegates `nonprod.` to are none yet, or Route 53’s four', () => {
+    const route53 = ['ns-1.awsdns-01.com', 'ns-1234.awsdns-56.net', 'ns-567.awsdns-12.org', 'ns-89.awsdns-34.co.uk']
+    expect(nameServerProblems([])).toEqual([])
+    expect(nameServerProblems(route53)).toEqual([])
+    expect(nameServerProblems(route53.slice(0, 3))).toEqual(["holds 3 name servers, not Route 53's 4"])
+    expect(nameServerProblems([...route53.slice(0, 3), route53[0] ?? ''])).toEqual(['repeats a name server'])
+    expect(nameServerProblems([...route53.slice(0, 3), 'ns1.example.net'])).toEqual([
+      "server 4 isn't a Route 53 name server",
+    ])
+    expect(nameServerProblems([...route53.slice(0, 3), 'ns-89.awsdns-34.co.uk.'])).toEqual([
+      "server 4 isn't a Route 53 name server",
+    ])
+    expect(nameServerProblems(NONPROD_NAME_SERVERS.app)).toEqual([])
+    expect(nameServerProblems(NONPROD_NAME_SERVERS.userContent)).toEqual([])
   })
 
   it('C11-Q08’s names aren’t given yet, so both domains are still placeholders, which the landing-zone entry refuses for a real target', () => {

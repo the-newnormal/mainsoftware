@@ -34,8 +34,8 @@ export interface LandingZoneConfig {
     ous: { security: string; workloads: string; recovery: string }
   }
   accounts: { management: string; logArchive: string; nonprod: string; prod: string }
-  // The organisation instance in ap-southeast-1 (C11-D09). Its ARN is formed at synth from the id
-  // (Stack.formatArn), so no ARN is written anywhere.
+  // The organisation instance in ap-southeast-1 (C11-D09). Its ARN is formed at synth by arnPattern()
+  // (src/config/arns.ts) from the id, so no ARN is written anywhere.
   identityCenter: {
     instanceId: string
     identityStoreId: string

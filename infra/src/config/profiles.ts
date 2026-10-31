@@ -5,9 +5,11 @@
 // (bin/workload.ts) reads only this file, so the pipeline's synth needs no person's configuration
 // (C11-D24, IG-08).
 //
-// A change to holdsRealData, logLockMode or smsProvider is on the owner's-read list (C11-D74):
-// holdsRealData brings production's rules to an environment (C11-D69), logLockMode makes the
-// audit store's lock one nobody can lift (C11-D18), and smsProvider starts real texts.
+// A change to holdsRealData, logLockMode, smsProvider, DOMAINS or NONPROD_NAME_SERVERS is on the
+// owner's-read list (C11-D74): holdsRealData brings production's rules to an environment (C11-D69),
+// logLockMode makes the audit store's lock one nobody can lift (C11-D18), smsProvider starts real
+// texts, DOMAINS names prod's zones, and NONPROD_NAME_SERVERS decides who answers for `nonprod.`,
+// which is same-site with prod (C11-D43).
 
 // Every stack is in ap-southeast-1 (D37, B.6), C0.12's Hearth-<env>-Edge alone in us-east-1 (IG-05).
 export const REGION = 'ap-southeast-1'
@@ -21,6 +23,16 @@ export const DOMAINS = {
   app: 'hearth-app.invalid',
   userContent: 'hearth-content.invalid',
 } as const
+
+// The non-prod zones' name servers, which prod's Baseline delegates `nonprod.` to (C11-D43). Committed
+// by a reviewed PR after non-prod's Baseline first deploys (its outputs), never looked up (IG-02) or
+// delegated by a Lambda (IG-11). Empty until then, so prod's Baseline renders no NS record. The shape
+// (profiles.test.ts) can't tell non-prod's zone from anyone else's, so the set-up runbook compares the
+// values with non-prod's own zone before prod's Baseline deploys.
+export const NONPROD_NAME_SERVERS: { readonly app: readonly string[]; readonly userContent: readonly string[] } = {
+  app: [],
+  userContent: [],
+}
 
 // A domain nobody can register or resolve (RFC 2606's .invalid), so a real deploy refuses it.
 export function isPlaceholderDomain(domain: string): boolean {

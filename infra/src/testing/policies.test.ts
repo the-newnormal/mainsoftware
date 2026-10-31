@@ -1,5 +1,8 @@
 // The test helpers later assertion tests stand on (C11-D70): an in-process synth with cdk.json's
-// context, and the policy walker, proved on a small stack holding one policy of each kind they read.
+// context, and the policy walker, proved on a small stack holding one policy of each kind they read;
+// then IAC-01's check and what it stands on, each proved on planted templates, every breakage found
+// and the template without it passing. Model actions are built from the lists, never written (IG-10),
+// and ARNs joined from their parts (IG-01).
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as logs from 'aws-cdk-lib/aws-logs'
@@ -7,12 +10,29 @@ import * as organizations from 'aws-cdk-lib/aws-organizations'
 import * as s3 from 'aws-cdk-lib/aws-s3'
 import * as sso from 'aws-cdk-lib/aws-sso'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { grantsModelAction, MODEL_SERVICE_PREFIXES } from '../config/models.ts'
+import { grantsModelAction, MODEL_ACTIONS, MODEL_SERVICE_PREFIXES, modelDenyActions } from '../config/models.ts'
+import { GITHUB_OIDC_HOST, iamVariable, QUALIFIER } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
-import { modelGrants, policyDocuments, policyStatements, unreadablePolicies } from './policies.ts'
+import { fixtureAccount } from './fixture.ts'
+import {
+  attachedPolicyName,
+  isModelDenyInPlace,
+  managedPolicyAttachments,
+  type ModelCheckAllowance,
+  modelCheck,
+  modelGrants,
+  namesModelAction,
+  policyDocuments,
+  policyStatements,
+  principalOf,
+  renderedString,
+  unreadablePolicies,
+} from './policies.ts'
 import { cdkContext, resourcesOf, type Synthesised, synthesise, templateOf, testApp } from './synth.ts'
 
 const [firstPrefix = ''] = MODEL_SERVICE_PREFIXES
+const [firstAction = ''] = MODEL_ACTIONS
+const actionService = firstAction.slice(0, firstAction.indexOf(':'))
 
 let synthesised: Synthesised
 let template: Record<string, unknown>
@@ -175,6 +195,30 @@ describe('C11-D70: synthesis for the assertion tests', () => {
     expect(Object.keys(resourcesOf(template)).length).toBeGreaterThan(5)
     expect(synthesised.assetManifests.size).toBeGreaterThan(0)
     expect(() => templateOf(synthesised, 'Hearth-missing')).toThrow(/synthesised: Hearth-helper-test/)
+  })
+
+  // What a person's deploy acts on beyond the template, which IAC-24 and the landing-zone checks read.
+  it('reads each stack’s artifact: account, Region, termination protection, deploy role and bootstrap version', () => {
+    const app = testApp()
+    const account = fixtureAccount(1)
+    const stack = new cdk.Stack(app, 'Artifact', {
+      stackName: 'Hearth-artifact-test',
+      terminationProtection: true,
+      synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: QUALIFIER.base }),
+      env: { account, region: REGION },
+    })
+    new cdk.CfnWaitConditionHandle(stack, 'Nothing')
+    const [artifact] = synthesise(app).stacks.map(s => s.artifact)
+    expect(artifact).toMatchObject({
+      account,
+      region: REGION,
+      terminationProtection: true,
+      bootstrapStackVersionSsmParameter: `/cdk-bootstrap/${QUALIFIER.base}/version`,
+    })
+    expect(artifact?.assumeRoleArn).toContain(`:role/cdk-${QUALIFIER.base}-deploy-role-${account}-${REGION}`)
+    expect(artifact?.requiresBootstrapStackVersion).toBeGreaterThan(0)
+    // A stack with no account and no protection, as the helper stack above.
+    expect(synthesised.stacks[0]?.artifact).toMatchObject({ region: REGION, terminationProtection: false })
   })
 })
 
