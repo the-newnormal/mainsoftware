@@ -1,6 +1,7 @@
 // The names that cross stacks and PRs (C11-D27) and the ARN builder every policy uses (C11-D74's
 // owner's read): each helper is held to the string the test joins itself from literal parts, never
 // through arns.ts, so a helper that returned `*` or another account fails here.
+import { readFileSync } from 'node:fs'
 import * as cdk from 'aws-cdk-lib'
 import { describe, expect, it } from 'vitest'
 import { fixtureAccount } from '../testing/fixture.ts'
@@ -16,6 +17,7 @@ import {
   QUALIFIER,
   SSM_PARAMETER,
   stagesIn,
+  TAG_KEY,
   TOOLKIT_STACK,
   taskFamily,
   taskRoleName,
@@ -46,6 +48,13 @@ describe('C11-D27: the names that cross stacks and PRs', () => {
     expect(execRoleName('prod', 'migrate')).toBe('hearth-prod-migrate-exec')
     expect(SSM_PARAMETER.zoneUserContent('nonprod')).toBe('/hearth/nonprod/zone/usercontent')
     expect(baselineStackName('nonprod')).toBe('Hearth-nonprod-Baseline')
+  })
+
+  it('C11-D09 C11-D11: the tag keys a policy matches and another stack, the helper or C0.12 sets', () => {
+    expect(TAG_KEY).toEqual({ user: 'hearth-user', reason: 'hearth-reason', access: 'hearth:access' })
+    // The helper sets the reason tag in shell, which can't import this file.
+    const helper = readFileSync(new URL('../../bin/break-glass.sh', import.meta.url), 'utf8')
+    expect(helper).toContain(`--tags "Key=${TAG_KEY.reason},Value=$reason"`)
   })
 
   it('writes an IAM policy variable without a string literal holding one', () => {

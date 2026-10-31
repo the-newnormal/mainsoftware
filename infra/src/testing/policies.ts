@@ -359,8 +359,8 @@ function subText(text: string, variables: Record<string, unknown>, context: Rend
 }
 
 // A value as CloudFormation would render it, where the template alone decides it: a literal string; a
-// Ref to AWS::Partition, AWS::Region, AWS::AccountId or AWS::URLSuffix (the last two from the stack's
-// env); an Fn::Join or Fn::Sub over those; and a Ref or GetAtt of a bucket, role, log group, topic,
+// Ref to AWS::Partition, AWS::Region, AWS::AccountId or AWS::URLSuffix (AWS::Region and AWS::AccountId
+// from the stack's env; the partition and URL suffix fixed); an Fn::Join or Fn::Sub over those; and a Ref or GetAtt of a bucket, role, log group, topic,
 // OIDC provider or managed policy whose properties fix it. Anything else (a key's id, a parameter, an
 // Fn::If, an import) is undefined, which a check reads as "could be anything" and so fails closed.
 // IAC-02, IAC-11, IAC-18 and IAC-23 compare resources and conditions with it.

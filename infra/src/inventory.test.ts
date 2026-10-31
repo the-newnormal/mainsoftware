@@ -2,9 +2,10 @@
 // against the committed file snapshot beside this file (__snapshots__/inventory.test.ts.snap), so a
 // change that adds, removes or replaces a resource type shows in the diff a reviewer reads. It holds
 // types and counts only, never an id, a name or a property, so IG-01 passes it. In CI Vitest writes
-// no new snapshot and fails on a missing one; a person updates it with `vitest run -u` and reads the
-// change. It pins no rule, so it stays off the owner's-read list (TECH-SPEC T24 item 31). PR 3 adds the
-// workload stacks.
+// no new snapshot and fails on a missing one; a person updates it with
+// `CI= npx vitest run infra/src/inventory.test.ts -u` (the flag after the path, since Vitest's -u
+// would take a path after it as its value) and reads the change. It pins no rule, so it stays off the
+// owner's-read list (TECH-SPEC T24 item 31). PR 3 adds the workload stacks.
 import { beforeAll, describe, expect, it } from 'vitest'
 import { type LandingZoneSynth, synthLandingZone } from './testing/landing-zone.ts'
 import { resourcesOf } from './testing/synth.ts'

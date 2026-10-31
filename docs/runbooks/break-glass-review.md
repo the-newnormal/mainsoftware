@@ -39,7 +39,7 @@
    - a session past its hour has a continuation entry, re-assumed under the same reason;
    - an amend entry names both its own session and the one it amends, under the amended session's reason, and the amend's own session wrote nothing else;
    - a refused attempt with a reason that isn't a reference is a finding, since its tags stay in the trail.
-4. Each A15 has an `lz:` reason and a merged PR, or a recorded tier-2 change.
+4. Each A15 has an `lz:` reason and a merged PR, a reviewed Foundation deploy (with its A3), the set-up's first deploys, or a recorded tier-2 change.
 5. Each `HearthOrgAdmin` session and each assumption of `OrganizationAccountAccessRole` has a reason: a reviewed Foundation deploy, a tier-2 change, or the set-up. A `HearthSetUp` session after the set-up is a finding.
 6. Each deploy-role session matches the deploy history (from C0.11 PR 4).
 7. List the quarter's `HearthSecurityReview` sessions, your own included.

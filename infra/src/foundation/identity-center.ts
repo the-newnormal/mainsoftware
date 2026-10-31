@@ -38,6 +38,7 @@ import {
   PERMISSION_SET,
   ROLE,
   SECURITY_LOG_GROUP,
+  TAG_KEY,
   TRAIL_NAME,
 } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
@@ -49,7 +50,7 @@ type AccountName = keyof LandingZoneConfig['accounts']
 type GroupName = keyof LandingZoneConfig['identityCenter']['groups']
 
 // The attribute for access control the break-glass trust reads (C11-D11).
-export const USER_ATTRIBUTE = 'hearth-user'
+export const USER_ATTRIBUTE = TAG_KEY.user
 
 // IAM's limit on a role's inline policies together, which a set's inline policy becomes in each
 // account, in characters without whitespace.

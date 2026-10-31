@@ -516,11 +516,22 @@ function namesOnlyTheLogs(condition: unknown): boolean {
   )
 }
 
+// Whether a condition makes S3 the only service the key is used through, required (never IfExists):
+// the other bound on a grant over log-archive's keys by pattern (C11-D17).
+function throughS3Only(condition: unknown): boolean {
+  const via = (condition as Record<string, Record<string, unknown>> | undefined)?.StringEquals?.['kms:ViaService']
+  return via === S3_VIA || (Array.isArray(via) && via.length === 1 && via[0] === S3_VIA)
+}
+
+// Both bounds: through S3, under the trail's or the break-glass entries' context alone.
+const boundedToTheLogs = (condition: unknown) => throughS3Only(condition) && namesOnlyTheLogs(condition)
+
 const DECRYPTS = ['kms:decrypt', 'kms:reencrypt*', 'kms:generatedatakey*']
 
 // IAC-23 (C11-D21): each grant that could use the archive key: in the archive key's own policy, any
 // that decrypts or makes a data key; anywhere else, one on a resource that could be a key in
-// log-archive (`key/*`, or a reference no static reading renders) not bounded to the logs' context.
+// log-archive (`key/*`, or a reference no static reading renders) not bounded to S3 and the logs'
+// context.
 function archiveKeyUsers(stacks: readonly StackTemplate[]): string[] {
   const keys = arn('kms', REGION, logArchive, 'key/*')
   const archiveKeys = new Set(
@@ -538,7 +549,7 @@ function archiveKeyUsers(stacks: readonly StackTemplate[]): string[] {
     .flatMap(({ at, s, resources }) => {
       if (s.type === 'AWS::KMS::Key') return archiveKeys.has(s.logicalId) ? [`${at}: uses the archive key`] : []
       const couldBeTheKey = resources.some(resource => globsOverlap(resource, keys))
-      return couldBeTheKey && !namesOnlyTheLogs(s.condition) ? [`${at}: could use the archive key`] : []
+      return couldBeTheKey && !boundedToTheLogs(s.condition) ? [`${at}: could use the archive key`] : []
     })
 }
 
@@ -555,7 +566,7 @@ function planted(roleStatements: unknown[], archiveKeyStatements: unknown[] = []
 }
 
 describe('IAC-23 C11-D21: nobody reads the archive or uses its key', () => {
-  it('IAC-23 finds a read of the archive bucket’s configuration, a read by NotAction, a decrypt on log-archive’s keys with no context or only an IfExists one, and a decrypt in the archive key’s policy, planted in a copy of LogArchive', () => {
+  it('IAC-23 finds a read of the archive bucket’s configuration, a read by NotAction, a decrypt on log-archive’s keys with no context, only an IfExists one or no kms:ViaService, and a decrypt in the archive key’s policy, planted in a copy of LogArchive', () => {
     const role = one(template, 'AWS::IAM::Role', 'RoleName', 'hearth-break-glass')[0]
     expect(
       archiveReaders(
@@ -588,6 +599,13 @@ describe('IAC-23 C11-D21: nobody reads the archive or uses its key', () => {
               Resource: keys,
               Condition: { StringLike: { 'kms:EncryptionContext:aws:s3:arn': bucketArn(BUCKET.archive) } },
             },
+            {
+              Sid: 'NoVia',
+              Effect: 'Allow',
+              Action: 'kms:Decrypt',
+              Resource: keys,
+              Condition: { StringEquals: { 'kms:EncryptionContext:aws:s3:arn': bucketArn(BUCKET.breakGlass) } },
+            },
           ],
           [{ Sid: 'Planted', Effect: 'Allow', Principal: { AWS: ROOT }, Action: 'kms:Decrypt', Resource: '*' }],
         ),
@@ -597,6 +615,7 @@ describe('IAC-23 C11-D21: nobody reads the archive or uses its key', () => {
       `Hearth-LogArchive ${role} Bare: could use the archive key`,
       `Hearth-LogArchive ${role} IfExists: could use the archive key`,
       `Hearth-LogArchive ${role} Archive: could use the archive key`,
+      `Hearth-LogArchive ${role} NoVia: could use the archive key`,
     ])
   })
 
@@ -613,7 +632,7 @@ describe('IAC-23 C11-D21: nobody reads the archive or uses its key', () => {
       .filter(({ resources }) => resources.some(resource => globsOverlap(resource, keys)))
       .map(
         ({ at, s }) =>
-          `${at.split(' ')[0]} ${at.split(' ')[2]}: ${namesOnlyTheLogs(s.condition) ? 'bounded' : 'NOT bounded'}`,
+          `${at.split(' ')[0]} ${at.split(' ')[2]}: ${boundedToTheLogs(s.condition) ? 'bounded' : 'NOT bounded'}`,
       )
     expect(bounded).toEqual([
       'Hearth-Foundation DecryptTrail: bounded',

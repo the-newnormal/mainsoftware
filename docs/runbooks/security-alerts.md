@@ -39,7 +39,7 @@ Find the alert's row. If it isn't expected, contain it first: remove the person'
 | A12 | A budget's 80 % or 100 % actual, or 100 % forecast, or a cost anomaly | Read with `HearthBilling` in Cost Explorer | Spend nobody planned, or a service nobody uses |
 | A13 | (From C0.12) a read of the master secret or a bootstrap input secret, or a use of `HearthDpoBootstrapSecret` | A matching break-glass session under its reason, or the DPO's own use | No reason explains it |
 | A14 | An ECS deployment failed, and the circuit breaker rolled it back | Handled by the deploy and rollback runbook, from C0.11 PR 4 | It repeats with no change merged |
-| A15 | A hearthbase role was assumed: landing-zone administration under `lz:`, or tier 2 | A merged PR whose Baseline deploy it is, under its `lz:pr-` reason, or a recorded tier-2 change | Anything else |
+| A15 | A hearthbase role was assumed, in any account: landing-zone administration under `lz:`, a Foundation deploy, the set-up, or tier 2 | A merged PR whose Baseline deploy it is, under its `lz:pr-` reason; a reviewed Foundation deploy under `HearthOrgAdmin`, with its A3; the set-up's first deploys; or a recorded tier-2 change | Anything else |
 
 ## Check it worked
 

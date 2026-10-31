@@ -853,6 +853,9 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['i: eval', afterAssume('eval "$reason"'), ['IG-09i']],
       ['i: env alone', afterAssume('env'), ['IG-09i']],
       ['i: declare -p', afterAssume('declare -p'), ['IG-09i']],
+      ['i: allexport', plant('set -f\n', 'set -f\nset -a\n'), ['IG-09i']],
+      ['i: allexport joined', plant('set -f\n', 'set -f\nset -ea\n'), ['IG-09i']],
+      ['i: allexport by name', plant('set -f\n', 'set -f\nset -o allexport\n'), ['IG-09i']],
       [
         'i: --debug',
         plant('aws sso login --profile "$profile"\n', 'aws sso login --profile "$profile" --debug\n'),

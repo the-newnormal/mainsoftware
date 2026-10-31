@@ -43,6 +43,7 @@ import {
   SEC_TAG,
   SECURITY_LOG_GROUP_PREFIX,
   SSO_ROLE_PATH,
+  TAG_KEY,
 } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 import {
@@ -498,7 +499,7 @@ function workloadFence2Statements(): IamStatement[] {
       Action: 'secretsmanager:GetSecretValue',
       Resource: '*',
       Condition: {
-        StringEquals: { 'secretsmanager:ResourceTag/hearth:access': 'rule9' },
+        StringEquals: { [`secretsmanager:ResourceTag/${TAG_KEY.access}`]: 'rule9' },
         ...exceptFor(...rule9Roles),
       },
     },
@@ -514,7 +515,7 @@ function workloadFence2Statements(): IamStatement[] {
       Effect: 'Deny',
       Action: 'sts:AssumeRole',
       Resource: HEARTHBASE_ROLES,
-      Condition: { StringNotLike: { 'aws:PrincipalTag/hearth-reason': LZ_REASON_SHAPES } },
+      Condition: { StringNotLike: { [`aws:PrincipalTag/${TAG_KEY.reason}`]: LZ_REASON_SHAPES } },
     },
     {
       Sid: 'HearthappOnlyDeploy',

@@ -62,6 +62,15 @@ export const TRAIL_NAME = 'hearth-org-trail'
 export const KEY_ALIAS = { sec: 'alias/hearth-sec', archive: 'alias/hearth-archive' } as const
 export const SEC_TAG = 'hearth-sec'
 
+// The tag keys a policy in one stack matches and another stack, the helper or C0.12 sets (C11-D05,
+// C11-D09, C11-D11): Identity Center sets hearth-user from each person's sign-in name, which the
+// break-glass trust compares with the session's source identity; the helper tags each break-glass
+// session hearth-reason, which the trust, the role's statements and the workload fences read; and
+// C0.12 tags the Rule 9 secret hearth:access, which the fences and break-glass's denies match. A
+// rename on one side alone would refuse every break-glass session, deny every landing-zone deploy or
+// leave the tagged secret unfenced, so each is written here once.
+export const TAG_KEY = { user: 'hearth-user', reason: 'hearth-reason', access: 'hearth:access' } as const
+
 // The log-archive account's three buckets, each named for that account at synth, so a name crosses
 // accounts without a reference (C11-D13, C11-D17, C11-D21).
 export const LOG_BUCKET_PREFIX = {

@@ -7,7 +7,7 @@
 // Statement ids are fixed strings, which the assertion tests pin.
 import { arnPattern, bucketArns, roleArn } from '../config/arns.ts'
 import { modelDenyActions } from '../config/models.ts'
-import { LOG_BUCKET_PREFIX, QUALIFIER, ROLE, type TaskRoleKind } from '../config/names.ts'
+import { LOG_BUCKET_PREFIX, QUALIFIER, ROLE, TAG_KEY, type TaskRoleKind } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 
 // One IAM statement as a policy document holds it. No statement here or in any landing-zone policy
@@ -201,7 +201,7 @@ export function rule9SecretDenies(): IamStatement[] {
       Effect: 'Deny',
       Action: 'secretsmanager:GetSecretValue',
       Resource: '*',
-      Condition: { StringEquals: { 'secretsmanager:ResourceTag/hearth:access': 'rule9' } },
+      Condition: { StringEquals: { [`secretsmanager:ResourceTag/${TAG_KEY.access}`]: 'rule9' } },
     },
   ]
 }

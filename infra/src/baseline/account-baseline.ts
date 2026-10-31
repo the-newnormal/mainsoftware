@@ -1,7 +1,7 @@
 // Hearth-<account>-Baseline (C11-D27): what each workload account holds beside the workload itself,
 // deployed by a person through hearthbase, first through OrganizationAccountAccessRole while the
-// account sits in Root and afterwards under break-glass with an lz:pr- reason (A1 and A15 alarm on
-// both). It holds:
+// account sits in Root and afterwards under break-glass with an lz:pr- reason (A15 alarms on both,
+// and A1 on the second too). It holds:
 // - hearth-boundary, the permissions boundary every workload role carries from C0.11 PR 3 (C11-D26);
 // - GitHub's OIDC provider, hearth-gh-deploy and, in prod, hearth-gh-diff (C11-D55);
 // - hearth-break-glass (C11-D11, C11-D12);

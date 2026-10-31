@@ -43,6 +43,7 @@ import {
   ROLE,
   SSO_ROLE_PATH,
   stagesIn,
+  TAG_KEY,
   taskFamily,
   taskRoleName,
 } from '../config/names.ts'
@@ -84,7 +85,7 @@ const BOOTSTRAP_LOGIN_REASONS = ['bootstrap:set-up', 'bootstrap:correct-number',
 const BOOTSTRAP_INPUT_REASONS = ['bootstrap:set-up', 'bootstrap:correct-number']
 const READ_ONLY_REASON = 'case:????-????'
 
-const REASON_TAG = 'hearth-reason'
+const REASON_TAG = TAG_KEY.reason
 const S3_VIA = `s3.${REGION}.amazonaws.com`
 
 export interface BreakGlassRoleProps {
@@ -168,7 +169,7 @@ function trust(account: string) {
           'aws:PrincipalArn': roleArn(account, `${SSO_ROLE_PATH}*AWSReservedSSO_${PERMISSION_SET.breakGlassEntry}_*`),
         },
         StringEquals: {
-          'sts:SourceIdentity': iamVariable('aws:PrincipalTag/hearth-user'),
+          'sts:SourceIdentity': iamVariable(`aws:PrincipalTag/${TAG_KEY.user}`),
           'aws:RequestedRegion': REGION,
         },
         'ForAllValues:StringEquals': { 'aws:TagKeys': [REASON_TAG] },

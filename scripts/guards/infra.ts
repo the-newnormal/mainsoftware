@@ -886,6 +886,17 @@ const traces = (text: string): boolean =>
       /^-[A-Za-z]*x/.test(word.replace(/["']/g, '')),
     ),
   )
+// allexport: an a in any option word of a set command (set -a, set -ea), or allexport named anywhere
+// (set -o, shopt -o, SHELLOPTS), which hands every variable after it, the credentials read into plain
+// variables among them, to every command the helper runs.
+const SET_RUN = /(?:^|[\s;&|(!])set(?=\s)/g
+const exportsAll = (text: string): boolean =>
+  /\ballexport\b/.test(text) ||
+  [...text.matchAll(SET_RUN)].some(run =>
+    wordsAsWritten(text.slice((run.index ?? 0) + run[0].length)).some(word =>
+      /^-[A-Za-z]*a/.test(word.replace(/["']/g, '')),
+    ),
+  )
 const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?:^|[\s;&|(])(?:env|printenv)\s*(?:$|[;&|)])/m, 'env or printenv alone prints every variable'],
   [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
@@ -1151,6 +1162,7 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       fail('i', `line ${line.line} writes or prints a credential`)
     }
     for (const [pattern, why] of EXPOSING) if (pattern.test(line.text)) fail('i', `line ${line.line}: ${why}`)
+    if (exportsAll(line.text)) fail('i', `line ${line.line}: allexport exports every variable, credentials among them`)
     const exports = /\b(?:export|declare\s+-[A-Za-z]*x|typeset\s+-[A-Za-z]*x)\s+(.*)$/.exec(line.text)?.[1] ?? ''
     if (exports.split(/\s+/).some(word => [...CREDENTIAL_ENV, ...credentials].includes(word.split('=')[0] ?? ''))) {
       fail('i', `line ${line.line} exports a credential, which every command would then hold`)

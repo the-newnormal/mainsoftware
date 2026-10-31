@@ -53,7 +53,7 @@ const LOG_BUCKET_NAMES =
   '(($.requestParameters.bucketName = "hearth-org-trail-*") || ($.requestParameters.bucketName = "hearth-break-glass-log-*") || ($.requestParameters.bucketName = "hearth-archive-*"))'
 
 // Each assured alarm (C11-D16): its metric, its name after hearth-sec-, and its filters' patterns, in
-// order, exactly as TECH-SPEC T24 item 5 lists them.
+// order, each written out here as C11-D16 defines the alarm, which src/foundation/sentinel.ts builds.
 const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] }> = [
   {
     metric: 'A01BreakGlass',
