@@ -236,7 +236,10 @@ describe('C0.7 T19 item 9 the producer, publishTopicEvent()', () => {
         [50, reason],
       ]),
     )
-    const written = JSON.stringify(log.lines)
+    // Every field but pino's time: epoch ms, whose digits can hold '9123' by chance (…9819123). A
+    // number, so no value can hide there.
+    for (const line of log.lines) expect(line.time).toEqual(expect.any(Number))
+    const written = JSON.stringify(log.lines.map(({ time: _time, ...line }) => line))
     for (const value of ['Marcus', '9123', ITEM, ITEM.toUpperCase()]) expect(written).not.toContain(value)
     // At 2 KiB exactly it goes.
     const fits = { topic: personTopic, type: 'inbox.changed', ids: { items: hundred.slice(0, 40) } }
