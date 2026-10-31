@@ -455,7 +455,8 @@ amend_session() {
 
 # A console sign-in link for this session, on request: the session goes to the sign-in endpoint in a
 # POST body read from standard input, never in an argument or a URL, and the link printed holds only
-# the sign-in token, good for 15 minutes.
+# the sign-in token, good for 15 minutes, which reaches jq through its environment, never its
+# arguments, since it signs in as the role.
 open_console() {
   local token destination
   if ! read -r token < <(AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" \
@@ -465,7 +466,7 @@ open_console() {
     printf "break-glass: the console link wasn't made; the shell still works\n"
     return 0
   fi
-  token="$(jq -rn --arg token "$token" '$token | @uri')"
+  token="$(token="$token" jq -rn 'env.token | @uri')"
   destination="$(jq -rn '"https://ap-southeast-1.console.aws.amazon.com/" | @uri')"
   printf 'Console sign-in for this session (the link works for 15 minutes):\n'
   printf '%s\n' "https://signin.aws.amazon.com/federation?Action=login&Destination=$destination&SigninToken=$token"

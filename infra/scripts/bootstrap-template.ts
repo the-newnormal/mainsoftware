@@ -35,8 +35,10 @@ export const STOCK_TEMPLATE = createRequire(import.meta.url).resolve(
 // Where the generator writes, which IAC-24 compares.
 export const COMMITTED_TEMPLATE = new URL('../bootstrap/hearth-bootstrap.yaml', import.meta.url)
 
-// The template's own top-level keys, in its order; anything the synth adds around them is dropped.
-const TOP_LEVEL_KEYS = ['Description', 'Parameters', 'Conditions', 'Resources', 'Outputs'] as const
+// The stock template's own top-level keys, in its order. The reader keeps every key it reads, these
+// first, so a CLI template that gains another (a Transform, Mappings, Rules, Metadata) reaches the
+// generator, which refuses it, naming it.
+const TOP_LEVEL_KEYS: readonly string[] = ['Description', 'Parameters', 'Conditions', 'Resources', 'Outputs']
 
 // The stock template's own CloudFormation Validate findings, all on default parameter values that
 // `cdk bootstrap` overrides. A bare App leaves them warnings, which change nothing in the template;
@@ -92,8 +94,9 @@ function throwingYamlWarnings<T>(run: () => T): T {
 }
 
 // A CloudFormation template file, read as the CLI reads it (short tags as intrinsics), returned as
-// JSON with the template's own top-level keys in its order. The stack holding it only reads it and
-// never deploys; its region is there for IG-05 and changes nothing in what is read.
+// JSON with every top-level key it holds, the stock template's own first in its order. The stack
+// holding it only reads it and never deploys; its region is there for IG-05 and changes nothing in
+// what is read.
 export function readCloudFormationFile(path: string): CfnTemplate {
   const outdir = mkdtempSync(join(tmpdir(), 'hearth-bootstrap-'))
   try {
@@ -108,6 +111,7 @@ export function readCloudFormationFile(path: string): CfnTemplate {
       const synthesised = app.synth().getStackByName(stack.stackName).template as CfnTemplate
       const template: CfnTemplate = {}
       for (const key of TOP_LEVEL_KEYS) if (synthesised[key] !== undefined) template[key] = synthesised[key]
+      for (const [key, value] of Object.entries(synthesised)) if (!(key in template)) template[key] = value
       return template
     })
   } finally {
@@ -133,6 +137,9 @@ export function withModelDeny(cli: CfnTemplate): CfnTemplate {
   const template = structuredClone(cli)
   const resources = isObject(template.Resources) ? template.Resources : {}
   const problems: string[] = []
+  for (const key of Object.keys(template)) {
+    if (!TOP_LEVEL_KEYS.includes(key)) problems.push(`the top-level key ${key} isn't one the stock template held`)
+  }
   const roles: string[] = []
   for (const [logicalId, resource] of Object.entries(resources)) {
     const type = isObject(resource) ? resource.Type : undefined

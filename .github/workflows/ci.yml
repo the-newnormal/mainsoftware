@@ -82,9 +82,9 @@ jobs:
       - run: npm test
       # The landing-zone entry over the fictional fixture (C0.11 PR 2, C11-D62): the CDK CLI proves Node
       # loads bin/landing-zone.ts and that aws-cdk-lib and the CLI agree; infra's assertion tests already
-      # ran in npm test. No AWS call: the script drops every inherited variable but PATH and HOME, points
-      # the AWS config and credentials files at /dev/null and turns off lookups, notices, telemetry and the
-      # version check. PR 3 adds the workload entry's synth beside it.
+      # ran in npm test. No AWS call: the script drops every inherited variable but PATH, gives the CLI a
+      # new empty HOME, points the AWS config and credentials files at /dev/null and turns off lookups,
+      # notices, telemetry and the version check. PR 3 adds the workload entry's synth beside it.
       - run: npm run synth:lz -w @hearth/infra
       # The Rule 1-9 access suite, case by case, todos included, so CI lists every rule
       # (BUILD-PLAN C0.4, T10). `npm test` above already ran it; this prints the names.

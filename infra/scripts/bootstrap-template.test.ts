@@ -447,4 +447,42 @@ describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t wri
       expect(() => withModelDeny(template), name).toThrow(/read the change before regenerating/)
     }
   })
+
+  it('reads every top-level key a CLI template holds, and refuses one the stock template never held, naming it', () => {
+    // A transform, mappings, rules and metadata, which the synth keeps and the stock template lacks.
+    const extra = readCloudFormationFile(
+      plantedYaml(
+        'extra-keys.yaml',
+        [
+          'Transform: AWS::LanguageExtensions',
+          'Metadata:',
+          '  X: y',
+          'Mappings:',
+          '  M:',
+          '    a:',
+          '      b: c',
+          'Rules:',
+          '  R:',
+          '    Assertions:',
+          '      - Assert: !Equals [a, a]',
+          'Resources:',
+          '  P:',
+          '    Type: AWS::SSM::Parameter',
+          '    Properties:',
+          '      Type: String',
+          '      Value: !FindInMap [M, a, b]',
+          '',
+        ].join('\n'),
+      ),
+    )
+    expect(Object.keys(extra).sort()).toEqual(['Mappings', 'Metadata', 'Resources', 'Rules', 'Transform'])
+    for (const key of ['Transform', 'Metadata', 'Mappings', 'Rules']) {
+      expect(() => withModelDeny(extra), key).toThrow(new RegExp(`top-level key ${key} `))
+    }
+    const transformed = plant(t => {
+      t.Transform = 'AWS::LanguageExtensions'
+    })
+    expect(() => withModelDeny(transformed)).toThrow(/top-level key Transform /)
+    expect(() => withModelDeny(transformed)).toThrow(/read the change before regenerating/)
+  })
 })

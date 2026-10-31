@@ -886,6 +886,82 @@ const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
   [/\baws\s+configure\s+set\b/, 'aws configure set writes to the CLI configuration'],
 ]
 
+// The words of the command that starts a text, as written (quotes kept), up to the first operator
+// outside quotes (; & | ) < > or a newline). A command substitution outside quotes is part of its word.
+function wordsAsWritten(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote: string | undefined
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\' && i + 1 < text.length) {
+      word += c
+      i += 1
+      word += text[i]
+      continue
+    } else if (c === '"') {
+      quote = quote === '"' ? undefined : '"'
+    } else if (quote === undefined && c === "'") {
+      quote = "'"
+    } else if (quote === undefined && c === '(' && text[i - 1] === '$') {
+      depth += 1
+    } else if (quote === undefined && depth > 0 && c === ')') {
+      depth -= 1
+    } else if (quote === undefined && depth === 0 && (c === '\n' || ';&|()<>'.includes(c))) {
+      break
+    } else if (quote === undefined && depth === 0 && /\s/.test(c)) {
+      if (word !== '') words.push(word)
+      word = ''
+      continue
+    }
+    word += c
+  }
+  if (word !== '') words.push(word)
+  return words
+}
+
+// Each jq run's program as written: the first word after jq that is neither an option nor an
+// option's value. A program read from a file (-f) has none here.
+const JQ_RUN = /(?:^|[\s;&|(])jq(?=\s)/g
+const JQ_TWO_VALUES = new Set(['--arg', '--argjson', '--slurpfile', '--rawfile'])
+const JQ_ONE_VALUE = new Set(['--indent', '-L'])
+function jqPrograms(text: string): string[] {
+  const programs: string[] = []
+  for (const run of text.matchAll(JQ_RUN)) {
+    const words = wordsAsWritten(text.slice((run.index ?? 0) + run[0].length))
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i] ?? ''
+      if (JQ_TWO_VALUES.has(word)) i += 2
+      else if (JQ_ONE_VALUE.has(word)) i += 1
+      else if (word === '-f' || word === '--from-file') break
+      else if (!word.startsWith('-')) {
+        programs.push(word)
+        break
+      }
+    }
+  }
+  return programs
+}
+
+// Whether a word as written expands anything in the shell: a $ or a backquote outside single quotes,
+// not escaped.
+function expands(word: string): boolean {
+  let quote: string | undefined
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i]
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\') i += 1
+    else if (c === '$' || c === '`') return true
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === "'" && quote === undefined) quote = "'"
+  }
+  return false
+}
+
 // The variables the helper reads the role's credentials into: the first three a `read -r` on the
 // assume-role line fills, which its --query lists as the key id, the secret and the token.
 function credentialVariables(lines: readonly ShellLine[]): string[] {
@@ -1052,6 +1128,9 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   if (lines.some(line => /\\?"[\w-]+\\?"\s*:/.test(line.text))) {
     fail('k', 'an entry is built by jq -n --arg, never by writing fields into JSON text')
   }
+  if (lines.some(line => jqPrograms(line.text).some(expands))) {
+    fail('k', 'a jq program is written whole in single quotes, its fields given by --arg, never expanded into it')
+  }
   if (!lines.some(line => /\bjq\s+-[a-z]*n[a-z]*\s.*--arg\s/.test(line.text))) {
     fail('k', 'entries are built by jq -n --arg')
   }
@@ -1109,10 +1188,15 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     .map(line => line.text)
     .join('\n')
     .replace(/\s+/g, ' ')
-  if (!lines.some(line => /^nonprod \| prod \| log-archive\) ;;$/.test(line.text))) {
+  // Each check whole, from case to esac, so no other arm takes anything more.
+  if (!flat.includes('case "$environment" in nonprod | prod | log-archive) ;; *) usage ;; esac')) {
     fail('m', 'the environment is checked against exactly nonprod, prod and log-archive')
   }
-  if (!flat.includes('if [ "$environment" = log-archive ]; then case "$reason" in incident:* | drill:*) ;; *)')) {
+  if (
+    !flat.includes(
+      'if [ "$environment" = log-archive ]; then case "$reason" in incident:* | drill:*) ;; *) usage ;; esac fi',
+    )
+  ) {
     fail('m', 'in log-archive only an incident: or drill: reason is taken')
   }
 
@@ -1140,19 +1224,45 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   }
 
   // p: --amend writes its one entry and signs out: no shell, no console, no open or close entry, and
-  // never beside --console.
+  // never beside --console. Both the function that writes the amend entry and the run's own --amend
+  // branch are read: the branch, from `if [ -n "$amend" ]; then` to its fi, reaches none of them,
+  // calls the amend and exits straight after it, so an amend run ends in the amend's sign-out and
+  // never goes on into a session.
+  const notInAmend = /\bbash\s+--rcfile\b|(?:^|[\s;&|(])curl\s|\bentry:\s*"(?:open|close)"/
   const amend = [...functions.keys()].find(name => bodyOf(name).some(line => /\bentry:\s*"amend"/.test(line.text)))
   const amendBody = amend === undefined ? [] : bodyOf(amend)
   if (
     amend === undefined ||
-    amendBody.some(line =>
-      reaches(line.text, /\bbash\s+--rcfile\b|(?:^|[\s;&|(])curl\s|\bentry:\s*"(?:open|close)"/),
-    ) ||
+    amendBody.some(line => reaches(line.text, notInAmend)) ||
     !/^aws\s+sso\s+logout\b/.test(amendBody.at(-1)?.text ?? '')
   ) {
     fail(
       'p',
       'the amend writes its one entry and ends in aws sso logout, reaching no shell, no console and no open or close entry',
+    )
+  }
+  const branchStart = main.find(({ line }) => line.text === 'if [ -n "$amend" ]; then')?.index ?? -1
+  let branchEnd = -1
+  for (let i = branchStart + 1, depth = 1; branchStart >= 0 && i < lines.length; i++) {
+    const text = lines[i]?.text ?? ''
+    if (/^if\s.*;\s*then$/.test(text)) depth += 1
+    else if (text === 'fi') depth -= 1
+    if (depth === 0) {
+      branchEnd = i
+      break
+    }
+  }
+  const branch = branchEnd < 0 ? [] : lines.slice(branchStart + 1, branchEnd)
+  if (
+    amend === undefined ||
+    branch.length < 2 ||
+    branch.some(line => reaches(line.text, notInAmend)) ||
+    !/^exit(?:\s+\d+)?$/.test(branch.at(-1)?.text ?? '') ||
+    !calls(branch.at(-2)?.text ?? '').includes(amend)
+  ) {
+    fail(
+      'p',
+      'the run’s --amend branch reaches no shell, no console and no open or close entry, and exits straight after the amend',
     )
   }
   if (

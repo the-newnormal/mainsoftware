@@ -874,6 +874,22 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09k'],
       ],
       [
+        'k: an entry’s fields written into a jq program',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  jq -n "{schema: \\"x\\", reason: \\"$reason\\"}" >"$entry_file"\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a field spliced into a jq program',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          `  jq -n --arg schema "$SCHEMA" '{schema: $schema, reason: "'"$reason"'"}' >"$entry_file"\n  put_entry "$key" || refuse "the open entry`,
+        ),
+        ['IG-09k'],
+      ],
+      [
         'k: an entry that may overwrite',
         plant("--checksum-algorithm SHA256 --if-none-match '*' >/dev/null", '--checksum-algorithm SHA256 >/dev/null'),
         ['IG-09k'],
@@ -915,8 +931,19 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09m'],
       ],
       [
+        'm: another arm takes more environments',
+        plant('  nonprod | prod | log-archive) ;;\n', '  nonprod | prod | log-archive) ;;\n  *prod*) ;;\n'),
+        ['IG-09m'],
+      ],
+      ['m: any environment taken', plant('  *) usage ;;\nesac\n', '  *) ;;\nesac\n'), ['IG-09m']],
+      [
         'm: log-archive takes any reason',
         plant('incident:* | drill:*) ;;', 'incident:* | drill:* | lz:*) ;;'),
+        ['IG-09m'],
+      ],
+      [
+        'm: log-archive refuses no reason',
+        plant('    *) usage ;;\n  esac\nfi\n', '    *) ;;\n  esac\nfi\n'),
         ['IG-09m'],
       ],
       [
@@ -952,6 +979,22 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09p'],
       ],
       [
+        'p: an open entry written in the --amend branch',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n  open_session\n  exit 0\n'),
+        ['IG-09p'],
+      ],
+      [
+        'p: the --amend branch starts the shell',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n  run_shell\n  exit 0\n'),
+        ['IG-09k', 'IG-09p'],
+      ],
+      [
+        'p: the --amend branch goes on into the session',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n'),
+        ['IG-09p'],
+      ],
+      ['p: no --amend branch', plant('if [ -n "$amend" ]; then\n  amend_session\n  exit 0\nfi\n', ''), ['IG-09p']],
+      [
         'p: --console beside --amend',
         plant(
           'if [ -n "$amend" ] && [ "$console" = yes ]; then refuse \'refused: --amend opens no console\'; fi\n',
@@ -984,7 +1027,9 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       'valid_reason "$1"',
     ].join('\n')
     expect(reasonFormLines(helper)).toHaveLength(6)
-    // References made from CASE_REFERENCE_PATTERN's own alphabet, each letter it allows first.
+    // The reasons infra/src/baseline/break-glass.test.ts plants (a test imports no test, so they are
+    // written again here), with the dates only valid_date can refuse. Its references are made the same
+    // way, from CASE_REFERENCE_PATTERN's own alphabet, each letter it allows first.
     const [letters = '', symbols = ''] = [...CASE_REFERENCE_PATTERN.source.matchAll(/\[([^\]]+)\]/g)].map(([, body]) =>
       (body ?? '').replace(/(.)-(.)/g, (_, a: string, b: string) =>
         Array.from({ length: b.charCodeAt(0) - a.charCodeAt(0) + 1 }, (_, i) =>
@@ -993,8 +1038,8 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ),
     )
     const references = [...letters].map((first, i) => {
-      const pick = (k: number) => symbols[(i * 5 + k) % symbols.length] ?? ''
-      const reference = `${first}${pick(1)}${pick(2)}${pick(3)}${letters[(i + 2) % letters.length]}${pick(4)}${pick(5)}${pick(6)}`
+      const pick = (k: number) => symbols[(i * 7 + k) % symbols.length] ?? ''
+      const reference = `${first}${pick(1)}${pick(2)}${pick(3)}${letters[(i + 3) % letters.length]}${pick(4)}${pick(5)}${pick(6)}`
       expect(CASE_REFERENCE_PATTERN.test(reference), reference).toBe(true)
       return `case:${formatCaseReference(reference as CaseReference)}`
     })
@@ -1009,6 +1054,8 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       'drill:2024-02-29',
       'lz:pr-1',
       'lz:pr-42',
+      'lz:pr-123',
+      'lz:pr-1234',
       'lz:pr-99999',
     ]
     const bad = [
@@ -1032,8 +1079,11 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       'bootstrap:other',
       'recover:aws',
       'recover:twilio ',
+      'lz:pr-42 ',
       'lz:pr-1\nlz:pr-2',
+      'case:B2CD-FGHJ\nx',
       'incident:٢٠٢٦-10-31-01',
+      'drill:２０２６-10-31',
       '',
     ]
     for (const reason of good) expect(run(check, [reason]), reason).toBe(0)
