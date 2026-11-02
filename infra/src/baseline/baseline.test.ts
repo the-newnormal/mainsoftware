@@ -12,14 +12,16 @@
 //   statements, NoNewIdentityProviders among them, within a managed policy's limit;
 // - the fast rules each account holds, their patterns, states and inputs, and the topic they email;
 // - C11-D43: the zones, Amazon's CAA alone, retained once made, and prod's `nonprod.` delegation only once its
-//   name servers are committed, which a variant shows; C11-D44: the server image's repository.
+//   name servers are committed, which the committed synth follows and two variants pin (filled and
+//   empty), so committing them turns none of these red; C11-D44: the server image's repository.
 // prod's statements also name the restore stage, which lives in its account (C11-Q02). Expected ARNs
 // are joined from their parts (IG-01) and the model deny comes from the lists (IG-10).
 import { readFileSync } from 'node:fs'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DEPLOY_WORKFLOW_REF, githubSubject } from '../config/env.ts'
-import { modelDenyActions } from '../config/models.ts'
-import { appHost, userContentHost } from '../config/profiles.ts'
+import { globsOverlap, modelDenyActions } from '../config/models.ts'
+import { appHost, NONPROD_NAME_SERVERS, userContentHost } from '../config/profiles.ts'
+import type { NameServers } from '../foundation/options.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
 import { policyStatements, renderedString } from '../testing/policies.ts'
@@ -107,9 +109,14 @@ describe.each(KINDS)('C11-D27: %s’s construct ids, which the nag allowances an
         : ['A1BreakGlass', 'A14Deployments', 'A15Hearthbase'],
     )
     expect(childrenOf('ServerRepository')).toEqual(['Repository', 'Name'])
+    // prod's delegation records follow the committed name servers, one for each list filled.
+    const delegation = [
+      ...(NONPROD_NAME_SERVERS.app.length > 0 ? ['NonprodApp'] : []),
+      ...(NONPROD_NAME_SERVERS.userContent.length > 0 ? ['NonprodUserContent'] : []),
+    ]
     expect(childrenOf('Zones')).toEqual(
       kind === 'prod'
-        ? ['App', 'UserContent', 'AppZoneId', 'UserContentZoneId']
+        ? ['App', 'UserContent', ...delegation, 'AppZoneId', 'UserContentZoneId']
         : ['App', 'UserContent', 'AppNameServers', 'UserContentNameServers', 'AppZoneId', 'UserContentZoneId'],
     )
   })
@@ -900,6 +907,18 @@ function boundaryStatements(account: string): unknown[] {
       Action: 'iam:PassRole',
       Resource: [iam('role/hearth-*-rule9-*'), iam('role/cdk-*')],
     },
+    {
+      Sid: 'BreakGlassParameter',
+      Effect: 'Deny',
+      Action: [
+        'ssm:PutParameter',
+        'ssm:DeleteParameter',
+        'ssm:DeleteParameters',
+        'ssm:LabelParameterVersion',
+        'ssm:UnlabelParameterVersion',
+      ],
+      Resource: arn('ssm', REGION, account, 'parameter/hearth/break-glass/*'),
+    },
     ...RULE9_SECRETS,
     { Sid: 'NoAudit', Effect: 'Deny', Action: ['cloudtrail:*', 'guardduty:*', 'organizations:*'], Resource: '*' },
     {
@@ -971,8 +990,42 @@ describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
     const [, boundary] = one(templateOf(kind), 'AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'hearth-boundary')
     expect(
       JSON.stringify(boundary.Properties?.PolicyDocument).length,
-      'past the limit, drop the SMS statements, then NoRouteOut (the SCPs still deny both), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
+      'past the limit, drop the SMS statements, then NoRouteOut and BreakGlassParameter (the SCPs still deny all three), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
     ).toBeLessThanOrEqual(MANAGED_LIMIT)
+  })
+
+  // The helper reads its bucket's name from the parameter by this name (infra/bin/break-glass.sh), and
+  // the role it takes can only read it, so a bounded role that rewrote or deleted it would refuse every
+  // break-glass session in the account. Replayed against the boundary as rendered: the statements
+  // that deny a request outright, by action and resource as IAM matches them, leaving out any
+  // statement with a condition, so the replay never reports a deny the boundary might not make.
+  it('IAC-10 C11-D13 C11-D26: no bounded role rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; reading it, and writing the workload’s own parameters, stay open', () => {
+    const template = templateOf(kind)
+    const [, boundary] = one(template, 'AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'hearth-boundary')
+    const statements = (boundary.Properties?.PolicyDocument as { Statement: Statement[] } | undefined)?.Statement ?? []
+    const denies = (action: string, resource: string) =>
+      statements
+        .filter(statement => statement.Effect === 'Deny' && statement.Condition === undefined)
+        .filter(statement =>
+          listOf(statement.Action).some(pattern => globsOverlap(pattern.toLowerCase(), action.toLowerCase())),
+        )
+        .filter(statement => listOf(statement.Resource).some(pattern => globsOverlap(pattern, resource)))
+        .map(statement => statement.Sid)
+    const [, parameter] = one(template, 'AWS::SSM::Parameter', 'Name', '/hearth/break-glass/log-bucket')
+    const at = (name: string) => arn('ssm', REGION, ACCOUNT[kind], `parameter${name}`)
+    const helpers = at(String(parameter.Properties?.Name))
+    for (const action of [
+      'ssm:PutParameter',
+      'ssm:DeleteParameter',
+      'ssm:DeleteParameters',
+      'ssm:LabelParameterVersion',
+      'ssm:UnlabelParameterVersion',
+    ]) {
+      expect(denies(action, helpers), action).toEqual(['BreakGlassParameter'])
+    }
+    expect(denies('ssm:GetParameter', helpers)).toEqual([])
+    expect(denies('ssm:GetParameters', helpers)).toEqual([])
+    expect(denies('ssm:PutParameter', at(`/hearth/${kind}/app/setting`))).toEqual([])
   })
 })
 
@@ -1203,10 +1256,33 @@ describe('C11-D16 C11-Q07: every alert leaves by email alone', () => {
 
 // --- C11-D43 and C11-D44 ---------------------------------------------------------------------------
 
+// The NS records a Baseline renders for prod's delegation of `nonprod.` to the given name servers: in
+// prod alone, one under each domain whose list is filled, for two days; none while both are empty.
+function delegationOf(template: Template, kind: Kind, nameServers: NameServers): unknown[] {
+  if (kind !== 'prod') return []
+  const zone = (name: string | undefined) => ({ Ref: one(template, 'AWS::Route53::HostedZone', 'Name', `${name}.`)[0] })
+  return [
+    { host: appHost('prod'), values: nameServers.app },
+    { host: userContentHost('prod'), values: nameServers.userContent },
+  ]
+    .filter(({ values }) => values.length > 0)
+    .map(({ host, values }) => ({
+      HostedZoneId: zone(host),
+      Name: `nonprod.${host}.`,
+      Type: 'NS',
+      TTL: '172800',
+      ResourceRecords: [...values],
+    }))
+}
+const nsRecords = (template: Template) =>
+  ofType(template, 'AWS::Route53::RecordSet')
+    .filter(([, r]) => r.Properties?.Type === 'NS')
+    .map(([, r]) => r.Properties)
+
 describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters', kind => {
   const host = { app: appHost(kind), userContent: userContentHost(kind) }
 
-  it('C11-D43: two public zones, the app’s and user content’s, each allowing Amazon’s certificate authority alone and retained once made, and no NS record until the delegation is committed', () => {
+  it('C11-D43: two public zones, the app’s and user content’s, each allowing Amazon’s certificate authority alone and retained once made, and no other record but prod’s delegation to the name servers committed in NONPROD_NAME_SERVERS (none while they are empty)', () => {
     const template = templateOf(kind)
     const zones = ofType(template, 'AWS::Route53::HostedZone')
     expect(zones.map(([, r]) => r.Properties)).toEqual([{ Name: `${host.app}.` }, { Name: `${host.userContent}.` }])
@@ -1214,15 +1290,16 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
       expect(zone.DeletionPolicy).toBe('RetainExceptOnCreate')
       expect(zone.UpdateReplacePolicy).toBe('Retain')
     }
-    expect(ofType(template, 'AWS::Route53::RecordSet').map(([, r]) => r.Properties)).toEqual(
-      zones.map(([id, zone]) => ({
+    expect(ofType(template, 'AWS::Route53::RecordSet').map(([, r]) => r.Properties)).toEqual([
+      ...zones.map(([id, zone]) => ({
         HostedZoneId: { Ref: id },
         Name: zone.Properties?.Name,
         Type: 'CAA',
         TTL: '1800',
         ResourceRecords: ['0 issue "amazon.com"'],
       })),
-    )
+      ...delegationOf(template, kind, NONPROD_NAME_SERVERS),
+    ])
   })
 
   it('C11-D24 C11-D43 C11-D44: the zones’ ids, the repository’s name and the break-glass-log bucket’s name sit in SSM parameters by fixed names', () => {
@@ -1279,21 +1356,20 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
 })
 
 describe('C11-D43: prod’s delegation of nonprod.', () => {
-  it('C11-D43: once non-prod’s name servers are committed, prod delegates nonprod. under each domain to them for two days; until then it delegates nothing', () => {
+  it('C11-D43: once non-prod’s name servers are committed, prod delegates nonprod. under each domain to them for two days; until then it delegates nothing, and non-prod’s Baseline never does', () => {
     const nameServers = {
       app: ['ns-1.awsdns-01.com', 'ns-2.awsdns-02.net', 'ns-3.awsdns-03.org', 'ns-4.awsdns-04.co.uk'],
       userContent: ['ns-5.awsdns-05.com', 'ns-6.awsdns-06.net', 'ns-7.awsdns-07.org', 'ns-8.awsdns-08.co.uk'],
     }
-    const delegated = synthLandingZone({ nonprodNameServers: nameServers }).templates.prodBaseline
-    const nsRecords = (template: Template) =>
-      ofType(template, 'AWS::Route53::RecordSet')
-        .filter(([, r]) => r.Properties?.Type === 'NS')
-        .map(([, r]) => r.Properties)
-    expect(nsRecords(templateOf('prod'))).toEqual([])
+    const none = { app: [], userContent: [] }
+    // The committed synth delegates to whatever NONPROD_NAME_SERVERS holds, and the variants pin both
+    // states whatever is committed.
+    expect(nsRecords(templateOf('prod'))).toEqual(delegationOf(templateOf('prod'), 'prod', NONPROD_NAME_SERVERS))
+    const delegated = synthLandingZone({ nonprodNameServers: nameServers }).templates
     const zone = (name: string | undefined) => ({
-      Ref: one(delegated, 'AWS::Route53::HostedZone', 'Name', `${name}.`)[0],
+      Ref: one(delegated.prodBaseline, 'AWS::Route53::HostedZone', 'Name', `${name}.`)[0],
     })
-    expect(nsRecords(delegated)).toEqual([
+    expect(nsRecords(delegated.prodBaseline)).toEqual([
       {
         HostedZoneId: zone(appHost('prod')),
         Name: `nonprod.${appHost('prod')}.`,
@@ -1309,7 +1385,9 @@ describe('C11-D43: prod’s delegation of nonprod.', () => {
         ResourceRecords: nameServers.userContent,
       },
     ])
-    // Non-prod's Baseline never delegates.
-    expect(nsRecords(synthLandingZone({ nonprodNameServers: nameServers }).templates.nonprodBaseline)).toEqual([])
+    // The form the committed synth is checked against is this one.
+    expect(delegationOf(delegated.prodBaseline, 'prod', nameServers)).toEqual(nsRecords(delegated.prodBaseline))
+    expect(nsRecords(delegated.nonprodBaseline)).toEqual([])
+    expect(nsRecords(synthLandingZone({ nonprodNameServers: none }).templates.prodBaseline)).toEqual([])
   }, 60_000)
 })

@@ -127,7 +127,7 @@ describe('C11-D28: the profiles', () => {
     for (const list of lists) expect(list).toMatch(/^pl-[0-9a-f]{8}(?:[0-9a-f]{9})?$/)
   })
 
-  it('C11-D18: the log-archive lock starts in GOVERNANCE', () => {
+  it('C11-D18: the log-archive lock is committed in GOVERNANCE; the PR that moves it to COMPLIANCE changes this pin, and IAC-06 follows the committed mode', () => {
     expect(LOG_ARCHIVE.logLockMode).toBe('GOVERNANCE')
   })
 })

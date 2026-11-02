@@ -4,12 +4,19 @@
 // when a fast rule's delivery fails (TECH-SPEC T24 item 5). An alarm emails as it enters ALARM and
 // again as it returns to OK, never per call: a matching call while it is already in ALARM (a prod
 // release's later stacks, a Baseline deploy's other writes, the Owner's own triage session) emails
-// nobody, so triage reads every call between the two emails (the security-alerts runbook). They can't
-// report tampering with themselves from inside management, which no guardrail binds: a HearthOrgAdmin
-// session or management's root can turn off the alarms' actions, delete them, or unsubscribe or delete
-// the topic before the copy receives those calls, minutes after they are made, so A6, and A3 for the
-// session itself, may then email nobody. The trail's files in log-archive, under Object Lock, still
-// record those calls for the quarterly review. The alarms:
+// nobody, so triage reads every call from the episode's first breaching period until the OK email (the
+// security-alerts runbook). Each treats missing data as no alarm, so a copy that stopped receiving the
+// trail would leave them all OK whatever happened: the copy's intake alarm, hearth-sec-copy-intake,
+// reads AWS's own count of the events the copy received, which nobody's datapoints can reach, and
+// alarms after an hour with none, missing data counting as none. They can't report tampering with
+// themselves from inside management, which no guardrail binds: a HearthOrgAdmin session or
+// management's root can turn off or mute the alarms' actions, delete them, or unsubscribe or delete the
+// topic before the copy receives those calls, minutes after they are made, so A6, and A3 for the
+// session itself, may then email nobody. The trail's files in log-archive, under Object
+// Lock, still record those calls for the quarterly review. Datapoints a caller puts into an alarm's
+// metric would leave no such record, since CloudTrail records PutMetricData only as a data event, which
+// the trail doesn't select, so each alarm reads a statistic they can't lower (alarmStatistic, below).
+// The alarms:
 // - A1 break-glass assumed, refused attempts included (C11-D11);
 // - A2 a root sign-in or action, or a centralised root session;
 // - A3 an administrator session: HearthOrgAdmin, the first deploys' HearthSetUp, or
@@ -21,11 +28,12 @@
 // - A6 tampering: the audit services' writes; long-lived credentials, a new or changed identity
 //   provider or Cognito identity pool, a deleted flow log; the fast alarms' rules, topics and log
 //   groups; the log-archive keys' administration; the log buckets' configuration and their objects'
-//   deletes and lock changes, allowed or denied; the alarms themselves, but a PutMetricAlarm
-//   CloudFormation makes; and IAM writes to the break-glass and GitHub roles, the boundary and
-//   GitHub's provider;
+//   deletes and lock changes, allowed or denied; the alarms themselves (a mute rule included), but a
+//   PutMetricAlarm CloudFormation makes; and IAM writes to the break-glass and GitHub roles, the
+//   boundary and GitHub's provider;
 // - A7 a CloudFormation change in prod, whatever the stack; A8 a session into prod's tasks;
-// - A11 five failed sign-ins in fifteen minutes; A15 a hearthbase role assumed (C11-D26).
+// - A11 five failed sign-ins in fifteen minutes; A15 a hearthbase role assumed (C11-D26);
+// and the copy's intake, beside them, which no filter feeds.
 // A9, A10 and A14 are fast rules in log-archive and the Baselines; A12 is the budgets (budgets.ts).
 // The accounts the patterns name are configuration, written into the template at synth. A pattern
 // holds at most 1,024 characters, so an alarm may have several filters publishing one metric, and each
@@ -63,10 +71,22 @@ export interface AssuredAlarm {
   name: string
   // One filter per pattern, each publishing 1 to the metric.
   patterns: readonly string[]
-  // The alarm's period in minutes and its threshold: 5 and 1 unless said.
+  // The alarm's period in minutes and its threshold, in matched events: 5 and 1 unless said.
   periodMinutes?: number
   threshold?: number
 }
+
+// The statistic an alarm reads, chosen so that nobody's own datapoints can hold it down. Anyone in
+// management who may call PutMetricData can put datapoints into Hearth/Security's metrics (values down
+// to -2^360, timestamped up to two weeks back and two hours ahead), and the trail records none of it
+// (above), so under Sum a negative value would cancel a filter's 1. An alarm on one match reads
+// Maximum, which a filter's 1 always reaches and a datapoint can only raise. An alarm on several (A11)
+// reads SampleCount, one sample per matched event, which a datapoint can only add to, so long as
+// CloudWatch refuses a negative sample count: that, and a filter's one sample per match, are proved at
+// set-up (the set-up runbook). Filter and alarm both name the unit Count, so a datapoint put under
+// another unit is left out rather than leaving the alarm's evaluation undefined.
+const alarmStatistic = (threshold: number) =>
+  threshold === 1 ? cloudwatch.Stats.MAXIMUM : cloudwatch.Stats.SAMPLE_COUNT
 
 // `a || b || …` and `a && b && …`, each part in brackets.
 const any = (...parts: string[]) => parts.map(part => `(${part})`).join(' || ')
@@ -272,7 +292,9 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           oneOf('requestParameters.bucketName', LOG_BUCKETS),
         )} }`,
         // (h) the alarms themselves: any delete (CloudFormation's too, when a reviewed change renames
-        // or removes an alarm), actions turned off, a state set, and a PutMetricAlarm by anyone but
+        // or removes an alarm), actions turned off, or muted by a mute rule (anyone's, CloudFormation's
+        // too: Hearth makes none, and a muted alarm keeps its actions on and its action lists whole,
+        // so the read-backs can't see one), a state set, and a PutMetricAlarm by anyone but
         // CloudFormation (whichever stack it deploys), so another service's call is seen. `!=` never
         // matches an absent field, hence both terms.
         `{ ${all(
@@ -280,6 +302,7 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           any(
             is('eventName', 'DeleteAlarms'),
             is('eventName', 'DisableAlarmActions'),
+            is('eventName', 'PutAlarmMuteRule'),
             is('eventName', 'SetAlarmState'),
             all(
               is('eventName', 'PutMetricAlarm'),
@@ -363,6 +386,7 @@ export interface SentinelProps {
 
 export class Sentinel extends Construct {
   readonly alarms: readonly cloudwatch.Alarm[]
+  readonly intake: cloudwatch.Alarm
 
   constructor(scope: Construct, id: string, props: SentinelProps) {
     super(scope, id)
@@ -384,18 +408,21 @@ export class Sentinel extends Construct {
           metricNamespace: SECURITY_NAMESPACE,
           metricName: spec.metric,
           metricValue: '1',
+          unit: cloudwatch.Unit.COUNT,
         })
       })
+      const threshold = spec.threshold ?? 1
       const alarm = new cloudwatch.Alarm(group, 'Alarm', {
         alarmName,
         metric: new cloudwatch.Metric({
           namespace: SECURITY_NAMESPACE,
           metricName: spec.metric,
-          statistic: cloudwatch.Stats.SUM,
+          statistic: alarmStatistic(threshold),
+          unit: cloudwatch.Unit.COUNT,
           period: cdk.Duration.minutes(spec.periodMinutes ?? 5),
         }),
         evaluationPeriods: 1,
-        threshold: spec.threshold ?? 1,
+        threshold,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       })
@@ -406,5 +433,28 @@ export class Sentinel extends Construct {
       alarm.node.addDependency(props.alerts.policyDependable)
       return alarm
     })
+    // The copy's intake: an hour in which the copy received no event, or with no datapoint at all, is
+    // an alarm (an organisation trail delivers every few minutes), read from AWS's own
+    // IncomingLogEvents, in a namespace no PutMetricData may write to. Its ALARM and OK reach the same
+    // topic as the assured alarms'.
+    const intake = new cloudwatch.Alarm(this, 'CopyIntake', {
+      alarmName: `${SEC_RULE_PREFIX}copy-intake`,
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/Logs',
+        metricName: 'IncomingLogEvents',
+        dimensionsMap: { LogGroupName: props.logGroup.logGroupName },
+        statistic: cloudwatch.Stats.SUM,
+        period: cdk.Duration.hours(1),
+      }),
+      evaluationPeriods: 1,
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    })
+    const intakeAction = new cwActions.SnsAction(props.alerts.topic)
+    intake.addAlarmAction(intakeAction)
+    intake.addOkAction(intakeAction)
+    intake.node.addDependency(props.alerts.policyDependable)
+    this.intake = intake
   }
 }

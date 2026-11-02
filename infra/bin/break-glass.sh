@@ -23,13 +23,16 @@
 # are a terminal. It works only in its own folder ($HEARTH_BREAK_GLASS_HOME, else
 # ~/.hearth-break-glass, mode 700), whose AWS config holds the hearth-<env>-entry profiles, never the
 # person's own, one run at a time (a second session open at once needs a folder of its own), and it
-# signs out of the access portal whatever way it ends. It drops every AWS variable it inherits, moves
-# HOME to that folder, and drops curl's config folders, a TLS key log and every CA override (a CA
-# bundle comes only from the entry profile's ca_bundle, which every command it runs then takes), and
-# its curl reads no config file (-q); it keeps the person's PATH and proxy settings. Credentials reach a
-# command only as bash prefix assignments, never as an argument, and are never printed or written, the
-# console exchange included. It never prints the person's sign-in name, an account id, the bucket's
-# name or an input it refused.
+# signs out of the access portal whatever way it ends. It drops every AWS variable it inherits, in
+# either case, moves HOME to that folder, and drops curl's config folders, a TLS key log, the CA
+# overrides the AWS CLI and curl honour, and Node's options and its settings that turn the certificate
+# check off or add the system's CAs; its curl reads no config file (-q). An inspecting proxy's CA
+# bundle comes from the entry profile's ca_bundle, which every command it runs then takes, the CDK CLI
+# included. It keeps the person's PATH, proxy settings and NODE_EXTRA_CA_CERTS, which gives the Owner
+# bootstrap script RDS's CA: Node adds those CAs to its own, except where a command is given a bundle,
+# as the CDK CLI is once the entry profile names one. Credentials reach a command only as bash prefix
+# assignments, never as an argument, and are never printed or written, the console exchange included.
+# It never prints the person's sign-in name, an account id, the bucket's name or an input it refused.
 #
 # No test runs it: IG-09 (scripts/guards/infra.test.ts) reads its text, parses it with bash -n and runs
 # only its pure functions, extracted. It runs top to bottom, each function defined before its first
@@ -188,13 +191,14 @@ BG_HOME="${HEARTH_BREAK_GLASS_HOME:-$HOME/.hearth-break-glass}"
 if [ -z "$(find "$BG_HOME" -maxdepth 0 -type d -user "$(id -u)" -perm 700 2>/dev/null)" ]; then
   refuse 'refused: make its folder first, yours alone (mkdir -m 700 ~/.hearth-break-glass), with the entry profiles in .aws/config there (docs/runbooks/break-glass.md)'
 fi
-# Every AWS variable it inherits goes: credentials, profiles, roles, and any endpoint or CA override.
+# Every AWS variable it inherits goes: credentials, profiles, roles, and any endpoint or CA override,
+# in lower case too, since the CDK CLI reads aws_ca_bundle before AWS_CA_BUNDLE.
 unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN \
   AWS_ROLE_ARN AWS_ROLE_SESSION_NAME AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI \
   AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
 for inherited in $(compgen -e); do
   case "$inherited" in
-    AWS_*) unset "$inherited" ;;
+    AWS_* | aws_*) unset "$inherited" ;;
   esac
 done
 # And whatever else would write the session down or change whom it trusts: curl's config folders
@@ -205,6 +209,13 @@ done
 # (HTTPS_PROXY, NO_PROXY and the like) stay, for a network that needs one: TLS still runs end to end
 # through a proxy, and the certificate is still checked.
 unset CURL_HOME XDG_CONFIG_HOME SSLKEYLOGFILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR
+# Node's too, for the Node programs run in the shell (the CDK CLI, the Owner bootstrap script): the
+# switch that turns its certificate check off, its options whole (which can write a TLS key log, add
+# the system's or OpenSSL's CAs, or load code before the program), and its switch to the system's
+# CAs. NODE_EXTRA_CA_CERTS stays, since it gives the Owner bootstrap script RDS's CA
+# (docs/runbooks/first-owner-set-up.md): it only adds CAs to Node's own, and a connection given CAs of
+# its own ignores it, as the CDK CLI's are once the entry profile names a ca_bundle.
+unset NODE_TLS_REJECT_UNAUTHORIZED NODE_OPTIONS NODE_USE_SYSTEM_CA
 export HOME="$BG_HOME"
 export AWS_CONFIG_FILE="$BG_HOME/.aws/config"
 export AWS_SHARED_CREDENTIALS_FILE=/dev/null
@@ -229,7 +240,8 @@ fi
 # Behind TLS inspection the entry profile names the inspecting CA's bundle (ca_bundle), and every
 # command after the sign-in takes that same bundle as AWS_CA_BUNDLE: those that run with the session
 # and no profile (the parameter read, the entries, the shell's own commands) and the CDK CLI, which
-# reads no profile's. It must be a regular file it can read, or the run is refused.
+# reads no profile's and then trusts that bundle alone, not NODE_EXTRA_CA_CERTS. It must be a regular
+# file it can read, or the run is refused.
 ca_bundle="$(aws configure get ca_bundle --profile "$profile" 2>/dev/null || true)"
 if [ -n "$ca_bundle" ]; then
   if ! [ -f "$ca_bundle" ] || ! [ -r "$ca_bundle" ]; then

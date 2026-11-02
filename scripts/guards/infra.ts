@@ -928,10 +928,11 @@ const WRITER = /(?:^|[\s;&|(])(?:echo|printf|cat|tee|logger)(?=\s|$)/
 const REDIRECT = /&?>>?\s*(&?)([^\s;&|)<>]*)/g
 const writes = (text: string): boolean =>
   WRITER.test(text) || [...text.matchAll(REDIRECT)].some(([, dup, target]) => dup !== '&' && target !== '/dev/null')
-// What the helper may never run: a trace, anything that prints the environment or variables, a
-// debug flag, eval, or a change to the CLI's configuration. A trace is an x in any option word of a
-// set, bash or sh command (set -e -x, bash -ix), xtrace named anywhere (set -o, a joined -eo, shopt -o,
-// SHELLOPTS), or BASH_XTRACEFD.
+// What the helper may never run: a trace, printenv, env given no command to run (printsEnvironment),
+// a command that lists variables (listsVariables, declare -p), a debug flag, eval, or a change to the
+// CLI's configuration. The shell's rc file, where any command would see the credentials, is matched
+// whole besides (IG-09 i). A trace is an x in any option word of a set, bash or sh command (set -e -x,
+// bash -ix), xtrace named anywhere (set -o, a joined -eo, shopt -o, SHELLOPTS), or BASH_XTRACEFD.
 const TRACE_NAMED = /\bxtrace\b|BASH_XTRACEFD/
 const TRACE_RUN = /(?:^|[\s;&|(!/"'])(?:set|bash|sh)(?=\s)/g
 const traces = (text: string): boolean =>
@@ -945,6 +946,7 @@ const traces = (text: string): boolean =>
 // (set -o, shopt -o, SHELLOPTS), which hands every variable after it, the credentials read into plain
 // variables among them, to every command the helper runs.
 const SET_RUN = /(?:^|[\s;&|(!])set(?=\s)/g
+const SHOPT_RUN = /(?:^|[\s;&|(!{])shopt(?=\s)/g
 const exportsAll = (text: string): boolean =>
   /\ballexport\b/.test(text) ||
   [...text.matchAll(SET_RUN)].some(run =>
@@ -953,7 +955,6 @@ const exportsAll = (text: string): boolean =>
     ),
   )
 const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
-  [/(?:^|[\s;&|(])(?:env|printenv)\s*(?:$|[;&|)])/m, 'env or printenv alone prints every variable'],
   [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
   [/\b(?:declare|typeset|export|readonly)\s+-[A-Za-z]*p\b/, 'it prints variables'],
   [/--debug\b/, '--debug prints requests, credentials among them'],
@@ -975,6 +976,32 @@ function listsVariables(text: string): boolean {
     if (quotedAt(text, start)) return false
     const words = wordsAsWritten(text.slice(start + command.length).replace(/(^|\s)\d+(?=[<>])/g, '$1'))
     return command === 'set' ? words.length === 0 : words.every(word => /^[-+]/.test(word))
+  })
+}
+
+// env given no command to run prints every variable it holds: env, /usr/bin/env or command env with
+// only options, an option's value (-u NAME, -C DIR) and NAME=value words after it, read as
+// listsVariables reads set, so `env >file`, `env 2>/dev/null >file`, `env -0 >file`, `env -u PS1`,
+// `{ env; }`, `$(env)` and a backquoted env each print or write them. In the shell's rc they would
+// print the role's credentials, which the shell holds in its environment. One line of a command at
+// a time, outside quotes; jq's env. is no command word.
+const ENV_COMMAND = /(?:^|[\s;&|(!{`])((?:[\w.-]*\/)*env)(?=\s|$|[;&|)<>`])/g
+const ENV_VALUE_OPTIONS = new Set(['--unset', '--chdir', '--split-string', '--argv0'])
+function printsEnvironment(text: string): boolean {
+  return [...text.matchAll(ENV_COMMAND)].some(run => {
+    const command = run[1] ?? ''
+    const start = (run.index ?? 0) + run[0].length - command.length
+    if (quotedAt(text, start)) return false
+    const rest = (text.slice(start + command.length).split('`')[0] ?? '').replace(/(^|\s)\d+(?=[<>])/g, '$1')
+    const words = wordsAsWritten(rest).map(word => word.replace(/["']/g, ''))
+    let i = 0
+    for (; i < words.length; i++) {
+      const word = words[i] ?? ''
+      if (word === '--') continue
+      if (ENV_VALUE_OPTIONS.has(word) || /^-[A-Za-z0-9]*[uCSPa]$/.test(word)) i += 1
+      else if (!/^-/.test(word) && !/^[A-Za-z_]\w*=/.test(word)) break
+    }
+    return i >= words.length
   })
 }
 
@@ -1133,8 +1160,39 @@ const EXITS = /(?:^|[\s;&|(!{])(?:exit|return)(?=\s|$|[;&|)])/
 const EXIT_RUN = /(?:^|[\s;&|(!{])exit(?=\s|$|[;&|)])/
 const ERREXIT_ON = /\berrexit\b|(?:^|[\s;&|(!{])set\s+(?:[^\s;&|]+\s+)*-[A-Za-z]*e/
 const SHELL_RUN = /\bbash\s+--rcfile\b/
+// The shell's rc file, written by its here-document, and the shell's start, each matched whole by
+// IG-09 (i): the rc runs inside the shell that holds the role's credentials in its environment, so
+// any line added to it could print or write them (env, /proc/self/environ, awk's ENVIRON), and the
+// two keep the shell's history off (unset HISTFILE, HISTFILE=/dev/null).
+const SHELL_RC = [
+  `cat >"$rc" <<'RC'`,
+  'unset HISTFILE',
+  'hearth_bg_prompt() {',
+  '  local left',
+  '  left=$(( (HEARTH_BREAK_GLASS_UNTIL - $(date -u +%s)) / 60 ))',
+  `  if [ "$left" -le 5 ] && [ "\${hearth_bg_warned:-}" != 5 ]; then`,
+  '    hearth_bg_warned=5',
+  `    printf 'break-glass: about %s minutes left: finish, then type exit so the close entry is written\\n' "$left"`,
+  `  elif [ "$left" -le 10 ] && [ -z "\${hearth_bg_warned:-}" ]; then`,
+  '    hearth_bg_warned=10',
+  `    printf 'break-glass: about %s minutes left\\n' "$left"`,
+  '  fi',
+  '  if [ "$left" -lt 0 ]; then left=0; fi',
+  `  PS1="[BREAK-GLASS $HEARTH_BREAK_GLASS \${left}m] "`,
+  '}',
+  'PROMPT_COMMAND=hearth_bg_prompt',
+].join('\n')
+const SHELL_START = [
+  'AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st"',
+  'HEARTH_BREAK_GLASS="$environment $reason" HEARTH_BREAK_GLASS_UNTIL="$expires_at" HISTFILE=/dev/null',
+  'bash --rcfile "$rc" -i || true',
+].join(' ')
+const RC_EXPANDED = /\$\{?rc\b/
 // What IG-09 (e) has the helper unset besides every AWS_ variable: curl's config folders, a TLS key
-// log the CLI and curl both write, and the CA overrides the CLI and curl honour.
+// log the CLI and curl both write, the CA overrides the CLI and curl honour, and Node's switch that
+// turns its certificate check off, its options whole (a TLS key log, the system's CAs or code loaded
+// first) and its switch to the system's CAs, for the CDK CLI. NODE_EXTRA_CA_CERTS stays: it gives the
+// Owner bootstrap script RDS's CA, and Node ignores it wherever a command is given CAs of its own.
 const INHERITED_TLS = [
   'CURL_HOME',
   'XDG_CONFIG_HOME',
@@ -1143,10 +1201,17 @@ const INHERITED_TLS = [
   'CURL_CA_BUNDLE',
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_OPTIONS',
+  'NODE_USE_SYSTEM_CA',
 ] as const
-// A command that removes a file or a folder, as IG-09 (h) reads the lock's release.
+// And the loop that unsets every other AWS variable inherited, after its gate, matched whole: in
+// either case, since the CDK CLI reads a lower-case aws_ca_bundle before AWS_CA_BUNDLE.
+const INHERITED_AWS_LOOP = ['case "$inherited" in', 'AWS_* | aws_*) unset "$inherited" ;;', 'esac', 'done'] as const
+// A command that removes a file or a folder, as IG-09 (h) reads the lock's release, and a path in the
+// helper's folder: one of its variables, or HOME and ~, which name that folder once HOME moves there.
 const REMOVES = /(?:^|[\s;&|(!{])(?:rm|rmdir|mv)(?=\s)/
-const IN_FOLDER = /\$\{?(?:run_dir|entry_file|rc|BG_HOME)\b/
+const IN_FOLDER = /\$\{?(?:run_dir|entry_file|rc|BG_HOME|HOME)\b|(?:^|[\s=:])~(?=\/|\s|$)/
 
 // Each IG-09 rule the helper's text breaks, as "path: IG-09<x> why". The rules that run bash (b's
 // refuse_agents and require_terminal, d's reason check, q's usage and refuse, each extracted, and n's
@@ -1213,6 +1278,14 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     range !== undefined && index >= range.start && index < range.end
   const gate = (statement: string) =>
     main.find(({ line, index }) => line.text === statement && topLevel.has(index))?.index ?? -1
+  // A variable a rule pins by its assignment, `name=…` as a gate, is set by that line alone and named
+  // by no other command, so no later line sets it again (printf -v, read, declare, ${name:=…}) and no
+  // local stands in for it (IG-09f, h, m): the gate's index, or -1.
+  const setOnce = (statement: string) => {
+    const at = gate(statement)
+    const name = /^(\w+)=/.exec(statement)?.[1] ?? ''
+    return at >= 0 && lines.every((line, index) => namings(line.text, name) === (index === at ? 1 : 0)) ? at : -1
+  }
   // A refusal in fixed words, nothing expanded into them, and a gate that ends in one: the gate's
   // line, then the refusal, then fi.
   const REFUSAL = /^refuse (?:'[^']*'|"[^"$`\\]*")$/
@@ -1242,19 +1315,29 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   const statements = lines.filter((line, index) => !(index === 0 && line.text.startsWith('#!')))
   if (statements[0]?.text !== 'set -euo pipefail') fail('a', 'its first statement is set -euo pipefail')
   if (lines.some(line => traces(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
-  // And it stays strict: no set turns an option back off (errexit, nounset, pipefail, noglob) but the
-  // handler's own set +e.
+  // And it stays strict: no set +… or shopt -u -o turns an option back off (errexit, nounset,
+  // pipefail, noglob) but the handler's own set +e. shopt's -u and -o may be joined or apart, in
+  // either order.
   for (const [index, line] of lines.entries()) {
     const command = line.text.split('\n')[0] ?? ''
-    const unsets = [...command.matchAll(SET_RUN)].some(
-      run =>
-        !quotedAt(command, (run.index ?? 0) + run[0].length - 3) &&
-        wordsAsWritten(command.slice((run.index ?? 0) + run[0].length)).some(word => /^\+/.test(word)),
-    )
+    const unsets =
+      [...command.matchAll(SET_RUN)].some(
+        run =>
+          !quotedAt(command, (run.index ?? 0) + run[0].length - 3) &&
+          wordsAsWritten(command.slice((run.index ?? 0) + run[0].length)).some(word => /^\+/.test(word)),
+      ) ||
+      [...command.matchAll(SHOPT_RUN)].some(run => {
+        if (quotedAt(command, (run.index ?? 0) + run[0].length - 5)) return false
+        const letters = wordsAsWritten(command.slice((run.index ?? 0) + run[0].length))
+          .map(word => word.replace(/["']/g, ''))
+          .filter(word => /^-[A-Za-z]+$/.test(word))
+          .join('')
+        return letters.includes('u') && letters.includes('o')
+      })
     if (unsets && !(within(handlerRange, index) && command === 'set +e')) {
       fail(
         'a',
-        `line ${line.line}: nothing turns an option of set -euo pipefail or set -f back off but the handler’s set +e`,
+        `line ${line.line}: nothing (set +… or shopt -u -o) turns an option of set -euo pipefail or set -f back off but the handler’s set +e`,
       )
     }
   }
@@ -1367,9 +1450,15 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   if (!['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', ...CREDENTIAL_ENV].every(name => unsetNames.includes(name))) {
     fail('e', 'unset every inherited credential and profile variable before the first aws command')
   }
+  const awsLoop = gate('for inherited in $(compgen -e); do')
+  if (!before(awsLoop, firstAws) || INHERITED_AWS_LOOP.some((text, at) => lines[awsLoop + 1 + at]?.text !== text)) {
+    fail('e', 'unset every other inherited AWS variable, in either case, by its loop before the first aws command')
+  }
   // And nothing inherited that would write the session down or change whom it trusts: curl's config
-  // folders, a TLS key log and every CA override, each unset before the first aws command and named
-  // by no other command, so no later line sets one again.
+  // folders, a TLS key log, the CA overrides the AWS CLI and curl honour, and Node's settings that
+  // turn its certificate check off, add the system's CAs or load code (NODE_EXTRA_CA_CERTS is kept),
+  // each unset before the first aws command and named by no other command, so no later line sets one
+  // again.
   if (!INHERITED_TLS.every(name => unsetNames.includes(name))) {
     fail('e', `unset ${INHERITED_TLS.join(' ')} before the first aws command`)
   }
@@ -1388,6 +1477,14 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   )
   if (!refusesAfter(modeCheck) || !before(modeCheck, exported('HOME="$BG_HOME"'))) {
     fail('f', 'its folder is checked to be the caller’s own, mode 700, by a gate that refuses, before HOME is exported')
+  }
+  // The folder checked is the folder used: BG_HOME is set once, before its check, and named by no
+  // other command, so no later line moves HOME, the access portal's token cache or the lock elsewhere.
+  if (!before(setOnce(`BG_HOME="\${HEARTH_BREAK_GLASS_HOME:-$HOME/.hearth-break-glass}"`), modeCheck)) {
+    fail(
+      'f',
+      `BG_HOME="\${HEARTH_BREAK_GLASS_HOME:-$HOME/.hearth-break-glass}" sets the folder once, before its check, and no other command names BG_HOME`,
+    )
   }
 
   // g: no CLI history, in its folder's config or the entry profile's, by a gate that refuses before
@@ -1501,10 +1598,12 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   // One run at a time in a folder, whose sign-out ends every access-portal token cached there: the
   // run's own folder in the helper's, run_dir, is its lock, which hold_folder takes by mkdir, refusing
   // in fixed words when another run holds it, as the top-level line straight before the run's trap,
-  // so a refusal leaves the other run's lock and sign-in alone; the entry and the shell's rc file are
-  // set once, at the top, inside it; and nothing removes or moves the folder or a file in it but the
-  // handler after its sign-out, so no second run signs in there before this run's sign-out.
-  const runDir = gate('run_dir="$BG_HOME/run.lock"')
+  // so a refusal leaves the other run's lock and sign-in alone; run_dir itself, the entry and the
+  // shell's rc file are each set once, at the top, the two files inside it, so no later line makes the
+  // lock a run's own (run_dir="$run_dir.$$"); and nothing removes or moves the folder or a file in it
+  // (through HOME or ~ too) but the handler after its sign-out, so no second run signs in there before
+  // this run's sign-out.
+  const runDir = setOnce('run_dir="$BG_HOME/run.lock"')
   const hold = gate('hold_folder')
   const holdBody = bodyOf('hold_folder').map(line => line.text)
   const inRun = (name: string) =>
@@ -1533,7 +1632,7 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   ) {
     fail(
       'h',
-      'one run at a time in a folder: hold_folder takes the lock (mkdir "$run_dir", refusing when held) straight before the trap, the entry and rc files are set once inside it, and only the handler, after its sign-out, removes it',
+      'one run at a time in a folder: run_dir="$BG_HOME/run.lock" is set once, hold_folder takes the lock (mkdir "$run_dir", refusing when held) straight before the trap, the entry and rc files are set once inside it, and only the handler, after its sign-out, removes it',
     )
   }
 
@@ -1569,6 +1668,9 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       fail('i', `line ${line.line}: a jq program reads a credential, which only the console's exchange may, into curl`)
     }
     for (const [pattern, why] of EXPOSING) if (pattern.test(line.text)) fail('i', `line ${line.line}: ${why}`)
+    if (line.text.split('\n').some(printsEnvironment)) {
+      fail('i', `line ${line.line}: env given no command to run prints every variable it holds`)
+    }
     if (line.text.split('\n').some(listsVariables)) {
       fail(
         'i',
@@ -1580,6 +1682,36 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     if (exports.split(/\s+/).some(word => [...CREDENTIAL_ENV, ...credentials].includes(word.split('=')[0] ?? ''))) {
       fail('i', `line ${line.line} exports a credential, which every command would then hold`)
     }
+  }
+  // And the shell that holds the credentials in its environment runs nothing but what is pinned here:
+  // its rc file is the one here-document, matched whole, written in the shell's function before the
+  // shell starts; the shell starts by the one line, matched whole, with its history off; and $rc is
+  // expanded only there and by the handler's clean-up (whose timing (h) holds), and its path named by
+  // no line but an assignment of rc (which (h) holds to one), so no other line adds to it.
+  const rcWrites = indexed.filter(({ line }) => (line.text.split('\n')[0] ?? '') === SHELL_RC.split('\n')[0])
+  const shellStarts = lines.filter(line => SHELL_RUN.test(line.text))
+  const rcAt = runFiles.find(({ name }) => name === 'rc')?.at ?? -1
+  const rcName = /^rc="\$run_dir\/([\w.-]+)"$/.exec(lines[rcAt]?.text ?? '')?.[1]
+  if (
+    rcWrites.length !== 1 ||
+    rcWrites[0]?.line.text !== SHELL_RC ||
+    !within(shellRange, rcWrites[0]?.index ?? -1) ||
+    (rcWrites[0]?.index ?? -1) > shellAt ||
+    shellStarts.length !== 1 ||
+    shellStarts[0]?.text !== SHELL_START ||
+    indexed.some(
+      ({ line, index }) =>
+        RC_EXPANDED.test(line.text) &&
+        index !== rcWrites[0]?.index &&
+        index !== shellAt &&
+        !(within(handlerRange, index) && REMOVES.test(line.text)),
+    ) ||
+    (rcName !== undefined && lines.some(line => namings(line.text, 'rc') === 0 && line.text.includes(`/${rcName}`)))
+  ) {
+    fail(
+      'i',
+      'the shell’s rc file is the one here-document, matched whole, the shell starts by the one line, matched whole, with HISTFILE=/dev/null, and $rc is expanded only there and by the handler’s clean-up',
+    )
   }
 
   // j: one assumption of the role, an hour at most, with the person's source identity and the reason,
@@ -1749,6 +1881,19 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     )
   ) {
     fail('m', 'in log-archive only an incident: or drill: reason is taken')
+  }
+  // And the environment checked is the environment used: environment="$1" sets it once, before its
+  // check, and profile="hearth-$environment-entry" sets the entry profile once from it, each named by
+  // no other command, so no later line changes the environment after its checks or signs in with
+  // another profile.
+  if (
+    !before(setOnce('environment="$1"'), gate('case "$environment" in')) ||
+    setOnce('profile="hearth-$environment-entry"') < 0
+  ) {
+    fail(
+      'm',
+      'environment="$1" is set once, before its check, and profile="hearth-$environment-entry" once, and no other command names either',
+    )
   }
 
   // o: a credential reaches a command only as a bash prefix assignment, never as an argument, through

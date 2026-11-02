@@ -5,15 +5,17 @@
 // log-archive and workload fences and the data perimeter. Every exception names one of the listed
 // role patterns and nothing wider; the floor binds everyone, keyed on nothing but a key's tag; the
 // log-protect SCP excepts nobody; the RCP's STS statements reach one call each. A small evaluator
-// replays the requests that would mute an alarm, hand a role outside, or reach the hearthbase
-// execution role through CloudFormation, directly or through the template it runs from hearthbase's
+// replays the requests that would mute an alarm, hand a role outside, rewrite the break-glass helper's
+// parameter, or reach the hearthbase execution role through CloudFormation, directly or through the template it runs from hearthbase's
 // staging bucket, against the SCPs binding a workload account, and the Baselines' own asset manifests
-// are checked against that bucket's fence, so the two can't drift apart. Root holds four of
-// Hearth's SCPs beside AWS's FullAWSAccess, the five Organizations allows, so a later step merges into
-// one of them. The floor's bucket patterns are checked against LogArchive's actual bucket names, so the
-// two can't drift apart. The pure scpProblems() is proved on planted contents first, and the RCP's
-// stage on a variant synth with it at Root. Expected ARNs are joined from their parts here, never built
-// through src/config/arns.ts (IG-01), and the model deny comes from the lists (IG-10).
+// are checked against that bucket's fence, so the two can't drift apart. It also replays the calls the
+// quarterly trail validation makes in each of its two Regions against the SCPs binding log-archive.
+// Root holds four of Hearth's SCPs beside AWS's FullAWSAccess, the five Organizations allows, so a
+// later step merges into one of them. The floor's bucket patterns are checked against LogArchive's
+// actual bucket names, so the two can't drift apart. The pure scpProblems() is proved on planted
+// contents first, and the RCP's stage on a variant synth with it at Root. Expected ARNs are joined
+// from their parts here, never built through src/config/arns.ts (IG-01), and the model deny comes from
+// the lists (IG-10).
 import { beforeAll, describe, expect, it } from 'vitest'
 import { LZ_REASON_SHAPES } from '../baseline/break-glass.ts'
 import { githubSubject } from '../config/env.ts'
@@ -188,6 +190,7 @@ const REGION_NOT_ACTIONS = [
   'cloudtrail:DescribeTrails',
   'cloudtrail:GetTrail',
   'cloudtrail:ListPublicKeys',
+  's3:GetBucketLocation',
 ]
 
 // The documents each policy must hold, exactly (C11-D05 to C11-D08).
@@ -292,6 +295,19 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
           anyIam('oidc-provider/token.actions.githubusercontent.com'),
           anyIam('policy/hearth-boundary'),
         ],
+        Condition: except(EXEC, OAAR),
+      },
+      {
+        Sid: 'ProtectBreakGlassParameter',
+        Effect: 'Deny',
+        Action: [
+          'ssm:PutParameter',
+          'ssm:DeleteParameter',
+          'ssm:DeleteParameters',
+          'ssm:LabelParameterVersion',
+          'ssm:UnlabelParameterVersion',
+        ],
+        Resource: anywhere('ssm', 'parameter/hearth/break-glass/*'),
         Condition: except(EXEC, OAAR),
       },
       {
@@ -407,7 +423,12 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
       {
         Sid: 'TrailReadsAlsoUsEast1',
         Effect: 'Deny',
-        Action: ['cloudtrail:DescribeTrails', 'cloudtrail:GetTrail', 'cloudtrail:ListPublicKeys'],
+        Action: [
+          'cloudtrail:DescribeTrails',
+          'cloudtrail:GetTrail',
+          'cloudtrail:ListPublicKeys',
+          's3:GetBucketLocation',
+        ],
         Resource: '*',
         Condition: { StringNotEquals: { 'aws:RequestedRegion': ['ap-southeast-1', 'us-east-1'] } },
       },
@@ -907,6 +928,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'hearth-baseline ProtectAudit ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
       'hearth-baseline ProtectAlarms ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
       'hearth-baseline ProtectRoles ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
+      'hearth-baseline ProtectBreakGlassParameter ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
       'hearth-baseline ProtectFlowLogs ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, cdk-hearthapp-cfn-exec-role-*-ap-southeast-1',
       'hearth-baseline ProtectBootstrapRoles ArnNotLike aws:PrincipalArn: OrganizationAccountAccessRole',
       'hearth-baseline-2 SetUpOnly ArnNotLike aws:PrincipalArn: OrganizationAccountAccessRole',
@@ -1000,7 +1022,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     expect(principalKeys).toEqual(['NoOaar ArnLike aws:PrincipalArn'])
   })
 
-  it('IAC-02 C11-D05 C11-D17: hearth-region leaves only the global services, names no Region by wildcard, and lets only GuardDuty and the trail’s three validation reads into us-east-1 (TRUST-02)', () => {
+  it('IAC-02 C11-D05 C11-D17: hearth-region leaves only the global services, names no Region by wildcard, and lets only GuardDuty and the trail’s four validation reads, its bucket’s location among them, into us-east-1 (TRUST-02)', () => {
     const region = JSON.parse(String(policiesIn(foundation).get('hearth-region')?.Properties?.Content)) as {
       Statement: Statement[]
     }
@@ -1015,12 +1037,15 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'cloudtrail:DescribeTrails',
       'cloudtrail:GetTrail',
       'cloudtrail:ListPublicKeys',
+      's3:GetBucketLocation',
     ])
     // What hearth-region leaves outside ap-southeast-1 but the global services is fenced to us-east-1:
-    // GuardDuty, and the reads alone, never a CloudTrail write.
+    // GuardDuty, and the reads alone, never a CloudTrail or S3 write.
     const fenced = [usEast1?.Action, trailReads?.Action].flatMap(list)
-    expect(REGION_NOT_ACTIONS.filter(action => !/^(?!guardduty:|cloudtrail:)/.test(action))).toEqual(fenced)
-    expect(fenced.filter(action => /^cloudtrail:(?!Describe|Get|List)/.test(action))).toEqual([])
+    expect(
+      REGION_NOT_ACTIONS.filter(action => /^(?:guardduty:|cloudtrail:|s3:GetBucketLocation$)/.test(action)),
+    ).toEqual(fenced)
+    expect(fenced.filter(action => /^(?:cloudtrail|s3):(?!Describe|Get|List)/.test(action))).toEqual([])
   })
 
   it('IAC-02 C11-D05: Root holds four of Hearth’s SCPs, which with AWS’s FullAWSAccess are the five Organizations allows; every other target holds at most five of a type', () => {
@@ -1203,6 +1228,29 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
     }
   })
 
+  it('IAC-02 C11-D13: no workload principal, the hearthapp execution and deploy roles included, rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; the hearthbase execution role, which writes it, may, and reading it stays open', () => {
+    const parameter = arn('ssm', 'ap-southeast-1', prod, 'parameter/hearth/break-glass/log-bucket')
+    const writes = [
+      'ssm:PutParameter',
+      'ssm:DeleteParameter',
+      'ssm:DeleteParameters',
+      'ssm:LabelParameterVersion',
+      'ssm:UnlabelParameterVersion',
+    ]
+    for (const action of writes) {
+      for (const principal of [task, appExec, appDeploy, baseDeploy]) {
+        expect(denied({ action, resource: parameter, principal }), `${action} ${principal}`).toEqual([
+          'ProtectBreakGlassParameter',
+        ])
+      }
+      expect(denied({ action, resource: parameter, principal: exec }), action).toEqual([])
+    }
+    expect(denied({ action: 'ssm:GetParameter', resource: parameter, principal: task })).toEqual([])
+    // The workload's own parameters stay its own.
+    const own = arn('ssm', 'ap-southeast-1', prod, 'parameter/hearth/prod/app/setting')
+    expect(denied({ action: 'ssm:PutParameter', resource: own, principal: appExec })).toEqual([])
+  })
+
   // hearthbase's staging bucket in prod, and the template a Baseline deploy would run from it.
   const assets = `cdk-hearthbase-assets-${prod}-ap-southeast-1`
   const template = arn('s3', '', '', `${assets}/0a1b2c3d.json`)
@@ -1278,6 +1326,71 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
       }
     }
     expect(accounts.sort()).toEqual([fixture.accounts.nonprod, fixture.accounts.prod].sort())
+  })
+})
+
+// The quarterly review's `aws cloudtrail validate-logs`, run in log-archive as HearthSecurityReview for
+// each Region the trail delivers digests for (the break-glass review runbook, step 2). The CLI makes
+// four calls in the Region its --region names, the bucket's location among them (its S3 client
+// provider asks GetBucketLocation there before it lists a digest), then lists and reads the digests
+// and files through a client in the bucket's own Region, ap-southeast-1.
+describe('IAC-02 C11-D05 C11-D17: the quarterly trail validation replayed against the SCPs binding log-archive', () => {
+  const reviewer = arn(
+    'iam',
+    '',
+    fixture.accounts.logArchive,
+    'role/aws-reserved/sso.amazonaws.com/ap-southeast-1/AWSReservedSSO_HearthSecurityReview_0a1b2c3d4e5f6a7b',
+  )
+  // The statements of every SCP at Root and on the Security OU, which together bind log-archive.
+  let binding: Statement[]
+  let bucket: string
+  beforeAll(() => {
+    binding = [...policiesIn(foundation).values()]
+      .filter(policy => policy.Properties?.Type === 'SERVICE_CONTROL_POLICY')
+      .filter(policy => {
+        const targets = (policy.Properties?.TargetIds ?? []) as string[]
+        return targets.includes(rootId) || targets.includes(security)
+      })
+      .flatMap(policy => (JSON.parse(String(policy.Properties?.Content)) as { Statement: Statement[] }).Statement)
+    const names = resourcesIn(lz.templates.logArchive)
+      .filter(([, r]) => r.Type === 'AWS::S3::Bucket')
+      .map(([, r]) => String(r.Properties?.BucketName))
+      .filter(name => name.startsWith('hearth-org-trail-'))
+    expect(names).toHaveLength(1)
+    bucket = arn('s3', '', '', names[0] ?? '')
+  })
+  const denied = (action: string, resource: string, region: string) =>
+    denyingStatements(binding, {
+      action,
+      resource,
+      principal: reviewer,
+      context: { 'aws:RequestedRegion': region },
+    })
+
+  it('IAC-02 C11-D17: every call validate-logs makes passes with --region ap-southeast-1 and with --region us-east-1, and the four it makes in that Region stop at those two (TRUST-02)', () => {
+    const inGivenRegion: Array<[string, string]> = [
+      ['cloudtrail:DescribeTrails', '*'],
+      ['organizations:DescribeOrganization', '*'],
+      ['cloudtrail:ListPublicKeys', '*'],
+      ['s3:GetBucketLocation', bucket],
+    ]
+    for (const region of ['ap-southeast-1', 'us-east-1']) {
+      for (const [action, resource] of inGivenRegion) {
+        expect(denied(action, resource, region), `${action} in ${region}`).toEqual([])
+      }
+    }
+    for (const [action, resource] of [
+      ['s3:ListBucket', bucket],
+      ['s3:GetObject', `${bucket}/AWSLogs/x`],
+    ] as const) {
+      expect(denied(action, resource, 'ap-southeast-1'), action).toEqual([])
+      // The bucket-location read is the one S3 call let into us-east-1; listing and reading are not.
+      expect(denied(action, resource, 'us-east-1'), action).toEqual(['OnlySingapore'])
+    }
+    // Anywhere else, every one but Organizations' (a global service) is refused.
+    for (const [action, resource] of inGivenRegion.filter(([action]) => !action.startsWith('organizations:'))) {
+      expect(denied(action, resource, 'eu-west-1'), action).toEqual(['TrailReadsAlsoUsEast1'])
+    }
   })
 })
 

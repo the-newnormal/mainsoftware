@@ -790,7 +790,11 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['a: xtrace after another -o', plant('set -f\n', 'set -f\nset -o errexit -o xtrace\n'), ['IG-09a']],
       ['a: xtrace taken by a joined -o', plant('set -f\n', 'set -f\nset -eo xtrace\n'), ['IG-09a']],
       ['a: xtrace through shopt', plant('set -f\n', 'set -f\nshopt -s -o xtrace\n'), ['IG-09a']],
-      ['a: a traced shell', plant('bash --rcfile "$rc" -i || true', 'bash --rcfile "$rc" -ix || true'), ['IG-09a']],
+      [
+        'a: a traced shell',
+        plant('bash --rcfile "$rc" -i || true', 'bash --rcfile "$rc" -ix || true'),
+        ['IG-09a', 'IG-09i'],
+      ],
       ['b: a marker missing', plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), ['IG-09b']],
       ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b', 'IG-09o']],
       [
@@ -1483,6 +1487,9 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
     const tls =
       'unset CURL_HOME XDG_CONFIG_HOME SSLKEYLOGFILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR\n'
+    const node = 'unset NODE_TLS_REJECT_UNAUTHORIZED NODE_OPTIONS NODE_USE_SYSTEM_CA\n'
+    const loop =
+      'for inherited in $(compgen -e); do\n  case "$inherited" in\n    AWS_* | aws_*) unset "$inherited" ;;\n  esac\ndone\n'
     const release =
       '  read -r holder 2>/dev/null <"$run_dir/pid"\n  if [ "$holder" = "$$" ]; then rm -f "$entry_file" "$rc" "$run_dir/pid" && rmdir "$run_dir"; fi\n'
     const signOut = '  aws sso logout >/dev/null 2>&1 || true\n'
@@ -1500,6 +1507,15 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ['IG-09e'],
       ],
       ['e: one of them left out', plant(tls, tls.replace(' SSLKEYLOGFILE', '')), ['IG-09e']],
+      ['e: Node’s certificate check, options and system CAs inherited', plant(node, ''), ['IG-09e']],
+      ['e: Node’s options left in', plant(node, node.replace(' NODE_OPTIONS', '')), ['IG-09e']],
+      [
+        'e: Node’s certificate check turned off again',
+        afterAssume('export NODE_TLS_REJECT_UNAUTHORIZED=0'),
+        ['IG-09e'],
+      ],
+      ['e: a lower-case aws_ca_bundle inherited', plant('AWS_* | aws_*) unset', 'AWS_*) unset'), ['IG-09e']],
+      ['e: the inherited AWS variables’ loop gone', plant(loop, ''), ['IG-09e']],
       ['e: a key log set again', afterAssume('export SSLKEYLOGFILE="$BG_HOME/keys"'), ['IG-09e']],
       [
         'e: a CA override as a prefix',
@@ -1533,6 +1549,98 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         'h: the folder moved aside after the shell',
         plant('\nrun_shell\nclose_session', '\nrun_shell\nmv "$run_dir" "$BG_HOME/old"\nclose_session'),
         ['IG-09h'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  // The shell's rc file runs inside the shell that holds the role's credentials in its environment: a
+  // line added to it, or a change to how the shell starts; and env given no command to run, shopt
+  // turning an option of set back off, and a pinned folder, lock or name set again after its check,
+  // each planted in a copy.
+  it('finds a line added to the shell’s rc or start, env printing, shopt turning an option off, and a pinned name set again, planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const inRc = (line: string) =>
+      plant('unset HISTFILE\nhearth_bg_prompt', `unset HISTFILE\n${line}\nhearth_bg_prompt`)
+    const afterModeCheck = (line: string) =>
+      plant("(docs/runbooks/break-glass.md)'\nfi\n", `(docs/runbooks/break-glass.md)'\nfi\n${line}\n`)
+    const profile = 'profile="hearth-$environment-entry"\n'
+    const cases: Array<[string, string, string[]]> = [
+      ['i: env into a file in the shell’s rc', inRc('env >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env, its errors silenced, into a file in the rc', inRc('env 2>/dev/null >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env -0 into a file in the rc', inRc('env -0 >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env -u into a file in the rc', inRc('env -u PS1 >"$HOME/session.env"'), ['IG-09i']],
+      ['i: the environment read from /proc in the rc', inRc('cat /proc/self/environ >"$HOME/session.env"'), ['IG-09i']],
+      [
+        'i: awk printing its environment in the rc',
+        inRc(`awk 'BEGIN { for (k in ENVIRON) print k, ENVIRON[k] }' >"$HOME/session.env"`),
+        ['IG-09i'],
+      ],
+      ['i: the rc keeps history', plant('unset HISTFILE\nhearth_bg_prompt', 'hearth_bg_prompt'), ['IG-09i']],
+      ['i: the shell keeps history', plant(' HISTFILE=/dev/null \\\n', ' \\\n'), ['IG-09i']],
+      [
+        'i: a line appended to the rc after it is written',
+        plant("RC\n  printf 'break-glass: the role", "RC\n  echo 'PS0=x' >>\"$rc\"\n  printf 'break-glass: the role"),
+        ['IG-09i'],
+      ],
+      [
+        'i: a line appended to the rc by its path',
+        plant(
+          "RC\n  printf 'break-glass: the role",
+          "RC\n  echo 'PS0=x' >>\"$run_dir/shell.rc\"\n  printf 'break-glass: the role",
+        ),
+        ['IG-09i'],
+      ],
+      ['i: env into a file', afterAssume('env >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env by its path into a file', afterAssume('/usr/bin/env >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env given an assignment, into a file', afterAssume('env TZ=UTC >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env in backquotes', afterAssume('saved=`env`'), ['IG-09i']],
+      ['i: env running a command passes', afterAssume('env -u PS1 TZ=UTC date -u'), []],
+      ['a: errexit off through shopt', plant('set -f\n', 'set -f\nshopt -uo errexit\n'), ['IG-09a']],
+      ['a: errexit off through shopt -ou', plant('set -f\n', 'set -f\nshopt -ou errexit\n'), ['IG-09a']],
+      ['a: nounset off through shopt -u -o', plant('set -f\n', 'set -f\nshopt -u -o nounset\n'), ['IG-09a']],
+      ['a: pipefail off through shopt', afterAssume('shopt -uo pipefail'), ['IG-09a']],
+      ['a: globbing back on through shopt', afterAssume('shopt -uo noglob'), ['IG-09a']],
+      [
+        'a: nounset off through shopt in a function',
+        plant('close_session() {\n  local key\n', 'close_session() {\n  local key\n  shopt -uo nounset\n'),
+        ['IG-09a'],
+      ],
+      ['a: a shopt option of its own passes', afterAssume('shopt -s checkwinsize'), []],
+      [
+        'h: the lock made per run',
+        plant('run_dir="$BG_HOME/run.lock"\n', 'run_dir="$BG_HOME/run.lock"\nrun_dir="$run_dir.$$"\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock made per run by printf -v',
+        plant('rc="$run_dir/shell.rc"\n', `rc="$run_dir/shell.rc"\nprintf -v run_dir '%s.%s' "$run_dir" "$$"\n`),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock removed through HOME',
+        plant('aws sso login --profile "$profile"\n', 'aws sso login --profile "$profile"\nrm -rf "$HOME/run.lock"\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock removed through ~',
+        plant(
+          'aws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\nrm -rf ~/.hearth-break-glass/run.lock\n',
+        ),
+        ['IG-09h'],
+      ],
+      ['f: the folder set again after its check', afterModeCheck(`BG_HOME="\${HEARTH_BG_ALT:-$BG_HOME}"`), ['IG-09f']],
+      [
+        'm: the environment set again after its checks',
+        plant(profile, `environment="\${HEARTH_BG_ENV:-$environment}"\n${profile}`),
+        ['IG-09m'],
+      ],
+      [
+        'm: the profile taken from outside',
+        plant(profile, `profile="\${HEARTH_BG_PROFILE:-hearth-$environment-entry}"\n`),
+        ['IG-09m'],
       ],
     ]
     for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)

@@ -8,7 +8,8 @@
 // - the assured alarms: each filter pattern exactly as written here from the fixture's accounts, each
 //   within CloudWatch Logs' 1,024 characters, A4 taking every Identity Center write IAM names but no
 //   access-portal call, and one alarm per id emailing management's topic as it enters ALARM and as it
-//   returns to OK;
+//   returns to OK, reading Maximum (A11 SampleCount) in Count, so no datapoint someone puts into its
+//   metric can hold it down;
 // - the reviewer's five saved queries over the copy alone;
 // - every log group in every landing-zone template in its retention class, retained and protected;
 // - five budgets in the amounts C11-Q09 chose, before tax, each alerting the topic at 80 % and 100 %
@@ -113,9 +114,10 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
       `{ ($.eventSource = "kms.amazonaws.com") && ($.recipientAccountId = "${logArchive}") && (($.eventName = "PutKeyPolicy") || ($.eventName = "ScheduleKeyDeletion") || ($.eventName = "CancelKeyDeletion") || ($.eventName = "DisableKey") || ($.eventName = "EnableKey") || ($.eventName = "DisableKeyRotation") || ($.eventName = "CreateGrant") || ($.eventName = "TagResource") || ($.eventName = "UntagResource") || ($.eventName = "CreateAlias") || ($.eventName = "UpdateAlias") || ($.eventName = "DeleteAlias")) }`,
       // (g) the log buckets' configuration
       `{ ($.eventSource = "s3.amazonaws.com") && ($.eventCategory = "Management") && ($.readOnly IS FALSE) && ${LOG_BUCKET_NAMES} }`,
-      // (h) the alarms themselves: a delete (CloudFormation's included), actions turned off, a state
-      // set, or a PutMetricAlarm by anyone but CloudFormation (another service's included)
-      '{ ($.eventSource = "monitoring.amazonaws.com") && (($.eventName = "DeleteAlarms") || ($.eventName = "DisableAlarmActions") || ($.eventName = "SetAlarmState") || (($.eventName = "PutMetricAlarm") && (($.userIdentity.invokedBy NOT EXISTS) || ($.userIdentity.invokedBy != "cloudformation.amazonaws.com")))) }',
+      // (h) the alarms themselves: a delete (CloudFormation's included), actions turned off or muted
+      // by a mute rule (anyone's: Hearth makes none), a state set, or a PutMetricAlarm by anyone but
+      // CloudFormation (another service's included)
+      '{ ($.eventSource = "monitoring.amazonaws.com") && (($.eventName = "DeleteAlarms") || ($.eventName = "DisableAlarmActions") || ($.eventName = "PutAlarmMuteRule") || ($.eventName = "SetAlarmState") || (($.eventName = "PutMetricAlarm") && (($.userIdentity.invokedBy NOT EXISTS) || ($.userIdentity.invokedBy != "cloudformation.amazonaws.com")))) }',
       // (i) the landing zone's roles, its boundary and GitHub's provider
       '{ ($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.roleName = "hearth-break-glass*") || ($.requestParameters.roleName = "hearth-gh-*") || ($.requestParameters.policyArn = "*:policy/hearth-boundary") || ($.requestParameters.openIDConnectProviderArn = "*token.actions.githubusercontent.com")) }',
       // (j) the log buckets' objects deleted or their locks changed, allowed or denied
@@ -305,7 +307,7 @@ describe('IAC-18 C11-D17: the organisation trail', () => {
 })
 
 describe('IAC-18 C11-D16: the assured alarms', () => {
-  it('IAC-18: each alarm’s filters on the copy hold exactly their patterns, each within 1,024 characters, publishing 1 to its metric in Hearth/Security', () => {
+  it('IAC-18: each alarm’s filters on the copy hold exactly their patterns, each within 1,024 characters, publishing 1 to its metric in Hearth/Security, in Count', () => {
     const filters = ofType(foundation, 'AWS::Logs::MetricFilter').map(([, r]) => r.Properties)
     const expected = ASSURED.flatMap(alarm =>
       alarm.patterns.map((pattern, index) => ({
@@ -315,7 +317,9 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
             : `hearth-sec-${alarm.name}-${String.fromCharCode(97 + index)}`,
         FilterPattern: pattern,
         LogGroupName: { Ref: logGroup },
-        MetricTransformations: [{ MetricName: alarm.metric, MetricNamespace: 'Hearth/Security', MetricValue: '1' }],
+        MetricTransformations: [
+          { MetricName: alarm.metric, MetricNamespace: 'Hearth/Security', MetricValue: '1', Unit: 'Count' },
+        ],
       })),
     )
     expect(filters).toEqual(expected)
@@ -377,9 +381,12 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
     expect(portal.filter(matches)).toEqual([])
   })
 
-  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes (A11 on five in fifteen), and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm', () => {
+  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes by Maximum (A11 on five in fifteen by SampleCount), both in Count, so no datapoint put into the metric holds one down, and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm; the copy’s intake alarm emails it after an hour in which the copy received nothing (DETECTION-03)', () => {
     const sentinel = lz.stacks.foundation?.node.tryFindChild('Sentinel')
-    expect(sentinel?.node.children.map(child => child.node.id)).toEqual(ASSURED.map(alarm => alarm.metric))
+    expect(sentinel?.node.children.map(child => child.node.id)).toEqual([
+      ...ASSURED.map(alarm => alarm.metric),
+      'CopyIntake',
+    ])
     // Each alarm's construct holds its filter (or its lettered filters) and the alarm.
     for (const alarm of ASSURED) {
       const filters =
@@ -392,8 +399,8 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
       ).toEqual([...filters, 'Alarm'])
     }
     const alarms = ofType(foundation, 'AWS::CloudWatch::Alarm')
-    expect(alarms.map(([, r]) => r.Properties)).toEqual(
-      ASSURED.map(alarm => ({
+    expect(alarms.map(([, r]) => r.Properties)).toEqual([
+      ...ASSURED.map(alarm => ({
         AlarmName: `hearth-sec-${alarm.name}`,
         AlarmActions: [{ Ref: topic }],
         OKActions: [{ Ref: topic }],
@@ -402,11 +409,29 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
         MetricName: alarm.metric,
         Namespace: 'Hearth/Security',
         Period: alarm.metric === 'A11SignInFailures' ? 900 : 300,
-        Statistic: 'Sum',
+        Statistic: alarm.metric === 'A11SignInFailures' ? 'SampleCount' : 'Maximum',
         Threshold: alarm.metric === 'A11SignInFailures' ? 5 : 1,
         TreatMissingData: 'notBreaching',
+        Unit: 'Count',
       })),
-    )
+      // The copy's intake (DETECTION-03): every alarm above treats no data as no alarm, so a copy that
+      // stopped receiving the trail would leave them all OK. This one alarms after an hour with no
+      // event, no datapoint included, by AWS's own count, into which no PutMetricData may write.
+      {
+        AlarmName: 'hearth-sec-copy-intake',
+        AlarmActions: [{ Ref: topic }],
+        OKActions: [{ Ref: topic }],
+        ComparisonOperator: 'LessThanThreshold',
+        Dimensions: [{ Name: 'LogGroupName', Value: { Ref: logGroup } }],
+        EvaluationPeriods: 1,
+        MetricName: 'IncomingLogEvents',
+        Namespace: 'AWS/Logs',
+        Period: 3600,
+        Statistic: 'Sum',
+        Threshold: 1,
+        TreatMissingData: 'breaching',
+      },
+    ])
     // Each waits for the topic's policy, so none fires into a topic that refuses it.
     for (const [, alarm] of alarms) expect(alarm.DependsOn).toEqual([topicPolicy])
   })

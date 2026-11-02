@@ -293,8 +293,8 @@ export class LogArchiveStack extends cdk.Stack {
     trailBucket.addToResourcePolicy(cloudTrailWrite('AWSCloudTrailAccountWrite', management))
 
     // The break-glass entries (C11-D13): each account's role writes and reads back under its own
-    // account's prefix, the reviewer reads them all, and nobody but this stack's execution role does
-    // anything else to the bucket or its objects.
+    // account's prefix, never over an entry already there, the reviewer reads them all, and nobody
+    // but this stack's execution role does anything else to the bucket or its objects.
     const entriesBucket = new s3.Bucket(this, 'BreakGlassLogBucket', {
       ...logBucket('breakGlass', secKey),
       objectLockDefaultRetention: lock(objectLockDays('break_glass_log')),
@@ -343,6 +343,22 @@ export class LogArchiveStack extends cdk.Stack {
         notActions: ['s3:Get*', 's3:List*', 's3:PutObject'],
         resources: [entriesArn, entriesObjectsArn],
         conditions: { ArnNotLike: { 'aws:PrincipalArn': execRole } },
+      }),
+    )
+    // No entry is ever replaced, by anyone, the execution role included (C11-D13): a put must carry
+    // If-None-Match, with which S3 refuses a key that already holds an object, so no session makes a
+    // new current version over an earlier entry, its own, another person's or the set-up's, and the
+    // review reads each entry as first written. The helper sends it with every entry; a put without
+    // it, a multipart upload's included, is refused. A session can still take a key nobody has
+    // written yet (another session's close, say); the trail's data event names the session that did.
+    entriesBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'EntriesNeverReplaced',
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:PutObject'],
+        resources: [entriesObjectsArn],
+        conditions: { Null: { 's3:if-none-match': 'true' } },
       }),
     )
 

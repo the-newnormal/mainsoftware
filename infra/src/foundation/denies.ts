@@ -154,6 +154,18 @@ export const RULE9_ROLE_WRITES: readonly string[] = [
   'iam:PassRole',
 ]
 
+// What would rewrite, remove or relabel the parameters the break-glass helper reads, its log bucket's
+// name among them (C11-D13): hearth-baseline's ProtectBreakGlassParameter and the boundary's
+// BreakGlassParameter refuse them on BREAK_GLASS_PARAMETERS.
+export const BREAK_GLASS_PARAMETER_WRITES: readonly string[] = [
+  'ssm:PutParameter',
+  'ssm:DeleteParameter',
+  'ssm:DeleteParameters',
+  'ssm:LabelParameterVersion',
+  'ssm:UnlabelParameterVersion',
+]
+export const BREAK_GLASS_PARAMETERS = 'parameter/hearth/break-glass/*'
+
 // A key's administration, which break-glass never does (C11-D12).
 export const KMS_ADMIN_ACTIONS: readonly string[] = [
   'kms:Create*',

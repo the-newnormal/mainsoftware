@@ -21,7 +21,7 @@ exports[`IAC-14 C11-D70: the landing zone’s inventory > IAC-14: each stack hol
     ],
     [
       "AWS::CloudWatch::Alarm",
-      10,
+      11,
     ],
     [
       "AWS::IAM::Role",

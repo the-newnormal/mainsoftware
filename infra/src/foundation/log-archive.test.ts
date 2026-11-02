@@ -3,9 +3,10 @@
 // - IAC-05: its three buckets, and no bucket anywhere else: private, encrypted under their own key
 //   (with a bucket key but for the trail's, since a trail can't be made over one without a decrypt
 //   grant nobody else holds), versioned, owner-enforced, retained once made, and each policy refusing plain
-//   HTTP and TLS below 1.2;
+//   HTTP and TLS below 1.2; the break-glass log's refusing any put without If-None-Match, so no
+//   entry is replaced by a new current version;
 // - IAC-06: every version of the trail and break-glass-log buckets locked for its class's period in
-//   the mode configured (a variant shows COMPLIANCE), then expired by exactly two lifecycle rules
+//   the mode committed (a variant shows the other), then expired by exactly two lifecycle rules
 //   with no tag filter, LCG-02's one exception; the archive locked with no default and no rule;
 // - the keys: rotated, a 30-day deletion window, tagged hearth-sec and retained once made, each policy exactly
 //   as written here, so neither carries the account root's kms:*;
@@ -143,7 +144,7 @@ describe('IAC-05 C11-D17: the log-archive buckets', () => {
     }
   })
 
-  it('IAC-05 C11-D13 C11-D17 C11-D21: each bucket’s policy is exactly its two TLS denies and its own statements', () => {
+  it('IAC-05 C11-D13 C11-D17 C11-D21: each bucket’s policy is exactly its two TLS denies and its own statements, the break-glass log refusing every put without If-None-Match, so no entry is ever replaced', () => {
     const tlsDenies = (bucketId: string) => {
       const resource = [
         { 'Fn::GetAtt': [bucketId, 'Arn'] },
@@ -236,6 +237,16 @@ describe('IAC-05 C11-D17: the log-archive buckets', () => {
           Resource: [bucketArn(BUCKET.breakGlass), `${bucketArn(BUCKET.breakGlass)}/*`],
           Condition: { ArnNotLike: { 'aws:PrincipalArn': EXEC } },
         },
+        // No entry is replaced, by anyone, the execution role included: a put without
+        // If-None-Match is refused, so none makes a new current version over an earlier entry.
+        {
+          Sid: 'EntriesNeverReplaced',
+          Effect: 'Deny',
+          Principal: { AWS: '*' },
+          Action: 's3:PutObject',
+          Resource: `${bucketArn(BUCKET.breakGlass)}/*`,
+          Condition: { Null: { 's3:if-none-match': 'true' } },
+        },
       ],
       [BUCKET.archive]: [
         {
@@ -294,9 +305,14 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
     }
   }
 
-  it('IAC-06: every version of the trail and break-glass-log buckets is locked for its class’s period in the configured mode, then expires by two rules with no tag filter', () => {
-    expect(LOG_ARCHIVE.logLockMode).toBe('GOVERNANCE')
-    locked(template, LOG_ARCHIVE.logLockMode)
+  // The mode committed in profiles.ts, whichever it is, so the PR that moves it to COMPLIANCE (C11-D18)
+  // changes no assertion here; profiles.test.ts pins which one is committed.
+  const committed = LOG_ARCHIVE.logLockMode
+  const other = committed === 'GOVERNANCE' ? 'COMPLIANCE' : 'GOVERNANCE'
+
+  it('IAC-06: every version of the trail and break-glass-log buckets is locked for its class’s period in the committed mode, then expires by two rules with no tag filter', () => {
+    expect(['GOVERNANCE', 'COMPLIANCE']).toContain(committed)
+    locked(template, committed)
   })
 
   it('IAC-06 C11-D21: the archive is locked with no default retention and no lifecycle rule, under a key of its own', () => {
@@ -307,11 +323,11 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
     expect(keyOf(template, 'alias/hearth-archive')).not.toBe(keyOf(template, 'alias/hearth-sec'))
   })
 
-  it('IAC-06 C11-D18: the COMPLIANCE variant locks both log buckets in COMPLIANCE, and leaves the archive as it was', () => {
-    const compliance = synthLandingZone({ logLockMode: 'COMPLIANCE' }).templates.logArchive
-    expect(() => locked(template, 'COMPLIANCE')).toThrow()
-    locked(compliance, 'COMPLIANCE')
-    expect(bucketOf(compliance, BUCKET.archive)[1]).toEqual(bucketOf(template, BUCKET.archive)[1])
+  it('IAC-06 C11-D18: a variant in the mode not committed locks both log buckets in that mode, and leaves the archive as it was', () => {
+    const variant = synthLandingZone({ logLockMode: other }).templates.logArchive
+    expect(() => locked(template, other)).toThrow()
+    locked(variant, other)
+    expect(bucketOf(variant, BUCKET.archive)[1]).toEqual(bucketOf(template, BUCKET.archive)[1])
   }, 60_000)
 
   it('IAC-06 C11-D17 C11-D21: both keys rotate, keep a 30-day deletion window, carry the hearth-sec tag the floor protects them by, and are retained once made', () => {

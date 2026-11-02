@@ -160,8 +160,10 @@ function reviewStatements(config: LandingZoneConfig): IamStatement[] {
     // What `aws cloudtrail validate-logs` calls for an organisation trail, each a read that takes no
     // resource: the trail's bucket and prefix from its ARN, the organisation's id in the digests'
     // prefix, and CloudTrail's public keys, so the quarterly review checks each account's delivered
-    // files against their signed digests (the break-glass review runbook); the files it reads are
-    // ReadLogs', and the digests are SSE-S3, so they need no key.
+    // files against their signed digests (the break-glass review runbook). The bucket's location,
+    // which it asks in the Region its --region names, and the files it reads are ReadLogs'
+    // (hearth-region lets these reads and the location into us-east-1 as well); the digests are
+    // SSE-S3, so they need no key.
     {
       Sid: 'ValidateTrail',
       Effect: 'Allow',

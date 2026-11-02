@@ -57,6 +57,8 @@ import {
   BASE_DEPLOY,
   BASE_PUBLISH,
   BREAK_GLASS,
+  BREAK_GLASS_PARAMETER_WRITES,
+  BREAK_GLASS_PARAMETERS,
   BUCKET_WRITE_ACTIONS,
   CDK_HEARTH,
   CFN_WRITE_ACTIONS,
@@ -97,14 +99,18 @@ export const OPT_OUT_NAME = 'hearth-ai-opt-out'
 // Organizations' limits on one policy's content, in characters.
 export const POLICY_LIMIT = { serviceControl: 5_120, resourceControl: 5_120, aiOptOut: 2_500 } as const
 
-// The reads `aws cloudtrail validate-logs` makes in the Region whose digests it checks (the trail,
-// and CloudTrail's public keys for that Region), which the quarterly reviewer runs in log-archive for
+// The reads `aws cloudtrail validate-logs` makes in the Region its --region names (the trail,
+// CloudTrail's public keys for that Region, and the trail bucket's own Region, which the CLI asks S3
+// for there before it lists a digest), which the quarterly reviewer runs in log-archive for
 // ap-southeast-1 and for us-east-1, where a multi-Region trail delivers the global services' events
-// (C11-D17, TECH-SPEC T24 item 6). Reads only, and only in those two Regions.
+// (C11-D17, TECH-SPEC T24 item 6). The organisation's id it reads is Organizations', a global service,
+// and the digests and files it then lists and reads through a client in the bucket's own Region,
+// ap-southeast-1. Reads only, and only in those two Regions.
 const TRAIL_VALIDATION_READS: readonly string[] = [
   'cloudtrail:DescribeTrails',
   'cloudtrail:GetTrail',
   'cloudtrail:ListPublicKeys',
+  's3:GetBucketLocation',
 ]
 
 // The global services hearth-region leaves to any Region (C11-D05): IAM, Organizations, STS, Route 53,
@@ -296,6 +302,18 @@ function baselineStatements(): IamStatement[] {
         anyIam(`oidc-provider/${GITHUB_OIDC_HOST}`),
         anyIam(`policy/${BOUNDARY}`),
       ],
+      Condition: exceptFor(EXEC, OAAR),
+    },
+    // The parameter the break-glass helper reads its log bucket's name from, in each account's
+    // Baseline and in log-archive (C11-D13): hearth-break-glass can only read it, so a write here would
+    // refuse every tier-1 session in the account, the lz:pr- one that would redeploy it included. Only
+    // the hearthbase execution role, which writes it, and OrganizationAccountAccessRole, which restores
+    // it under tier 2, change it; the boundary refuses it to every bounded role besides.
+    {
+      Sid: 'ProtectBreakGlassParameter',
+      Effect: 'Deny',
+      Action: BREAK_GLASS_PARAMETER_WRITES,
+      Resource: anywhere('ssm', BREAK_GLASS_PARAMETERS),
       Condition: exceptFor(EXEC, OAAR),
     },
     // A Platform update may replace a flow log through either execution role; A6 alarms either way.

@@ -188,7 +188,8 @@ export const PROFILES: Readonly<Record<EnvironmentName, Profile>> = {
 
 // The log-archive account's trail and break-glass-log buckets lock each version for their class's
 // days (C11-D18): GOVERNANCE for the first week, then COMPLIANCE, which nobody can lift or shorten,
-// in a one-line PR under the owner's-read rule, deployed as tier 2.
+// in an owner's-read PR that also turns around profiles.test.ts's pin of the committed mode (IAC-06
+// follows whichever is committed), deployed as tier 2.
 export const LOG_ARCHIVE = {
   logLockMode: 'GOVERNANCE' as 'GOVERNANCE' | 'COMPLIANCE',
 } as const
