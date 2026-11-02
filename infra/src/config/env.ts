@@ -4,9 +4,11 @@
 // profiles (profiles.ts), so the pipeline never needs any of it (C11-D24, IG-08).
 //
 // A person keeps the values in infra/.env.local (git-ignored, as every .env* but .env.example) and
-// synthesises in a shell with no AWS credentials, then deploys only the synthesised assembly
-// (`cdk deploy --app cdk.out`) from the credentialed shell, so no repository code runs where
-// HearthOrgAdmin, OrganizationAccountAccessRole or break-glass credentials exist (C11-D23).
+// synthesises in a shell with no AWS credentials, then deploys only the synthesised assembly from
+// the credentialed shell, from a folder with no cdk.json (beside one, the CLI first runs any `build`
+// command it names, with those credentials) and with the checkout's own CLI
+// (`cdk deploy --app <checkout>/infra/cdk.out`), so no repository code runs where HearthOrgAdmin,
+// OrganizationAccountAccessRole or break-glass credentials exist (C11-D23).
 // infra/.env.example documents every variable, each with a comment and an empty value. From C0.11
 // PR 2, CI's synth:lz uses the fixture (src/testing/fixture.ts) under HEARTH_FIXTURE=1, whose account
 // ids are made at run time.

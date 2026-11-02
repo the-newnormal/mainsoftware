@@ -355,7 +355,9 @@ export class LogArchiveStack extends cdk.Stack {
     // here as a data event naming its writer's session and source identity, and the quarterly review
     // matches each key's writer with the session the key names (org-trail.ts's
     // hearth/review/break-glass-entry-writes); a close the helper reported unwritten that is found in
-    // the bucket was written by someone else.
+    // the bucket was written by someone else, unless the trail shows that session's (or its
+    // continuation's) own successful put followed only by its PreconditionFailed retries: the AWS CLI
+    // retrying a put whose reply was lost, or the helper's unprompted second try.
     entriesBucket.addToResourcePolicy(
       new iam.PolicyStatement({
         sid: 'EntriesNeverReplaced',

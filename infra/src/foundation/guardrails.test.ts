@@ -17,7 +17,6 @@
 // from their parts here, never built through src/config/arns.ts (IG-01), and the model deny comes from
 // the lists (IG-10).
 import { beforeAll, describe, expect, it } from 'vitest'
-import { LZ_REASON_SHAPES } from '../baseline/break-glass.ts'
 import { githubSubject } from '../config/env.ts'
 import { globsOverlap, modelDenyActions } from '../config/models.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
@@ -591,7 +590,13 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
         Effect: 'Deny',
         Action: 'sts:AssumeRole',
         Resource: anyIam('role/cdk-hearthbase-*'),
-        Condition: { StringNotLike: { 'aws:PrincipalTag/hearth-reason': [...LZ_REASON_SHAPES] } },
+        // Written out, not read from LZ_REASON_SHAPES, so a wider subset in the source fails here
+        // by itself (C0.11 review 5 TESTS-01).
+        Condition: {
+          StringNotLike: {
+            'aws:PrincipalTag/hearth-reason': ['lz:pr-?', 'lz:pr-??', 'lz:pr-???', 'lz:pr-????', 'lz:pr-?????'],
+          },
+        },
       },
       {
         Sid: 'HearthappOnlyDeploy',
@@ -924,7 +929,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
         }
       }
     }
-    const lz = LZ_REASON_SHAPES.join(', ')
+    const lz = 'lz:pr-?, lz:pr-??, lz:pr-???, lz:pr-????, lz:pr-?????'
     expect(exceptions).toEqual([
       'hearth-baseline ProtectAudit ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
       'hearth-baseline ProtectAlarms ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
@@ -1181,6 +1186,30 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
       // The workload's own stacks are hearthapp's deploy role's to change.
       expect(denied({ action, resource: stack('Hearth-prod-Workload'), principal: appDeploy }), action).toEqual([])
     }
+  })
+
+  it('IAC-02 C11-D12: break-glass reaches hearthbase’s deploy role under an lz:pr- reason alone, never an incident’s, a drill’s or none (C0.11 review 5 TESTS-01)', () => {
+    const breakGlass = prodRole('hearth-break-glass')
+    const assume = (reason?: string) =>
+      denied({
+        action: 'sts:AssumeRole',
+        resource: baseDeploy,
+        principal: breakGlass,
+        context: reason === undefined ? {} : { 'aws:PrincipalTag/hearth-reason': reason },
+      })
+    expect(assume('lz:pr-42')).toEqual([])
+    expect(assume('incident:2026-10-31-01')).toEqual(['HearthbaseOnlyLzReason'])
+    expect(assume('drill:2026-10-31-01')).toEqual(['HearthbaseOnlyLzReason'])
+    expect(assume()).toEqual(['HearthbaseOnlyLzReason'])
+    // And nobody but break-glass reaches it, whatever its reason.
+    expect(
+      denied({
+        action: 'sts:AssumeRole',
+        resource: baseDeploy,
+        principal: task,
+        context: { 'aws:PrincipalTag/hearth-reason': 'lz:pr-42' },
+      }),
+    ).toEqual(['HearthbaseOnlyBreakGlass'])
   })
 
   it('IAC-02 C11-D16: no workload principal mutes hearth-ops-alerts through its subscription’s filter or the topic’s data protection policy, but the hearthbase execution role may', () => {

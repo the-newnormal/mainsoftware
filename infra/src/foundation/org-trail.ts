@@ -47,11 +47,15 @@ import { document } from './denies.ts'
 
 // The reviewer's saved queries (C11-D17), each over the copy alone, run once at set-up by the runbook.
 export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: string }> = [
+  // Every break-glass assumption, refused ones included, with its session name, source identity and
+  // reason. The role's trust constrains no session name, so the name is what ties a writer in
+  // hearth/review/break-glass-entry-writes to its assumption, and a name assumed twice in an account
+  // shows here.
   {
     id: 'BreakGlassSessions',
     name: 'hearth/review/break-glass-sessions',
     query: [
-      'fields @timestamp, recipientAccountId, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode',
+      'fields @timestamp, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode',
       `filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/${ROLE.breakGlass}$/`,
       'sort @timestamp desc',
     ].join(' | '),
@@ -97,8 +101,9 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
   // its source identity beside the key, sorted so each key's puts sit together. Another of the
   // account's break-glass sessions, under any session name, can write a key nobody has written yet
   // (an open session's close, say), which the bucket doesn't refuse (log-archive.ts), so the review
-  // matches each key's writer, by session and source identity, with the session the key names (the
-  // break-glass review runbook).
+  // matches each key's writer with the session the key names, and the writer's source identity with
+  // the one hearth/review/break-glass-sessions shows assuming the role under the writer's session
+  // name (the break-glass review runbook).
   {
     id: 'BreakGlassEntryWrites',
     name: 'hearth/review/break-glass-entry-writes',

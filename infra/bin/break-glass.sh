@@ -20,10 +20,13 @@
 # and no console, writes no open or close entry, and signs out at once (C11-D13).
 #
 # It refuses a coding agent or CI before anything else, and refuses unless standard input and output
-# are a terminal. It works only in its own folder ($HEARTH_BREAK_GLASS_HOME, else
-# ~/.hearth-break-glass, mode 700), whose AWS config holds the hearth-<env>-entry profiles, never the
-# person's own, one run at a time (a second session open at once needs a folder of its own), and it
-# signs out of the access portal whatever way it ends. It drops every AWS variable it inherits, in
+# are a terminal. It refuses a run that began with shell state of the person's, which bash takes before
+# its first line (an option it doesn't set itself, POSIX mode, SHELLOPTS or BASHOPTS exported,
+# BASH_ENV), and drops every function the person's shell exported before it defines its own. It works
+# only in its own folder ($HEARTH_BREAK_GLASS_HOME, else ~/.hearth-break-glass, mode 700), whose AWS
+# config holds the hearth-<env>-entry profiles, never the person's own, one run at a time (a second
+# session open at once needs a folder of its own), and it signs out of the access portal whatever way
+# it ends. It drops every AWS variable it inherits, in
 # either case, moves HOME to that folder, and drops curl's config folders, a TLS key log, the CA
 # overrides the AWS CLI and curl honour, and Node's options and its settings that turn the certificate
 # check off or add the system's CAs; its curl reads no config file (-q). An inspecting proxy's CA
@@ -45,6 +48,12 @@ IFS=$' \n\t'
 export LC_ALL=C
 # Nothing it reads is a file pattern, so nothing typed is expanded as one.
 set -f
+# A function the person's shell exported (Fedora's which, a module system's module) would stand in for
+# any command of its name, aws among them, holding the role's credentials, here and in the shell it
+# opens: each is dropped before this script defines its own.
+for exported_function in $(compgen -A function); do
+  unset -f "$exported_function"
+done
 
 # The reasons, each matched whole. A request's reference is CASE_REFERENCE_PATTERN
 # (packages/shared/src/cases.ts) quoted as two groups of four; a date is checked against the calendar
@@ -105,6 +114,28 @@ require_terminal() {
   fi
 }
 
+# Nor is a run that began with shell state of the person's, which bash takes before this script's first
+# line, and which would reach the role's credentials or its entries: an option beyond the ones set
+# above and bash's defaults (a trace or verbose mode prints each command, the credentials the CLI is
+# handed among them; allexport hands every variable to every command; noclobber leaves an entry's
+# earlier body under a later entry's key; keyword mode moves the reason's tag out of the CLI's
+# arguments), POSIX mode (in which the shell it opens skips its rc file), SHELLOPTS or BASHOPTS
+# exported (which carry the person's options into this run, and errexit, nounset and noglob into the
+# shell it opens), or BASH_ENV (a file bash runs first, defining what it likes). It is refused, never
+# undone: what that file did has already happened, and an option turned back off would leave the rest.
+refuse_inherited_shell() {
+  local name exported=no
+  for name in $(compgen -e); do
+    case "$name" in
+      SHELLOPTS | BASHOPTS | BASH_ENV) exported=yes ;;
+    esac
+  done
+  if [[ $- == *[!efhuBp]* ]] || [[ :$SHELLOPTS: == *:posix:* ]] || [ "$exported" = yes ]; then
+    printf "break-glass: refused: it started with shell settings of yours that would reach the role's credentials or its entries (an option such as a trace or noclobber, POSIX mode, SHELLOPTS or BASHOPTS exported, or BASH_ENV); run it from a terminal without them (docs/runbooks/break-glass.md)\n" >&2
+    exit 3
+  fi
+}
+
 # Whether a YYYY-MM-DD date is on the calendar (month lengths and leap years by arithmetic, since BSD
 # date can't parse one) and not after today in Singapore, where the day an incident or drill began is
 # counted: UTC+8 all year, written as a POSIX zone (SGT-8), which GNU and BSD date read with no time
@@ -147,6 +178,7 @@ valid_reason() {
 
 refuse_agents
 require_terminal
+refuse_inherited_shell
 
 # --- The arguments ---------------------------------------------------------------------------------
 
@@ -259,6 +291,8 @@ expires=''
 expires_at=0
 session=''
 first_session=''
+# The last later session whose continuation entry is written (close_session).
+continued=''
 account=''
 role=''
 user=''
@@ -425,16 +459,21 @@ collect_close() {
 
 # The role, for an hour at most, under the reason, with the person's sign-in name as the session's
 # source identity, which CloudTrail carries; the session's own name holds only the time.
+# The session's name and its hour become the run's only once the role is taken, so a refused or failed
+# assumption leaves them naming the session it already had.
 assume_role() {
-  session="hearth-bg-$(date -u +%Y%m%dT%H%M%SZ)"
-  expires_at=$(($(date -u +%s) + 60 * 60))
+  local name ends
+  name="hearth-bg-$(date -u +%Y%m%dT%H%M%SZ)"
+  ends=$(($(date -u +%s) + 60 * 60))
   if ! read -r ak sk st expires < <(aws sts assume-role --profile "$profile" --role-arn "$role" \
-    --role-session-name "$session" --source-identity "$user" --tags "Key=hearth-reason,Value=$reason" \
+    --role-session-name "$name" --source-identity "$user" --tags "Key=hearth-reason,Value=$reason" \
     --duration-seconds 3600 --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \
     --output text 2>/dev/null); then
     printf "break-glass: the role wasn't assumed: check the reason's form, that you signed in with HearthBreakGlassEntry, and docs/runbooks/break-glass.md\n" >&2
     return 1
   fi
+  session="$name"
+  expires_at="$ends"
 }
 
 # One entry, under this account's prefix, never over another (--if-none-match) and with the checksum
@@ -462,7 +501,7 @@ open_session() {
   jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg runbook "$runbook" \
     --arg session "$session" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg expires "$expires" \
     '{schema: $schema, entry: "open", environment: $environment, reason: $reason, runbook: $runbook, session: $session, at: $at, expires: $expires}' \
-    >"$entry_file"
+    >|"$entry_file"
   put_entry "$key" || refuse "the open entry wasn't written, so nothing was done; see docs/runbooks/break-glass.md"
   opened=yes
   first_session="$session"
@@ -476,6 +515,11 @@ open_session() {
 # is there for then asks them to sign in again (sign_in_again), and one that stops unprompted can't,
 # so its close isn't written and the reviewer is told. Nor is the role taken again after a second
 # sign-in that was refused or never checked (sign_in), whichever close it is.
+# The continuation is written whenever the session in hand is a later one with none yet (continued
+# names the last that has one), not only straight after it is taken: when its put fails, or a signal
+# stops it, the handler's close comes back here holding that session's keys, good for its hour, and
+# writes the continuation before the close, never a close by a session with no entry of its own. If
+# that put is refused because the first did land, the close isn't written and the reviewer is told.
 close_session() {
   local key
   if [ "$1" = prompted ]; then collect_close; fi
@@ -486,18 +530,21 @@ close_session() {
     fi
     [ "$sign_in" = checked ] || return 1
     assume_role || return 1
+  fi
+  if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then
     jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg session "$session" \
       --arg continues "$first_session" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg expires "$expires" \
       '{schema: $schema, entry: "continuation", environment: $environment, reason: $reason, session: $session, continues: $continues, at: $at, expires: $expires}' \
-      >"$entry_file"
+      >|"$entry_file"
     put_entry "$(entry_key "$session" continuation)" || return 1
+    continued="$session"
   fi
   key="$(entry_key "$first_session" close)"
   jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg session "$first_session" \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson modes "$modes_json" --argjson ids "$ids_json" \
     --arg outcome "$outcome" \
     '{schema: $schema, entry: "close", environment: $environment, session: $session, at: $at, modes: $modes, ids: $ids, outcome: $outcome}' \
-    >"$entry_file"
+    >|"$entry_file"
   put_entry "$key" || return 1
   closed=yes
   printf 'break-glass: close entry written\n'
@@ -517,7 +564,7 @@ amend_session() {
   jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg session "$session" \
     --arg amends "$amend" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson ids "$ids_json" \
     '{schema: $schema, entry: "amend", environment: $environment, reason: $reason, session: $session, amends: $amends, at: $at, ids: $ids}' \
-    >"$entry_file"
+    >|"$entry_file"
   read -r bucket < <(AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" \
     aws ssm get-parameter --name /hearth/break-glass/log-bucket --query Parameter.Value --output text 2>/dev/null) ||
     refuse "the break-glass-log bucket's parameter wasn't read, so nothing was written"

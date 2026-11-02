@@ -366,8 +366,13 @@ export function ruleFindings(path: string, code: string, rules: readonly CodeRul
 
 // --- IG-03: cdk.json and the context file ---------------------------------------------------------
 
-// What's wrong with infra/cdk.json: the app must be the workload entry run by Node, and no plugin may
-// load code into the CLI, which runs it with the deploy job's credentials (C11-D48).
+// What's wrong with infra/cdk.json: the app must be the workload entry run by Node, no plugin may
+// load code into the CLI, which runs it with the deploy job's credentials (C11-D48), and no build
+// command may run before it, which the CLI does beside cdk.json with whoever's credentials run it,
+// even with --app naming an assembly (C0.11 review 5 DOCS-01). It holds only the keys it holds today,
+// so no other setting the CLI acts on arrives unread.
+const CDK_JSON_KEYS: ReadonlySet<string> = new Set(['app', 'context', 'versionReporting'])
+
 export function cdkJsonProblems(json: unknown): Finding[] {
   if (typeof json !== 'object' || json === null || Array.isArray(json)) {
     return ['infra/cdk.json: IG-03 is not a JSON object']
@@ -375,7 +380,13 @@ export function cdkJsonProblems(json: unknown): Finding[] {
   const found: Finding[] = []
   const config = json as Record<string, unknown>
   if (config.app !== 'node bin/workload.ts') found.push("infra/cdk.json: IG-03 app must be 'node bin/workload.ts'")
-  if ('plugin' in config) found.push('infra/cdk.json: IG-03 a plugin runs code inside the CLI')
+  for (const key of Object.keys(config)) {
+    if (key === 'plugin') found.push('infra/cdk.json: IG-03 a plugin runs code inside the CLI')
+    else if (key === 'build') found.push('infra/cdk.json: IG-03 a build command runs before the CLI reads any app')
+    else if (!CDK_JSON_KEYS.has(key)) {
+      found.push(`infra/cdk.json: IG-03 holds only app, context and versionReporting, not ${JSON.stringify(key)}`)
+    }
+  }
   return found
 }
 
@@ -1342,6 +1353,34 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     }
   }
 
+  // And bash's own start-up state, which it takes before the helper's first line, never reaches the
+  // role (C0.11 review 5 HELPER-01): every function the person's shell exported is unset by its loop,
+  // matched whole as a gate before the first function is defined, so none stands in for aws or any
+  // other command; and refuse_inherited_shell, a gate before the first aws command, refuses an option
+  // beyond the helper's own and bash's defaults, POSIX mode, and an exported SHELLOPTS, BASHOPTS or
+  // BASH_ENV, and exits non-zero (infra.test.ts runs it, as a script, under each).
+  const firstDefinition = lines.findIndex(line => isDefinition(line.text))
+  const dropLoop = gate('for exported_function in $(compgen -A function); do')
+  if (
+    !before(dropLoop, firstDefinition) ||
+    lines[dropLoop + 1]?.text !== 'unset -f "$exported_function"' ||
+    lines[dropLoop + 2]?.text !== 'done'
+  ) {
+    fail('a', 'every function the person exported is unset by its loop, before the first function is defined')
+  }
+  const startUp = bodyOf('refuse_inherited_shell').map(line => line.text)
+  if (
+    !startUp.includes('SHELLOPTS | BASHOPTS | BASH_ENV) exported=yes ;;') ||
+    !startUp.includes('if [[ $- == *[!efhuBp]* ]] || [[ :$SHELLOPTS: == *:posix:* ]] || [ "$exported" = yes ]; then') ||
+    !startUp.some(line => /^exit [1-9]\d*$/.test(line)) ||
+    !before(gate('refuse_inherited_shell'), firstAws)
+  ) {
+    fail(
+      'a',
+      'refuse_inherited_shell refuses an inherited option, POSIX mode, and an exported SHELLOPTS, BASHOPTS or BASH_ENV, and exits non-zero, as a gate before the first aws command',
+    )
+  }
+
   // b: a coding agent or CI refused before the first aws command, by exactly the markers the Owner
   // bootstrap script refuses, set or empty.
   const agents = bodyOf('refuse_agents').map(line => line.text)
@@ -1849,6 +1888,57 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       fail(
         'k',
         'a late close takes the role only on a checked sign-in: sign_in=checked at the top before the trap, sign_in_again setting sign_in=unchecked before its aws sso login and sign_in=checked last, nothing else naming it, and the close’s one assume_role straight after [ "$sign_in" = checked ] || return 1',
+      )
+    }
+  }
+  // Every entry is written with >|, so noclobber, however it came on, never leaves an earlier entry's
+  // body under a later key (C0.11 review 5 HELPER-01).
+  for (const line of lines) {
+    if (/(?<!>)>(?![>|])\s*"?\$\{?entry_file\b/.test(line.text.split('\n')[0] ?? '')) {
+      fail(
+        'k',
+        `line ${line.line}: an entry is written with >|, so noclobber never leaves an earlier body under its key`,
+      )
+    }
+  }
+  // And a later session's continuation is written whenever the session in hand has none, not only
+  // straight after the role is taken, so the handler's retry of a close whose continuation failed
+  // writes it first (C0.11 review 5 HELPER-02): the one continuation jq is the first line of
+  // `if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then` at close_session's
+  // own top level, before the close's jq, with its put straight after, then `continued="$session"`
+  // and fi; `continued=''` starts it, at the top before the trap, and nothing else names it.
+  {
+    const closeRange = functions.get('close_session')
+    const closeLines = closeRange === undefined ? [] : indexed.slice(closeRange.start, closeRange.end)
+    const closeTop = alwaysRun(closeLines)
+    const guardAt =
+      closeLines.find(
+        ({ line, index }) =>
+          closeTop.has(index) &&
+          line.text === 'if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then',
+      )?.index ?? -1
+    const continuations = indexed.filter(({ line }) => /\bentry:\s*"continuation"/.test(line.text))
+    const closeJq = lines.findIndex(line => /\bentry:\s*"close"/.test(line.text))
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === "continued=''")
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, 'continued')
+      return count === 0 ? [] : [{ index, count }]
+    })
+    if (
+      guardAt < 0 ||
+      continuations.length !== 1 ||
+      continuations[0]?.index !== guardAt + 1 ||
+      lines[guardAt + 2]?.text !== 'put_entry "$(entry_key "$session" continuation)" || return 1' ||
+      lines[guardAt + 3]?.text !== 'continued="$session"' ||
+      lines[guardAt + 4]?.text !== 'fi' ||
+      !before(guardAt, closeJq) ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || (index !== guardAt + 3 && index !== starts[0]?.index))
+    ) {
+      fail(
+        'k',
+        'a later session’s continuation is written by close_session, at its own top level, whenever the session in hand has none ([ "$session" != "$continued" ]), before the close, and only that write sets continued',
       )
     }
   }

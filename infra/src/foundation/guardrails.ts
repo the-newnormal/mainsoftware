@@ -1,8 +1,10 @@
 // The organisation's guardrails (C11-D05 to C11-D08), in Hearth-Foundation: the service control
 // policies, the resource control policy and the AI services opt-out, each attached to Root, an OU or
 // an account named by configuration. SCPs never bind the management account, so its own principals
-// are fenced by their permission sets alone (C11-D10). Every policy is Deny-only, and every exception
-// names a role pattern from denies.ts, never a person or an account:
+// are fenced by their own policies alone (C11-D10), and management can detach, rewrite or turn off
+// any policy here in one call, which A5 alarms on: the evidence floor binds the member accounts for
+// as long as management leaves it in place (TECH-SPEC T24 item 32). Every policy is Deny-only, and
+// every exception names a role pattern from denies.ts, never a person or an account:
 // - Root: hearth-baseline and hearth-baseline-2 (the evidence floor, the protected names and the
 //   account-wide denies, split in two to stay within 5,120 characters each), hearth-no-models
 //   (C11-D06) and hearth-region (C11-D05), with AWS's FullAWSAccess, so Root holds the five SCPs

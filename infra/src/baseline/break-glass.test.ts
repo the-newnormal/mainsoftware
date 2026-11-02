@@ -10,7 +10,7 @@
 import { readFileSync } from 'node:fs'
 import { CASE_REFERENCE_PATTERN, formatCaseReference, parseCaseReference } from '@hearth/shared'
 import { describe, expect, it } from 'vitest'
-import { REASON_SHAPES } from './break-glass.ts'
+import { LZ_REASON_SHAPES, REASON_SHAPES } from './break-glass.ts'
 
 const HELPER = readFileSync(new URL('../../bin/break-glass.sh', import.meta.url), 'utf8')
 
@@ -105,6 +105,19 @@ describe('IAC-11 C11-D11 C11-D14: the helper’s reasons and the trust’s shape
       'lz:pr-????',
       'lz:pr-?????',
     ])
+  })
+
+  // The role's LandingZone grant and the workload SCP's HearthbaseOnlyLzReason both read the subset
+  // the source derives from REASON_SHAPES, so it is written out here, where a wider derivation (an
+  // incident or a drill let through to the hearthbase roles) fails (C0.11 review 5 TESTS-01).
+  it('C11-D12: the landing-zone shapes, the only reasons that reach the hearthbase roles, are exactly these, and no good reason but an lz:pr- one fits any of them (C0.11 review 5 TESTS-01)', () => {
+    expect([...LZ_REASON_SHAPES]).toEqual(['lz:pr-?', 'lz:pr-??', 'lz:pr-???', 'lz:pr-????', 'lz:pr-?????'])
+    for (const reason of GOOD) {
+      expect(
+        LZ_REASON_SHAPES.some(shape => globMatches(shape, reason)),
+        reason,
+      ).toBe(reason.startsWith('lz:pr-'))
+    }
   })
 
   it('the helper has the six forms, each a whole-string pattern', () => {

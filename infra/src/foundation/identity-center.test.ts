@@ -2,9 +2,10 @@
 // 3), as Hearth-Foundation renders them. The attribute for access control maps each person's sign-in
 // name to hearth-user, which break-glass's trust reads. Each of the five sets has its session length,
 // its managed policy and exactly the inline policy this file builds, which opens with the model deny
-// in place: management's only fence for people, since no SCP binds it. HearthOrgAdmin can't close an
-// account or take one out of the organisation without an alarmed edit of itself first, and the
-// reviewer decrypts only through S3 under the trail's or the break-glass entries' encryption context.
+// in place: management's only fence for people, since no SCP binds it. HearthOrgAdmin's own sessions
+// can't close an account or take one out of the organisation, though a role one makes in management
+// isn't held by that deny (TECH-SPEC T24 item 32), and the reviewer decrypts only through S3 under the
+// trail's or the break-glass entries' encryption context.
 // Who holds which set where: nobody holds a standing set in an account whose profile holds real data
 // but the break-glass entry, which grants nothing but assuming that account's alarmed break-glass
 // role; non-prod's operator set is assigned only while non-prod holds no real data, which a variant

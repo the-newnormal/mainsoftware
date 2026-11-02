@@ -25,7 +25,7 @@ import type { NameServers } from '../foundation/options.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
 import { policyStatements, renderedString } from '../testing/policies.ts'
-import { LZ_REASON_SHAPES, REASON_SHAPES } from './break-glass.ts'
+import { REASON_SHAPES } from './break-glass.ts'
 
 type Template = Record<string, unknown>
 interface Resource {
@@ -308,7 +308,13 @@ function breakGlassStatements(kind: Kind): unknown[] {
       Effect: 'Allow',
       Action: ['sts:AssumeRole', 'sts:SetSourceIdentity'],
       Resource: [hearthbase('deploy-role'), hearthbase('file-publishing-role')],
-      Condition: { StringLike: { 'aws:PrincipalTag/hearth-reason': [...LZ_REASON_SHAPES] } },
+      // Written out, not read from LZ_REASON_SHAPES, so a wider subset in the source fails here (C0.11
+      // review 5 TESTS-01).
+      Condition: {
+        StringLike: {
+          'aws:PrincipalTag/hearth-reason': ['lz:pr-?', 'lz:pr-??', 'lz:pr-???', 'lz:pr-????', 'lz:pr-?????'],
+        },
+      },
     },
     {
       Sid: 'NoIamWrites',

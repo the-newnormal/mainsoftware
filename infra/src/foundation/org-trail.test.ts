@@ -158,8 +158,10 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
 
 // The reviewer's saved queries (C11-D17), each over the copy alone.
 const QUERIES: Record<string, string> = {
+  // Every break-glass assumption with its session name, which ties an entry's writer to its
+  // assumption, since the role's trust constrains no session name.
   'hearth/review/break-glass-sessions':
-    'fields @timestamp, recipientAccountId, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode | filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/hearth-break-glass$/ | sort @timestamp desc',
+    'fields @timestamp, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode | filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/hearth-break-glass$/ | sort @timestamp desc',
   'hearth/review/admin-sessions':
     'fields @timestamp, recipientAccountId, eventName, requestParameters.roleArn, errorCode | filter (eventName = "AssumeRoleWithSAML" and requestParameters.roleArn like /AWSReservedSSO_Hearth(OrgAdmin|SetUp)_/) or (eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/(OrganizationAccountAccessRole|cdk-hearthbase-[^\\/]+)$/) | sort @timestamp desc',
   'hearth/review/deploy-role-sessions':

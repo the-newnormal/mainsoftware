@@ -182,14 +182,24 @@ describe('IG-02 (C11-D24): no lookup', () => {
   }, 30_000)
 })
 
-describe('IG-03 (C11-D24, C11-D48): no context file, cdk.out ignored, cdk.json runs the workload entry with no plugin', () => {
-  it('refuses another app or a plugin, on planted JSON', () => {
+describe('IG-03 (C11-D24, C11-D48): no context file, cdk.out ignored, cdk.json runs the workload entry with no plugin or build command', () => {
+  it('refuses another app, a plugin, a build command or any other key, on planted JSON', () => {
     expect(cdkJsonProblems({ app: 'node bin/workload.ts', context: {} })).toEqual([])
     expect(cdkJsonProblems({ app: 'npx tsx bin/workload.ts' })).toEqual([
       "infra/cdk.json: IG-03 app must be 'node bin/workload.ts'",
     ])
     expect(cdkJsonProblems({ app: 'node bin/workload.ts', plugin: ['x'] })).toEqual([
       'infra/cdk.json: IG-03 a plugin runs code inside the CLI',
+    ])
+    // A build command runs beside cdk.json before the CLI reads any app, an assembly named by --app
+    // included, with whoever's credentials run it (C0.11 review 5 DOCS-01).
+    const today = JSON.parse(readRepoFile('infra/cdk.json')) as Record<string, unknown>
+    expect(cdkJsonProblems({ ...today, build: 'npm run prepare' })).toEqual([
+      'infra/cdk.json: IG-03 a build command runs before the CLI reads any app',
+    ])
+    expect(cdkJsonProblems({ ...today, watch: { include: ['**'] }, requireApproval: 'never' })).toEqual([
+      'infra/cdk.json: IG-03 holds only app, context and versionReporting, not "watch"',
+      'infra/cdk.json: IG-03 holds only app, context and versionReporting, not "requireApproval"',
     ])
     expect(cdkJsonProblems([])).toEqual(['infra/cdk.json: IG-03 is not a JSON object'])
     expect(cdkJsonProblems(null)).toEqual(['infra/cdk.json: IG-03 is not a JSON object'])
@@ -929,7 +939,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ],
       ['i: a credential printed', afterAssume('echo "$AWS_SESSION_TOKEN"'), ['IG-09i', 'IG-09o']],
       ['i: a credential exported', afterAssume('export AWS_SESSION_TOKEN'), ['IG-09i']],
-      ['i: a credential written', afterAssume('printf \'%s\' "$sk" >"$entry_file"'), ['IG-09i', 'IG-09o']],
+      ['i: a credential written', afterAssume('printf \'%s\' "$sk" >|"$entry_file"'), ['IG-09i', 'IG-09o']],
       ['i: eval', afterAssume('eval "$reason"'), ['IG-09i']],
       ['i: env alone', afterAssume('env'), ['IG-09i']],
       ['i: declare -p', afterAssume('declare -p'), ['IG-09i']],
@@ -1837,6 +1847,124 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       expect(run(utc, ['2026-11-01'], pinned)).not.toBe(0)
     } finally {
       rmSync(shims, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  // C0.11 review 5 HELPER-01 and HELPER-02.
+  it('a, k: the start-up gate, the dropped functions, the >| writes and the pending continuation are each pinned', () => {
+    const loop = 'for exported_function in $(compgen -A function); do\n  unset -f "$exported_function"\ndone\n'
+    const cases: Array<[string, string, string[]]> = [
+      [
+        'a: the start-up gate never called',
+        plant('require_terminal\nrefuse_inherited_shell\n', 'require_terminal\n'),
+        ['IG-09a'],
+      ],
+      [
+        'a: the start-up gate after the first aws command',
+        plant('require_terminal\nrefuse_inherited_shell\n', 'require_terminal\n').replace(
+          '\nassume_role || exit 1\n',
+          '\nrefuse_inherited_shell\nassume_role || exit 1\n',
+        ),
+        ['IG-09a'],
+      ],
+      ['a: POSIX mode let through', plant(' || [[ :$SHELLOPTS: == *:posix:* ]]', ''), ['IG-09a']],
+      [
+        'a: BASH_ENV let through',
+        plant('SHELLOPTS | BASHOPTS | BASH_ENV) exported=yes', 'SHELLOPTS | BASHOPTS) exported=yes'),
+        ['IG-09a'],
+      ],
+      [
+        'a: the gate returns',
+        plant('break-glass.md)\\n" >&2\n    exit 3\n', 'break-glass.md)\\n" >&2\n    return 0\n'),
+        ['IG-09a'],
+      ],
+      ['a: exported functions kept', plant(loop, ''), ['IG-09a']],
+      [
+        'a: exported functions dropped after the helper defines its own',
+        plant(loop, '').replace('\nrefuse_agents\nrequire_terminal\n', `\n${loop}refuse_agents\nrequire_terminal\n`),
+        ['IG-09a'],
+      ],
+      [
+        'k: the close written with >',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    >"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the open entry written with >',
+        plant(
+          `expires: $expires}' \\\n    >|"$entry_file"\n  put_entry "$key" || refuse`,
+          `expires: $expires}' \\\n    >"$entry_file"\n  put_entry "$key" || refuse`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the continuation only straight after the role is taken',
+        plant(
+          '    assume_role || return 1\n  fi\n  if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then\n',
+          '    assume_role || return 1\n  if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then\n',
+        ).replace('    continued="$session"\n  fi\n', '    continued="$session"\n  fi\n  fi\n'),
+        ['IG-09k'],
+      ],
+      ['k: the continuation never recorded', plant('    continued="$session"\n', ''), ['IG-09k']],
+      [
+        'k: continued set by printf -v',
+        plant('    continued="$session"\n', `    continued="$session"\n    printf -v continued '%s' x\n`),
+        ['IG-09k'],
+      ],
+      ['k: continued never started', plant("\ncontinued=''\n", '\n'), ['IG-09k']],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  it('a: refuse_inherited_shell, run as a script, refuses each start-up state bash inherits and passes with none', () => {
+    const fn = shellFunction(helper, 'refuse_inherited_shell') ?? ''
+    expect(fn).toContain('refuse_inherited_shell() {')
+    const dir = mkdtempSync(join(tmpdir(), 'ig09-start-'))
+    try {
+      // As the helper runs it: after its own set -euo pipefail and set -f, from a file, since bash -c
+      // adds c to $-.
+      const gate = (body: string) => {
+        const path = join(dir, `gate-${Math.random().toString(36).slice(2)}.sh`)
+        writeFileSync(path, ['set -euo pipefail', 'set -f', body, 'refuse_inherited_shell', ''].join('\n'))
+        return path
+      }
+      const start = (path: string, shell: string, env: Record<string, string> = {}) =>
+        spawnSync(
+          'env',
+          [
+            '-i',
+            `PATH=${process.env.PATH ?? ''}`,
+            ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+            'bash',
+            '-c',
+            `${shell} "$0"`,
+            path,
+          ],
+          { encoding: 'utf8' },
+        ).status
+      const script = gate(fn)
+      for (const shell of ['bash', 'bash -p', 'f() { :; }; export -f f; bash'])
+        expect(start(script, shell), shell).toBe(0)
+      const refused: Array<[string, string, Record<string, string>?]> = [
+        ['a trace', 'bash -x'],
+        ['verbose', 'bash -v'],
+        ['noclobber', 'bash -C'],
+        ['every variable exported', 'bash -a'],
+        ['keyword mode', 'bash -k'],
+        ['POSIX mode', 'bash --posix'],
+        ['POSIXLY_CORRECT', 'bash', { POSIXLY_CORRECT: '1' }],
+        ['SHELLOPTS exported, noclobber in it', 'set -o noclobber; export SHELLOPTS; bash'],
+        ['SHELLOPTS exported, defaults only', 'export SHELLOPTS; bash'],
+        ['BASHOPTS exported', 'shopt -s nocasematch; export BASHOPTS; bash'],
+        ['BASH_ENV', 'bash', { BASH_ENV: '/dev/null' }],
+        ['BASH_ENV empty', 'bash', { BASH_ENV: '' }],
+      ]
+      for (const [name, shell, env] of refused) expect(start(script, shell, env), name).toBe(3)
+      // A copy without the POSIX check lets POSIX mode through, which the case above would catch.
+      const lax = gate(fn.replace(' || [[ :$SHELLOPTS: == *:posix:* ]]', ''))
+      expect(start(lax, 'bash --posix')).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   }, 30_000)
 

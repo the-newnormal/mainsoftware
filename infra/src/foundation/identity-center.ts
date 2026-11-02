@@ -7,9 +7,13 @@
 //
 // Five sets, each with an hour's session but the operator's eight and the reviewer's four, and each
 // inline policy starting with the unconditional model deny, which is management's only fence for
-// people, since SCPs never bind it (C11-D06, C11-D10):
-// - HearthOrgAdmin (management): AdministratorAccess, which may neither close an account nor take one
-//   out of the organisation without an alarmed edit of the set first (TECH-SPEC T24 item 3);
+// people, since SCPs never bind it (C11-D06, C11-D10). A set's inline policy binds that set's own
+// sessions and nothing they make: a role a session makes in management carries only its own policies.
+// - HearthOrgAdmin (management): AdministratorAccess, whose sessions may neither close an account nor
+//   take one out of the organisation (TECH-SPEC T24 item 3), a guard against a slip that would lift
+//   every SCP from an account and end its content, not a fence. Nothing here keeps a session from
+//   stopping or narrowing the organisation trail, or from detaching, rewriting or turning off Root's
+//   SCPs, the evidence floor among them, each in one call A6 or A5 alarms on (TECH-SPEC T24 item 32);
 // - HearthBreakGlassEntry (every member account): nothing but assuming that account's
 //   hearth-break-glass (C11-D11);
 // - HearthNonprodOperator (non-prod, only while it holds no real data, C11-D69): read-only, service
