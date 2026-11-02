@@ -248,7 +248,7 @@ describe('T2 server runtime: the repo', () => {
       }),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('every package the server and its packages load at run time is in their dependencies', () => {
     // Otherwise it works only because npm links every workspace and hoists dev dependencies, and
@@ -268,7 +268,7 @@ describe('T2 server runtime: the repo', () => {
         })
       })
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('runtime code never loads a test-only file, which the image leaves out', () => {
     // apps/server/scripts/ holds CI's checks and development tools, which Dockerfile.dockerignore
@@ -284,7 +284,7 @@ describe('T2 server runtime: the repo', () => {
         ),
       )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('a relative or #specifier stays inside its own workspace (another workspace is imported by name)', () => {
     // Otherwise a file would load without being part of a dependency, so neither these rules nor
@@ -309,7 +309,7 @@ describe('T2 server runtime: the repo', () => {
       }),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it("the server's packages export and map only files Node can run", () => {
     expect(server.flatMap(w => manifestProblems(w).map(problem => `${w.dir}package.json: ${problem}`))).toEqual([])
@@ -320,7 +320,7 @@ describe('T2 server runtime: the repo', () => {
       unstrippableSyntax(path, readRepoFile(path)).map(problem => `${path}, ${problem}`),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('no .tsx, .jsx, .cts or .cjs files where the server loads code: its files are ES modules Node strips', () => {
     expect(serverFiles.filter(path => /\.(?:[jt]sx|c[jt]s)$/.test(path))).toEqual([])

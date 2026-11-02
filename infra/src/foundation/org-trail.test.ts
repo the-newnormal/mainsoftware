@@ -6,7 +6,9 @@
 //   alias in log-archive, copied to CloudWatch through a role that may only write that copy's
 //   streams, and retained once made;
 // - the assured alarms: each filter pattern exactly as written here from the fixture's accounts, each
-//   within CloudWatch Logs' 1,024 characters, and one alarm per id emailing management's topic;
+//   within CloudWatch Logs' 1,024 characters, A4 taking every Identity Center write IAM names but no
+//   access-portal call, and one alarm per id emailing management's topic as it enters ALARM and as it
+//   returns to OK;
 // - the reviewer's five saved queries over the copy alone;
 // - every log group in every landing-zone template in its retention class, retained and protected;
 // - five budgets in the amounts C11-Q09 chose, before tax, each alerting the topic at 80 % and 100 %
@@ -82,7 +84,7 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
     metric: 'A04Identity',
     name: 'a04-identity',
     patterns: [
-      '{ ($.eventSource = "sso.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*PermissionSet*") || ($.eventName = "*AccountAssignment*") || ($.eventName = "*AccessControlAttribute*") || ($.eventName = "*Instance")) }',
+      '{ ($.eventSource = "sso.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*PermissionSet*") || ($.eventName = "*AccountAssignment*") || ($.eventName = "*AccessControlAttribute*") || ($.eventName = "*Instance") || ($.eventName = "*Configuration") || ($.eventName = "*Directory*") || ($.eventName = "*Trust*") || ($.eventName = "*Application*") || ($.eventName = "*Profile*") || ($.eventName = "*Region") || ($.eventName = "*PermissionsPolicy") || ($.eventName = "TagResource") || ($.eventName = "UntagResource") || ($.eventName = "StartSSO")) }',
       '{ ($.eventSource = "identitystore.amazonaws.com") && ($.readOnly IS FALSE) }',
       '{ ($.eventSource = "sso-directory.amazonaws.com") && ($.readOnly IS FALSE) }',
     ],
@@ -111,8 +113,9 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
       `{ ($.eventSource = "kms.amazonaws.com") && ($.recipientAccountId = "${logArchive}") && (($.eventName = "PutKeyPolicy") || ($.eventName = "ScheduleKeyDeletion") || ($.eventName = "CancelKeyDeletion") || ($.eventName = "DisableKey") || ($.eventName = "EnableKey") || ($.eventName = "DisableKeyRotation") || ($.eventName = "CreateGrant") || ($.eventName = "TagResource") || ($.eventName = "UntagResource") || ($.eventName = "CreateAlias") || ($.eventName = "UpdateAlias") || ($.eventName = "DeleteAlias")) }`,
       // (g) the log buckets' configuration
       `{ ($.eventSource = "s3.amazonaws.com") && ($.eventCategory = "Management") && ($.readOnly IS FALSE) && ${LOG_BUCKET_NAMES} }`,
-      // (h) the alarms themselves, but CloudFormation's own updates of them
-      '{ ($.eventSource = "monitoring.amazonaws.com") && (($.eventName = "DeleteAlarms") || ($.eventName = "DisableAlarmActions") || ($.eventName = "SetAlarmState") || (($.eventName = "PutMetricAlarm") && ($.userIdentity.invokedBy NOT EXISTS))) }',
+      // (h) the alarms themselves: a delete (CloudFormation's included), actions turned off, a state
+      // set, or a PutMetricAlarm by anyone but CloudFormation (another service's included)
+      '{ ($.eventSource = "monitoring.amazonaws.com") && (($.eventName = "DeleteAlarms") || ($.eventName = "DisableAlarmActions") || ($.eventName = "SetAlarmState") || (($.eventName = "PutMetricAlarm") && (($.userIdentity.invokedBy NOT EXISTS) || ($.userIdentity.invokedBy != "cloudformation.amazonaws.com")))) }',
       // (i) the landing zone's roles, its boundary and GitHub's provider
       '{ ($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.roleName = "hearth-break-glass*") || ($.requestParameters.roleName = "hearth-gh-*") || ($.requestParameters.policyArn = "*:policy/hearth-boundary") || ($.requestParameters.openIDConnectProviderArn = "*token.actions.githubusercontent.com")) }',
       // (j) the log buckets' objects deleted or their locks changed, allowed or denied
@@ -322,7 +325,59 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
     }
   })
 
-  it('IAC-18: one alarm per id emails management’s topic on the first match in five minutes (A11 on five in fifteen), and treats no data as no alarm', () => {
+  it('IAC-18 C11-D16: A4 (a) takes every Identity Center write IAM names, by the event name CloudTrail gives it (the instance’s sign-in settings, its identity source and MFA rule, trusts, token issuers, applications and Regions included), and no call the access portal or its sign-in makes', () => {
+    // Every sso action AWS's service reference for IAM marks a write, a permissions change or a tag,
+    // and the other casing CloudTrail may record the instance's settings under.
+    const writes = [
+      ...['AddRegion', 'RemoveRegion', 'AssociateDirectory', 'DisassociateDirectory'],
+      ...['AssociateProfile', 'CreateProfile', 'DeleteProfile', 'DisassociateProfile', 'UpdateProfile'],
+      ...['AttachCustomerManagedPolicyReferenceToPermissionSet', 'AttachManagedPolicyToPermissionSet'],
+      ...['DetachCustomerManagedPolicyReferenceFromPermissionSet', 'DetachManagedPolicyFromPermissionSet'],
+      ...['CreatePermissionSet', 'DeletePermissionSet', 'UpdatePermissionSet', 'ProvisionPermissionSet'],
+      ...['PutInlinePolicyToPermissionSet', 'DeleteInlinePolicyFromPermissionSet'],
+      ...['PutPermissionsBoundaryToPermissionSet', 'DeletePermissionsBoundaryFromPermissionSet'],
+      ...['CreateAccountAssignment', 'DeleteAccountAssignment', 'PutPermissionsPolicy'],
+      ...['CreateInstance', 'DeleteInstance', 'UpdateInstance', 'StartSSO'],
+      ...['CreateInstanceAccessControlAttributeConfiguration', 'DeleteInstanceAccessControlAttributeConfiguration'],
+      ...['UpdateInstanceAccessControlAttributeConfiguration', 'UpdateSSOConfiguration', 'UpdateSsoConfiguration'],
+      ...['PutMfaDeviceManagementForDirectory', 'CreateTrust', 'UpdateTrust'],
+      ...['CreateTrustedTokenIssuer', 'DeleteTrustedTokenIssuer', 'UpdateTrustedTokenIssuer'],
+      ...['CreateApplication', 'DeleteApplication', 'UpdateApplication'],
+      ...['CreateApplicationAssignment', 'DeleteApplicationAssignment', 'PutApplicationAssignmentConfiguration'],
+      ...['PutApplicationAccessScope', 'DeleteApplicationAccessScope'],
+      ...['PutApplicationAuthenticationMethod', 'DeleteApplicationAuthenticationMethod'],
+      ...['PutApplicationGrant', 'DeleteApplicationGrant', 'PutApplicationSessionConfiguration'],
+      ...['CreateApplicationInstance', 'DeleteApplicationInstance', 'CreateManagedApplicationInstance'],
+      ...['DeleteManagedApplicationInstance', 'UpdateManagedApplicationInstanceStatus'],
+      ...['CreateApplicationInstanceCertificate', 'DeleteApplicationInstanceCertificate'],
+      ...['ImportApplicationInstanceServiceProviderMetadata', 'UpdateApplicationInstanceActiveCertificate'],
+      ...['UpdateApplicationInstanceDisplayData', 'UpdateApplicationInstanceResponseConfiguration'],
+      ...['UpdateApplicationInstanceResponseSchemaConfiguration', 'UpdateApplicationInstanceSecurityConfiguration'],
+      ...['UpdateApplicationInstanceServiceProviderConfiguration', 'UpdateApplicationInstanceStatus'],
+      ...['TagResource', 'UntagResource'],
+    ]
+    // The access portal's and its device sign-in's own calls, which every `aws sso login` and logout
+    // makes: matching them would wake someone at every helper run.
+    const portal = ['Authenticate', 'Federate', 'Logout', 'CreateToken', 'RegisterClient', 'StartDeviceAuthorization']
+    const [, filter] = one(foundation, 'AWS::Logs::MetricFilter', 'FilterName', 'hearth-sec-a04-identity-a')
+    const pattern = String(filter.Properties?.FilterPattern)
+    expect(pattern.startsWith('{ ($.eventSource = "sso.amazonaws.com") && ($.readOnly IS FALSE) && (')).toBe(true)
+    // The clause's event names, each a CloudWatch Logs wildcard (`*` any run of characters).
+    const names = [...pattern.matchAll(/\$\.eventName = "([^"]+)"/g)].map(([, name]) => name ?? '')
+    const matches = (eventName: string) =>
+      names.some(name =>
+        new RegExp(
+          `^${name
+            .split('*')
+            .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+            .join('.*')}$`,
+        ).test(eventName),
+      )
+    expect(writes.filter(name => !matches(name))).toEqual([])
+    expect(portal.filter(matches)).toEqual([])
+  })
+
+  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes (A11 on five in fifteen), and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm', () => {
     const sentinel = lz.stacks.foundation?.node.tryFindChild('Sentinel')
     expect(sentinel?.node.children.map(child => child.node.id)).toEqual(ASSURED.map(alarm => alarm.metric))
     // Each alarm's construct holds its filter (or its lettered filters) and the alarm.
@@ -341,6 +396,7 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
       ASSURED.map(alarm => ({
         AlarmName: `hearth-sec-${alarm.name}`,
         AlarmActions: [{ Ref: topic }],
+        OKActions: [{ Ref: topic }],
         ComparisonOperator: 'GreaterThanOrEqualToThreshold',
         EvaluationPeriods: 1,
         MetricName: alarm.metric,

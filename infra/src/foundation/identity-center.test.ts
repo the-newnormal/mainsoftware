@@ -164,6 +164,18 @@ const SETS: Record<string, { session: string; managed: string[]; inline: unknown
         Action: ['guardduty:Get*', 'guardduty:List*', 'access-analyzer:Get*', 'access-analyzer:List*'],
         Resource: '*',
       },
+      // aws cloudtrail validate-logs, for an organisation trail (TRUST-02).
+      {
+        Sid: 'ValidateTrail',
+        Effect: 'Allow',
+        Action: [
+          'cloudtrail:DescribeTrails',
+          'cloudtrail:GetTrail',
+          'cloudtrail:ListPublicKeys',
+          'organizations:DescribeOrganization',
+        ],
+        Resource: '*',
+      },
       { Sid: 'NeverTheArchive', Effect: 'Deny', Action: 's3:*', Resource: [archiveBucket, `${archiveBucket}/*`] },
       {
         Sid: 'NeverTheArchiveKey',

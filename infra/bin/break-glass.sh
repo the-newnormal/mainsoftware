@@ -22,10 +22,14 @@
 # It refuses a coding agent or CI before anything else, and refuses unless standard input and output
 # are a terminal. It works only in its own folder ($HEARTH_BREAK_GLASS_HOME, else
 # ~/.hearth-break-glass, mode 700), whose AWS config holds the hearth-<env>-entry profiles, never the
-# person's own, and it signs out of the access portal whatever way it ends. Credentials reach a command
-# only as bash prefix assignments, never as an argument, and are never printed or written, the console
-# exchange included. It never prints the person's sign-in name, an account id, the bucket's name or an
-# input it refused.
+# person's own, one run at a time (a second session open at once needs a folder of its own), and it
+# signs out of the access portal whatever way it ends. It drops every AWS variable it inherits, moves
+# HOME to that folder, and drops curl's config folders, a TLS key log and every CA override (a CA
+# bundle comes only from the entry profile's ca_bundle, which every command it runs then takes), and
+# its curl reads no config file (-q); it keeps the person's PATH and proxy settings. Credentials reach a
+# command only as bash prefix assignments, never as an argument, and are never printed or written, the
+# console exchange included. It never prints the person's sign-in name, an account id, the bucket's
+# name or an input it refused.
 #
 # No test runs it: IG-09 (scripts/guards/infra.test.ts) reads its text, parses it with bash -n and runs
 # only its pure functions, extracted. It runs top to bottom, each function defined before its first
@@ -193,6 +197,14 @@ for inherited in $(compgen -e); do
     AWS_*) unset "$inherited" ;;
   esac
 done
+# And whatever else would write the session down or change whom it trusts: curl's config folders
+# (its run also takes -q, so it reads no config file at all, not even one in the password file's
+# home), a TLS key log, which the CLI and curl can both write, and the CA overrides the CLI
+# (REQUESTS_CA_BUNDLE) and curl honour. Behind TLS inspection the CLI's CA comes only from the entry
+# profile's ca_bundle (below), and curl's from its own default store. The proxy variables
+# (HTTPS_PROXY, NO_PROXY and the like) stay, for a network that needs one: TLS still runs end to end
+# through a proxy, and the certificate is still checked.
+unset CURL_HOME XDG_CONFIG_HOME SSLKEYLOGFILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR
 export HOME="$BG_HOME"
 export AWS_CONFIG_FILE="$BG_HOME/.aws/config"
 export AWS_SHARED_CREDENTIALS_FILE=/dev/null
@@ -214,6 +226,17 @@ if [ "$(aws configure get cli_history 2>/dev/null || true)" = enabled ] ||
   [ "$(aws configure get cli_history --profile "$profile" 2>/dev/null || true)" = enabled ]; then
   refuse "refused: the AWS CLI's history is on in its folder's config; turn cli_history off there"
 fi
+# Behind TLS inspection the entry profile names the inspecting CA's bundle (ca_bundle), and every
+# command after the sign-in takes that same bundle as AWS_CA_BUNDLE: those that run with the session
+# and no profile (the parameter read, the entries, the shell's own commands) and the CDK CLI, which
+# reads no profile's. It must be a regular file it can read, or the run is refused.
+ca_bundle="$(aws configure get ca_bundle --profile "$profile" 2>/dev/null || true)"
+if [ -n "$ca_bundle" ]; then
+  if ! [ -f "$ca_bundle" ] || ! [ -r "$ca_bundle" ]; then
+    refuse "refused: the entry profile's ca_bundle isn't a file it can read; give its full path"
+  fi
+  export AWS_CA_BUNDLE="$ca_bundle"
+fi
 
 # --- What it does with the role --------------------------------------------------------------------
 
@@ -234,8 +257,24 @@ closed=no
 modes_json='[]'
 ids_json='{}'
 outcome=stopped
-entry_file="$BG_HOME/entry.json"
-rc="$BG_HOME/shell.rc"
+# The run's own folder inside the helper's, which is also its lock (hold_folder), holding the entry
+# being written and the shell's rc file, so no other run reads, overwrites or removes them.
+run_dir="$BG_HOME/run.lock"
+entry_file="$run_dir/entry.json"
+rc="$run_dir/shell.rc"
+
+# One run at a time in a folder: the access portal's token is cached there, and every run's sign-out
+# ends every token there, so a second session open at the same time (log-archive triage during a prod
+# session, say) takes a folder of its own, set up the same way (docs/runbooks/break-glass.md). mkdir
+# makes the lock whole or not at all; it holds this run's process id, and only this run's handler
+# removes it, after its sign-out. It is taken just before the trap is set, so a refusal here, before
+# the trap, leaves another run's lock and sign-in alone.
+hold_folder() {
+  if ! mkdir "$run_dir" 2>/dev/null; then
+    refuse 'refused: another break-glass run holds this folder; finish it first, or give a session open at the same time a folder of its own (HEARTH_BREAK_GLASS_HOME, docs/runbooks/break-glass.md); if no run is going, one was stopped before its clean-up: remove run.lock in the folder'
+  fi
+  printf '%s\n' "$$" >"$run_dir/pid"
+}
 
 # The runbook the session follows, from a numbered menu defaulted from the reason.
 choose_runbook() {
@@ -470,12 +509,13 @@ amend_session() {
 # A console sign-in link for this session, on request: the session goes to the sign-in endpoint in a
 # POST body read from standard input, never in an argument or a URL, and the link printed holds only
 # the sign-in token, good for 15 minutes, which reaches jq through its environment, never its
-# arguments, since it signs in as the role.
+# arguments, since it signs in as the role. curl's -q, first, keeps any .curlrc from tracing the POST
+# body or turning the certificate check off.
 open_console() {
   local token destination
   if ! read -r token < <(AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" \
     jq -cjn '{sessionId: env.AWS_ACCESS_KEY_ID, sessionKey: env.AWS_SECRET_ACCESS_KEY, sessionToken: env.AWS_SESSION_TOKEN}' |
-    curl -fsS --proto '=https' --tlsv1.2 --data-urlencode 'Action=getSigninToken' --data-urlencode 'Session@-' \
+    curl -q -fsS --proto '=https' --tlsv1.2 --data-urlencode 'Action=getSigninToken' --data-urlencode 'Session@-' \
       https://signin.aws.amazon.com/federation 2>/dev/null | jq -r '.SigninToken // empty'); then
     printf "break-glass: the console link wasn't made; the shell still works\n"
     return 0
@@ -516,12 +556,14 @@ RC
 }
 
 # However it ends: a close entry, unprompted (stopped, with no modes or ids), if the session opened
-# and none was written; the credentials dropped, its files removed, and the access portal signed out.
+# and none was written; the credentials dropped, the access portal signed out, and then the run's
+# folder and lock removed, while it still holds this run's process id (a person may have cleared a
+# lock by hand, and another run taken the folder since).
 # Once it has begun, a second Ctrl-C, a hang-up, a TERM or a Ctrl-\ is ignored, by this script and by
 # the commands it runs, which inherit that, so nothing can stop the close or the sign-out part way;
 # and with errexit off, a print to a terminal that has gone doesn't end it early either.
 on_exit() {
-  local status=$?
+  local status=$? holder=''
   trap '' INT TERM HUP QUIT
   trap - EXIT
   set +e
@@ -531,14 +573,16 @@ on_exit() {
   ak=''
   sk=''
   st=''
-  rm -f "$entry_file" "$rc"
   aws sso logout >/dev/null 2>&1 || true
+  read -r holder 2>/dev/null <"$run_dir/pid"
+  if [ "$holder" = "$$" ]; then rm -f "$entry_file" "$rc" "$run_dir/pid" && rmdir "$run_dir"; fi
   exit "$status"
 }
 
 # --- The session -----------------------------------------------------------------------------------
 
 if [ -z "$amend" ]; then choose_runbook; fi
+hold_folder
 trap 'on_exit' EXIT INT TERM HUP
 aws sso login --profile "$profile"
 

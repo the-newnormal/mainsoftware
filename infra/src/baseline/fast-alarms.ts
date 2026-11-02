@@ -31,14 +31,20 @@ export interface FastAlarmsProps {
 const CLOUDTRAIL = 'AWS API Call via CloudTrail'
 const CLOUDTRAIL_STATE = 'ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS'
 
-// What an AssumeRole alarm says: the alarm, the account, the call, the session's source identity (the
-// operator's sign-in name), the reason tag and any error code.
+// What an AssumeRole alarm says: the alarm, the account, the call and its caller, the source identity
+// the call sets (the operator's sign-in name, on the hop into hearth-break-glass) and the one the
+// caller's session already carries (on a chained hop, as a cdk deploy's into a hearthbase role, which
+// sends no source identity or tags of its own, so A15 names the person only there and never the
+// reason, which the A1 for the same session holds), the reason tag and any error code. An input
+// transformer can't fall back from one path to another, so both identities are carried.
 const assumeInput = (alarm: string) =>
   events.RuleTargetInput.fromObject({
     alarm,
     account: events.EventField.account,
     action: events.EventField.fromPath('$.detail.eventName'),
+    caller: events.EventField.fromPath('$.detail.userIdentity.arn'),
     sourceIdentity: events.EventField.fromPath('$.detail.requestParameters.sourceIdentity'),
+    inheritedSourceIdentity: events.EventField.fromPath('$.detail.userIdentity.sessionContext.sourceIdentity'),
     reason: events.EventField.fromPath('$.detail.requestParameters.tags[0].value'),
     error: events.EventField.fromPath('$.detail.errorCode'),
   })

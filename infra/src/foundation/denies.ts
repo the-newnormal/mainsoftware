@@ -68,6 +68,15 @@ export const LOG_BUCKET_DENY_ACTIONS: readonly string[] = [
 export const LOG_BUCKET_PATTERNS = (): string[] =>
   Object.values(LOG_BUCKET_PREFIX).flatMap(prefix => bucketArns(`${prefix}*`))
 
+// hearthbase's staging bucket in any account, and its objects, as the bootstrap template names it
+// (`cdk-<qualifier>-assets-<account>-<region>`): it holds each Baseline's template, which CloudFormation
+// runs as the hearthbase execution role (C11-D26).
+export const BASE_ASSETS = (): string[] => bucketArns(`cdk-${QUALIFIER.base}-assets-*`)
+
+// Every write to a bucket or its objects, its configuration included, written as wildcards LCG-02
+// doesn't read as S3 calls (C11-D08).
+export const BUCKET_WRITE_ACTIONS: readonly string[] = ['s3:Put*', 's3:Delete*', 's3:Replicate*', 's3:Restore*']
+
 // Long-lived credentials, which nobody makes: people sign in through Identity Center (C11-D09).
 export const NO_LONG_LIVED_CREDENTIALS: readonly string[] = [
   'iam:CreateUser',
@@ -82,10 +91,17 @@ export const NO_LONG_LIVED_CREDENTIALS: readonly string[] = [
 // aliases. A role trusting any of them would be a way in that no AssumeRole fence sees: the last three
 // assume it as a service principal, which the RCP's AssumeRole statement lets through (C11-D07,
 // TECH-SPEC T24 items 2 and 32). Hearth uses none of them, so Roles Anywhere is denied whole.
-export const NO_NEW_IDENTITY_PROVIDERS: readonly string[] = [
+// The OIDC provider writes stand apart because the Baseline makes one provider, GitHub's, through the
+// hearthbase execution role, which hearth-workload-fences-2 lets make or change an OIDC provider and
+// nothing else in these lists.
+export const OIDC_PROVIDER_WRITES: readonly string[] = [
   'iam:CreateOpenIDConnectProvider',
   'iam:AddClientIDToOpenIDConnectProvider',
   'iam:UpdateOpenIDConnectProviderThumbprint',
+]
+// Every other way in, which nothing Hearth deploys makes. Identity Center's own SAML provider in each
+// account is made by its service-linked role, which no SCP or boundary binds.
+export const NO_OTHER_WAYS_IN: readonly string[] = [
   'iam:CreateSAMLProvider',
   'iam:UpdateSAMLProvider',
   'cognito-identity:*',
@@ -95,6 +111,8 @@ export const NO_NEW_IDENTITY_PROVIDERS: readonly string[] = [
   'iot:CreateRoleAlias',
   'iot:UpdateRoleAlias',
 ]
+// Both, which hearth-boundary denies to every role it bounds.
+export const NO_NEW_IDENTITY_PROVIDERS: readonly string[] = [...OIDC_PROVIDER_WRITES, ...NO_OTHER_WAYS_IN]
 
 // Closing an account or taking it out of the organisation, which would lift every SCP from it and end
 // its content after the post-closure period (C11-D10, TECH-SPEC T24 item 3).
@@ -183,6 +201,9 @@ export const APP_EXEC = roleArn('*', APP_EXEC_ROLE)
 // `cdk deploy` (C11-D26).
 export const BASE_DEPLOY = roleArn('*', `cdk-${QUALIFIER.base}-deploy-role-*-${REGION}`)
 export const APP_DEPLOY = roleArn('*', `cdk-${QUALIFIER.app}-deploy-role-*-${REGION}`)
+// hearthbase's file-publishing role, the one that uploads each Baseline's template to hearthbase's
+// staging bucket in a `cdk deploy` (C11-D26).
+export const BASE_PUBLISH = roleArn('*', `cdk-${QUALIFIER.base}-file-publishing-role-*-${REGION}`)
 // The role Organizations makes in each member account (C11-D02).
 export const OAAR = roleArn('*', ROLE.oaar)
 export const BREAK_GLASS = roleArn('*', ROLE.breakGlass)

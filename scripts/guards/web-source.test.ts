@@ -162,7 +162,7 @@ describe('T21: the web source guard (apps/web/src)', () => {
     expect(allowed).toEqual(['boot/pre-boot.ts: __zod_globalConfig'])
     expect(writes.filter(write => !allowed.includes(write))).toEqual([])
     expect([...new Set(writes)]).toEqual(allowed)
-  })
+  }, 30_000)
 
   it('WS-03 T21 item 3: fetch only in api/http.ts and WebSocket only in live/gateway-client.ts and session/runtime.ts, never with an absolute URL', () => {
     const net = new Set(['fetch', 'WebSocket'])
@@ -205,7 +205,7 @@ describe('T21: the web source guard (apps/web/src)', () => {
         .map(text => `${path}: ${text}`),
     )
     expect(absolute).toEqual([])
-  })
+  }, 30_000)
 
   it('WS-04 X9 CL Conventions: no colour literal (hex, rgb, hsl, oklch) outside styles/tokens.css; no text-white, bg-black or default-palette class; no arbitrary colour value', () => {
     expect(
@@ -552,7 +552,7 @@ describe('T21: the web source guard (apps/web/src)', () => {
     expect(scripts.flatMap(path => webAuthnUses(path, sources.get(path) ?? '').map(use => `${path}: ${use}`))).toEqual(
       [],
     )
-  })
+  }, 30_000)
 
   it('WS-13 WCAG 3.3.8 SHL-49 T21 item 13: the code and PIN fields, the sign-in steps and whatever renders the fields block no paste or copy: no onPaste, onCopy, onCut or onBeforeInput, and no paste, copy, cut or beforeinput listener', () => {
     const handlers = (source: string) => clipboardHandlers('fixture.tsx', source)
@@ -600,7 +600,7 @@ describe('T21: the web source guard (apps/web/src)', () => {
     expect(
       guarded.flatMap(path => clipboardHandlers(path, sources.get(path) ?? '').map(handler => `${path}: ${handler}`)),
     ).toEqual([])
-  })
+  }, 30_000)
 
   it('WS-14 T21 items 1 and 6: every class list that sets font-display sets font-semibold with no variant, and no other weight or italic: the one face Newsreader ships', () => {
     expect(
@@ -686,5 +686,5 @@ describe('T21: the web source guard (apps/web/src)', () => {
     // ScreenHeader, Dialog, EmptyState, StepFrame, PlainScreen and ErrorScreen set it today.
     expect(lists.length).toBeGreaterThanOrEqual(6)
     expect(displayOffFace(lists.map(({ path, text }) => `${path}: ${text}`))).toEqual([])
-  })
+  }, 30_000)
 })

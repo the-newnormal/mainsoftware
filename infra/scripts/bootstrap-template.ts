@@ -2,12 +2,15 @@
 // TECH-SPEC T24 item 11): the pinned CLI's own template with two changes that matter. Each of its
 // five roles gets an inline hearth-no-models policy denying every model action (models.ts), so the
 // roles cdk deploy assumes can never call a model, whatever the managed policies they're given
-// allow. And the deploy and file-publishing roles' same-account trust also allows
-// sts:SetSourceIdentity beside sts:TagSession: a break-glass session always carries a source
-// identity, which persists into every role it chains into, and STS refuses that chain unless the
-// target's trust allows the action, so without it `cdk deploy` under an lz:pr- reason couldn't take
-// the roles it needs (C11-D11, C11-D27). The only other change is BootstrapVariant's default, so a
-// stock `cdk bootstrap` refuses to replace a Hearth toolkit stack without --force.
+// allow. And the deploy and file-publishing roles' trust gains one statement, allowing
+// sts:SetSourceIdentity to the account's hearth-break-glass role alone: a break-glass session always
+// carries a source identity, which persists into every role it chains into, and STS refuses that
+// chain unless the target's trust allows the action, so without it `cdk deploy` under an lz:pr-
+// reason couldn't take the roles it needs (C11-D11, C11-D27). Bound to that role, whose own trust
+// sets the identity to the person's sign-in name and which STS never lets a chain change, no other
+// principal in the account can stamp a name of its choosing on these roles' sessions. The only other
+// change is BootstrapVariant's default, so a stock `cdk bootstrap` refuses to replace a Hearth toolkit
+// stack without --force.
 //
 // It reads the CLI's YAML through aws-cdk-lib's CfnInclude, which turns CloudFormation's short tags
 // into intrinsics, and throws on any YAML warning (an unknown tag would otherwise read as a plain
@@ -27,6 +30,7 @@ import { isDeepStrictEqual } from 'node:util'
 import * as cdk from 'aws-cdk-lib'
 import { CfnInclude } from 'aws-cdk-lib/cloudformation-include'
 import { modelDenyActions } from '../src/config/models.ts'
+import { iamVariable, ROLE } from '../src/config/names.ts'
 import { REGION } from '../src/config/profiles.ts'
 
 // A CloudFormation template as JSON.
@@ -73,12 +77,27 @@ export const BOOTSTRAP_ROLES = [
 export const EXAMPLE_BOUNDARY = 'CdkBoostrapPermissionsBoundaryPolicy'
 
 // The roles a break-glass session chains into under an lz:pr- reason (infra/src/baseline/break-glass.ts,
-// its LandingZone statement), whose same-account trust statement for sts:TagSession, exactly as the
-// stock template writes it, also gets sts:SetSourceIdentity. The lookup and image-publishing roles,
-// which break-glass never takes, and every cross-account statement stay as they are.
+// its LandingZone statement), whose trust gains BREAK_GLASS_SOURCE_IDENTITY at its end. The generator
+// was written for their stock trust, which holds one same-account sts:TagSession statement exactly
+// as below and nothing naming sts:SetSourceIdentity; that statement stays as the CLI ships it, since
+// widening it would let anyone in the account set any source identity. The lookup and
+// image-publishing roles, which break-glass never takes, and every cross-account statement stay as
+// they are.
 export const SOURCE_IDENTITY_ROLES = ['FilePublishingRole', 'DeploymentActionRole'] as const
 const STOCK_TAG_SESSION = { Action: 'sts:TagSession', Effect: 'Allow', Principal: { AWS: { Ref: 'AWS::AccountId' } } }
-export const SOURCE_IDENTITY_ACTIONS = ['sts:TagSession', 'sts:SetSourceIdentity'] as const
+export const BREAK_GLASS_SOURCE_IDENTITY = {
+  Sid: 'HearthBreakGlassSourceIdentity',
+  Action: 'sts:SetSourceIdentity',
+  Effect: 'Allow',
+  Principal: { AWS: { Ref: 'AWS::AccountId' } },
+  Condition: {
+    ArnEquals: {
+      'aws:PrincipalArn': {
+        'Fn::Sub': `arn:${iamVariable('AWS::Partition')}:iam::${iamVariable('AWS::AccountId')}:role/${ROLE.breakGlass}`,
+      },
+    },
+  },
+} as const
 
 export const NO_MODELS_POLICY = 'hearth-no-models'
 export const NO_MODELS_SID = 'HearthNoModels'
@@ -143,8 +162,8 @@ function noModelsPolicy(): Record<string, unknown> {
   }
 }
 
-// The CLI's template with the deny on every role, sts:SetSourceIdentity in the two roles' same-account
-// trust and the variant's default changed. It refuses, naming
+// The CLI's template with the deny on every role, the break-glass statement in the two roles' trust
+// and the variant's default changed. It refuses, naming
 // what changed, anything it wasn't written for, so a CLI upgrade that moves the template is read by a
 // person before it is deployed.
 export function withModelDeny(cli: CfnTemplate): CfnTemplate {
@@ -184,7 +203,7 @@ export function withModelDeny(cli: CfnTemplate): CfnTemplate {
     }
     properties.Policies = [...policies, noModelsPolicy()]
   }
-  // The trust widened in place, only where the one stock same-account TagSession statement is found.
+  // The break-glass statement appended, only to a trust shaped as the stock template wrote it.
   for (const logicalId of SOURCE_IDENTITY_ROLES) {
     const resource = resources[logicalId]
     const properties = isObject(resource) && isObject(resource.Properties) ? resource.Properties : {}
@@ -198,7 +217,7 @@ export function withModelDeny(cli: CfnTemplate): CfnTemplate {
       )
       continue
     }
-    ;(matching[0] as Record<string, unknown>).Action = [...SOURCE_IDENTITY_ACTIONS]
+    statements.push(structuredClone(BREAK_GLASS_SOURCE_IDENTITY))
   }
   const outputs = isObject(template.Outputs) ? template.Outputs : {}
   const output = isObject(outputs.BootstrapVersion) ? outputs.BootstrapVersion.Value : undefined

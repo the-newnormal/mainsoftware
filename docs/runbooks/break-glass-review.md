@@ -20,7 +20,7 @@
 - An Owner with `HearthOrgAdmin`, for step 8.
 - The quarter's dates.
 - Read access to the repository's merged PRs and, from C0.11 PR 4, its deployment history.
-- The records of tier-2 changes the people who ran them kept for this review.
+- The records of tier-2 changes the people who ran them kept for this review, and the set-up's notes.
 
 ## Steps
 
@@ -30,9 +30,11 @@
    - `hearth/review/deploy-role-sessions`: the GitHub roles' sessions (`hearth-gh-deploy` and `hearth-gh-diff`), by account;
    - `hearth/review/root-and-assume-root`: any root activity and `AssumeRoot`;
    - `hearth/review/recovery-moves`: every account moved between OUs, with the ids of the OUs it left and joined, so the moves into and out of `Recovery` show by its id.
-2. In log-archive, list the quarter's break-glass entries (`aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/`), and read each one.
+2. In log-archive, list the quarter's break-glass entries (`aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/`), and read each one. The log bucket is `hearth-break-glass-log-` followed by log-archive's account id, which `aws sts get-caller-identity --query Account --output text` prints in your log-archive session. `<account>` is the account each session ran in, the `recipientAccountId` the first query prints for it; `aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/ --delimiter / --query 'CommonPrefixes[].Prefix'` lists every account's folder.
+   - If the set-up's notes record a trail copy removed after Foundation's failed first deploy (with its event count and times), list the trail bucket (`hearth-org-trail-` and the same id) for those days, under `AWSLogs/`, and check it holds log files for those times; if it doesn't, it is a finding.
+   - Validate the quarter's trail files against their signed digests, which shows a delivered file overwritten or deleted since. For each account (management and every member, by the ids the first query prints) and in each of ap-southeast-1 and us-east-1, where the trail delivers the global services' events: `aws cloudtrail validate-logs --trail-arn <the trail> --account-id <the account> --start-time <the quarter's first day, as 2026-07-01T00:00:00Z> --region <the Region>`. `aws cloudtrail describe-trails --region ap-southeast-1 --query 'trailList[].TrailARN' --output text` prints the trail, `hearth-org-trail`. Each run ends by counting the digest and log files it found valid; any `INVALID`, a missing file, or a gap it reports goes to [A suspected breach of personal data](breach.md), with `aws s3api list-object-versions --bucket <the trail bucket> --prefix <the key it names>` read for the keys it names. Record counts and results, never a key.
 3. For each break-glass session the first query lists, reconcile three sources: the trail's assumption, the entries, and the merged PRs (and, from C0.11 PR 4, the deploy history). Check:
-   - an open entry and a close entry exist, keyed by the session's name (`hearth-bg-` and its time);
+   - an open entry and a close entry exist, keyed by the session's name (`hearth-bg-` and its time), and each entry's `session` and `environment` match its key and the account its folder names;
    - the reason is a reference in its exact form, and holds no name;
    - the runbook named fits the reason;
    - a `case:` reference is a real request (the DPO confirms it);
@@ -55,17 +57,17 @@
 
 8. Check who holds what in Identity Center, which only an Owner can list:
    - While you watch, the Owner, with `HearthOrgAdmin`, shows each account's assignments (Identity Center's *AWS accounts*, or `aws sso-admin list-account-assignments` for each account and permission set) and each group's members (`aws identitystore list-group-memberships`). Every assignment is to a group, never to a person, and they are exactly the landing zone's: `HearthOrgAdmin`, `HearthSecurityReview` and `HearthBilling` in management; `HearthBreakGlassEntry` in prod, log-archive and non-prod; `HearthSecurityReview` in log-archive; and `HearthNonprodOperator` in non-prod only until it holds real data. So nobody but the on-call group holds anything in prod. Each group holds only the people who should be in it.
-   - Then run this query on the same log group over the quarter, which lists every change to Identity Center, and match each with its A4 email and with a reviewed PR or a person an Owner added or removed:
+   - Then run this query on the same log group over the quarter, which lists every change to Identity Center by the names A4 watches, and match each with the A4 episode that covers it (several changes in one episode share its ALARM and OK emails) and with a reviewed PR or a person an Owner added or removed:
 
    ```
    fields @timestamp, eventSource, eventName, errorCode
-   | filter (eventSource = "sso.amazonaws.com" and eventName like /PermissionSet|AccountAssignment|AccessControlAttribute|Instance$/) or eventSource = "identitystore.amazonaws.com" or eventSource = "sso-directory.amazonaws.com"
+   | filter (eventSource = "sso.amazonaws.com" and eventName like /PermissionSet|AccountAssignment|AccessControlAttribute|Instance$|Configuration$|Directory|Trust|Application|Profile|Region$|PermissionsPolicy$|^TagResource$|^UntagResource$|^StartSSO$/) or eventSource = "identitystore.amazonaws.com" or eventSource = "sso-directory.amazonaws.com"
    | filter eventName not like /^(Get|List|Describe|Search|IsMember)/
    | sort @timestamp desc
    ```
 
    Record counts and findings, never a name.
-9. With the Owner, check that the quarter's read-backs in management were done ([the set-up runbook's *The quarterly read-backs*](aws-account-set-up.md#the-quarterly-read-backs)): every `hearth-sec` alarm with its actions on and management's topic alone as its action, management's topic with one email subscription, confirmed and authenticated, and the trail query there showing no change to any other account's topic. A management session can silence those alarms before they email anyone, which only this read and the trail would show.
+9. With the Owner, check that the quarter's read-backs in management were done ([the set-up runbook's *The quarterly read-backs*](aws-account-set-up.md#the-quarterly-read-backs)): every `hearth-sec` alarm with its actions on and management's topic alone as its alarm action and as its OK action, management's topic with one email subscription, confirmed and authenticated, and the trail query there showing no change to any other account's topic. A management session can silence those alarms before they email anyone, which only this read and the trail would show.
 10. A use with no reason behind it goes to [A suspected breach of personal data](breach.md).
 
 ## Check it worked

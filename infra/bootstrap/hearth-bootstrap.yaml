@@ -233,10 +233,7 @@
               }
             },
             {
-              "Action": [
-                "sts:TagSession",
-                "sts:SetSourceIdentity"
-              ],
+              "Action": "sts:TagSession",
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -294,6 +291,23 @@
                   "Ref": "AWS::NoValue"
                 }
               ]
+            },
+            {
+              "Sid": "HearthBreakGlassSourceIdentity",
+              "Action": "sts:SetSourceIdentity",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Ref": "AWS::AccountId"
+                }
+              },
+              "Condition": {
+                "ArnEquals": {
+                  "aws:PrincipalArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hearth-break-glass"
+                  }
+                }
+              }
             }
           ]
         },
@@ -1513,10 +1527,7 @@
               }
             },
             {
-              "Action": [
-                "sts:TagSession",
-                "sts:SetSourceIdentity"
-              ],
+              "Action": "sts:TagSession",
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -1574,6 +1585,23 @@
                   "Ref": "AWS::NoValue"
                 }
               ]
+            },
+            {
+              "Sid": "HearthBreakGlassSourceIdentity",
+              "Action": "sts:SetSourceIdentity",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Ref": "AWS::AccountId"
+                }
+              },
+              "Condition": {
+                "ArnEquals": {
+                  "aws:PrincipalArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/hearth-break-glass"
+                  }
+                }
+              }
             }
           ]
         },

@@ -53,8 +53,11 @@ import { REGION } from '../config/profiles.ts'
 import {
   APP_DEPLOY,
   APP_EXEC,
+  BASE_ASSETS,
   BASE_DEPLOY,
+  BASE_PUBLISH,
   BREAK_GLASS,
+  BUCKET_WRITE_ACTIONS,
   CDK_HEARTH,
   CFN_WRITE_ACTIONS,
   document,
@@ -67,8 +70,9 @@ import {
   LOG_BUCKET_PATTERNS,
   modelDeny,
   NO_LONG_LIVED_CREDENTIALS,
-  NO_NEW_IDENTITY_PROVIDERS,
+  NO_OTHER_WAYS_IN,
   OAAR,
+  OIDC_PROVIDER_WRITES,
   ROUTE_OUT_ACTIONS,
   RULE9_EXEC,
   RULE9_ROLE_WRITES,
@@ -93,10 +97,21 @@ export const OPT_OUT_NAME = 'hearth-ai-opt-out'
 // Organizations' limits on one policy's content, in characters.
 export const POLICY_LIMIT = { serviceControl: 5_120, resourceControl: 5_120, aiOptOut: 2_500 } as const
 
+// The reads `aws cloudtrail validate-logs` makes in the Region whose digests it checks (the trail,
+// and CloudTrail's public keys for that Region), which the quarterly reviewer runs in log-archive for
+// ap-southeast-1 and for us-east-1, where a multi-Region trail delivers the global services' events
+// (C11-D17, TECH-SPEC T24 item 6). Reads only, and only in those two Regions.
+const TRAIL_VALIDATION_READS: readonly string[] = [
+  'cloudtrail:DescribeTrails',
+  'cloudtrail:GetTrail',
+  'cloudtrail:ListPublicKeys',
+]
+
 // The global services hearth-region leaves to any Region (C11-D05): IAM, Organizations, STS, Route 53,
 // CloudFront, Support, billing and cost, Health, the account's own settings and Identity Center, plus
 // the calls the CLI and the console route to us-east-1 (listing buckets, the account's public access
-// block, describing Regions), and GuardDuty, which the next statement fences to its two Regions.
+// block, describing Regions), and GuardDuty and the trail's validation reads, which the next two
+// statements fence to their two Regions.
 export const REGION_NOT_ACTIONS: readonly string[] = [
   'iam:*',
   'organizations:*',
@@ -121,6 +136,7 @@ export const REGION_NOT_ACTIONS: readonly string[] = [
   's3:GetAccountPublic*',
   'ec2:DescribeRegions',
   'guardduty:*',
+  ...TRAIL_VALIDATION_READS,
 ]
 
 // The Regions GuardDuty runs in: Hearth's, and us-east-1, where the global services' events arrive
@@ -353,8 +369,8 @@ function baseline2Statements(): IamStatement[] {
   ]
 }
 
-// hearth-region (Root): every call outside ap-southeast-1 but the global services', and GuardDuty in
-// its two Regions alone (C11-D05, C11-D20).
+// hearth-region (Root): every call outside ap-southeast-1 but the global services', and GuardDuty and
+// the trail's validation reads in their two Regions alone (C11-D05, C11-D17, C11-D20).
 function regionStatements(): IamStatement[] {
   return [
     {
@@ -368,6 +384,13 @@ function regionStatements(): IamStatement[] {
       Sid: 'GuardDutyAlsoUsEast1',
       Effect: 'Deny',
       Action: 'guardduty:*',
+      Resource: '*',
+      Condition: { StringNotEquals: { 'aws:RequestedRegion': GUARDDUTY_REGIONS } },
+    },
+    {
+      Sid: 'TrailReadsAlsoUsEast1',
+      Effect: 'Deny',
+      Action: TRAIL_VALIDATION_READS,
       Resource: '*',
       Condition: { StringNotEquals: { 'aws:RequestedRegion': GUARDDUTY_REGIONS } },
     },
@@ -401,8 +424,9 @@ function logProtectStatements(): IamStatement[] {
 }
 
 // hearth-workload-fences (Workloads OU): sessions into tasks and the bastion by break-glass alone,
-// the one-off tasks by the deploy role alone, and each database login by its own role alone
-// (C11-D05, C11-D12, C11-D78).
+// the one-off tasks by the deploy role alone, each database login by its own role alone, and
+// hearthbase's staging bucket written by its file-publishing role alone (C11-D05, C11-D12, C11-D26,
+// C11-D78).
 function workloadFenceStatements(): IamStatement[] {
   const logins = [
     DB_LOGIN.bootstrap,
@@ -471,6 +495,19 @@ function workloadFenceStatements(): IamStatement[] {
       Condition: exceptFor(TASK_ROLE('rule9')),
     },
     { Sid: 'DbNoOtherLogin', Effect: 'Deny', Action: 'rds-db:connect', NotResource: logins },
+    // CloudFormation runs each Baseline's template from hearthbase's staging bucket as the hearthbase
+    // execution role, and the CLI uploads a template only when no object holds its key (the template's
+    // hash), so whoever else could write the bucket would choose what the next lz:pr- deploy runs. Only
+    // hearthbase's file-publishing role, which break-glass alone may assume, writes the bucket or its
+    // objects, and nobody changes its configuration or policy (that role's own policy can't). A
+    // bootstrap upgrade runs as tier 2, in Recovery, where this doesn't bind.
+    {
+      Sid: 'HearthbaseAssetsOnlyItsPublisher',
+      Effect: 'Deny',
+      Action: BUCKET_WRITE_ACTIONS,
+      Resource: BASE_ASSETS(),
+      Condition: exceptFor(BASE_PUBLISH),
+    },
   ]
 }
 
@@ -478,9 +515,9 @@ function workloadFenceStatements(): IamStatement[] {
 // Rule 9's secrets to their own roles, hearthbase to break-glass under a landing-zone reason, hearthapp
 // to the deploy role, each execution role passed only by its own deploy role and hearthbase's stacks
 // changed only by its deploy role, Rule 9's roles unchangeable, every role hearthapp makes bounded, no
-// route out, and no new identity provider but GitHub's, made by hearthbase (C11-D05, C11-D07, C11-D12,
-// C11-D26, C11-D29). A workload role is created with its boundary, never given one later, since only
-// the hearthbase execution role may put a boundary on a role.
+// route out, no OIDC provider but by hearthbase, which makes GitHub's, and no other way in for anyone
+// (C11-D05, C11-D07, C11-D12, C11-D26, C11-D29). A workload role is created with its boundary, never
+// given one later, since only the hearthbase execution role may put a boundary on a role.
 function workloadFence2Statements(): IamStatement[] {
   const rule9Roles = [TASK_ROLE('rule9'), RULE9_EXEC]
   return [
@@ -584,14 +621,18 @@ function workloadFence2Statements(): IamStatement[] {
       Condition: exceptFor(EXEC),
     },
     { Sid: 'NoRouteOut', Effect: 'Deny', Action: ROUTE_OUT_ACTIONS, Resource: '*' },
-    // The Baseline, deployed by the hearthbase execution role, makes GitHub's provider.
+    // The Baseline, deployed by the hearthbase execution role, makes GitHub's provider, so that role
+    // alone may make or change an OIDC provider.
     {
-      Sid: 'NoNewIdentityProviders',
+      Sid: 'OidcProvidersOnlyHearthbase',
       Effect: 'Deny',
-      Action: NO_NEW_IDENTITY_PROVIDERS,
+      Action: OIDC_PROVIDER_WRITES,
       Resource: '*',
-      Condition: exceptFor(EXEC, OAAR),
+      Condition: exceptFor(EXEC),
     },
+    // Every other way in, for everyone, the hearthbase execution role included, so an lz:pr- deploy
+    // can't make one either.
+    { Sid: 'NoNewIdentityProviders', Effect: 'Deny', Action: NO_OTHER_WAYS_IN, Resource: '*' },
   ]
 }
 
@@ -716,7 +757,8 @@ export function guardrailPolicies(config: LandingZoneConfig, options: ResolvedLa
       id: 'WorkloadFences',
       name: SCP_NAMES.workloadFences,
       type: scp,
-      description: 'Sessions, the bastion, one-off tasks and database logins (C11-D05, C11-D12, C11-D78)',
+      description:
+        "Sessions, the bastion, one-off tasks, database logins and hearthbase's staging bucket (C11-D05, C11-D12, C11-D26, C11-D78)",
       document: document(workloadFenceStatements()),
       targets: [workloads],
     },

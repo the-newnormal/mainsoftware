@@ -1,24 +1,29 @@
 // The assured alarms (C11-D16), in Hearth-Foundation: metric filters on the organisation trail's
 // CloudWatch copy (org-trail.ts) and one alarm each, emailing management's hearth-ops-alerts topic.
 // They see every account's calls, a member account's fast rule or not, so they are the path that holds
-// when a fast rule's delivery fails (TECH-SPEC T24 item 5). They can't report tampering with
-// themselves from inside management, which no guardrail binds: a HearthOrgAdmin session or
-// management's root can turn off the alarms' actions, delete them, or unsubscribe or delete the topic
-// before the copy receives those calls, minutes after they are made, so A6, and A3 for the session
-// itself, may then email nobody. The trail's files in log-archive, under Object Lock, still record
-// those calls for the quarterly review. The alarms:
+// when a fast rule's delivery fails (TECH-SPEC T24 item 5). An alarm emails as it enters ALARM and
+// again as it returns to OK, never per call: a matching call while it is already in ALARM (a prod
+// release's later stacks, a Baseline deploy's other writes, the Owner's own triage session) emails
+// nobody, so triage reads every call between the two emails (the security-alerts runbook). They can't
+// report tampering with themselves from inside management, which no guardrail binds: a HearthOrgAdmin
+// session or management's root can turn off the alarms' actions, delete them, or unsubscribe or delete
+// the topic before the copy receives those calls, minutes after they are made, so A6, and A3 for the
+// session itself, may then email nobody. The trail's files in log-archive, under Object Lock, still
+// record those calls for the quarterly review. The alarms:
 // - A1 break-glass assumed, refused attempts included (C11-D11);
 // - A2 a root sign-in or action, or a centralised root session;
 // - A3 an administrator session: HearthOrgAdmin, the first deploys' HearthSetUp, or
 //   OrganizationAccountAccessRole;
 // - A4 Identity Center changed: permission sets, assignments, the attribute for access control, the
-//   instance, the identity store or the directory;
+//   instance and its sign-in settings, the identity source and its MFA rule, trusts and trusted token
+//   issuers, applications, profiles, Regions, tags, the identity store or the directory;
 // - A5 any write to Organizations;
 // - A6 tampering: the audit services' writes; long-lived credentials, a new or changed identity
 //   provider or Cognito identity pool, a deleted flow log; the fast alarms' rules, topics and log
 //   groups; the log-archive keys' administration; the log buckets' configuration and their objects'
-//   deletes and lock changes, allowed or denied; the alarms themselves; and IAM writes to the
-//   break-glass and GitHub roles, the boundary and GitHub's provider;
+//   deletes and lock changes, allowed or denied; the alarms themselves, but a PutMetricAlarm
+//   CloudFormation makes; and IAM writes to the break-glass and GitHub roles, the boundary and
+//   GitHub's provider;
 // - A7 a CloudFormation change in prod, whatever the stack; A8 a session into prod's tasks;
 // - A11 five failed sign-ins in fifteen minutes; A15 a hearthbase role assumed (C11-D26).
 // A9, A10 and A14 are fast rules in log-archive and the Baselines; A12 is the budgets (budgets.ts).
@@ -86,6 +91,37 @@ const S3_OBJECT_CHANGES = [
 // The log-archive buckets, by name pattern (their names end in log-archive's account id).
 const LOG_BUCKETS = Object.values(LOG_BUCKET_PREFIX).map(prefix => `${prefix}*`)
 
+// The Identity Center writes A4 watches, by the event name CloudTrail records (CloudWatch Logs'
+// wildcards): every write, permissions change and tag IAM names for sso, under either casing of the
+// instance's settings (UpdateSSOConfiguration, UpdateSsoConfiguration), but never a call the access
+// portal or its device sign-in makes (Authenticate, Federate, Logout, CreateToken, RegisterClient,
+// StartDeviceAuthorization), which every `aws sso login` and logout would otherwise raise. Hence a
+// name list rather than every sso write; the test holds it to IAM's list. Which event a hand change of
+// the MFA rule or the portal's session records is proved at set-up (the set-up runbook).
+const IDENTITY_CENTER_WRITES = [
+  '*PermissionSet*',
+  '*AccountAssignment*',
+  '*AccessControlAttribute*',
+  // the instance, and applications' instances
+  '*Instance',
+  // the instance's settings, and applications'
+  '*Configuration',
+  // the identity source, and the directory's MFA device management
+  '*Directory*',
+  // trusts and trusted token issuers
+  '*Trust*',
+  // applications, their assignments, grants, scopes and authentication methods
+  '*Application*',
+  '*Profile*',
+  // the instance's Regions (AddRegion, RemoveRegion)
+  '*Region',
+  // the older console's permissions policy
+  '*PermissionsPolicy',
+  'TagResource',
+  'UntagResource',
+  'StartSSO',
+]
+
 // The key administration A6 watches in the log-archive account (C11-D05, C11-D17).
 const KEY_ADMINISTRATION = [
   'PutKeyPolicy',
@@ -137,11 +173,7 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
       metric: 'A04Identity',
       name: 'a04-identity',
       patterns: [
-        `{ ${all(
-          is('eventSource', 'sso.amazonaws.com'),
-          WRITE,
-          oneOf('eventName', ['*PermissionSet*', '*AccountAssignment*', '*AccessControlAttribute*', '*Instance']),
-        )} }`,
+        `{ ${all(is('eventSource', 'sso.amazonaws.com'), WRITE, oneOf('eventName', IDENTITY_CENTER_WRITES))} }`,
         `{ ${all(is('eventSource', 'identitystore.amazonaws.com'), WRITE)} }`,
         `{ ${all(is('eventSource', 'sso-directory.amazonaws.com'), WRITE)} }`,
       ],
@@ -239,14 +271,20 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           WRITE,
           oneOf('requestParameters.bucketName', LOG_BUCKETS),
         )} }`,
-        // (h) the alarms themselves, but CloudFormation's own updates of them
+        // (h) the alarms themselves: any delete (CloudFormation's too, when a reviewed change renames
+        // or removes an alarm), actions turned off, a state set, and a PutMetricAlarm by anyone but
+        // CloudFormation (whichever stack it deploys), so another service's call is seen. `!=` never
+        // matches an absent field, hence both terms.
         `{ ${all(
           is('eventSource', 'monitoring.amazonaws.com'),
           any(
             is('eventName', 'DeleteAlarms'),
             is('eventName', 'DisableAlarmActions'),
             is('eventName', 'SetAlarmState'),
-            all(is('eventName', 'PutMetricAlarm'), '$.userIdentity.invokedBy NOT EXISTS'),
+            all(
+              is('eventName', 'PutMetricAlarm'),
+              any('$.userIdentity.invokedBy NOT EXISTS', '$.userIdentity.invokedBy != "cloudformation.amazonaws.com"'),
+            ),
           ),
         )} }`,
         // (i) the landing zone's roles, its boundary and GitHub's provider
@@ -361,7 +399,10 @@ export class Sentinel extends Construct {
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       })
-      alarm.addAlarmAction(new cwActions.SnsAction(props.alerts.topic))
+      // Into ALARM and back to OK, so each episode's span reaches the mailbox (above).
+      const action = new cwActions.SnsAction(props.alerts.topic)
+      alarm.addAlarmAction(action)
+      alarm.addOkAction(action)
       alarm.node.addDependency(props.alerts.policyDependable)
       return alarm
     })

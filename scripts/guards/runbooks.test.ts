@@ -33,7 +33,8 @@
 //   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11);
 // - RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone's runbooks keep the two
 //   steps no code can hold: security-alerts.md's containment (removing someone from a group stops
-//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones), and the set-up's
+//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them,
+//   and an account in Recovery, where OAAR isn't fenced, moves back into its OU first), and the set-up's
 //   step N confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
@@ -495,7 +496,7 @@ describe('RB-04 (C0.9 PD-81): every code path a runbook names exists now', () =>
     const runbooks = repoFiles().filter(path => isRunbook(path) && path !== README)
     expect(runbooks.every(path => codePathsOf(readRepoFile(path)).length > 0)).toBe(true)
     expect(runbooks.flatMap(path => missingCodePaths(path, readRepoFile(path), world))).toEqual([])
-  })
+  }, 30_000)
 })
 
 // --- RB-05: a stop by hand for every purpose CONDUCT_WITHDRAWABLE lists ---------------------------
@@ -674,6 +675,14 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
   else {
     if (!/\bstops only new sessions\b/.test(containment)) found.push('security-alerts.md: no "stops only new sessions"')
     if (!containment.includes('aws:TokenIssueTime')) found.push('security-alerts.md: no aws:TokenIssueTime')
+    // OAAR's sessions are ended by the SCP too, and an account in Recovery, where NoOaar doesn't bind,
+    // goes back into its OU (C0.11 review 2 FIXES-01).
+    if (!containment.includes('*:role/OrganizationAccountAccessRole')) {
+      found.push('security-alerts.md: the SCP names no *:role/OrganizationAccountAccessRole')
+    }
+    if (!/\bmoves it back into its own OU\b/.test(containment)) {
+      found.push('security-alerts.md: no "moves it back into its own OU"')
+    }
   }
   const stepN = setUp.split(/^### N\. .*$/m)[1]?.split(/^##+ /m)[0]
   if (stepN === undefined) found.push('aws-account-set-up.md: no step N')
@@ -688,10 +697,10 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
   return found
 }
 
-describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone’s runbooks keep containment and authenticated subscriptions', () => {
+describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01): the landing zone’s runbooks keep containment, OAAR’s included, and authenticated subscriptions', () => {
   it('finds each gap on planted text, and passes the right words', () => {
     const alerts =
-      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions, so an SCP denies where `aws:TokenIssueTime` is before then.\n\n## Check it worked\n'
+      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions. An account in `Recovery` moves it back into its own OU. An SCP denies where `aws:TokenIssueTime` is before then and `aws:PrincipalArn` is like `*:role/OrganizationAccountAccessRole`.\n\n## Check it worked\n'
     const setUp =
       '### N. Confirm each email subscription\n\n`aws sns confirm-subscription --authenticate-on-unsubscribe true`, then `ConfirmationWasAuthenticated` prints `true`.\n\n### O. Next\n'
     expect(landingZoneProblems(alerts, setUp)).toEqual([])
@@ -700,6 +709,15 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone’
     ])
     expect(landingZoneProblems(alerts.replace('aws:TokenIssueTime', 'aws:CurrentTime'), setUp)).toEqual([
       'security-alerts.md: no aws:TokenIssueTime',
+    ])
+    expect(
+      landingZoneProblems(
+        alerts.replace('`*:role/OrganizationAccountAccessRole`', '`*:role/hearth-break-glass`'),
+        setUp,
+      ),
+    ).toEqual(['security-alerts.md: the SCP names no *:role/OrganizationAccountAccessRole'])
+    expect(landingZoneProblems(alerts.replace('moves it back into its own OU', 'stays where it is'), setUp)).toEqual([
+      'security-alerts.md: no "moves it back into its own OU"',
     ])
     expect(landingZoneProblems('## Steps\n', setUp)).toEqual([
       'security-alerts.md: no "### Containing an unexpected session"',

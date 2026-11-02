@@ -4,8 +4,8 @@
 //   name as source identity, one reason tag of a reason's shape) and its scope, each grant under the
 //   reason it needs: the bootstrap login and input under bootstrap: or recover:, the read-only login
 //   under case:, the hearthbase roles under lz:pr- alone, each taking the session's source identity
-//   on both sides, its grant and the role's trust in the committed bootstrap template; and every deny
-//   unconditional;
+//   on both sides, its grant and the role's trust in the committed bootstrap template, which takes one
+//   from hearth-break-glass alone; and every deny unconditional;
 // - IAC-10: GitHub's provider and roles, each trust exactly one environment's subject of the deploy
 //   workflow on main; hearth-gh-deploy stops and tags only its own one-off tasks and assumes only the
 //   two hearthapp roles; hearth-gh-diff reads the prod stacks and nothing else; hearth-boundary's
@@ -409,6 +409,7 @@ interface Statement {
   Principal?: unknown
   Action?: string | string[]
   Resource?: string | string[]
+  Condition?: unknown
 }
 const listOf = (value: string | string[] | undefined): string[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value]
@@ -417,8 +418,12 @@ const SAME_ACCOUNT = { AWS: { Ref: 'AWS::AccountId' } }
 // C11-D11 and C11-D27: a break-glass session always carries a source identity (its trust requires
 // one), and STS carries it into any role the session assumes, refusing the assumption unless both
 // sides allow sts:SetSourceIdentity: the grant, and the target role's trust, here the bootstrap
-// template's role whose name renders, for hearthbase in this account, to the granted ARN. The roles
-// reached, by logical id, and each side's gap as "<Sid or logical id>: <what is missing>".
+// template's role whose name renders, for hearthbase in this account, to the granted ARN. A trust
+// statement admits the chain only when it allows the action to the account under exactly one
+// condition, ArnEquals on aws:PrincipalArn, rendering for this account to its own hearth-break-glass,
+// whose trust sets the identity to the person's sign-in name: one with no condition would let anyone
+// in the account set any source identity on these roles' sessions. The roles reached, by logical id,
+// and each side's gap as "<Sid or logical id>: <what is missing>".
 function chain(statements: Statement[], template: Template, account: string) {
   const roles = resourcesIn(template).filter(([, r]) => r.Type === 'AWS::IAM::Role')
   const named = (name: string) =>
@@ -448,16 +453,36 @@ function chain(statements: Statement[], template: Template, account: string) {
       const [logicalId, role] = found
       reached.push(logicalId)
       const trust = (role.Properties?.AssumeRolePolicyDocument as { Statement?: Statement[] } | undefined)?.Statement
-      const admits = (trust ?? []).some(
+      const allows = (trust ?? []).filter(
         s =>
           s.Effect === 'Allow' &&
           JSON.stringify(s.Principal) === JSON.stringify(SAME_ACCOUNT) &&
           listOf(s.Action).includes('sts:SetSourceIdentity'),
       )
-      if (!admits) gaps.push(`${logicalId}: its trust allows the account no sts:SetSourceIdentity`)
+      if (allows.length === 0) {
+        gaps.push(`${logicalId}: its trust allows the account no sts:SetSourceIdentity`)
+      } else if (!allows.every(s => breakGlassOnly(s.Condition, account))) {
+        gaps.push(`${logicalId}: its trust lets anyone in the account set a source identity`)
+      }
     }
   }
   return { reached, gaps }
+}
+
+// Whether a trust statement's condition is exactly ArnEquals on aws:PrincipalArn, naming, rendered for
+// this account, its own hearth-break-glass and nothing else.
+function breakGlassOnly(condition: unknown, account: string): boolean {
+  const keys = (value: unknown) => (typeof value === 'object' && value !== null ? Object.keys(value) : [])
+  const arnEquals = (condition as { ArnEquals?: Record<string, unknown> } | undefined)?.ArnEquals
+  const sub = (arnEquals?.['aws:PrincipalArn'] as { 'Fn::Sub'?: unknown } | undefined)?.['Fn::Sub']
+  return (
+    JSON.stringify(keys(condition)) === JSON.stringify(['ArnEquals']) &&
+    JSON.stringify(keys(arnEquals)) === JSON.stringify(['aws:PrincipalArn']) &&
+    JSON.stringify(keys(arnEquals?.['aws:PrincipalArn'])) === JSON.stringify(['Fn::Sub']) &&
+    typeof sub === 'string' &&
+    sub.replaceAll(variable('AWS::Partition'), 'aws').replaceAll(variable('AWS::AccountId'), account) ===
+      arn('iam', '', account, 'role/hearth-break-glass')
+  )
 }
 
 describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind => {
@@ -480,7 +505,7 @@ describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind =
     ])
   })
 
-  it('IAC-11 C11-D11 C11-D27: each role it may assume, the hearthbase deploy and file-publishing roles, takes its source identity on both sides, its grant and the role’s trust in the committed bootstrap template, proved on planted gaps first', () => {
+  it('IAC-11 C11-D11 C11-D27: each role it may assume, the hearthbase deploy and file-publishing roles, takes its source identity on both sides, its grant and the role’s trust in the committed bootstrap template, from hearth-break-glass alone (TRUST-03), proved on planted gaps first', () => {
     const [, role] = roleIn(kind, 'hearth-break-glass')
     const policies = role.Properties?.Policies as Array<{ PolicyDocument: { Statement: Statement[] } }>
     const statements = policies.flatMap(policy => policy.PolicyDocument.Statement)
@@ -502,6 +527,34 @@ describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind =
       'DeploymentActionRole: its trust allows the account no sts:SetSourceIdentity',
       'FilePublishingRole: its trust allows the account no sts:SetSourceIdentity',
     ])
+    // So is a trust that allows it to anyone in the account (TRUST-03), with its condition dropped,
+    // widened to every role, or a second, unconditioned statement beside it.
+    const planted = (change: (s: Statement, trust: Statement[]) => void) => {
+      const copy = structuredClone(BOOTSTRAP)
+      for (const [, r] of resourcesIn(copy)) {
+        const trust = (r.Properties?.AssumeRolePolicyDocument as { Statement?: Statement[] } | undefined)?.Statement
+        const s = (trust ?? []).find(t => listOf(t.Action).includes('sts:SetSourceIdentity'))
+        if (s !== undefined && trust !== undefined) change(s, trust)
+      }
+      return chain(statements, copy, account).gaps
+    }
+    const anyone = [
+      'DeploymentActionRole: its trust lets anyone in the account set a source identity',
+      'FilePublishingRole: its trust lets anyone in the account set a source identity',
+    ]
+    expect(planted(s => delete s.Condition)).toEqual(anyone)
+    expect(
+      planted(s => {
+        s.Condition = {
+          ArnLike: {
+            'aws:PrincipalArn': {
+              'Fn::Sub': `arn:${variable('AWS::Partition')}:iam::${variable('AWS::AccountId')}:role/*`,
+            },
+          },
+        }
+      }),
+    ).toEqual(anyone)
+    expect(planted((s, trust) => trust.push({ ...structuredClone(s), Condition: undefined }))).toEqual(anyone)
     // So is a grant widened to the lookup role, whose trust takes no source identity.
     const lookup = structuredClone(statements)
     for (const s of lookup) {
@@ -932,12 +985,16 @@ const ASSUME = {
   paths: {
     account: '$.account',
     'detail-eventName': '$.detail.eventName',
+    'detail-userIdentity-arn': '$.detail.userIdentity.arn',
     'detail-requestParameters-sourceIdentity': '$.detail.requestParameters.sourceIdentity',
+    'detail-userIdentity-sessionContext-sourceIdentity': '$.detail.userIdentity.sessionContext.sourceIdentity',
     'detail-requestParameters-tags-0--value': '$.detail.requestParameters.tags[0].value',
     'detail-errorCode': '$.detail.errorCode',
   },
+  // A chained hop sets no source identity of its own, so the one its caller's session carries rides
+  // beside it (TRUST-03).
   template: (alarm: string) =>
-    `{"alarm":"${alarm}","account":<account>,"action":<detail-eventName>,"sourceIdentity":<detail-requestParameters-sourceIdentity>,"reason":<detail-requestParameters-tags-0--value>,"error":<detail-errorCode>}`,
+    `{"alarm":"${alarm}","account":<account>,"action":<detail-eventName>,"caller":<detail-userIdentity-arn>,"sourceIdentity":<detail-requestParameters-sourceIdentity>,"inheritedSourceIdentity":<detail-userIdentity-sessionContext-sourceIdentity>,"reason":<detail-requestParameters-tags-0--value>,"error":<detail-errorCode>}`,
 }
 const CALLER = {
   paths: {

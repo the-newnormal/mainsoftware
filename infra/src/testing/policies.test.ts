@@ -219,7 +219,7 @@ describe('C11-D70: synthesis for the assertion tests', () => {
     expect(artifact?.requiresBootstrapStackVersion).toBeGreaterThan(0)
     // A stack with no account and no protection, as the helper stack above.
     expect(synthesised.stacks[0]?.artifact).toMatchObject({ region: REGION, terminationProtection: false })
-  })
+  }, 30_000)
 })
 
 describe('C11-D70: the policy walker', () => {

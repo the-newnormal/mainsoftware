@@ -1,8 +1,9 @@
 // IAC-24 and IAC-01 over the CDK bootstrap template Hearth deploys (C11-D26, C11-D75; TECH-SPEC T24
 // item 11): the committed infra/bootstrap/hearth-bootstrap.yaml is strict JSON, is exactly what the
 // generator makes from the pinned CLI's own template, differs from that template only by the model
-// deny on each of its five roles, sts:SetSourceIdentity in the deploy and file-publishing roles'
-// same-account trust (which a break-glass session's chain into them needs: C11-D11, C11-D27) and the
+// deny on each of its five roles, one trust statement more in the deploy and file-publishing roles,
+// allowing sts:SetSourceIdentity to the account's hearth-break-glass role alone (which a break-glass
+// session's chain into them needs, and nobody else may use to stamp a name: C11-D11, C11-D27), and the
 // variant's default, fits the landing zone's bootstrap version and qualifier, keeps the stock
 // template's S3 delete grants and lifecycle rules where they were, passes IAC-01's model check and
 // its own copy of the template check (no Lambda, custom resource, transform or import, its one export
@@ -50,12 +51,25 @@ const NO_MODELS = {
 }
 const VARIANT = 'Hearth: AWS CDK default resources with no model actions on any role (C11-D75)'
 
-// The roles a break-glass session chains into under an lz:pr- reason, written out here rather than
-// taken from the generator, and the stock same-account statement whose action list gains
-// sts:SetSourceIdentity in each.
+// The roles a break-glass session chains into under an lz:pr- reason, and the one statement each
+// role's trust gains: sts:SetSourceIdentity, for the account's hearth-break-glass role alone, so no
+// other principal in the account can set a source identity of its choosing on them. Both are written
+// out here rather than taken from the generator. The stock same-account TagSession statement, which
+// allows the account with no condition, stays as the CLI ships it.
 const SOURCE_IDENTITY_ROLES = ['DeploymentActionRole', 'FilePublishingRole']
 const SAME_ACCOUNT = { AWS: { Ref: 'AWS::AccountId' } }
 const STOCK_TAG_SESSION = { Action: 'sts:TagSession', Effect: 'Allow', Principal: SAME_ACCOUNT }
+const BREAK_GLASS_SOURCE_IDENTITY = {
+  Sid: 'HearthBreakGlassSourceIdentity',
+  Action: 'sts:SetSourceIdentity',
+  Effect: 'Allow',
+  Principal: SAME_ACCOUNT,
+  Condition: {
+    ArnEquals: {
+      'aws:PrincipalArn': { 'Fn::Sub': `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/hearth-break-glass` },
+    },
+  },
+}
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -104,8 +118,8 @@ const trustStatements = (template: CfnTemplate, role: string): unknown[] => {
 }
 
 // The differences the deny, the trust and the variant make, and nothing else: each role's deny
-// appended to its Policies (the list made where the stock role has none), the two roles' stock
-// same-account TagSession statement given sts:SetSourceIdentity too, and the variant's default.
+// appended to its Policies (the list made where the stock role has none), the break-glass statement
+// appended to the two roles' trust, and the variant's default.
 function expectedDifferences(stock: CfnTemplate): Difference[] {
   const roles = BOOTSTRAP_ROLES.map(role => {
     const stockPolicies = propertiesOf(stock, role).Policies
@@ -113,22 +127,20 @@ function expectedDifferences(stock: CfnTemplate): Difference[] {
       ? { path: `Resources.${role}.Properties.Policies[${stockPolicies.length}]`, before: undefined, after: NO_MODELS }
       : { path: `Resources.${role}.Properties.Policies`, before: undefined, after: [NO_MODELS] }
   })
-  const trusts = SOURCE_IDENTITY_ROLES.map(role => {
-    const index = trustStatements(stock, role).findIndex(statement => isDeepStrictEqual(statement, STOCK_TAG_SESSION))
-    return {
-      path: `Resources.${role}.Properties.AssumeRolePolicyDocument.Statement[${index}].Action`,
-      before: 'sts:TagSession',
-      after: ['sts:TagSession', 'sts:SetSourceIdentity'],
-    }
-  })
+  const trusts = SOURCE_IDENTITY_ROLES.map(role => ({
+    path: `Resources.${role}.Properties.AssumeRolePolicyDocument.Statement[${trustStatements(stock, role).length}]`,
+    before: undefined,
+    after: BREAK_GLASS_SOURCE_IDENTITY,
+  }))
   const parameters = isObject(stock.Parameters) ? stock.Parameters : {}
   const variant = isObject(parameters.BootstrapVariant) ? parameters.BootstrapVariant.Default : undefined
   return [...roles, ...trusts, { path: 'Parameters.BootstrapVariant.Default', before: variant, after: VARIANT }]
 }
 
-// IAC-24 (j): each role's trust statements that name sts:SetSourceIdentity, as "the account" for an
-// unconditional Allow to the account itself and "elsewhere" for any other (a cross-account statement
-// under Fn::If, a condition, another principal).
+// IAC-24 (j): each role's trust statements that name sts:SetSourceIdentity, as "hearth-break-glass"
+// for exactly the break-glass statement above, "the account" for an unconditional Allow to the account
+// itself (anyone in it could then stamp any name), and "elsewhere" for any other (a cross-account
+// statement under Fn::If, another condition, another principal).
 function sourceIdentityTrust(template: CfnTemplate): Record<string, string[]> {
   return Object.fromEntries(
     typesOf(template, 'AWS::IAM::Role').map(role => [
@@ -136,12 +148,14 @@ function sourceIdentityTrust(template: CfnTemplate): Record<string, string[]> {
       trustStatements(template, role)
         .filter(statement => JSON.stringify(statement).includes('sts:SetSourceIdentity'))
         .map(statement =>
-          isObject(statement) &&
-          statement.Effect === 'Allow' &&
-          statement.Condition === undefined &&
-          isDeepStrictEqual(statement.Principal, SAME_ACCOUNT)
-            ? 'the account'
-            : 'elsewhere',
+          isDeepStrictEqual(statement, BREAK_GLASS_SOURCE_IDENTITY)
+            ? 'hearth-break-glass'
+            : isObject(statement) &&
+                statement.Effect === 'Allow' &&
+                statement.Condition === undefined &&
+                isDeepStrictEqual(statement.Principal, SAME_ACCOUNT)
+              ? 'the account'
+              : 'elsewhere',
         ),
     ]),
   )
@@ -334,12 +348,18 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     const policies = propertiesOf(missing, 'DeploymentActionRole').Policies as unknown[]
     propertiesOf(missing, 'DeploymentActionRole').Policies = policies.slice(0, -1)
     expect(byPath(differences(stock, missing))).not.toEqual(byPath(expectedDifferences(stock)))
-    // So does a trust widened anywhere else: the lookup role's same-account statement.
+    // So does a trust widened anywhere else: the break-glass statement on the lookup role too.
     const lookup = structuredClone(committed)
-    const statement = trustStatements(lookup, 'LookupRole').find(s => isDeepStrictEqual(s, STOCK_TAG_SESSION))
+    trustStatements(lookup, 'LookupRole').push(structuredClone(BREAK_GLASS_SOURCE_IDENTITY))
+    expect(byPath(differences(stock, lookup))).not.toEqual(byPath(expectedDifferences(stock)))
+    // And so does a stock statement widened in place, as an earlier generator did.
+    const inPlace = structuredClone(committed)
+    const statement = trustStatements(inPlace, 'DeploymentActionRole').find(s =>
+      isDeepStrictEqual(s, STOCK_TAG_SESSION),
+    )
     expect(statement).toBeDefined()
     ;(statement as Record<string, unknown>).Action = ['sts:TagSession', 'sts:SetSourceIdentity']
-    expect(byPath(differences(stock, lookup))).not.toEqual(byPath(expectedDifferences(stock)))
+    expect(byPath(differences(stock, inPlace))).not.toEqual(byPath(expectedDifferences(stock)))
   })
 
   it('(e) every role holds exactly one model deny in place, Sid HearthNoModels, every model action in order', () => {
@@ -448,17 +468,39 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(outputs.FileAssetKeyArn?.Export?.Name).toEqual(FILE_ASSET_KEY_EXPORT)
   })
 
-  it('(j) the deploy and file-publishing roles’ same-account trust allows sts:SetSourceIdentity, which a break-glass session’s chain into them needs, and no other statement names it', () => {
+  it('(j) the deploy and file-publishing roles’ trust allows sts:SetSourceIdentity to the account’s hearth-break-glass role alone, which a break-glass session’s chain into them needs, and no other statement names it', () => {
     const expected = {
       CloudFormationExecutionRole: [],
-      DeploymentActionRole: ['the account'],
-      FilePublishingRole: ['the account'],
+      DeploymentActionRole: ['hearth-break-glass'],
+      FilePublishingRole: ['hearth-break-glass'],
       ImagePublishingRole: [],
       LookupRole: [],
     }
     expect(sourceIdentityTrust(committed)).toEqual(expected)
     // The stock template names it nowhere, so a chained deploy under lz:pr- would be refused.
     expect(sourceIdentityTrust(stock)).not.toEqual(expected)
+    // The stock same-account statement widened in place lets anyone in the account set any source
+    // identity, and is found as such.
+    const anyone = structuredClone(committed)
+    const tagSession = trustStatements(anyone, 'FilePublishingRole').find(s => isDeepStrictEqual(s, STOCK_TAG_SESSION))
+    expect(tagSession).toBeDefined()
+    ;(tagSession as Record<string, unknown>).Action = ['sts:TagSession', 'sts:SetSourceIdentity']
+    expect(sourceIdentityTrust(anyone).FilePublishingRole).toEqual(['the account', 'hearth-break-glass'])
+    // So is the break-glass statement with its condition dropped, or widened to any role.
+    const unbounded = structuredClone(committed)
+    for (const s of trustStatements(unbounded, 'DeploymentActionRole')) {
+      if (isDeepStrictEqual(s, BREAK_GLASS_SOURCE_IDENTITY)) delete (s as Record<string, unknown>).Condition
+    }
+    expect(sourceIdentityTrust(unbounded).DeploymentActionRole).toEqual(['the account'])
+    const anyRole = structuredClone(committed)
+    for (const s of trustStatements(anyRole, 'DeploymentActionRole')) {
+      if (isDeepStrictEqual(s, BREAK_GLASS_SOURCE_IDENTITY)) {
+        ;(s as Record<string, unknown>).Condition = {
+          ArnLike: { 'aws:PrincipalArn': { 'Fn::Sub': `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/*` } },
+        }
+      }
+    }
+    expect(sourceIdentityTrust(anyRole).DeploymentActionRole).toEqual(['elsewhere'])
     // A cross-account statement naming it is found as one.
     const crossAccount = structuredClone(committed)
     const conditional = trustStatements(crossAccount, 'DeploymentActionRole').find(
@@ -466,7 +508,7 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     ) as { 'Fn::If': [string, Record<string, unknown>, unknown] } | undefined
     expect(conditional).toBeDefined()
     if (conditional !== undefined) conditional['Fn::If'][1].Action = ['sts:TagSession', 'sts:SetSourceIdentity']
-    expect(sourceIdentityTrust(crossAccount).DeploymentActionRole).toEqual(['the account', 'elsewhere'])
+    expect(sourceIdentityTrust(crossAccount).DeploymentActionRole).toEqual(['elsewhere', 'hearth-break-glass'])
   })
 
   it('(k) it fits the request body `cdk bootstrap` sends, with 1 KiB of the limit to spare, proved on a planted template first', () => {

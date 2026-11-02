@@ -157,6 +157,22 @@ function reviewStatements(config: LandingZoneConfig): IamStatement[] {
       Action: ['guardduty:Get*', 'guardduty:List*', 'access-analyzer:Get*', 'access-analyzer:List*'],
       Resource: '*',
     },
+    // What `aws cloudtrail validate-logs` calls for an organisation trail, each a read that takes no
+    // resource: the trail's bucket and prefix from its ARN, the organisation's id in the digests'
+    // prefix, and CloudTrail's public keys, so the quarterly review checks each account's delivered
+    // files against their signed digests (the break-glass review runbook); the files it reads are
+    // ReadLogs', and the digests are SSE-S3, so they need no key.
+    {
+      Sid: 'ValidateTrail',
+      Effect: 'Allow',
+      Action: [
+        'cloudtrail:DescribeTrails',
+        'cloudtrail:GetTrail',
+        'cloudtrail:ListPublicKeys',
+        'organizations:DescribeOrganization',
+      ],
+      Resource: '*',
+    },
     { Sid: 'NeverTheArchive', Effect: 'Deny', Action: 's3:*', Resource: [archiveBucket, archiveObjects] },
     {
       Sid: 'NeverTheArchiveKey',

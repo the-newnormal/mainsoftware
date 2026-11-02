@@ -14,7 +14,8 @@
 //   break-glass log; the reviewer decrypts only through S3 under those contexts;
 // - IAC-11 for log-archive's hearth-break-glass: its trust, and a scope that writes its own entries
 //   and triages, with no landing-zone role, bastion, database login, secret or trail object;
-// - C11-D20 A9 A10: the organisation's analyzer, with no archive rule, and the findings alarms.
+// - C11-D20 A9 A10: the organisation's analyzer, with no archive rule, each key readable by its role as
+//   far as AccessAnalyzerServiceRolePolicy reads a key, and the findings alarms.
 // Planted cases come first for IAC-23's checks. Expected ARNs are joined from their parts (IG-01),
 // the template's own expiry keys are compared as written (LCG-02), and the model deny comes from the
 // lists (IG-10).
@@ -278,6 +279,9 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
       [BUCKET.breakGlass, 'break_glass_log'],
     ] as const) {
       const days = objectLockDays(logClass)
+      // The design's 731 days, written here too, so a shorter class period fails a test on the owner's
+      // read as well as changing the list CLAUDE.md names (C11-D17, C11-D18).
+      expect(days, name).toBe(731)
       expect(RETENTION_CLASSES[logClass].period, name).toMatchObject({ kind: 'days', days })
       const [, bucket] = bucketOf(t, name)
       expect(bucket.Properties?.ObjectLockEnabled, name).toBe(true)
@@ -361,6 +365,7 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
         'kms:GetKeyRotationStatus',
         'kms:ListResourceTags',
         'kms:ListGrants',
+        'kms:ListKeyPolicies',
       ],
       Resource: '*',
       Condition: {
@@ -444,6 +449,50 @@ describe('IAC-06 C11-D18 C11-D19: Object Lock and the locked buckets’ expiry',
       ],
     })
     expect(policyOf('alias/hearth-archive')).toEqual({ Version: '2012-10-17', Statement: [administration, readBack] })
+  })
+
+  it('C11-D20: each key lets Access Analyzer’s role read all AccessAnalyzerServiceRolePolicy reads of a key, so neither raises an ACCESS_DENIED error finding, which A10 would email as active', () => {
+    // The managed policy's actions on a key (its kms:ListKeys is the account's, which no key policy
+    // decides). A key policy that lets the role read less leaves the key unanalysed.
+    const reads = ['kms:DescribeKey', 'kms:GetKeyPolicy', 'kms:ListGrants', 'kms:ListKeyPolicies']
+    const analyzer = arn(
+      'iam',
+      '',
+      logArchive,
+      'role/aws-service-role/access-analyzer.amazonaws.com/AWSServiceRoleForAccessAnalyzer',
+    )
+    interface KeyStatement {
+      Effect: string
+      Principal?: { AWS?: string }
+      Action: string | string[]
+      Condition?: { ArnLike?: { 'aws:PrincipalArn'?: string | string[] } }
+    }
+    // Whether a statement admits the analyzer's role: by its ARN, or through the account's root with
+    // the role named in its aws:PrincipalArn.
+    const admitsAnalyzer = (statement: KeyStatement) =>
+      statement.Principal?.AWS === analyzer ||
+      (statement.Principal?.AWS === ROOT &&
+        [statement.Condition?.ArnLike?.['aws:PrincipalArn'] ?? []].flat().includes(analyzer))
+    const covers = (granted: string, action: string) =>
+      new RegExp(
+        `^${granted
+          .split('*')
+          .map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*')}$`,
+      ).test(action)
+    for (const alias of ['alias/hearth-sec', 'alias/hearth-archive']) {
+      const [, key] = resourcesIn(template).find(([id]) => id === keyOf(template, alias)) as [string, Resource]
+      const statements = (key.Properties?.KeyPolicy as { Statement: KeyStatement[] } | undefined)?.Statement ?? []
+      const granted = statements
+        .filter(statement => statement.Effect === 'Allow' && admitsAnalyzer(statement))
+        .flatMap(statement => [statement.Action].flat())
+      for (const action of reads) {
+        expect(
+          granted.some(grant => covers(grant, action)),
+          `${alias} lets the analyzer ${action}`,
+        ).toBe(true)
+      }
+    }
   })
 })
 
@@ -933,7 +982,9 @@ const CLOUDTRAIL = 'AWS API Call via CloudTrail'
 const ASSUME_INPUT = {
   account: '$.account',
   'detail-eventName': '$.detail.eventName',
+  'detail-userIdentity-arn': '$.detail.userIdentity.arn',
   'detail-requestParameters-sourceIdentity': '$.detail.requestParameters.sourceIdentity',
+  'detail-userIdentity-sessionContext-sourceIdentity': '$.detail.userIdentity.sessionContext.sourceIdentity',
   'detail-requestParameters-tags-0--value': '$.detail.requestParameters.tags[0].value',
   'detail-errorCode': '$.detail.errorCode',
 }

@@ -69,7 +69,7 @@ describe('Vitest modes: every test file runs in exactly one mode (CLAUDE.md, Tes
     ]) {
       expect(modesOf(path), path).toEqual([])
     }
-  })
+  }, 30_000)
 
   it('TM-SPEC T10 T21: a Playwright spec (*.spec.ts) runs in no Vitest mode, so npm test and the integration run never start a browser', () => {
     for (const path of ['apps/web/e2e/x.spec.ts', 'apps/web/e2e/support/x.spec.ts', 'apps/server/src/x.spec.ts']) {

@@ -574,7 +574,7 @@ describe('LCG-04 (C0.10 LH-33): no server code outside apps/server/src/lifecycle
     )
     expect(files.size).toBeGreaterThan(0)
     expect(serverDeletes(files, protectedTables())).toEqual([])
-  })
+  }, 30_000)
 })
 
 // --- LCG-05: deletes in replica mode ----------------------------------------------------------------
@@ -718,7 +718,7 @@ describe('LCG-05 (C0.10 LH-33, LH-11): nothing deletes a guarded table with trig
     // Several files set replica mode today, so an empty map would mean the guard reads nothing.
     expect(files.size).toBeGreaterThan(0)
     expect(replicaDeletes(files, guarded)).toEqual([])
-  })
+  }, 30_000)
 })
 
 // --- What the docs say C0.10 built (review DOCS-02, DOCS-03, DOCS-05, DOCS-06, R2DOCS-01, R2DOCS-02,

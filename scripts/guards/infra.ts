@@ -956,12 +956,46 @@ const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?:^|[\s;&|(])(?:env|printenv)\s*(?:$|[;&|)])/m, 'env or printenv alone prints every variable'],
   [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
   [/\b(?:declare|typeset|export|readonly)\s+-[A-Za-z]*p\b/, 'it prints variables'],
-  [/(?:^|[;&|]\s*|\bthen\s+|\bdo\s+|\belse\s+)set\s*(?:$|[;&|])/m, 'set alone prints every variable'],
   [/--debug\b/, '--debug prints requests, credentials among them'],
   [/(?:^|[\s;&|(])eval(?:\s|$)/, 'eval runs text as code'],
   [/\baws\s+configure\s+set\b/, 'aws configure set writes to the CLI configuration'],
   [/\baws\s+(?:configure\s+export-credentials|sso\s+get-role-credentials)\b/, 'it prints credentials'],
 ]
+
+// A command that prints variables when it names none: set prints every one, the unexported variables
+// the credentials are read into among them, and declare, typeset, local, export and readonly given
+// only options print theirs, so `set >file`, `set 2>/dev/null`, `{ set; }`, `$(declare)` and
+// `declare | cat` each print or write them. A descriptor written before a redirect (the 2 of 2>) is
+// the redirect's, not a name. Read one line of a command at a time, outside quotes.
+const LISTING_RUN = /(?:^|[\s;&|(!{])(set|declare|typeset|local|export|readonly)(?=\s|$|[;&|)<>])/g
+function listsVariables(text: string): boolean {
+  return [...text.matchAll(LISTING_RUN)].some(run => {
+    const command = run[1] ?? ''
+    const start = (run.index ?? 0) + run[0].length - command.length
+    if (quotedAt(text, start)) return false
+    const words = wordsAsWritten(text.slice(start + command.length).replace(/(^|\s)\d+(?=[<>])/g, '$1'))
+    return command === 'set' ? words.length === 0 : words.every(word => /^[-+]/.test(word))
+  })
+}
+
+// How often a command names a variable other than to read it: its bare name outside quotes (an
+// assignment, or the name printf -v, read, declare, local, export, unset, for or arithmetic is given),
+// and ${name=…} or ${name:=…}, which assign it wherever they stand. A jq --arg or --argjson name is
+// jq's own, and a here-document's body is the command's input, so neither is read.
+const NAMING = new Map<string, readonly [RegExp, RegExp]>()
+function namings(text: string, name: string): number {
+  let patterns = NAMING.get(name)
+  if (patterns === undefined) {
+    patterns = [new RegExp(`(?<![\\w$-])(?<!\\$\\{[!#]?)${name}(?![\\w-])`, 'g'), new RegExp(`\\$\\{${name}:?=`, 'g')]
+    NAMING.set(name, patterns)
+  }
+  const [bare, assigns] = patterns
+  const command = (text.split('\n')[0] ?? '').replace(/--arg(?:json)?\s+\w+/g, '')
+  return (
+    [...command.matchAll(bare)].filter(match => !quotedAt(command, match.index ?? 0)).length +
+    (command.match(assigns)?.length ?? 0)
+  )
+}
 
 // The words of the command that starts a text, as written (quotes kept), up to the first operator
 // outside quotes (; & | ) < > or a newline). A command substitution outside quotes is part of its word.
@@ -1089,6 +1123,31 @@ const withoutPrefixes = (text: string, prefixes: RegExp): string =>
 // A run of env (or /usr/bin/env, command env) or sudo: any AWS_ word among its arguments is in its argv.
 const ENV_RUN = /(?:^|[\s;&|(!])(?:\/usr\/bin\/env|command\s+env|env|sudo)(?=\s)/g
 
+// What IG-09 (h) reads: a trap named anywhere in a command, quoted or not (no message the helper
+// prints says trap); exec or kill run as a command; an exit or return as a command word; an exit run
+// as one, or reached through a call; errexit turned on (an e in a set option word, or errexit named);
+// and the shell the role's credentials open, whose function alone may hand Ctrl-C to it.
+const TRAP_WORD = /(?<![\w-])trap(?![\w-])/
+const ENDS_RUN = /(?:^|[\s;&|(!{])(exec|kill)(?=\s|$|[;&|)<>])/g
+const EXITS = /(?:^|[\s;&|(!{])(?:exit|return)(?=\s|$|[;&|)])/
+const EXIT_RUN = /(?:^|[\s;&|(!{])exit(?=\s|$|[;&|)])/
+const ERREXIT_ON = /\berrexit\b|(?:^|[\s;&|(!{])set\s+(?:[^\s;&|]+\s+)*-[A-Za-z]*e/
+const SHELL_RUN = /\bbash\s+--rcfile\b/
+// What IG-09 (e) has the helper unset besides every AWS_ variable: curl's config folders, a TLS key
+// log the CLI and curl both write, and the CA overrides the CLI and curl honour.
+const INHERITED_TLS = [
+  'CURL_HOME',
+  'XDG_CONFIG_HOME',
+  'SSLKEYLOGFILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+] as const
+// A command that removes a file or a folder, as IG-09 (h) reads the lock's release.
+const REMOVES = /(?:^|[\s;&|(!{])(?:rm|rmdir|mv)(?=\s)/
+const IN_FOLDER = /\$\{?(?:run_dir|entry_file|rc|BG_HOME)\b/
+
 // Each IG-09 rule the helper's text breaks, as "path: IG-09<x> why". The rules that run bash (b's
 // refuse_agents and require_terminal, d's reason check, q's usage and refuse, each extracted, and n's
 // parse and mode) are infra.test.ts's, which uses shellFunction and reasonFormLines.
@@ -1121,28 +1180,37 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     called.set(text, names)
     return names
   }
-  // The top-level commands bash always reaches: outside every if, case, for, while, { } and ( )
-  // block, and not carrying on a line that ends in &&, || or |, which bash runs as one list with
-  // it (so `true ||` before a check would skip it). A gate is such a line, matched whole, so a check
-  // whose answer is ignored, inverted or never reached isn't one (IG-09b, c, d, f, g).
-  const topLevel = new Set<number>()
-  let depth = 0
-  let carried = false
-  for (const [index, line] of lines.entries()) {
-    if (inFunction(index) || isDefinition(line.text) || functionEnds.has(index)) continue
-    const command = line.text.split('\n')[0] ?? ''
-    const closes = /^(?:fi|done|esac|\}|\))(?:$|[\s;&|)<>])/.test(command)
-    const branch = /^(?:else|elif)(?:$|\s)/.test(command)
-    if (closes) depth -= 1
-    if (depth === 0 && !carried && !closes && !branch) topLevel.add(index)
-    if (
-      !branch &&
-      (/(?:^|[\s;])(?:then|do)$/.test(command) || /^case\s.*\sin$/.test(command) || /[{(]$/.test(command))
-    ) {
-      depth += 1
+  // The commands bash always reaches in a run of lines (the helper's own top level, or a function's
+  // body): outside every if, case, for, while, { } and ( ) block, and not carrying on a line that
+  // ends in &&, || or |, which bash runs as one list with it (so `true ||` before a check would skip
+  // it). A gate is such a top-level line, matched whole, so a check whose answer is ignored, inverted
+  // or never reached isn't one (IG-09b, c, d, f, g).
+  const alwaysRun = (run: ReadonlyArray<{ line: ShellLine; index: number }>): Set<number> => {
+    const found = new Set<number>()
+    let depth = 0
+    let carried = false
+    for (const { line, index } of run) {
+      const command = line.text.split('\n')[0] ?? ''
+      const closes = /^(?:fi|done|esac|\}|\))(?:$|[\s;&|)<>])/.test(command)
+      const branch = /^(?:else|elif)(?:$|\s)/.test(command)
+      if (closes) depth -= 1
+      if (depth === 0 && !carried && !closes && !branch) found.add(index)
+      if (
+        !branch &&
+        (/(?:^|[\s;])(?:then|do)$/.test(command) || /^case\s.*\sin$/.test(command) || /[{(]$/.test(command))
+      ) {
+        depth += 1
+      }
+      carried = /(?:&&|\|)$/.test(command)
     }
-    carried = /(?:&&|\|)$/.test(command)
+    return found
   }
+  const indexed = lines.map((line, index) => ({ line, index }))
+  const topLevel = alwaysRun(
+    indexed.filter(({ line, index }) => !inFunction(index) && !isDefinition(line.text) && !functionEnds.has(index)),
+  )
+  const within = (range: { start: number; end: number } | undefined, index: number) =>
+    range !== undefined && index >= range.start && index < range.end
   const gate = (statement: string) =>
     main.find(({ line, index }) => line.text === statement && topLevel.has(index))?.index ?? -1
   // A refusal in fixed words, nothing expanded into them, and a gate that ends in one: the gate's
@@ -1163,10 +1231,33 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   const firstAws = firstLine(AWS_WORD)
   const before = (index: number, limit: number) => index >= 0 && (limit < 0 || index < limit)
 
+  // The run's trap and its handler, which (a) and (h) read.
+  const trap = main.find(
+    ({ line, index }) => topLevel.has(index) && /^trap\s+'?\w+'?\s+EXIT\s+INT\s+TERM\s+HUP$/.test(line.text),
+  )
+  const handler = trap === undefined ? undefined : /^trap\s+'?(\w+)/.exec(trap.line.text)?.[1]
+  const handlerRange = handler === undefined ? undefined : functions.get(handler)
+
   // a: strict from the first statement, and nothing traces.
   const statements = lines.filter((line, index) => !(index === 0 && line.text.startsWith('#!')))
   if (statements[0]?.text !== 'set -euo pipefail') fail('a', 'its first statement is set -euo pipefail')
   if (lines.some(line => traces(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
+  // And it stays strict: no set turns an option back off (errexit, nounset, pipefail, noglob) but the
+  // handler's own set +e.
+  for (const [index, line] of lines.entries()) {
+    const command = line.text.split('\n')[0] ?? ''
+    const unsets = [...command.matchAll(SET_RUN)].some(
+      run =>
+        !quotedAt(command, (run.index ?? 0) + run[0].length - 3) &&
+        wordsAsWritten(command.slice((run.index ?? 0) + run[0].length)).some(word => /^\+/.test(word)),
+    )
+    if (unsets && !(within(handlerRange, index) && command === 'set +e')) {
+      fail(
+        'a',
+        `line ${line.line}: nothing turns an option of set -euo pipefail or set -f back off but the handler’s set +e`,
+      )
+    }
+  }
 
   // b: a coding agent or CI refused before the first aws command, by exactly the markers the Owner
   // bootstrap script refuses, set or empty.
@@ -1195,6 +1286,24 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     fail('b', 'require_terminal runs, as a gate of its own, before the first aws command')
   }
 
+  // A variable a rule pins by its top-level export is set by that export alone and named by no
+  // other command, so no later line sets it again, unsets it or stands a prefix assignment of it
+  // before a command (IG-09c, e, g).
+  const exported = (assignment: string) =>
+    main.find(
+      ({ line, index }) =>
+        topLevel.has(index) && /^export\s/.test(line.text) && line.text.split(/\s+/).includes(assignment),
+    )?.index ?? -1
+  const exportedOnly = (rule: string, assignment: string) => {
+    const name = assignment.split('=')[0] ?? ''
+    const at = exported(assignment)
+    for (const [index, line] of lines.entries()) {
+      if (namings(line.text, name) > (index === at ? 1 : 0)) {
+        fail(rule, `line ${line.line}: ${name} is set by export ${assignment} alone, and no other command names it`)
+      }
+    }
+  }
+
   // c: the C locale and the umask before the reason is checked.
   const reasonCheck = gate('if ! valid_reason "$reason"; then usage; fi')
   for (const [statement, why] of [
@@ -1203,6 +1312,7 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   ] as const) {
     if (!before(gate(statement), reasonCheck)) fail('c', `${why}, before the reason is checked`)
   }
+  exportedOnly('c', 'LC_ALL=C')
 
   // d: the reason and its date checked by pure functions, before the first aws command.
   for (const name of ['valid_reason', 'valid_date']) {
@@ -1212,13 +1322,31 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   if (!before(reasonCheck, firstAws)) {
     fail('d', 'if ! valid_reason "$reason"; then usage; fi checks the reason, as a gate, before the first aws command')
   }
+  // The reason tagged is the reason checked: it is set once, reason="$2", as a gate before its check,
+  // and no other command names it but valid_reason's own local, so no later line rewrites it and no
+  // local in a caller of the assumption stands in for it.
+  const reasonSet = gate('reason="$2"')
+  const reasonLocal = lines.findIndex(
+    (line, index) =>
+      within(functions.get('valid_reason'), index) &&
+      /^local\s/.test(line.text) &&
+      line.text.split(/\s+/).includes('reason="$1"'),
+  )
+  if (
+    reasonSet < 0 ||
+    !before(reasonSet, reasonCheck) ||
+    lines.some((line, index) => {
+      const count = namings(line.text, 'reason')
+      return count > 0 && !((index === reasonSet || index === reasonLocal) && count === 1)
+    })
+  ) {
+    fail(
+      'd',
+      'the reason is set once, reason="$2", before its check, and no other command names it but valid_reason’s local',
+    )
+  }
 
   // e: its own folder, config and region, and nothing inherited, before the first aws command.
-  const exported = (assignment: string) =>
-    main.find(
-      ({ line, index }) =>
-        topLevel.has(index) && /^export\s/.test(line.text) && line.text.split(/\s+/).includes(assignment),
-    )?.index ?? -1
   for (const assignment of [
     'AWS_STS_REGIONAL_ENDPOINTS=regional',
     'AWS_REGION=ap-southeast-1',
@@ -1228,14 +1356,29 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     'AWS_EC2_METADATA_DISABLED=true',
   ]) {
     if (!before(exported(assignment), firstAws)) fail('e', `export ${assignment} before the first aws command`)
+    exportedOnly('e', assignment)
   }
-  const unset = main.find(({ line, index }) => topLevel.has(index) && /^unset\s/.test(line.text))
-  const unsetNames = unset?.line.text.split(/\s+/) ?? []
-  if (
-    !before(unset?.index ?? -1, firstAws) ||
-    !['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', ...CREDENTIAL_ENV].every(name => unsetNames.includes(name))
-  ) {
+  // Every top-level unset before the first aws command counts, so the AWS one and the TLS one are
+  // each read.
+  const unsets = main.filter(
+    ({ line, index }) => topLevel.has(index) && /^unset\s/.test(line.text) && before(index, firstAws),
+  )
+  const unsetNames = unsets.flatMap(({ line }) => line.text.split(/\s+/))
+  if (!['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', ...CREDENTIAL_ENV].every(name => unsetNames.includes(name))) {
     fail('e', 'unset every inherited credential and profile variable before the first aws command')
+  }
+  // And nothing inherited that would write the session down or change whom it trusts: curl's config
+  // folders, a TLS key log and every CA override, each unset before the first aws command and named
+  // by no other command, so no later line sets one again.
+  if (!INHERITED_TLS.every(name => unsetNames.includes(name))) {
+    fail('e', `unset ${INHERITED_TLS.join(' ')} before the first aws command`)
+  }
+  for (const name of INHERITED_TLS) {
+    for (const [index, line] of lines.entries()) {
+      if (namings(line.text, name) > 0 && !unsets.some(unset => unset.index === index)) {
+        fail('e', `line ${line.line}: ${name} is unset before the first aws command, and no other command names it`)
+      }
+    }
   }
 
   // f: its folder is the caller's own, mode 700, before HOME moves there: the check whole, as a gate
@@ -1268,12 +1411,9 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   ) {
     fail('g', 'export AWS_PAGER= before the first aws command')
   }
+  exportedOnly('g', 'AWS_PAGER=')
 
   // h: a trap on every way out, set before the first sign-in, that signs out.
-  const trap = main.find(
-    ({ line, index }) => topLevel.has(index) && /^trap\s+'?\w+'?\s+EXIT\s+INT\s+TERM\s+HUP$/.test(line.text),
-  )
-  const handler = trap === undefined ? undefined : /^trap\s+'?(\w+)/.exec(trap.line.text)?.[1]
   if (trap === undefined || !before(trap.index, firstLine(/\baws\s+sso\s+login\b/))) {
     fail('h', "trap '<handler>' EXIT INT TERM HUP is set before the first aws sso login")
   }
@@ -1281,10 +1421,11 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     fail('h', 'the trap’s handler runs aws sso logout')
   }
   // Once the handler has begun, nothing stops the close or the sign-out part way: its first commands
-  // (after its locals) ignore INT, TERM and HUP, which the commands it runs inherit, drop the EXIT
-  // trap and turn errexit off, so a failed print can't end it early; and nowhere does it give a signal
-  // its default action back.
-  const handlerBody = handler === undefined ? [] : bodyOf(handler).map(line => line.text)
+  // (after its locals) ignore INT, TERM and HUP (QUIT too, in the one such trap the list below takes),
+  // which the commands it runs inherit, drop the EXIT trap and turn errexit off, so a failed print
+  // can't end it early.
+  const handlerLines = handlerRange === undefined ? [] : indexed.slice(handlerRange.start, handlerRange.end)
+  const handlerBody = handlerLines.map(({ line }) => line.text)
   const opening = handlerBody.filter(line => !/^local\s/.test(line)).slice(0, 3)
   const ignored = opening.some(line => {
     const signals = /^trap\s+(?:''|"")\s+(.+)$/.exec(line)?.[1]?.split(/\s+/) ?? []
@@ -1293,8 +1434,107 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   if (!ignored || !opening.includes('trap - EXIT') || !opening.includes('set +e')) {
     fail('h', "the trap's handler first ignores INT, TERM and HUP, drops the EXIT trap and turns errexit off")
   }
-  if (handlerBody.some(line => /^trap\s+-\s+.*\b(?:INT|TERM|HUP|QUIT)\b/.test(line))) {
-    fail('h', "the trap's handler never gives a signal its default action back")
+  // And the handler stays in force: no trap but the run's, the handler's two and the shell
+  // function's pair (Ctrl-C left to the shell while it runs, then the handler's again), each matched
+  // whole and set once, so nothing drops or replaces the handler or gives a signal its default action
+  // back, however the signal is named (INT, SIGINT, 2) or the trap is spelt (trap INT, trap --).
+  const shellRange = [...functions.values()].find(range =>
+    lines.slice(range.start, range.end).some(line => SHELL_RUN.test(line.text)),
+  )
+  const shellAt = indexed.find(({ line, index }) => within(shellRange, index) && SHELL_RUN.test(line.text))?.index ?? -1
+  const allowedTraps = new Map<string, (index: number) => boolean>([
+    ["trap '' INT TERM HUP QUIT", index => within(handlerRange, index)],
+    ['trap - EXIT', index => within(handlerRange, index)],
+    ["trap ':' INT", index => within(shellRange, index) && index < shellAt],
+    [`trap '${handler}' INT`, index => within(shellRange, index) && index > shellAt],
+  ])
+  const trapsSet = new Set<string>()
+  for (const { line, index } of indexed) {
+    const command = line.text.split('\n')[0] ?? ''
+    if (TRAP_WORD.test(command) && index !== trap?.index) {
+      if (allowedTraps.get(line.text)?.(index) !== true || trapsSet.has(line.text)) {
+        fail(
+          'h',
+          `line ${line.line}: no trap but the run’s, the handler’s two and the shell’s pair, each once, so nothing drops or replaces the handler or gives a signal its default action back`,
+        )
+      }
+      trapsSet.add(line.text)
+    }
+    // Nothing ends the run around its handler: exec replaces the helper, and kill can stop it with a
+    // signal no trap catches.
+    if (
+      [...command.matchAll(ENDS_RUN)].some(
+        run => !quotedAt(command, (run.index ?? 0) + run[0].length - (run[1]?.length ?? 0)),
+      )
+    ) {
+      fail('h', `line ${line.line}: no exec or kill, which end the run without its handler`)
+    }
+  }
+  // And the handler runs to its sign-out: at its own top level, the close under its condition (the
+  // session opened and no close written), then aws sso logout; before the sign-out nothing exits,
+  // returns or turns errexit back on, itself or through what it calls, since its EXIT trap is gone;
+  // and it ends in exit "$status", which is its only exit or return.
+  const handlerTop = alwaysRun(handlerLines)
+  const atTop = (text: string) =>
+    handlerLines.find(({ line, index }) => line.text === text && handlerTop.has(index))?.index ?? -1
+  const closeIf = atTop('if [ "$opened" = yes ] && [ "$closed" = no ]; then')
+  const closeCall = lines[closeIf + 1]?.text ?? ''
+  const logout = atTop('aws sso logout >/dev/null 2>&1 || true')
+  const last = handlerLines.at(-1)
+  if (
+    closeIf < 0 ||
+    !/^[A-Za-z_]\w* unprompted(?:\s+\|\|\s+(?:(?!&\s*$).)*)?$/.test(closeCall) ||
+    !reaches(closeCall, /\bentry:\s*"close"/) ||
+    lines[closeIf + 2]?.text !== 'fi' ||
+    logout < closeIf ||
+    last?.line.text !== 'exit "$status"' ||
+    handlerLines.some(({ line, index }) => index !== last?.index && EXITS.test(line.text.split('\n')[0] ?? '')) ||
+    handlerLines.some(
+      ({ line, index }) => index < logout && (reaches(line.text, EXIT_RUN) || reaches(line.text, ERREXIT_ON)),
+    )
+  ) {
+    fail(
+      'h',
+      'the trap’s handler runs, at its own top level, the close when the session opened and none was written, then aws sso logout, with nothing before it that exits, returns or turns errexit on, and ends in exit "$status"',
+    )
+  }
+  // One run at a time in a folder, whose sign-out ends every access-portal token cached there: the
+  // run's own folder in the helper's, run_dir, is its lock, which hold_folder takes by mkdir, refusing
+  // in fixed words when another run holds it, as the top-level line straight before the run's trap,
+  // so a refusal leaves the other run's lock and sign-in alone; the entry and the shell's rc file are
+  // set once, at the top, inside it; and nothing removes or moves the folder or a file in it but the
+  // handler after its sign-out, so no second run signs in there before this run's sign-out.
+  const runDir = gate('run_dir="$BG_HOME/run.lock"')
+  const hold = gate('hold_folder')
+  const holdBody = bodyOf('hold_folder').map(line => line.text)
+  const inRun = (name: string) =>
+    main.find(({ line, index }) => topLevel.has(index) && new RegExp(`^${name}="\\$run_dir/[\\w.-]+"$`).test(line.text))
+      ?.index ?? -1
+  const runFiles = ['entry_file', 'rc'].map(name => ({ name, at: inRun(name) }))
+  if (
+    !before(runDir, hold) ||
+    holdBody[0] !== 'if ! mkdir "$run_dir" 2>/dev/null; then' ||
+    !REFUSAL.test(holdBody[1] ?? '') ||
+    holdBody[2] !== 'fi' ||
+    trap === undefined ||
+    hold + 1 !== trap.index ||
+    runFiles.some(
+      ({ name, at }) =>
+        !before(runDir, at) || lines.some((line, index) => index !== at && namings(line.text, name) > 0),
+    ) ||
+    lines.some((line, index) => {
+      const command = line.text.split('\n')[0] ?? ''
+      return (
+        REMOVES.test(command) &&
+        IN_FOLDER.test(command) &&
+        !(within(handlerRange, index) && logout >= 0 && index > logout)
+      )
+    })
+  ) {
+    fail(
+      'h',
+      'one run at a time in a folder: hold_folder takes the lock (mkdir "$run_dir", refusing when held) straight before the trap, the entry and rc files are set once inside it, and only the handler, after its sign-out, removes it',
+    )
   }
 
   // The console function: the one that runs curl, whose exchange is the one place a credential may
@@ -1329,6 +1569,12 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       fail('i', `line ${line.line}: a jq program reads a credential, which only the console's exchange may, into curl`)
     }
     for (const [pattern, why] of EXPOSING) if (pattern.test(line.text)) fail('i', `line ${line.line}: ${why}`)
+    if (line.text.split('\n').some(listsVariables)) {
+      fail(
+        'i',
+        `line ${line.line}: set, or declare, typeset, local, export or readonly naming nothing, prints variables`,
+      )
+    }
     if (exportsAll(line.text)) fail('i', `line ${line.line}: allexport exports every variable, credentials among them`)
     const exports = /\b(?:export|declare\s+-[A-Za-z]*x|typeset\s+-[A-Za-z]*x)\s+(.*)$/.exec(line.text)?.[1] ?? ''
     if (exports.split(/\s+/).some(word => [...CREDENTIAL_ENV, ...credentials].includes(word.split('=')[0] ?? ''))) {
@@ -1351,14 +1597,14 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   if (
     assumes.length !== 1 ||
     !/--source-identity\s/.test(assume) ||
-    !/--tags\s+["']?Key=hearth-reason,Value=/.test(assume) ||
+    !/\s--tags\s+"Key=hearth-reason,Value=\$reason"(?:\s|$)/.test(assume) ||
     !/--role-session-name\s/.test(assume) ||
     duration === undefined ||
     Number(duration) > 3600
   ) {
     fail(
       'j',
-      'exactly one aws sts assume-role, with --source-identity, --tags Key=hearth-reason,Value=…, --role-session-name and --duration-seconds of at most 3600',
+      'exactly one aws sts assume-role, with --source-identity, --tags "Key=hearth-reason,Value=$reason" whole, --role-session-name and --duration-seconds of at most 3600',
     )
   }
 
@@ -1405,18 +1651,31 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       )
     }
   }
-  for (const [entry, flag] of [
-    ['open', 'opened=yes'],
-    ['close', 'closed=yes'],
+  // Each flag is otherwise named only where it starts, `<flag>=no` at the top before the trap (whose
+  // handler reads it under set -u), so no other spelling (printf -v, declare, read, ${…:=…}, quotes)
+  // sets it either.
+  for (const [entry, name] of [
+    ['open', 'opened'],
+    ['close', 'closed'],
   ] as const) {
     const at = lines.findIndex(line => new RegExp(`\\bentry:\\s*"${entry}"`).test(line.text))
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === `${name}=no`)
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, name)
+      return count === 0 ? [] : [{ index, count }]
+    })
     if (
       at < 0 ||
       !calls(lines[at + 1]?.text ?? '').includes('put_entry') ||
-      lines[at + 2]?.text !== flag ||
-      lines.filter(line => line.text === flag).length !== 1
+      lines[at + 2]?.text !== `${name}=yes` ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || (index !== at + 2 && index !== starts[0]?.index))
     ) {
-      fail('k', `the ${entry} entry is put straight after its jq, and only that put sets ${flag}`)
+      fail(
+        'k',
+        `the ${entry} entry is put straight after its jq, and only that put sets ${name}=yes; ${name}=no starts it, at the top before the trap, and nothing else names it`,
+      )
     }
   }
   for (const { line, index } of main) {
@@ -1448,6 +1707,16 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     const urls = line.text.match(/https?:\/\/[^\s'")]+/g) ?? []
     if (urls.length === 0 || urls.some(url => url !== 'https://signin.aws.amazon.com/federation')) {
       fail('l', `line ${line.line}: curl goes only to https://signin.aws.amazon.com/federation`)
+    }
+    // And each run takes -q as its first argument (curl ignores it anywhere else), so it reads no
+    // .curlrc, which could trace the POST body, the session in it, or turn the certificate check off.
+    const command = line.text.replace(/\bcommand\s+-v\s+curl\b/g, '')
+    if (
+      [...command.matchAll(/(?:^|[\s;&|(])curl(?=\s)/g)].some(
+        run => wordsAsWritten(command.slice((run.index ?? 0) + run[0].length))[0] !== '-q',
+      )
+    ) {
+      fail('l', `line ${line.line}: curl runs with -q first, so it reads no .curlrc`)
     }
   }
   // The console function runs only from a main-flow line that asks for --console, written
@@ -1759,9 +2028,14 @@ export const SYNTH_LZ_ENVIRONMENT = [
   'HEARTH_FIXTURE=1',
 ] as const
 
+// The script itself, whole: one command, so nothing runs before, beside or after it outside env -i
+// (npm runs a script through sh with the caller's environment, AWS keys and all), and no option but
+// these, so no plugin, profile, role or instance credentials either.
+export const SYNTH_LZ_SCRIPT = `env -i ${SYNTH_LZ_ENVIRONMENT.join(' ')} cdk synth --app 'node bin/landing-zone.ts' --no-lookups --no-notices --quiet`
+
 // What's wrong with infra's synth:lz script: it must run the CLI in exactly that environment, as
 // synth of the landing-zone entry with no lookups, notices or output, and with no profile, role or
-// instance credentials.
+// instance credentials, and be exactly SYNTH_LZ_SCRIPT; the parts are named first, to say what moved.
 export function synthScriptProblems(command: string): Finding[] {
   const found: Finding[] = []
   const at = 'infra/package.json synth:lz'
@@ -1783,11 +2057,15 @@ export function synthScriptProblems(command: string): Finding[] {
   for (const flag of ['--profile', '--role-arn', '--ec2creds']) {
     if (cli.some(word => word === flag || word.startsWith(`${flag}=`))) found.push(`${at}: C11-D62 passes no ${flag}`)
   }
+  if (found.length === 0 && command !== SYNTH_LZ_SCRIPT) {
+    found.push(`${at}: C11-D62 is exactly ${SYNTH_LZ_SCRIPT}, one command, so nothing runs outside env -i`)
+  }
   return found
 }
 
 // What's wrong with ci.yml for the landing zone's synth (C11-D62): the check job runs synth:lz
-// straight after npm test, and the workflow can hold no AWS credential: no id-token permission, only
+// straight after npm test, each step its run line alone (so neither is skipped by an if: or let fail
+// by continue-on-error), and the workflow can hold no AWS credential: no id-token permission, only
 // contents: read at the top, no credentials action and no AWS_ variable. The id-token clause reads
 // every line, comments included, for id-token and write-all (which grants it), so a job's own
 // permissions can't ask for one in a block, a flow mapping or a quoted key, a uses: job included;
@@ -1796,10 +2074,10 @@ export function synthScriptProblems(command: string): Finding[] {
 // for every workflow.
 export function ciSynthProblems(text: string, steps: readonly string[]): Finding[] {
   const found: Finding[] = []
-  const test = steps.findIndex(step => /^run: npm test$/m.test(step))
-  if (test < 0 || !/^run: npm run synth:lz -w @hearth\/infra$/m.test(steps[test + 1] ?? '')) {
+  const test = steps.indexOf('run: npm test')
+  if (test < 0 || steps[test + 1] !== 'run: npm run synth:lz -w @hearth/infra') {
     found.push(
-      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test',
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test, each step its run line alone',
     )
   }
   if (/id-token|write-all/i.test(text)) {

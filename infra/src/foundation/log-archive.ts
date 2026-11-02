@@ -131,6 +131,9 @@ export class LogArchiveStack extends cdk.Stack {
       ],
       resources: ['*'],
     })
+    // Access Analyzer reads a key with every key action of AccessAnalyzerServiceRolePolicy (DescribeKey,
+    // GetKeyPolicy, ListGrants, ListKeyPolicies); a key that refuses it one is left unanalysed, with an
+    // ACCESS_DENIED error finding, active, which A10 emails (C11-D20).
     const readBack = new iam.PolicyStatement({
       sid: 'ReadBack',
       principals: [new iam.ArnPrincipal(accountRoot(account))],
@@ -140,6 +143,7 @@ export class LogArchiveStack extends cdk.Stack {
         'kms:GetKeyRotationStatus',
         'kms:ListResourceTags',
         'kms:ListGrants',
+        'kms:ListKeyPolicies',
       ],
       resources: ['*'],
       conditions: {

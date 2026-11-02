@@ -12,8 +12,9 @@
 //   CloudTrail's own deliveries (each delivery logged would be delivered and logged again): a delete,
 //   a retention or legal-hold call, or any other write (a copy, a multipart upload, a tag or ACL
 //   change) is recorded, allowed or denied. A PutObject is recorded for nobody, CloudTrail or anyone
-//   else: log file validation shows a delivered file overwritten, but not a file added beside the
-//   digests;
+//   else: the reviewer's quarterly validation of each account's files against their signed digests
+//   (`aws cloudtrail validate-logs`, the break-glass review runbook) shows a delivered file
+//   overwritten, but not a file added beside the digests;
 // - every object read and write on the break-glass-log and archive buckets.
 // The key is named by its alias's ARN in log-archive, since its id exists only once LogArchive deploys
 // (TECH-SPEC T24 item 6); whether CloudTrail takes another account's alias at create is proved at the
@@ -106,7 +107,9 @@ export class OrgTrail extends Construct {
 
     // Retained even when the create that made it rolls back: CloudFormation can't delete a group under
     // deletion protection, so the rollback would fail instead. The set-up runbook's "A first deploy
-    // failed" turns the protection off and deletes the empty group by hand before the retry.
+    // failed" turns the protection off and deletes the group by hand before the retry, whether or not
+    // the trail delivered into it first: it only duplicates the trail's Object-Locked files in
+    // log-archive, and its event count and times are noted for the quarterly review.
     this.logGroup = new logs.LogGroup(this, 'TrailCopy', {
       logGroupName: SECURITY_LOG_GROUP,
       retention: cloudWatchRetention('cloudtrail'),

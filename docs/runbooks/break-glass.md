@@ -21,7 +21,8 @@
 ## Before you start
 
 - A terminal outside any Claude Code session, on an encrypted, up-to-date machine. Better, a separate operating-system user for break-glass, which a session under your own user can't read at all.
-- The helper's own folder, yours alone: `mkdir -m 700 ~/.hearth-break-glass` (or set `HEARTH_BREAK_GLASS_HOME` to another such folder). The helper refuses to start until it exists with mode 700, and it uses nothing outside it: it unsets every `AWS_` variable you have, and sets `HOME` to that folder for the session.
+- The helper's own folder, yours alone: `mkdir -m 700 ~/.hearth-break-glass` (or set `HEARTH_BREAK_GLASS_HOME` to another such folder). The helper refuses to start until it exists with mode 700. It unsets every `AWS_` variable you have, curl's config folders (`CURL_HOME`, `XDG_CONFIG_HOME`), `SSLKEYLOGFILE` and every CA override (`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `SSL_CERT_FILE`, `SSL_CERT_DIR`), sets `HOME` to that folder for the session, and runs curl so it reads no `.curlrc`; it still uses your `PATH` and your proxy settings.
+- One session at a time in a folder: the helper takes the folder's lock, `run.lock` inside it, and refuses a second run while it is held, since a run's sign-out ends every access-portal token cached there. A second session open at the same time (log-archive triage during a prod session, say) needs a folder of its own, set up the same way (mode 700, its own `.aws/config`) and named in `HEARTH_BREAK_GLASS_HOME`. A `run.lock` left by a run that was killed (its clean-up never ran) is removed by hand, once no helper is running in that folder.
 - That folder's own AWS config, `.aws/config`, holding one Identity Center profile per account it reaches, named exactly `hearth-nonprod-entry`, `hearth-prod-entry` and `hearth-log-archive-entry`. Account ids live only there:
 
   ```ini
@@ -37,7 +38,7 @@
   sso_registration_scopes = sso:account:access
   ```
 
-  The other two profiles are the same with their own account ids. Behind TLS inspection, add `ca_bundle = <the bundle's path>` there, since an inherited `AWS_CA_BUNDLE` is unset. Never set `cli_history`: the helper refuses while it is on.
+  The other two profiles are the same with their own account ids. Behind TLS inspection, an inherited `AWS_CA_BUNDLE` or `REQUESTS_CA_BUNDLE` is unset, so add `ca_bundle = <the bundle's full path>` to each `hearth-<env>-entry` profile: the helper reads it, refuses unless it is a file it can read, and passes it as `AWS_CA_BUNDLE` to everything it runs after the sign-in, the break-glass shell and a Baseline deploy's CDK CLI included. curl, for `--console`, trusts only its own default store, so the inspecting CA must be in the system's store, or the console link isn't made (the shell still works). Never set `cli_history`: the helper refuses while it is on.
 - The tools: the AWS CLI version 2, new enough that `aws s3api put-object help` lists `--if-none-match`; `jq`; and `curl`, for `--console` only.
 - The reason, in hand, in its exact form (below), and the runbook you follow.
 
@@ -99,9 +100,11 @@ An entry can never change, so an id learnt after the close (the DPO's person id,
 Its messages are fixed, and the AWS CLI's own errors are silenced, since they would print the account id, the bucket's name and your sign-in name; only the access portal's sign-in (`aws sso login`) prints its own. So check, in order:
 
 - "the sign-in didn't work", or "sign in with the HearthBreakGlassEntry permission set": the `hearth-<env>-entry` profile and its `sso-session` in the folder's `.aws/config`, and that you chose `HearthBreakGlassEntry` in the portal.
+- "another break-glass run holds this folder": finish the session open there first, or give a session open at the same time a folder of its own (*Before you start*); if no helper is running, a killed run left its `run.lock`: remove it by hand.
+- "the entry profile's ca_bundle isn't a file it can read": the profile's `ca_bundle` names a file that exists and is readable, by its full path.
 - "a reason's date is never after today in Singapore": the reason's date is a later day than today in Singapore; give the day it began there. Any other reason it refuses prints only its usage: compare yours with the forms it lists.
 - "the role wasn't assumed": the reason's exact form; that you signed in with `HearthBreakGlassEntry` through the right `hearth-<env>-entry` profile; that the account's Baseline is deployed.
-- "the break-glass-log bucket's parameter wasn't read": the account's `/hearth/break-glass/log-bucket` parameter exists (its Baseline, or `Hearth-LogArchive`, makes it).
+- "the break-glass-log bucket's parameter wasn't read": the account's `/hearth/break-glass/log-bucket` parameter exists (its Baseline, or `Hearth-LogArchive`, makes it). The role was assumed (A1 alarmed), so tell the second reviewer.
 - "the open entry wasn't written": the CLI is new enough for `--if-none-match`; nothing was done, so open it again.
 - "the close entry wasn't written": tell the second reviewer, who reconciles the session from the trail.
 - "the access portal's hour has ended too; sign in again": sign in to the portal as yourself, with your security key and `HearthBreakGlassEntry`; "that sign-in isn't the one the session opened under" means another person, set or account signed in, and the close wasn't written.
@@ -115,7 +118,7 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 
 - A1's email arrived within minutes from the account's topic, and later from management's.
 - The helper printed `open entry written for <session>` and then `close entry written` (or `amend entry written`).
-- The second reviewer, with `HearthSecurityReview` in log-archive, finds the entries: `aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/<dd>/` lists them, each one JSON object of schema `hearth.break-glass.v1`, keyed `<session>-open.json` and `<session>-close.json` (the session the helper opened), `<continuing session>-continuation.json` (under that session's own day) or `<amended session>-amend-<the amend's time>.json` (under the amended session's day).
+- The second reviewer, with `HearthSecurityReview` in log-archive, finds the entries: `aws s3api list-objects-v2 --bucket <the log bucket> --prefix break-glass/<account>/<yyyy>/<mm>/<dd>/` lists them (the log bucket is `hearth-break-glass-log-` followed by log-archive's account id, and `<account>` the id of the account the session ran in, as [the quarterly review](break-glass-review.md)'s step 2 finds them), each one JSON object of schema `hearth.break-glass.v1`, keyed `<session>-open.json` and `<session>-close.json` (the session the helper opened), `<continuing session>-continuation.json` (under that session's own day) or `<amended session>-amend-<the amend's time>.json` (under the amended session's day).
 
 ## Afterwards
 

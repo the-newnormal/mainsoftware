@@ -6,7 +6,9 @@
 // role patterns and nothing wider; the floor binds everyone, keyed on nothing but a key's tag; the
 // log-protect SCP excepts nobody; the RCP's STS statements reach one call each. A small evaluator
 // replays the requests that would mute an alarm, hand a role outside, or reach the hearthbase
-// execution role through CloudFormation against the SCPs binding a workload account. Root holds four of
+// execution role through CloudFormation, directly or through the template it runs from hearthbase's
+// staging bucket, against the SCPs binding a workload account, and the Baselines' own asset manifests
+// are checked against that bucket's fence, so the two can't drift apart. Root holds four of
 // Hearth's SCPs beside AWS's FullAWSAccess, the five Organizations allows, so a later step merges into
 // one of them. The floor's bucket patterns are checked against LogArchive's actual bucket names, so the
 // two can't drift apart. The pure scpProblems() is proved on planted contents first, and the RCP's
@@ -57,13 +59,14 @@ const secret = (name: string) => anywhere('secretsmanager', `secret:${name}`)
 const taskDefinitions = (family: string) => anywhere('ecs', `task-definition/${family}:*`)
 
 // The role patterns an SCP may name in a principal condition (C11-D05, C11-D26): each qualifier's
-// CloudFormation execution role and deploy role, OrganizationAccountAccessRole, break-glass, GitHub's
-// deploy role and both GitHub roles, every hearth bootstrap role, the server task roles by kind and
-// Rule 9's execution role, each in any account.
+// CloudFormation execution role and deploy role, hearthbase's file-publishing role,
+// OrganizationAccountAccessRole, break-glass, GitHub's deploy role and both GitHub roles, every hearth
+// bootstrap role, the server task roles by kind and Rule 9's execution role, each in any account.
 const EXEC = role('cdk-hearthbase-cfn-exec-role-*-ap-southeast-1')
 const APP_EXEC = role('cdk-hearthapp-cfn-exec-role-*-ap-southeast-1')
 const BASE_DEPLOY = role('cdk-hearthbase-deploy-role-*-ap-southeast-1')
 const APP_DEPLOY = role('cdk-hearthapp-deploy-role-*-ap-southeast-1')
+const BASE_PUBLISH = role('cdk-hearthbase-file-publishing-role-*-ap-southeast-1')
 const OAAR = role('OrganizationAccountAccessRole')
 const BREAK_GLASS = role('hearth-break-glass')
 const GH_DEPLOY = role('hearth-gh-deploy')
@@ -77,6 +80,7 @@ const ALLOWED_PRINCIPAL_PATTERNS: readonly string[] = [
   APP_EXEC,
   BASE_DEPLOY,
   APP_DEPLOY,
+  BASE_PUBLISH,
   BREAK_GLASS,
   GH_DEPLOY,
   GH_ROLES,
@@ -94,6 +98,8 @@ const LOG_BUCKETS = ['hearth-org-trail-', 'hearth-break-glass-log-', 'hearth-arc
   arn('s3', '', '', `${prefix}*`),
   arn('s3', '', '', `${prefix}*/*`),
 ])
+// hearthbase's staging bucket and its objects, in any account (C11-D26).
+const BASE_ASSETS = [arn('s3', '', '', 'cdk-hearthbase-assets-*'), arn('s3', '', '', 'cdk-hearthbase-assets-*/*')]
 // A key carrying the hearth-sec tag, which the floor protects keys by.
 const TAGGED = { Null: { 'aws:ResourceTag/hearth-sec': 'false' } }
 const except = (...patterns: string[]) => ({
@@ -123,10 +129,12 @@ const SMS = [
   'sns:VerifySMSSandboxPhoneNumber',
   'sns:OptInPhoneNumber',
 ]
-const NEW_IDENTITY_PROVIDERS = [
+const OIDC_PROVIDER_WRITES = [
   'iam:CreateOpenIDConnectProvider',
   'iam:AddClientIDToOpenIDConnectProvider',
   'iam:UpdateOpenIDConnectProviderThumbprint',
+]
+const OTHER_WAYS_IN = [
   'iam:CreateSAMLProvider',
   'iam:UpdateSAMLProvider',
   'cognito-identity:*',
@@ -177,6 +185,9 @@ const REGION_NOT_ACTIONS = [
   's3:GetAccountPublic*',
   'ec2:DescribeRegions',
   'guardduty:*',
+  'cloudtrail:DescribeTrails',
+  'cloudtrail:GetTrail',
+  'cloudtrail:ListPublicKeys',
 ]
 
 // The documents each policy must hold, exactly (C11-D05 to C11-D08).
@@ -392,6 +403,14 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
         Resource: '*',
         Condition: { StringNotEquals: { 'aws:RequestedRegion': ['ap-southeast-1', 'us-east-1'] } },
       },
+      // The reviewer's aws cloudtrail validate-logs, in us-east-1 too (TRUST-02).
+      {
+        Sid: 'TrailReadsAlsoUsEast1',
+        Effect: 'Deny',
+        Action: ['cloudtrail:DescribeTrails', 'cloudtrail:GetTrail', 'cloudtrail:ListPublicKeys'],
+        Resource: '*',
+        Condition: { StringNotEquals: { 'aws:RequestedRegion': ['ap-southeast-1', 'us-east-1'] } },
+      },
     ]),
   },
   'hearth-log-protect': {
@@ -493,6 +512,13 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
           'hearth_worker',
           'hearth_rule9',
         ].map(dbUser),
+      },
+      {
+        Sid: 'HearthbaseAssetsOnlyItsPublisher',
+        Effect: 'Deny',
+        Action: ['s3:Put*', 's3:Delete*', 's3:Replicate*', 's3:Restore*'],
+        Resource: BASE_ASSETS,
+        Condition: except(BASE_PUBLISH),
       },
     ]),
   },
@@ -623,12 +649,13 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
         Resource: '*',
       },
       {
-        Sid: 'NoNewIdentityProviders',
+        Sid: 'OidcProvidersOnlyHearthbase',
         Effect: 'Deny',
-        Action: NEW_IDENTITY_PROVIDERS,
+        Action: OIDC_PROVIDER_WRITES,
         Resource: '*',
-        Condition: except(EXEC, OAAR),
+        Condition: except(EXEC),
       },
+      { Sid: 'NoNewIdentityProviders', Effect: 'Deny', Action: OTHER_WAYS_IN, Resource: '*' },
     ]),
   },
   'hearth-data-perimeter': {
@@ -893,6 +920,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'hearth-workload-fences DbAppLogin ArnNotLike aws:PrincipalArn: hearth-*-api-task, hearth-*-realtime-task',
       'hearth-workload-fences DbWorkerLogin ArnNotLike aws:PrincipalArn: hearth-*-worker-task',
       'hearth-workload-fences DbRule9Login ArnNotLike aws:PrincipalArn: hearth-*-rule9-task',
+      'hearth-workload-fences HearthbaseAssetsOnlyItsPublisher ArnNotLike aws:PrincipalArn: cdk-hearthbase-file-publishing-role-*-ap-southeast-1',
       'hearth-workload-fences-2 NoPipelineSecretReads ArnLike aws:PrincipalArn: hearth-gh-*, cdk-hearth*',
       'hearth-workload-fences-2 BootstrapInputOnlyBreakGlass ArnNotLike aws:PrincipalArn: hearth-break-glass',
       'hearth-workload-fences-2 Rule9SecretByName ArnNotLike aws:PrincipalArn: hearth-*-rule9-task, hearth-*-rule9-exec',
@@ -905,7 +933,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'hearth-workload-fences-2 HearthbaseStacksOnlyItsDeploy ArnNotLike aws:PrincipalArn: cdk-hearthbase-deploy-role-*-ap-southeast-1',
       'hearth-workload-fences-2 AppRolesBounded ArnLike aws:PrincipalArn: cdk-hearthapp-cfn-exec-role-*-ap-southeast-1',
       'hearth-workload-fences-2 BoundaryOnlyHearthbase ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1',
-      'hearth-workload-fences-2 NoNewIdentityProviders ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1, OrganizationAccountAccessRole',
+      'hearth-workload-fences-2 OidcProvidersOnlyHearthbase ArnNotLike aws:PrincipalArn: cdk-hearthbase-cfn-exec-role-*-ap-southeast-1',
       `hearth-data-perimeter OrgPrincipalsOnly StringNotEqualsIfExists aws:PrincipalOrgID: ${fixture.organization.id}`,
       'hearth-data-perimeter OrgPrincipalsOnly BoolIfExists aws:PrincipalIsAWSService: false',
       `hearth-data-perimeter AssumeRoleOrgOnly StringNotEqualsIfExists aws:PrincipalOrgID: ${fixture.organization.id}`,
@@ -972,7 +1000,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     expect(principalKeys).toEqual(['NoOaar ArnLike aws:PrincipalArn'])
   })
 
-  it('IAC-02 C11-D05: hearth-region leaves only the global services, names no Region by wildcard, and lets GuardDuty alone into us-east-1', () => {
+  it('IAC-02 C11-D05 C11-D17: hearth-region leaves only the global services, names no Region by wildcard, and lets only GuardDuty and the trail’s three validation reads into us-east-1 (TRUST-02)', () => {
     const region = JSON.parse(String(policiesIn(foundation).get('hearth-region')?.Properties?.Content)) as {
       Statement: Statement[]
     }
@@ -980,9 +1008,19 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       list(statement.Condition?.StringNotEquals?.['aws:RequestedRegion']),
     )
     expect(regions.filter(value => value.includes('*') || value.includes('?'))).toEqual([])
-    const [onlySingapore, usEast1] = region.Statement
+    const [onlySingapore, usEast1, trailReads] = region.Statement
     expect(onlySingapore?.NotAction).toEqual(REGION_NOT_ACTIONS)
     expect(usEast1?.Action).toBe('guardduty:*')
+    expect(trailReads?.Action).toEqual([
+      'cloudtrail:DescribeTrails',
+      'cloudtrail:GetTrail',
+      'cloudtrail:ListPublicKeys',
+    ])
+    // What hearth-region leaves outside ap-southeast-1 but the global services is fenced to us-east-1:
+    // GuardDuty, and the reads alone, never a CloudTrail write.
+    const fenced = [usEast1?.Action, trailReads?.Action].flatMap(list)
+    expect(REGION_NOT_ACTIONS.filter(action => !/^(?!guardduty:|cloudtrail:)/.test(action))).toEqual(fenced)
+    expect(fenced.filter(action => /^cloudtrail:(?!Describe|Get|List)/.test(action))).toEqual([])
   })
 
   it('IAC-02 C11-D05: Root holds four of Hearth’s SCPs, which with AWS’s FullAWSAccess are the five Organizations allows; every other target holds at most five of a type', () => {
@@ -1134,11 +1172,13 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
     expect(denied({ action: 'sns:Publish', resource: topic, principal: task })).toEqual([])
   })
 
-  it('IAC-02 C11-D07: no workload principal makes a way to hand a role outside, by provider, certificate, activation or role alias, but the hearthbase execution role may', () => {
+  it('IAC-02 C11-D07: no workload principal, the hearthbase execution role an lz:pr- deploy acts through included, hands a role outside by a SAML provider, an identity pool, a certificate, an activation or a role alias; only that role makes or changes an OIDC provider, as the Baseline makes GitHub’s', () => {
     const at = (service: string, resource: string) => arn(service, 'ap-southeast-1', prod, resource)
     for (const [action, resource] of [
-      ['iam:CreateOpenIDConnectProvider', arn('iam', '', prod, 'oidc-provider/example.invalid')],
+      ['iam:CreateSAMLProvider', arn('iam', '', prod, 'saml-provider/x')],
+      ['iam:UpdateSAMLProvider', arn('iam', '', prod, 'saml-provider/x')],
       ['cognito-identity:CreateIdentityPool', at('cognito-identity', 'identitypool/x')],
+      ['cognito-identity:SetIdentityPoolRoles', at('cognito-identity', 'identitypool/x')],
       ['rolesanywhere:CreateTrustAnchor', at('rolesanywhere', 'trust-anchor/x')],
       ['rolesanywhere:CreateProfile', at('rolesanywhere', 'profile/x')],
       ['rolesanywhere:DisableCrl', at('rolesanywhere', 'crl/x')],
@@ -1147,9 +1187,97 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
       ['iot:CreateRoleAlias', at('iot', 'rolealias/x')],
       ['iot:UpdateRoleAlias', at('iot', 'rolealias/x')],
     ] as const) {
-      expect(denied({ action, resource, principal: task }), action).toEqual(['NoNewIdentityProviders'])
+      for (const principal of [task, appExec, exec, baseDeploy]) {
+        expect(denied({ action, resource, principal }), `${action} ${principal}`).toEqual(['NoNewIdentityProviders'])
+      }
+    }
+    for (const action of [
+      'iam:CreateOpenIDConnectProvider',
+      'iam:AddClientIDToOpenIDConnectProvider',
+      'iam:UpdateOpenIDConnectProviderThumbprint',
+    ]) {
+      const resource = arn('iam', '', prod, 'oidc-provider/example.invalid')
+      expect(denied({ action, resource, principal: task }), action).toEqual(['OidcProvidersOnlyHearthbase'])
+      expect(denied({ action, resource, principal: appExec }), action).toEqual(['OidcProvidersOnlyHearthbase'])
       expect(denied({ action, resource, principal: exec }), action).toEqual([])
     }
+  })
+
+  // hearthbase's staging bucket in prod, and the template a Baseline deploy would run from it.
+  const assets = `cdk-hearthbase-assets-${prod}-ap-southeast-1`
+  const template = arn('s3', '', '', `${assets}/0a1b2c3d.json`)
+  const basePublish = prodRole(`cdk-hearthbase-file-publishing-role-${prod}-ap-southeast-1`)
+  const appPublish = prodRole(`cdk-hearthapp-file-publishing-role-${prod}-ap-southeast-1`)
+
+  it('IAC-02 C11-D26: only hearthbase’s file-publishing role writes hearthbase’s staging bucket, whose templates CloudFormation runs as the hearthbase execution role, and nobody changes its configuration, so no workload principal plants what the next lz:pr- deploy runs', () => {
+    for (const [action, resource] of [
+      ['s3:PutObject', template],
+      ['s3:DeleteObjectVersion', template],
+      ['s3:DeleteObjectTagging', template],
+      ['s3:PutObjectAcl', template],
+      ['s3:ReplicateObject', template],
+      ['s3:RestoreObject', template],
+      ['s3:PutBucketPolicy', arn('s3', '', '', assets)],
+      ['s3:DeleteBucketPolicy', arn('s3', '', '', assets)],
+      ['s3:PutBucketNotification', arn('s3', '', '', assets)],
+      ['s3:PutReplicationConfiguration', arn('s3', '', '', assets)],
+      ['s3:PutBucketAcl', arn('s3', '', '', assets)],
+      ['s3:DeleteBucket', arn('s3', '', '', assets)],
+    ] as const) {
+      for (const principal of [task, exec, appExec, baseDeploy, appDeploy, appPublish]) {
+        expect(denied({ action, resource, principal }), `${action} ${principal}`).toEqual([
+          'HearthbaseAssetsOnlyItsPublisher',
+        ])
+      }
+    }
+    for (const action of ['s3:PutObject', 's3:DeleteObjectVersion']) {
+      expect(denied({ action, resource: template, principal: basePublish }), action).toEqual([])
+    }
+    // Reading stays open, and hearthapp's own bucket is its file-publishing role's (PR 3 fences it).
+    expect(denied({ action: 's3:GetObject', resource: template, principal: task })).toEqual([])
+    const appTemplate = arn('s3', '', '', `cdk-hearthapp-assets-${prod}-ap-southeast-1/0a1b2c3d.json`)
+    expect(denied({ action: 's3:PutObject', resource: appTemplate, principal: appPublish })).toEqual([])
+  })
+
+  it('IAC-02 C11-D26: each Baseline’s template, as its asset manifest publishes it, sits where that fence binds and is uploaded through the one role it excepts', () => {
+    interface Destination {
+      bucketName: string
+      objectKey: string
+      assumeRoleArn: string
+    }
+    const destinations = [...lz.synthesised.assetManifests]
+      .filter(([path]) => /^Hearth-(?:nonprod|prod)-Baseline\.assets\.json$/.test(path))
+      .flatMap(([, manifest]) =>
+        Object.values(
+          (manifest as { files?: Record<string, { destinations: Record<string, Destination> }> }).files ?? {},
+        ),
+      )
+      .flatMap(file => Object.values(file.destinations))
+    expect(destinations).toHaveLength(2)
+    const accounts: string[] = []
+    for (const { bucketName, objectKey, assumeRoleArn } of destinations) {
+      const object = arn('s3', '', '', `${bucketName}/${objectKey}`)
+      // The manifest leaves the partition for the CLI to fill in (a CloudFormation pseudo parameter,
+      // itself holding colons), so the role is read from IAM's part on; the account is the Baseline's.
+      const iamPart = assumeRoleArn.indexOf(':iam::')
+      expect(iamPart, assumeRoleArn).toBeGreaterThan(0)
+      const [account = '', resource = ''] = assumeRoleArn.slice(iamPart + ':iam::'.length).split(':')
+      const publisher = arn('iam', '', account, resource)
+      accounts.push(account)
+      expect(bucketName, object).toBe(`cdk-hearthbase-assets-${account}-ap-southeast-1`)
+      expect(denied({ action: 's3:PutObject', resource: object, principal: publisher }), publisher).toEqual([])
+      for (const name of [
+        'hearth-x-api-task',
+        `cdk-hearthbase-cfn-exec-role-${account}-ap-southeast-1`,
+        `cdk-hearthbase-deploy-role-${account}-ap-southeast-1`,
+      ]) {
+        const principal = arn('iam', '', account, `role/${name}`)
+        expect(denied({ action: 's3:PutObject', resource: object, principal }), principal).toEqual([
+          'HearthbaseAssetsOnlyItsPublisher',
+        ])
+      }
+    }
+    expect(accounts.sort()).toEqual([fixture.accounts.nonprod, fixture.accounts.prod].sort())
   })
 })
 
