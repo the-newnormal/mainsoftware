@@ -1448,7 +1448,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['k: closed set by an expansion', afterAssume(`: "\${closed:=yes}"`), ['IG-09k']],
       ['k: closed set inside an if', afterAssume('if true; then closed=yes; fi'), ['IG-09k']],
       ['k: closed never started', plant('\nclosed=no\n', '\n'), ['IG-09k']],
-      // HELPER-02: the role is taken for a late close only on a sign-in this run has checked.
+      // C0.11 review 4 HELPER-02: the role is taken for a late close only on a sign-in this run has checked.
       ['k: the close’s sign-in check dropped', plant('    [ "$sign_in" = checked ] || return 1\n', ''), ['IG-09k']],
       [
         'k: the close’s sign-in check carried on from a line before',

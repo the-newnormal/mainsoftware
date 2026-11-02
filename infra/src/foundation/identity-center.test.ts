@@ -164,7 +164,7 @@ const SETS: Record<string, { session: string; managed: string[]; inline: unknown
         Action: ['guardduty:Get*', 'guardduty:List*', 'access-analyzer:Get*', 'access-analyzer:List*'],
         Resource: '*',
       },
-      // aws cloudtrail validate-logs, for an organisation trail (TRUST-02).
+      // aws cloudtrail validate-logs, for an organisation trail (C0.11 review 2 TRUST-02).
       {
         Sid: 'ValidateTrail',
         Effect: 'Allow',

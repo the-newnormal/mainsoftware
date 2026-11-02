@@ -39,8 +39,10 @@
 //
 // Each entry added here costs about 207 characters of the bootstrap template's request body, since
 // the deny repeats on its five roles. IAC-24 (k) holds that body to 51,200 characters less 1,024
-// kept spare, about 18 entries away today; past that, collapse entries into wildcard patterns or move
-// the deny into one managed policy the five roles attach. After any change to these lists, run
+// kept spare, about 15 entries away today; past that, collapse entries into wildcard patterns or move
+// the deny into one managed policy the five roles attach. The tighter limit is `hearth-boundary`,
+// which carries the deny within a managed policy's 6,144 characters (IAC-10) and has room for about
+// three entries today; past that, IAC-10's drop order takes out its SMS statements first. After any change to these lists, run
 // `node infra/scripts/bootstrap-template.ts` and commit the template it writes (IAC-24).
 // This file is on the owner's-read list (C11-D74).
 

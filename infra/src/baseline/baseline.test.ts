@@ -512,7 +512,7 @@ describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind =
     ])
   })
 
-  it('IAC-11 C11-D11 C11-D27: each role it may assume, the hearthbase deploy and file-publishing roles, takes its source identity on both sides, its grant and the role’s trust in the committed bootstrap template, from hearth-break-glass alone (TRUST-03), proved on planted gaps first', () => {
+  it('IAC-11 C11-D11 C11-D27: each role it may assume, the hearthbase deploy and file-publishing roles, takes its source identity on both sides, its grant and the role’s trust in the committed bootstrap template, from hearth-break-glass alone (C0.11 review 2 TRUST-03), proved on planted gaps first', () => {
     const [, role] = roleIn(kind, 'hearth-break-glass')
     const policies = role.Properties?.Policies as Array<{ PolicyDocument: { Statement: Statement[] } }>
     const statements = policies.flatMap(policy => policy.PolicyDocument.Statement)
@@ -534,7 +534,7 @@ describe.each(KINDS)('IAC-11 C11-D11 C11-D12: %s’s hearth-break-glass', kind =
       'DeploymentActionRole: its trust allows the account no sts:SetSourceIdentity',
       'FilePublishingRole: its trust allows the account no sts:SetSourceIdentity',
     ])
-    // So is a trust that allows it to anyone in the account (TRUST-03), with its condition dropped,
+    // So is a trust that allows it to anyone in the account (C0.11 review 2 TRUST-03), with its condition dropped,
     // widened to every role, or a second, unconditioned statement beside it.
     const planted = (change: (s: Statement, trust: Statement[]) => void) => {
       const copy = structuredClone(BOOTSTRAP)
@@ -1069,7 +1069,7 @@ const ASSUME = {
     'detail-errorCode': '$.detail.errorCode',
   },
   // A chained hop sets no source identity of its own, so the one its caller's session carries rides
-  // beside it (TRUST-03).
+  // beside it (C0.11 review 2 TRUST-03).
   template: (alarm: string) =>
     `{"alarm":"${alarm}","account":<account>,"action":<detail-eventName>,"caller":<detail-userIdentity-arn>,"sourceIdentity":<detail-requestParameters-sourceIdentity>,"inheritedSourceIdentity":<detail-userIdentity-sessionContext-sourceIdentity>,"reason":<detail-requestParameters-tags-0--value>,"error":<detail-errorCode>}`,
 }

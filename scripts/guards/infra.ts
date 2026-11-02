@@ -1810,7 +1810,7 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       )
     }
   }
-  // The role is taken for a late close only on a sign-in this run has checked (HELPER-02): sign_in
+  // The role is taken for a late close only on a sign-in this run has checked (C0.11 review 4 HELPER-02): sign_in
   // starts `sign_in=checked` at the top before the trap; the second sign-in's function sets
   // `sign_in=unchecked` before its `aws sso login` and `sign_in=checked` as its last line; nothing
   // else names the flag; and the close's one assumption comes straight after

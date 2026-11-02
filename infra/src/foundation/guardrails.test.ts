@@ -420,7 +420,7 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
         Resource: '*',
         Condition: { StringNotEquals: { 'aws:RequestedRegion': ['ap-southeast-1', 'us-east-1'] } },
       },
-      // The reviewer's aws cloudtrail validate-logs, in us-east-1 too (TRUST-02).
+      // The reviewer's aws cloudtrail validate-logs, in us-east-1 too (C0.11 review 2 TRUST-02).
       {
         Sid: 'TrailReadsAlsoUsEast1',
         Effect: 'Deny',
@@ -1023,7 +1023,7 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     expect(principalKeys).toEqual(['NoOaar ArnLike aws:PrincipalArn'])
   })
 
-  it('IAC-02 C11-D05 C11-D17: hearth-region leaves only the global services, names no Region by wildcard, and lets only GuardDuty and the trail’s four validation reads, its bucket’s location among them, into us-east-1 (TRUST-02)', () => {
+  it('IAC-02 C11-D05 C11-D17: hearth-region leaves only the global services, names no Region by wildcard, and lets only GuardDuty and the trail’s four validation reads, its bucket’s location among them, into us-east-1 (C0.11 review 2 TRUST-02)', () => {
     const region = JSON.parse(String(policiesIn(foundation).get('hearth-region')?.Properties?.Content)) as {
       Statement: Statement[]
     }
@@ -1384,7 +1384,7 @@ describe('IAC-02 C11-D05 C11-D17: the quarterly trail validation replayed agains
       context: { 'aws:RequestedRegion': region },
     })
 
-  it('IAC-02 C11-D17: every call validate-logs makes passes with --region ap-southeast-1 and with --region us-east-1, and the four it makes in that Region stop at those two (TRUST-02)', () => {
+  it('IAC-02 C11-D17: every call validate-logs makes passes with --region ap-southeast-1 and with --region us-east-1, and the four it makes in that Region stop at those two (C0.11 review 2 TRUST-02)', () => {
     const inGivenRegion: Array<[string, string]> = [
       ['cloudtrail:DescribeTrails', '*'],
       ['organizations:DescribeOrganization', '*'],

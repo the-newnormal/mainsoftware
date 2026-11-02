@@ -388,7 +388,7 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
     expect(portal.filter(matches)).toEqual([])
   })
 
-  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes by Maximum (A11 on five in fifteen by SampleCount), both in Count, so no datapoint put into the metric holds one down, and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm; the copy’s intake alarm emails it once twelve five-minute periods in a row, about an hour, held no event, each empty period a real 0, so no earlier hour’s datapoint keeps it OK (DETECTION-03)', () => {
+  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes by Maximum (A11 on five in fifteen by SampleCount), both in Count, so no datapoint put into the metric holds one down, and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm; the copy’s intake alarm emails it once twelve five-minute periods in a row, about an hour, held no event, each empty period a real 0, so no earlier hour’s datapoint keeps it OK (C0.11 review 3 DETECTION-03)', () => {
     const sentinel = lz.stacks.foundation?.node.tryFindChild('Sentinel')
     expect(sentinel?.node.children.map(child => child.node.id)).toEqual([
       ...ASSURED.map(alarm => alarm.metric),
@@ -421,7 +421,7 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
         TreatMissingData: 'notBreaching',
         Unit: 'Count',
       })),
-      // The copy's intake (DETECTION-03): every alarm above treats no data as no alarm, so a copy that
+      // The copy's intake (C0.11 review 3 DETECTION-03): every alarm above treats no data as no alarm, so a copy that
       // stopped receiving the trail would leave them all OK. This one reads AWS's own count, into which
       // no PutMetricData may write. That count has a datapoint only for a period in which events
       // arrived, and CloudWatch judges a plain alarm on the latest real datapoints in a range longer
