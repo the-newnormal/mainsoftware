@@ -292,6 +292,7 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
           anyIam('role/hearth-break-glass*'),
           anyIam('role/hearth-gh-*'),
           anyIam('role/aws-reserved/sso.amazonaws.com/*'),
+          anyIam('saml-provider/AWSSSO_*_DO_NOT_DELETE'),
           anyIam('oidc-provider/token.actions.githubusercontent.com'),
           anyIam('policy/hearth-boundary'),
         ],
@@ -1226,6 +1227,22 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
       expect(denied({ action, resource, principal: appExec }), action).toEqual(['OidcProvidersOnlyHearthbase'])
       expect(denied({ action, resource, principal: exec }), action).toEqual([])
     }
+  })
+
+  it('IAC-02 C11-D11: no workload principal, the hearthapp execution and deploy roles included, deletes, changes or retags Identity Center’s own SAML provider, which every Identity Center sign-in to the account, HearthBreakGlassEntry’s included, arrives through; the hearthbase execution role stays excepted, as for Identity Center’s roles', () => {
+    const provider = arn('iam', '', prod, 'saml-provider/AWSSSO_0a1b2c3d4e5f6a7b_DO_NOT_DELETE')
+    for (const action of ['iam:DeleteSAMLProvider', 'iam:TagSAMLProvider', 'iam:UntagSAMLProvider']) {
+      for (const principal of [task, appExec, appDeploy, baseDeploy]) {
+        expect(denied({ action, resource: provider, principal }), `${action} ${principal}`).toEqual(['ProtectRoles'])
+      }
+      expect(denied({ action, resource: provider, principal: exec }), action).toEqual([])
+    }
+    // A change to it is refused twice over, and reading it stays open.
+    expect(denied({ action: 'iam:UpdateSAMLProvider', resource: provider, principal: task })).toEqual([
+      'ProtectRoles',
+      'NoNewIdentityProviders',
+    ])
+    expect(denied({ action: 'iam:GetSAMLProvider', resource: provider, principal: task })).toEqual([])
   })
 
   it('IAC-02 C11-D13: no workload principal, the hearthapp execution and deploy roles included, rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; the hearthbase execution role, which writes it, may, and reading it stays open', () => {

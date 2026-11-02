@@ -269,6 +269,10 @@ closed=no
 modes_json='[]'
 ids_json='{}'
 outcome=stopped
+# Whether the access portal's sign-in cached in the folder is one this run has checked as the person's
+# own: the first is, and a second (sign_in_again) only once its check has passed, so the role is never
+# taken on a second sign-in that was refused or never checked, the handler's unprompted close included.
+sign_in=checked
 # The run's own folder inside the helper's, which is also its lock (hold_folder), holding the entry
 # being written and the shell's rc file, so no other run reads, overwrites or removes them.
 run_dir="$BG_HOME/run.lock"
@@ -441,7 +445,9 @@ put_entry() {
     --checksum-algorithm SHA256 --if-none-match '*' >/dev/null 2>&1
 }
 
-# An entry's key: the session's own date, from its name, under this account's prefix.
+# An entry's key, under this account's prefix: the session the entry names as its own (its session
+# field), under the day that session began, from its name. So every entry sits in its own session's
+# folder, which the quarterly review lists beside that session's assumption in the trail.
 entry_key() {
   printf 'break-glass/%s/%s/%s/%s/%s-%s.json' "$account" "${1:10:4}" "${1:14:2}" "${1:16:2}" "$1" "$2"
 }
@@ -468,7 +474,8 @@ open_session() {
 # naming the first before it writes the close. The access portal's session began at the sign-in,
 # before the role was taken, and lasts an hour too, so by then it may have ended: a close the person
 # is there for then asks them to sign in again (sign_in_again), and one that stops unprompted can't,
-# so its close isn't written and the reviewer is told.
+# so its close isn't written and the reviewer is told. Nor is the role taken again after a second
+# sign-in that was refused or never checked (sign_in), whichever close it is.
 close_session() {
   local key
   if [ "$1" = prompted ]; then collect_close; fi
@@ -477,6 +484,7 @@ close_session() {
       [ "$1" = prompted ] || return 1
       sign_in_again || return 1
     fi
+    [ "$sign_in" = checked ] || return 1
     assume_role || return 1
     jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg session "$session" \
       --arg continues "$first_session" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg expires "$expires" \
@@ -496,13 +504,16 @@ close_session() {
 }
 
 # An amend entry for an earlier session, under its reason: the ids first, then the role for the one
-# write, then signed out. No shell, no console, no open or close entry.
+# write, then signed out. No shell, no console, no open or close entry. The entry is keyed by the
+# amend's own session, under its own day, as a continuation is, and names the session it amends: an
+# amend written in a later quarter than that session is then listed by the review of the quarter whose
+# trail holds the amend's own assumption.
 amend_session() {
   local key
   printf 'Amending %s.\n' "$amend"
   collect_ids
   assume_role || exit 1
-  key="$(entry_key "$amend" "amend-${session#hearth-bg-}")"
+  key="$(entry_key "$session" "amend-${amend#hearth-bg-}")"
   jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg reason "$reason" --arg session "$session" \
     --arg amends "$amend" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson ids "$ids_json" \
     '{schema: $schema, entry: "amend", environment: $environment, reason: $reason, session: $session, amends: $amends, at: $at, ids: $ids}' \
@@ -618,10 +629,13 @@ role="arn:$partition:iam::$account:role/hearth-break-glass"
 
 # A new sign-in for a close past the access portal's hour (close_session), which must be the same
 # person with the same permission set in the same account, or the close isn't written. It is defined
-# here, after the first sign-in, because it only ever runs after it.
+# here, after the first sign-in, because it only ever runs after it. Until its check passes, the
+# sign-in cached in the folder may be someone else's, so nothing takes the role on it (sign_in): a
+# refusal here is final, and the handler's unprompted close, which follows it, writes nothing.
 sign_in_again() {
   local again_account again_caller
   printf "break-glass: the access portal's hour has ended too; sign in again, as yourself, to write the close\n"
+  sign_in=unchecked
   aws sso login --profile "$profile" || return 1
   read -r again_account again_caller < <(aws sts get-caller-identity --profile "$profile" --query '[Account,Arn]' \
     --output text 2>/dev/null) || return 1
@@ -629,6 +643,7 @@ sign_in_again() {
     printf "break-glass: that sign-in isn't the one the session opened under, so the close entry wasn't written\n" >&2
     return 1
   fi
+  sign_in=checked
 }
 
 if [ -n "$amend" ]; then

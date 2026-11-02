@@ -1,9 +1,12 @@
 // The fast alarms (C11-D16): EventBridge rules in a member account that email its hearth-ops-alerts
 // topic within a minute or so of what they match. They are the quick path; the assured path is the
-// organisation trail's metric filters and alarms in management (A1 to A8, A11, A15), which see the
-// same calls even if a member account's delivery of management events to its default bus fails
-// (TECH-SPEC T24 item 5). Every input carries ids, an operator's sign-in name, a reason reference
-// and error codes only, never a request's content.
+// organisation trail's metric filters and alarms in management (A1 to A8, A11, A15). For A1, A8 and
+// A15 it sees the same calls even if a member account's delivery of management events to its default
+// bus fails. For A7 and A14 it doesn't: its A7 sees only CloudFormation's writes in prod, so what
+// prod's three A7 rules here match (ECS changes made outside CloudFormation, a RunTask overriding a
+// command or an environment) and A14's failed deployments are seen only here, and only while prod's
+// bus receives them (TECH-SPEC T24 item 5). Every input carries ids, an operator's sign-in name, a
+// reason reference and error codes only, never a request's content.
 //
 // Patterns: a Match helper is the whole value it matches with, never wrapped in another list, and a
 // raw matcher (`[{ exists: false }]`) is written as a list itself, so no pattern holds a list inside

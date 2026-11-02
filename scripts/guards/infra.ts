@@ -1810,6 +1810,48 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       )
     }
   }
+  // The role is taken for a late close only on a sign-in this run has checked (HELPER-02): sign_in
+  // starts `sign_in=checked` at the top before the trap; the second sign-in's function sets
+  // `sign_in=unchecked` before its `aws sso login` and `sign_in=checked` as its last line; nothing
+  // else names the flag; and the close's one assumption comes straight after
+  // `[ "$sign_in" = checked ] || return 1`, on a line not carried on from the one before it. So a
+  // refused or unchecked second sign-in is final, and the handler's unprompted close takes no role on
+  // the sign-in it left cached.
+  {
+    const again = bodyOf('sign_in_again')
+    const login = again.findIndex(line => /\baws\s+sso\s+login\b/.test(line.text))
+    const unchecked = again.findIndex(line => line.text === 'sign_in=unchecked')
+    const close = bodyOf('close_session')
+    const assumes = close.flatMap((line, index) => (calls(line.text).includes('assume_role') ? [index] : []))
+    const checkAt = (assumes[0] ?? 0) - 1
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === 'sign_in=checked')
+    const allowed = new Set([
+      starts[0]?.index,
+      ...[unchecked, again.length - 1].map(at => (functions.get('sign_in_again')?.start ?? -1) + at),
+    ])
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, 'sign_in')
+      return count === 0 ? [] : [{ index, count }]
+    })
+    if (
+      again.length === 0 ||
+      login < 0 ||
+      unchecked < 0 ||
+      unchecked > login ||
+      again[again.length - 1]?.text !== 'sign_in=checked' ||
+      assumes.length !== 1 ||
+      close[checkAt]?.text !== '[ "$sign_in" = checked ] || return 1' ||
+      /(?:&&|\|)$/.test(close[checkAt - 1]?.text.split('\n')[0] ?? '') ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || !allowed.has(index))
+    ) {
+      fail(
+        'k',
+        'a late close takes the role only on a checked sign-in: sign_in=checked at the top before the trap, sign_in_again setting sign_in=unchecked before its aws sso login and sign_in=checked last, nothing else naming it, and the close’s one assume_role straight after [ "$sign_in" = checked ] || return 1',
+      )
+    }
+  }
   for (const { line, index } of main) {
     if (
       reaches(line.text, /\bput-object\b/) &&
@@ -2175,7 +2217,9 @@ export const SYNTH_LZ_ENVIRONMENT = [
 
 // The script itself, whole: one command, so nothing runs before, beside or after it outside env -i
 // (npm runs a script through sh with the caller's environment, AWS keys and all), and no option but
-// these, so no plugin, profile, role or instance credentials either.
+// these, so no plugin, profile, role or instance credentials either. npm also runs a script's pre and
+// post hooks, and hands every script to a root .npmrc's script-shell, each with the caller's
+// environment, so synthHookProblems and npmrcProblems refuse those.
 export const SYNTH_LZ_SCRIPT = `env -i ${SYNTH_LZ_ENVIRONMENT.join(' ')} cdk synth --app 'node bin/landing-zone.ts' --no-lookups --no-notices --quiet`
 
 // What's wrong with infra's synth:lz script: it must run the CLI in exactly that environment, as
@@ -2206,6 +2250,35 @@ export function synthScriptProblems(command: string): Finding[] {
     found.push(`${at}: C11-D62 is exactly ${SYNTH_LZ_SCRIPT}, one command, so nothing runs outside env -i`)
   }
   return found
+}
+
+// The hooks npm runs around `npm run synth:lz` by themselves, each in its own shell with the caller's
+// environment, outside the script's env -i: a `cdk ls` there would reach STS with the caller's keys.
+// npm runs no root manifest's hook for `-w @hearth/infra`, so only infra's manifest is read.
+export const SYNTH_LZ_HOOKS = ['presynth:lz', 'postsynth:lz'] as const
+
+// What's wrong with infra's manifest around synth:lz: a pre or post hook of it (C11-D62). The parsed
+// keys are read, so a key spelled with a JSON escape is found as npm finds it.
+export function synthHookProblems(manifest: unknown): Finding[] {
+  const scripts = (manifest as { scripts?: Record<string, unknown> } | null)?.scripts ?? {}
+  return SYNTH_LZ_HOOKS.filter(hook => Object.hasOwn(scripts, hook)).map(
+    hook =>
+      `infra/package.json ${hook}: C11-D62 no ${hook} script: npm runs it with the caller's environment, outside env -i`,
+  )
+}
+
+// What's wrong with a tracked root .npmrc (C11-D62): a script-shell, which names the program npm hands
+// every script to, synth:lz included, with the caller's environment before env -i runs. npm reads
+// the key with or without quotes, and reads no workspace's own .npmrc. Its other case and underscore
+// spellings are refused too, though npm 11 ignores them, so a later npm that reads one changes nothing.
+export function npmrcProblems(text: string): Finding[] {
+  const sets = text.split(/\r?\n/).some(line => {
+    const key = (line.split('=')[0] ?? '').trim().replace(/^(["'])(.*)\1$/, '$2')
+    return /^script[-_]shell$/i.test(key)
+  })
+  return sets
+    ? [".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i"]
+    : []
 }
 
 // What's wrong with ci.yml for the landing zone's synth (C11-D62): the check job runs synth:lz

@@ -899,6 +899,7 @@ function boundaryStatements(account: string): unknown[] {
         iam('oidc-provider/token.actions.githubusercontent.com'),
         self,
         iam('role/aws-reserved/sso.amazonaws.com/*'),
+        iam('saml-provider/AWSSSO_*_DO_NOT_DELETE'),
       ],
     },
     {
@@ -994,16 +995,13 @@ describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
     ).toBeLessThanOrEqual(MANAGED_LIMIT)
   })
 
-  // The helper reads its bucket's name from the parameter by this name (infra/bin/break-glass.sh), and
-  // the role it takes can only read it, so a bounded role that rewrote or deleted it would refuse every
-  // break-glass session in the account. Replayed against the boundary as rendered: the statements
-  // that deny a request outright, by action and resource as IAM matches them, leaving out any
-  // statement with a condition, so the replay never reports a deny the boundary might not make.
-  it('IAC-10 C11-D13 C11-D26: no bounded role rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; reading it, and writing the workload’s own parameters, stay open', () => {
-    const template = templateOf(kind)
+  // Replayed against the boundary as rendered: the statements that deny a request outright, by action
+  // and resource as IAM matches them, leaving out any statement with a condition, so the replay never
+  // reports a deny the boundary might not make.
+  const boundaryDenies = (template: ReturnType<typeof templateOf>) => {
     const [, boundary] = one(template, 'AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'hearth-boundary')
     const statements = (boundary.Properties?.PolicyDocument as { Statement: Statement[] } | undefined)?.Statement ?? []
-    const denies = (action: string, resource: string) =>
+    return (action: string, resource: string) =>
       statements
         .filter(statement => statement.Effect === 'Deny' && statement.Condition === undefined)
         .filter(statement =>
@@ -1011,6 +1009,14 @@ describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
         )
         .filter(statement => listOf(statement.Resource).some(pattern => globsOverlap(pattern, resource)))
         .map(statement => statement.Sid)
+  }
+
+  // The helper reads its bucket's name from the parameter by this name (infra/bin/break-glass.sh), and
+  // the role it takes can only read it, so a bounded role that rewrote or deleted it would refuse every
+  // break-glass session in the account.
+  it('IAC-10 C11-D13 C11-D26: no bounded role rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; reading it, and writing the workload’s own parameters, stay open', () => {
+    const template = templateOf(kind)
+    const denies = boundaryDenies(template)
     const [, parameter] = one(template, 'AWS::SSM::Parameter', 'Name', '/hearth/break-glass/log-bucket')
     const at = (name: string) => arn('ssm', REGION, ACCOUNT[kind], `parameter${name}`)
     const helpers = at(String(parameter.Properties?.Name))
@@ -1026,6 +1032,24 @@ describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
     expect(denies('ssm:GetParameter', helpers)).toEqual([])
     expect(denies('ssm:GetParameters', helpers)).toEqual([])
     expect(denies('ssm:PutParameter', at(`/hearth/${kind}/app/setting`))).toEqual([])
+  })
+
+  // Every Identity Center sign-in to the account, HearthBreakGlassEntry's included, arrives through
+  // Identity Center's own SAML provider, which its service-linked role makes and no boundary binds; a
+  // bounded role that deleted it would shut the account's standing way in (hearth-baseline's
+  // ProtectRoles refuses it to every other principal but the hearthbase execution role and OAAR).
+  it('IAC-10 C11-D11 C11-D26: no bounded role deletes, changes or retags Identity Center’s own SAML provider, and none makes or changes another; reading it stays open', () => {
+    const denies = boundaryDenies(templateOf(kind))
+    const provider = arn('iam', '', ACCOUNT[kind], 'saml-provider/AWSSSO_0a1b2c3d4e5f6a7b_DO_NOT_DELETE')
+    for (const action of ['iam:DeleteSAMLProvider', 'iam:TagSAMLProvider', 'iam:UntagSAMLProvider']) {
+      expect(denies(action, provider), action).toEqual(['ProtectedNames'])
+    }
+    expect(denies('iam:UpdateSAMLProvider', provider)).toEqual(['NoNewIdentityProviders', 'ProtectedNames'])
+    const another = arn('iam', '', ACCOUNT[kind], 'saml-provider/x')
+    for (const action of ['iam:CreateSAMLProvider', 'iam:UpdateSAMLProvider']) {
+      expect(denies(action, another), action).toEqual(['NoNewIdentityProviders'])
+    }
+    expect(denies('iam:GetSAMLProvider', provider)).toEqual([])
   })
 })
 

@@ -9,8 +9,10 @@
 //   within CloudWatch Logs' 1,024 characters, A4 taking every Identity Center write IAM names but no
 //   access-portal call, and one alarm per id emailing management's topic as it enters ALARM and as it
 //   returns to OK, reading Maximum (A11 SampleCount) in Count, so no datapoint someone puts into its
-//   metric can hold it down;
-// - the reviewer's five saved queries over the copy alone;
+//   metric can hold it down (one can still hold it up, which triage and the read-backs catch), and
+//   the copy's intake alarm, which FILL holds to twelve real five-minute periods, so it alarms about
+//   an hour after the copy's last event;
+// - the reviewer's six saved queries over the copy alone, the break-glass entries' writers among them;
 // - every log group in every landing-zone template in its retention class, retained and protected;
 // - five budgets in the amounts C11-Q09 chose, before tax, each alerting the topic at 80 % and 100 %
 //   of actual spend and 100 % of forecast, and the anomaly monitor and its subscription.
@@ -166,6 +168,10 @@ const QUERIES: Record<string, string> = {
     'fields @timestamp, recipientAccountId, eventSource, eventName, errorCode | filter (userIdentity.type = "Root" and not ispresent(userIdentity.invokedBy)) or eventName = "AssumeRoot" | sort @timestamp desc',
   'hearth/review/recovery-moves':
     'fields @timestamp, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode | filter eventSource = "organizations.amazonaws.com" and eventName = "MoveAccount" | sort @timestamp desc',
+  // Who wrote each break-glass entry, refused puts included: the writer's session and source identity
+  // beside the key, whose session the review matches them with.
+  'hearth/review/break-glass-entry-writes':
+    'fields @timestamp, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode | filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^hearth-break-glass-log-/ | sort requestParameters.key asc, @timestamp asc',
 }
 
 // Each log group a landing-zone template may hold, by name, and its retention class (IAC-07). PR 3
@@ -282,7 +288,7 @@ describe('IAC-18 C11-D17: the organisation trail', () => {
     })
   })
 
-  it('IAC-18 C11-D17: the reviewer’s five saved queries read the copy alone', () => {
+  it('IAC-18 C11-D17: the reviewer’s six saved queries read the copy alone, one listing every break-glass entry’s writer beside its key', () => {
     const orgTrail = lz.stacks.foundation?.node.tryFindChild('OrgTrail')
     expect(orgTrail?.node.children.map(child => child.node.id)).toEqual([
       'TrailCopy',
@@ -293,6 +299,7 @@ describe('IAC-18 C11-D17: the organisation trail', () => {
       'DeployRoleSessions',
       'RootAndAssumeRoot',
       'RecoveryMoves',
+      'BreakGlassEntryWrites',
     ])
     const queries = ofType(foundation, 'AWS::Logs::QueryDefinition').map(([, r]) => r.Properties)
     expect(queries).toEqual(
@@ -381,7 +388,7 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
     expect(portal.filter(matches)).toEqual([])
   })
 
-  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes by Maximum (A11 on five in fifteen by SampleCount), both in Count, so no datapoint put into the metric holds one down, and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm; the copy’s intake alarm emails it after an hour in which the copy received nothing (DETECTION-03)', () => {
+  it('IAC-18: one alarm per id emails management’s topic as it enters ALARM, on the first match in five minutes by Maximum (A11 on five in fifteen by SampleCount), both in Count, so no datapoint put into the metric holds one down, and again as it returns to OK, so each episode’s span reaches the mailbox, and treats no data as no alarm; the copy’s intake alarm emails it once twelve five-minute periods in a row, about an hour, held no event, each empty period a real 0, so no earlier hour’s datapoint keeps it OK (DETECTION-03)', () => {
     const sentinel = lz.stacks.foundation?.node.tryFindChild('Sentinel')
     expect(sentinel?.node.children.map(child => child.node.id)).toEqual([
       ...ASSURED.map(alarm => alarm.metric),
@@ -415,19 +422,35 @@ describe('IAC-18 C11-D16: the assured alarms', () => {
         Unit: 'Count',
       })),
       // The copy's intake (DETECTION-03): every alarm above treats no data as no alarm, so a copy that
-      // stopped receiving the trail would leave them all OK. This one alarms after an hour with no
-      // event, no datapoint included, by AWS's own count, into which no PutMetricData may write.
+      // stopped receiving the trail would leave them all OK. This one reads AWS's own count, into which
+      // no PutMetricData may write. That count has a datapoint only for a period in which events
+      // arrived, and CloudWatch judges a plain alarm on the latest real datapoints in a range longer
+      // than its periods, so FILL makes each empty five-minute period a real 0, and twelve of twelve
+      // below 1, about an hour, alarm: a single late period can't. A range FILL returns nothing for is
+      // missing data, which breaches.
       {
         AlarmName: 'hearth-sec-copy-intake',
         AlarmActions: [{ Ref: topic }],
         OKActions: [{ Ref: topic }],
         ComparisonOperator: 'LessThanThreshold',
-        Dimensions: [{ Name: 'LogGroupName', Value: { Ref: logGroup } }],
-        EvaluationPeriods: 1,
-        MetricName: 'IncomingLogEvents',
-        Namespace: 'AWS/Logs',
-        Period: 3600,
-        Statistic: 'Sum',
+        DatapointsToAlarm: 12,
+        EvaluationPeriods: 12,
+        Metrics: [
+          { Expression: 'FILL(m1, 0)', Id: 'expr_1', ReturnData: true },
+          {
+            Id: 'm1',
+            MetricStat: {
+              Metric: {
+                Dimensions: [{ Name: 'LogGroupName', Value: { Ref: logGroup } }],
+                MetricName: 'IncomingLogEvents',
+                Namespace: 'AWS/Logs',
+              },
+              Period: 300,
+              Stat: 'Sum',
+            },
+            ReturnData: false,
+          },
+        ],
         Threshold: 1,
         TreatMissingData: 'breaching',
       },

@@ -38,6 +38,9 @@ export const BOUNDARY = 'hearth-boundary'
 
 // Where Identity Center puts the roles its permission sets make in each account.
 export const SSO_ROLE_PATH = 'aws-reserved/sso.amazonaws.com/'
+// The SAML provider Identity Center makes in each account it provisions a set in, which each of
+// those roles trusts, as an IAM resource path (`AWSSSO_<id>_DO_NOT_DELETE`).
+export const SSO_SAML_PROVIDER = 'saml-provider/AWSSSO_*_DO_NOT_DELETE'
 
 // The permission sets (C11-D10). HearthSetUp is made by hand for the first deploys and deleted after
 // them, never by CDK; it is named here so its sessions match A3's alarm (C11-D16).

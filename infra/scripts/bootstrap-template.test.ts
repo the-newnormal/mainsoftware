@@ -290,8 +290,12 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
   it('(a) the committed file is strict JSON, and a YAML short tag in it fails to parse', () => {
     expect(() => parseCommitted(committedText)).not.toThrow()
     expect(isObject(committed.Resources)).toBe(true)
-    const planted = committedText.replace('"Value": "32"', `"Value": !Sub '\${AWS::AccountId}'`)
-    expect(planted).not.toBe(committedText)
+    // The tag is planted on the template's own bootstrap version, read from it rather than written
+    // here, so a regenerated template at a newer version plants it all the same.
+    const version = propertiesOf(committed, 'CdkBootstrapVersion').Value
+    expect(typeof version, 'the template holds its bootstrap version as a string').toBe('string')
+    const planted = committedText.replace(`"Value": ${JSON.stringify(version)}`, `"Value": !Sub '\${AWS::AccountId}'`)
+    expect(planted, 'the plant found the bootstrap version’s value to replace').not.toBe(committedText)
     expect(() => parseCommitted(planted)).toThrow()
   })
 

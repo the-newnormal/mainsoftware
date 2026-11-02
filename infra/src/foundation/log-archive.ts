@@ -350,7 +350,12 @@ export class LogArchiveStack extends cdk.Stack {
     // new current version over an earlier entry, its own, another person's or the set-up's, and the
     // review reads each entry as first written. The helper sends it with every entry; a put without
     // it, a multipart upload's included, is refused. A session can still take a key nobody has
-    // written yet (another session's close, say); the trail's data event names the session that did.
+    // written yet: another of the account's break-glass sessions, under any session name, can write
+    // an open session's close first, and the real close is then refused. The trail records every put
+    // here as a data event naming its writer's session and source identity, and the quarterly review
+    // matches each key's writer with the session the key names (org-trail.ts's
+    // hearth/review/break-glass-entry-writes); a close the helper reported unwritten that is found in
+    // the bucket was written by someone else.
     entriesBucket.addToResourcePolicy(
       new iam.PolicyStatement({
         sid: 'EntriesNeverReplaced',

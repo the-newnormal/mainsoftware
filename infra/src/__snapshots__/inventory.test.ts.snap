@@ -37,7 +37,7 @@ exports[`IAC-14 C11-D70: the landing zone’s inventory > IAC-14: each stack hol
     ],
     [
       "AWS::Logs::QueryDefinition",
-      5,
+      6,
     ],
     [
       "AWS::Organizations::Policy",

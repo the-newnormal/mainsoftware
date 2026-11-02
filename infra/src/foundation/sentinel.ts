@@ -1,21 +1,29 @@
 // The assured alarms (C11-D16), in Hearth-Foundation: metric filters on the organisation trail's
 // CloudWatch copy (org-trail.ts) and one alarm each, emailing management's hearth-ops-alerts topic.
-// They see every account's calls, a member account's fast rule or not, so they are the path that holds
-// when a fast rule's delivery fails (TECH-SPEC T24 item 5). An alarm emails as it enters ALARM and
-// again as it returns to OK, never per call: a matching call while it is already in ALARM (a prod
-// release's later stacks, a Baseline deploy's other writes, the Owner's own triage session) emails
-// nobody, so triage reads every call from the episode's first breaching period until the OK email (the
-// security-alerts runbook). Each treats missing data as no alarm, so a copy that stopped receiving the
-// trail would leave them all OK whatever happened: the copy's intake alarm, hearth-sec-copy-intake,
-// reads AWS's own count of the events the copy received, which nobody's datapoints can reach, and
-// alarms after an hour with none, missing data counting as none. They can't report tampering with
-// themselves from inside management, which no guardrail binds: a HearthOrgAdmin session or
-// management's root can turn off or mute the alarms' actions, delete them, or unsubscribe or delete the
-// topic before the copy receives those calls, minutes after they are made, so A6, and A3 for the
-// session itself, may then email nobody. The trail's files in log-archive, under Object
-// Lock, still record those calls for the quarterly review. Datapoints a caller puts into an alarm's
-// metric would leave no such record, since CloudTrail records PutMetricData only as a data event, which
-// the trail doesn't select, so each alarm reads a statistic they can't lower (alarmStatistic, below).
+// They see every account's calls, a member account's fast rule or not, so for A1, A8 and A15 they
+// are the path that holds when a fast rule's delivery fails. They aren't for the rest: A7 here sees
+// only CloudFormation's writes in prod, so nothing here sees what prod's three fast A7 rules match
+// (ECS changes made outside CloudFormation, a RunTask overriding a command or an environment), nor
+// A14's failed deployments (TECH-SPEC T24 item 5). An alarm emails as it enters ALARM and again as
+// it returns to OK, never per call: a matching call while it is already in ALARM (a prod release's
+// later stacks, a Baseline deploy's other writes, the Owner's own triage session) emails nobody, so
+// triage reads every call from the episode's first breaching period until the OK email (the
+// security-alerts runbook). Each treats missing data as no alarm, so a copy that stopped receiving
+// the trail would leave them all OK whatever happened: the copy's intake alarm,
+// hearth-sec-copy-intake, reads AWS's own count of the events the copy received, which nobody's
+// datapoints can reach, and alarms once twelve five-minute periods in a row, about an hour, held
+// none (CopyIntake, below). They can't report tampering with themselves from inside management,
+// which no guardrail binds: a HearthOrgAdmin session or management's root can turn off or mute the
+// alarms' actions, delete them, or unsubscribe or delete the topic before the copy receives those
+// calls, minutes after they are made, so A6, and A3 for the session itself, may then email nobody.
+// The trail's files in log-archive, under Object Lock, still record those calls for the quarterly
+// review. Datapoints a caller puts into an alarm's metric would leave no such record, since
+// CloudTrail records PutMetricData only as a data event, which the trail doesn't select, so each
+// alarm reads a statistic they can't lower (alarmStatistic, below). They can still raise one, and an
+// alarm held in ALARM that way emails nobody about the calls that follow, so triage treats a
+// breaching period with no matching call, or an alarm still in ALARM long after its last one, as an
+// A6 raised in management, and the read-backs read each alarm's state (the security-alerts and
+// review runbooks).
 // The alarms:
 // - A1 break-glass assumed, refused attempts included (C11-D11);
 // - A2 a root sign-in or action, or a centralised root session;
@@ -64,6 +72,10 @@ export const SECURITY_NAMESPACE = 'Hearth/Security'
 // CloudWatch Logs' limit on one filter pattern, in characters.
 const PATTERN_LIMIT = 1_024
 
+// The copy's intake alarm: twelve empty five-minute periods in a row, about an hour (CopyIntake).
+const INTAKE_PERIOD_MINUTES = 5
+const INTAKE_PERIODS = 12
+
 export interface AssuredAlarm {
   // The construct id and the metric's name.
   metric: string
@@ -84,7 +96,11 @@ export interface AssuredAlarm {
 // reads SampleCount, one sample per matched event, which a datapoint can only add to, so long as
 // CloudWatch refuses a negative sample count: that, and a filter's one sample per match, are proved at
 // set-up (the set-up runbook). Filter and alarm both name the unit Count, so a datapoint put under
-// another unit is left out rather than leaving the alarm's evaluation undefined.
+// another unit is left out rather than leaving the alarm's evaluation undefined. No statistic stops a
+// datapoint holding an alarm up: one at the threshold, put in every few minutes, keeps the alarm in
+// ALARM, where it emails nobody about a real match (above). Triage and the read-backs are what find
+// that; a deny of PutMetricData into Hearth/Security on HearthOrgAdmin would refuse it to that set's
+// sessions, but not to management's root or a role a session makes, and is the owner's to choose.
 const alarmStatistic = (threshold: number) =>
   threshold === 1 ? cloudwatch.Stats.MAXIMUM : cloudwatch.Stats.SAMPLE_COUNT
 
@@ -433,20 +449,32 @@ export class Sentinel extends Construct {
       alarm.node.addDependency(props.alerts.policyDependable)
       return alarm
     })
-    // The copy's intake: an hour in which the copy received no event, or with no datapoint at all, is
-    // an alarm (an organisation trail delivers every few minutes), read from AWS's own
-    // IncomingLogEvents, in a namespace no PutMetricData may write to. Its ALARM and OK reach the same
-    // topic as the assured alarms'.
+    // The copy's intake: about an hour in which the copy received no event is an alarm (an
+    // organisation trail delivers every few minutes), read from AWS's own IncomingLogEvents, in a
+    // namespace no PutMetricData may write to. That count has a datapoint only for a period in which
+    // events arrived, and CloudWatch judges an alarm on the latest real datapoints in a range it reads
+    // further back than its periods, ignoring how missing data is treated while it finds enough, so a
+    // plain alarm on it would stay OK for as long as an earlier period with events stayed in range.
+    // FILL makes each empty five-minute period a real 0 instead, and the alarm needs twelve of twelve
+    // below 1, so it alarms about an hour after the copy's last event, and one late period can't trip
+    // it. A range FILL returns nothing for is missing data, treated as breaching. Its ALARM and OK
+    // reach the same topic as the assured alarms'.
     const intake = new cloudwatch.Alarm(this, 'CopyIntake', {
       alarmName: `${SEC_RULE_PREFIX}copy-intake`,
-      metric: new cloudwatch.Metric({
-        namespace: 'AWS/Logs',
-        metricName: 'IncomingLogEvents',
-        dimensionsMap: { LogGroupName: props.logGroup.logGroupName },
-        statistic: cloudwatch.Stats.SUM,
-        period: cdk.Duration.hours(1),
+      metric: new cloudwatch.MathExpression({
+        expression: 'FILL(m1, 0)',
+        usingMetrics: {
+          m1: new cloudwatch.Metric({
+            namespace: 'AWS/Logs',
+            metricName: 'IncomingLogEvents',
+            dimensionsMap: { LogGroupName: props.logGroup.logGroupName },
+            statistic: cloudwatch.Stats.SUM,
+          }),
+        },
+        period: cdk.Duration.minutes(INTAKE_PERIOD_MINUTES),
       }),
-      evaluationPeriods: 1,
+      evaluationPeriods: INTAKE_PERIODS,
+      datapointsToAlarm: INTAKE_PERIODS,
       threshold: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,

@@ -1,7 +1,8 @@
 // The infra source guard (IG, C0.11; TECH-SPEC T24 item 28): what the CDK app's source must and
 // mustn't hold, before any template is synthesised. Each case is first proved on planted text, then
 // held over the repository. The templates themselves are the assertion tests' (IAC, infra/**/*.test.ts).
-// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script and ci.yml step.
+// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script, with no hook
+// around it and no script-shell in a root .npmrc, and its ci.yml step.
 // This file and infra.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -32,6 +33,7 @@ import {
   MODEL_MODULES,
   modelModuleFindings,
   modelStringFindings,
+  npmrcProblems,
   ORGANIZATIONS_ID,
   packageFindings,
   RESERVED_FUNCTION_NAMES,
@@ -41,6 +43,7 @@ import {
   ruleFindings,
   scriptFindings,
   shellFunction,
+  synthHookProblems,
   synthScriptProblems,
   testImportFindings,
   workloadGraphFindings,
@@ -1445,6 +1448,42 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['k: closed set by an expansion', afterAssume(`: "\${closed:=yes}"`), ['IG-09k']],
       ['k: closed set inside an if', afterAssume('if true; then closed=yes; fi'), ['IG-09k']],
       ['k: closed never started', plant('\nclosed=no\n', '\n'), ['IG-09k']],
+      // HELPER-02: the role is taken for a late close only on a sign-in this run has checked.
+      ['k: the close’s sign-in check dropped', plant('    [ "$sign_in" = checked ] || return 1\n', ''), ['IG-09k']],
+      [
+        'k: the close’s sign-in check carried on from a line before',
+        plant('    [ "$sign_in" = checked ] || return 1\n', '    true ||\n    [ "$sign_in" = checked ] || return 1\n'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close’s sign-in check after the assumption',
+        plant(
+          '    [ "$sign_in" = checked ] || return 1\n    assume_role || return 1\n',
+          '    assume_role || return 1\n    [ "$sign_in" = checked ] || return 1\n',
+        ),
+        ['IG-09k'],
+      ],
+      ['k: the second sign-in never marked unchecked', plant('  sign_in=unchecked\n', ''), ['IG-09k']],
+      [
+        'k: the second sign-in marked unchecked after its login',
+        plant(
+          '  sign_in=unchecked\n  aws sso login --profile "$profile" || return 1\n',
+          '  aws sso login --profile "$profile" || return 1\n  sign_in=unchecked\n',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the second sign-in marked checked before its check',
+        plant(
+          '  sign_in=checked\n}\n',
+          '}\n',
+          plant('  sign_in=unchecked\n', '  sign_in=unchecked\n  sign_in=checked\n'),
+        ),
+        ['IG-09k'],
+      ],
+      ['k: the sign-in flag set again', afterAssume('sign_in=checked'), ['IG-09k']],
+      ['k: the sign-in flag set by printf -v', afterAssume("printf -v sign_in '%s' checked"), ['IG-09k']],
+      ['k: the sign-in flag never started', plant('\nsign_in=checked\n', '\n'), ['IG-09k']],
       [
         'e: the credentials file set again',
         plant(
@@ -1961,6 +2000,43 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
     // A line break where a space was: sh runs env -i alone, then the synth with every variable.
     expect(changed('env -i ', 'env -i\n')).toEqual(whole)
   })
+
+  // npm runs a pre or post hook, and a root .npmrc's script-shell, with the caller's environment,
+  // outside env -i; IG-07 lets `cdk ls` stand in any script, so these two pins are what find one.
+  it('npm runs no hook around it, and no tracked root .npmrc names a script shell', () => {
+    const manifest = JSON.parse(readRepoFile('infra/package.json'))
+    expect(synthHookProblems(manifest)).toEqual([])
+    const tracked = execFileSync('git', ['ls-files', '--cached', '--', '.npmrc'], { cwd: root, encoding: 'utf8' })
+    expect(tracked.trim() === '' ? [] : npmrcProblems(readRepoFile('.npmrc'))).toEqual([])
+
+    const hooked = (text: string) => synthHookProblems(JSON.parse(text))
+    const manifestText = readRepoFile('infra/package.json')
+    const scriptsKey = '"scripts": {\n'
+    expect(manifestText).toContain(scriptsKey)
+    const plant = (hooks: string) => manifestText.replace(scriptsKey, () => `${scriptsKey}${hooks}`)
+    const pre =
+      "infra/package.json presynth:lz: C11-D62 no presynth:lz script: npm runs it with the caller's environment, outside env -i"
+    const post =
+      "infra/package.json postsynth:lz: C11-D62 no postsynth:lz script: npm runs it with the caller's environment, outside env -i"
+    expect(hooked(plant('    "presynth:lz": "cdk ls",\n'))).toEqual([pre])
+    expect(hooked(plant(`    "postsynth:lz": "cdk ls --app 'node bin/landing-zone.ts'",\n`))).toEqual([post])
+    expect(hooked(plant('    "presynth:lz": "cdk ls",\n    "postsynth:lz": "cdk ls",\n'))).toEqual([pre, post])
+    // A key spelled with a JSON escape is the same key to npm.
+    expect(hooked(plant('    "pre\\u0073ynth:lz": "cdk ls",\n'))).toEqual([pre])
+    // IG-07 passes each of them, which is why this pin exists.
+    expect(scriptFindings('infra/package.json', JSON.parse(plant('    "presynth:lz": "cdk ls",\n')))).toEqual([])
+    // Hooks of other scripts, and a script whose name only starts like one, are not synth:lz's.
+    expect(hooked(plant('    "pretypecheck": "true",\n    "presynth:lzx": "true",\n'))).toEqual([])
+
+    const shell = [
+      ".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i",
+    ]
+    expect(npmrcProblems('script-shell=./scripts/sh.sh\n')).toEqual(shell)
+    expect(npmrcProblems('engine-strict=true\n"script-shell" = /bin/bash\n')).toEqual(shell)
+    expect(npmrcProblems("  'script-shell'=bash\r\n")).toEqual(shell)
+    expect(npmrcProblems('SCRIPT_SHELL=bash\n')).toEqual(shell)
+    expect(npmrcProblems('engine-strict=true\nsave-exact=true\n; script-shell=bash\n# script-shell=bash\n')).toEqual([])
+  }, 30_000)
 
   it('ci.yml runs it straight after npm test, and holds no id-token, credentials action or AWS_ variable', () => {
     const ci = readRepoFile('.github/workflows/ci.yml')

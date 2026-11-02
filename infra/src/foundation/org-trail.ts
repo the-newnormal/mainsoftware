@@ -32,7 +32,15 @@ import * as logs from 'aws-cdk-lib/aws-logs'
 import { Construct } from 'constructs'
 import { arnPattern, bucketArns } from '../config/arns.ts'
 import type { LandingZoneConfig } from '../config/env.ts'
-import { KEY_ALIAS, logBucketName, QUALIFIER, ROLE, SECURITY_LOG_GROUP, TRAIL_NAME } from '../config/names.ts'
+import {
+  KEY_ALIAS,
+  LOG_BUCKET_PREFIX,
+  logBucketName,
+  QUALIFIER,
+  ROLE,
+  SECURITY_LOG_GROUP,
+  TRAIL_NAME,
+} from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 import { cloudWatchRetention } from '../config/retention.ts'
 import { document } from './denies.ts'
@@ -82,6 +90,22 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
       'fields @timestamp, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode',
       'filter eventSource = "organizations.amazonaws.com" and eventName = "MoveAccount"',
       'sort @timestamp desc',
+    ].join(' | '),
+  },
+  // Who wrote each break-glass entry: every put on the break-glass-log bucket, refused ones included,
+  // from the trail's data events, with the writing session (its name, after the role in the ARN) and
+  // its source identity beside the key, sorted so each key's puts sit together. Another of the
+  // account's break-glass sessions, under any session name, can write a key nobody has written yet
+  // (an open session's close, say), which the bucket doesn't refuse (log-archive.ts), so the review
+  // matches each key's writer, by session and source identity, with the session the key names (the
+  // break-glass review runbook).
+  {
+    id: 'BreakGlassEntryWrites',
+    name: 'hearth/review/break-glass-entry-writes',
+    query: [
+      'fields @timestamp, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode',
+      `filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^${LOG_BUCKET_PREFIX.breakGlass}/`,
+      'sort requestParameters.key asc, @timestamp asc',
     ].join(' | '),
   },
 ]

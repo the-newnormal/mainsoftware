@@ -46,6 +46,7 @@ import {
   SEC_TAG,
   SECURITY_LOG_GROUP_PREFIX,
   SSO_ROLE_PATH,
+  SSO_SAML_PROVIDER,
   TAG_KEY,
   TOOLKIT_STACK,
 } from '../config/names.ts'
@@ -290,7 +291,10 @@ function baselineStatements(): IamStatement[] {
       Condition: exceptFor(EXEC, OAAR),
     },
     // The roles and names the landing zone makes: break-glass, GitHub's roles and provider, Identity
-    // Center's roles and the boundary (C11-D11, C11-D26, C11-D55).
+    // Center's roles and its SAML provider, and the boundary (C11-D11, C11-D26, C11-D55). Every
+    // Identity Center sign-in to an account, HearthBreakGlassEntry's included, arrives through that
+    // provider, so deleting it would shut the account's standing way in. Identity Center's own writes
+    // to it come from its service-linked role, which no SCP binds.
     {
       Sid: 'ProtectRoles',
       Effect: 'Deny',
@@ -299,6 +303,7 @@ function baselineStatements(): IamStatement[] {
         anyIam(`role/${ROLE.breakGlass}*`),
         anyIam('role/hearth-gh-*'),
         anyIam(`role/${SSO_ROLE_PATH}*`),
+        anyIam(SSO_SAML_PROVIDER),
         anyIam(`oidc-provider/${GITHUB_OIDC_HOST}`),
         anyIam(`policy/${BOUNDARY}`),
       ],

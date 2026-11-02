@@ -100,7 +100,8 @@ export const OIDC_PROVIDER_WRITES: readonly string[] = [
   'iam:UpdateOpenIDConnectProviderThumbprint',
 ]
 // Every other way in, which nothing Hearth deploys makes. Identity Center's own SAML provider in each
-// account is made by its service-linked role, which no SCP or boundary binds.
+// account is made by its service-linked role, which no SCP or boundary binds; hearth-baseline's
+// ProtectRoles and the boundary's ProtectedNames keep everyone else from deleting it.
 export const NO_OTHER_WAYS_IN: readonly string[] = [
   'iam:CreateSAMLProvider',
   'iam:UpdateSAMLProvider',
