@@ -14,6 +14,7 @@ import {
   LandingZoneConfigError,
   parseLandingZoneEnv,
   resolveLandingZone,
+  SUBJECT_SHAPE,
   subjectFormatProblem,
   subjectRepositoryProblem,
 } from './env.ts'
@@ -153,10 +154,30 @@ describe('C11-D55: the subject binds the repository the configuration names', ()
     expect(
       subjectRepositoryProblem(
         withFormat(
-          `repo:example-org@1/hearth@2:environment:{environment}:job_workflow_ref:example-org@1/hearth@2/${workflow}:x`,
+          `repo:example-org@1/hearth@2:environment:{environment}:job_workflow_ref:example-org@1/hearth@2/${workflow}`,
         ),
       ),
     ).toBeUndefined()
+  })
+
+  it('refuses any shape but the one GitHub sends for the claim keys repo, context and job_workflow_ref (C0.11 review 6 DOCS-04)', () => {
+    const tail = `:job_workflow_ref:{repository}/${workflow}`
+    const shapeProblem = `must be exactly ${SUBJECT_SHAPE},`
+    for (const format of [
+      // context's value without its own word
+      `repo:{repository}:{environment}${tail}`,
+      // a context: label GitHub never writes
+      `repo:{repository}:context:environment:{environment}${tail}`,
+      // a ref: claim the customisation doesn't include
+      `repo:{repository}:ref:refs/heads/main:environment:{environment}${tail}`,
+      // anything after the job_workflow_ref claim
+      `repo:{repository}:environment:{environment}${tail}:x`,
+      // the claims in another order
+      `repo:{repository}${tail}:environment:{environment}`,
+    ]) {
+      expect(subjectFormatProblem(format), format).toBeUndefined()
+      expect(subjectRepositoryProblem(withFormat(format)), format).toContain(shapeProblem)
+    }
   })
 
   it('refuses a format naming another repository, near-identical owner or ids included, in either position', () => {

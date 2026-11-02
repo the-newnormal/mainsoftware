@@ -103,8 +103,9 @@ const ASSURED: ReadonlyArray<{ metric: string; name: string; patterns: string[] 
     patterns: [
       // (a) the audit services' writes
       '{ (($.eventSource = "cloudtrail.amazonaws.com") || ($.eventSource = "guardduty.amazonaws.com") || ($.eventSource = "access-analyzer.amazonaws.com")) && ($.readOnly IS FALSE) }',
-      // (b) long-lived credentials, identity providers and Cognito identity pools, flow logs
-      '{ (($.eventSource = "iam.amazonaws.com") && (($.eventName = "CreateUser") || ($.eventName = "CreateAccessKey") || ($.eventName = "CreateLoginProfile") || ($.eventName = "CreateServiceSpecificCredential"))) || (($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*OpenIDConnectProvider*") || ($.eventName = "*SAMLProvider*"))) || (($.eventSource = "cognito-identity.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "rolesanywhere.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "ssm.amazonaws.com") && (($.eventName = "CreateActivation") || ($.eventName = "UpdateManagedInstanceRole"))) || (($.eventSource = "iot.amazonaws.com") && (($.eventName = "CreateRoleAlias") || ($.eventName = "UpdateRoleAlias"))) || (($.eventSource = "ec2.amazonaws.com") && ($.eventName = "DeleteFlowLogs")) }',
+      // (b) long-lived credentials, identity providers and Cognito identity pools, STS's Regional
+      // endpoint status (a denied attempt included: C0.11 review 6 IAM-01), flow logs
+      '{ (($.eventSource = "iam.amazonaws.com") && (($.eventName = "CreateUser") || ($.eventName = "CreateAccessKey") || ($.eventName = "CreateLoginProfile") || ($.eventName = "CreateServiceSpecificCredential"))) || (($.eventSource = "iam.amazonaws.com") && ($.readOnly IS FALSE) && (($.eventName = "*OpenIDConnectProvider*") || ($.eventName = "*SAMLProvider*") || ($.eventName = "*STSRegionalEndpoint*"))) || (($.eventSource = "cognito-identity.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "rolesanywhere.amazonaws.com") && ($.readOnly IS FALSE)) || (($.eventSource = "ssm.amazonaws.com") && (($.eventName = "CreateActivation") || ($.eventName = "UpdateManagedInstanceRole"))) || (($.eventSource = "iot.amazonaws.com") && (($.eventName = "CreateRoleAlias") || ($.eventName = "UpdateRoleAlias"))) || (($.eventSource = "ec2.amazonaws.com") && ($.eventName = "DeleteFlowLogs")) }',
       // (c) the fast alarms' rules
       '{ ($.eventSource = "events.amazonaws.com") && ($.readOnly IS FALSE) && (($.requestParameters.name = "hearth-sec-*") || ($.requestParameters.rule = "hearth-sec-*")) }',
       // (d) the alarm topics and their subscriptions
@@ -161,19 +162,19 @@ const QUERIES: Record<string, string> = {
   // Every break-glass assumption with its session name, which ties an entry's writer to its
   // assumption, since the role's trust constrains no session name.
   'hearth/review/break-glass-sessions':
-    'fields @timestamp, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode | filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/hearth-break-glass$/ | sort @timestamp desc',
+    'fields @timestamp, eventTime, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode | filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/hearth-break-glass$/ | sort @timestamp desc',
   'hearth/review/admin-sessions':
-    'fields @timestamp, recipientAccountId, eventName, requestParameters.roleArn, errorCode | filter (eventName = "AssumeRoleWithSAML" and requestParameters.roleArn like /AWSReservedSSO_Hearth(OrgAdmin|SetUp)_/) or (eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/(OrganizationAccountAccessRole|cdk-hearthbase-[^\\/]+)$/) | sort @timestamp desc',
+    'fields @timestamp, eventTime, recipientAccountId, eventName, requestParameters.roleArn, errorCode | filter (eventName = "AssumeRoleWithSAML" and requestParameters.roleArn like /AWSReservedSSO_Hearth(OrgAdmin|SetUp)_/) or (eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/(OrganizationAccountAccessRole|cdk-hearthbase-[^\\/]+)$/) | sort @timestamp desc',
   'hearth/review/deploy-role-sessions':
-    'fields @timestamp, recipientAccountId, requestParameters.roleArn, errorCode | filter eventName = "AssumeRoleWithWebIdentity" and requestParameters.roleArn like /:role\\/hearth-gh-/ | sort recipientAccountId asc, @timestamp desc',
+    'fields @timestamp, eventTime, recipientAccountId, requestParameters.roleArn, errorCode | filter eventName = "AssumeRoleWithWebIdentity" and requestParameters.roleArn like /:role\\/hearth-gh-/ | sort recipientAccountId asc, @timestamp desc',
   'hearth/review/root-and-assume-root':
-    'fields @timestamp, recipientAccountId, eventSource, eventName, errorCode | filter (userIdentity.type = "Root" and not ispresent(userIdentity.invokedBy)) or eventName = "AssumeRoot" | sort @timestamp desc',
+    'fields @timestamp, eventTime, recipientAccountId, eventSource, eventName, errorCode | filter (userIdentity.type = "Root" and not ispresent(userIdentity.invokedBy)) or eventName = "AssumeRoot" | sort @timestamp desc',
   'hearth/review/recovery-moves':
-    'fields @timestamp, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode | filter eventSource = "organizations.amazonaws.com" and eventName = "MoveAccount" | sort @timestamp desc',
+    'fields @timestamp, eventTime, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode | filter eventSource = "organizations.amazonaws.com" and eventName = "MoveAccount" | sort @timestamp desc',
   // Who wrote each break-glass entry, refused puts included: the writer's session and source identity
   // beside the key, whose session the review matches them with.
   'hearth/review/break-glass-entry-writes':
-    'fields @timestamp, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode | filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^hearth-break-glass-log-/ | sort requestParameters.key asc, @timestamp asc',
+    'fields @timestamp, eventTime, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode | filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^hearth-break-glass-log-/ | sort requestParameters.key asc, eventTime asc',
 }
 
 // Each log group a landing-zone template may hold, by name, and its retention class (IAC-07). PR 3

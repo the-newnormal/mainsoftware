@@ -34,7 +34,7 @@
 //   issuers, applications, profiles, Regions, tags, the identity store or the directory;
 // - A5 any write to Organizations;
 // - A6 tampering: the audit services' writes; long-lived credentials, a new or changed identity
-//   provider or Cognito identity pool, a deleted flow log; the fast alarms' rules, topics and log
+//   provider or Cognito identity pool, STS's Regional endpoint status, a deleted flow log; the fast alarms' rules, topics and log
 //   groups; the log-archive keys' administration; the log buckets' configuration and their objects'
 //   deletes and lock changes, allowed or denied; the alarms themselves (a mute rule included), but a
 //   PutMetricAlarm CloudFormation makes; and IAM writes to the break-glass and GitHub roles, the
@@ -232,9 +232,12 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           ]),
           WRITE,
         )} }`,
-        // (b) long-lived credentials, identity providers and Cognito identity pools, the services
-        // that hand a role's credentials to a certificate or a code (IAM Roles Anywhere, SSM's hybrid
-        // activations and the role an activated machine takes, IoT's role aliases), flow logs
+        // (b) long-lived credentials, identity providers and Cognito identity pools, STS's Regional
+        // endpoint status (deactivating it in ap-southeast-1 refuses every break-glass session in the
+        // account; hearth-baseline-2's SetUpOnly refuses it to all but OAAR, so a denied attempt shows
+        // here: C0.11 review 6 IAM-01; the event's name is proved at set-up, hence the wildcard), the
+        // services that hand a role's credentials to a certificate or a code (IAM Roles Anywhere, SSM's
+        // hybrid activations and the role an activated machine takes, IoT's role aliases), flow logs
         `{ ${any(
           all(
             is('eventSource', 'iam.amazonaws.com'),
@@ -248,7 +251,7 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
           all(
             is('eventSource', 'iam.amazonaws.com'),
             WRITE,
-            oneOf('eventName', ['*OpenIDConnectProvider*', '*SAMLProvider*']),
+            oneOf('eventName', ['*OpenIDConnectProvider*', '*SAMLProvider*', '*STSRegionalEndpoint*']),
           ),
           all(is('eventSource', 'cognito-identity.amazonaws.com'), WRITE),
           all(is('eventSource', 'rolesanywhere.amazonaws.com'), WRITE),

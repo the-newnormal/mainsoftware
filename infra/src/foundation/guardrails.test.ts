@@ -371,7 +371,11 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
       {
         Sid: 'SetUpOnly',
         Effect: 'Deny',
-        Action: ['s3:PutAccountPublicAccessBlock', 'ec2:DisableEbsEncryptionByDefault'],
+        Action: [
+          's3:PutAccountPublicAccessBlock',
+          'ec2:DisableEbsEncryptionByDefault',
+          'iam:SetSTSRegionalEndpointStatus',
+        ],
         Resource: '*',
         Condition: except(OAAR),
       },
@@ -1272,6 +1276,24 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
       'NoNewIdentityProviders',
     ])
     expect(denied({ action: 'iam:GetSAMLProvider', resource: provider, principal: task })).toEqual([])
+  })
+
+  it('IAC-02 C11-D12: no workload principal, either execution role, the deploy roles and break-glass included, changes STS’s Regional endpoint status, whose deactivation in ap-southeast-1 would refuse every break-glass session in the account; OAAR may once a move to Recovery lifts the OU’s fence, and reading it stays open (C0.11 review 6 IAM-01)', () => {
+    const action = 'iam:SetSTSRegionalEndpointStatus'
+    const breakGlass = prodRole('hearth-break-glass')
+    const oaar = prodRole('OrganizationAccountAccessRole')
+    for (const principal of [task, exec, appExec, baseDeploy, appDeploy, breakGlass]) {
+      expect(denied({ action, resource: '*', principal }), principal).toEqual(['SetUpOnly'])
+    }
+    expect(denied({ action, resource: '*', principal: oaar })).toEqual(['NoOaar'])
+    // In Recovery only Root's SCPs bind, and none of them refuses OAAR the repair.
+    const inRecovery = [...policiesIn(foundation).values()]
+      .filter(policy => policy.Properties?.Type === 'SERVICE_CONTROL_POLICY')
+      .filter(policy => ((policy.Properties?.TargetIds ?? []) as string[]).includes(rootId))
+      .flatMap(policy => (JSON.parse(String(policy.Properties?.Content)) as { Statement: Statement[] }).Statement)
+    expect(denyingStatements(inRecovery, { action, resource: '*', principal: oaar })).toEqual([])
+    expect(denyingStatements(inRecovery, { action, resource: '*', principal: task })).toEqual(['SetUpOnly'])
+    expect(denied({ action: 'iam:ListSTSRegionalEndpointsStatus', resource: '*', principal: task })).toEqual([])
   })
 
   it('IAC-02 C11-D13: no workload principal, the hearthapp execution and deploy roles included, rewrites, deletes or relabels the parameter the break-glass helper reads its bucket from; the hearthbase execution role, which writes it, may, and reading it stays open', () => {

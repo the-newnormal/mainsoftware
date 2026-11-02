@@ -1217,7 +1217,8 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       [
         'o: the session in curl’s arguments',
         plant("--data-urlencode 'Session@-'", '--data-urlencode "Session=$st"'),
-        ['IG-09o'],
+        // The curl run is pinned whole too (l).
+        ['IG-09l', 'IG-09o'],
       ],
       [
         'p: the amend starts the shell',
@@ -1531,7 +1532,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
   }, 30_000)
 
-  it('finds curl without -q first, an inherited TLS setting, and a folder lock moved or released early, planted in a copy, by its rule', () => {
+  it('finds a curl run other than the pinned line (without -q first, or with a trace, output or certificate option), an inherited TLS setting, and a folder lock moved or released early, planted in a copy, by its rule', () => {
     const afterAssume = (line: string) =>
       plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
     const tls =
@@ -1545,6 +1546,49 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     const cases: Array<[string, string, string[]]> = [
       ['l: curl without -q, so it reads a .curlrc', plant('curl -q -fsS', 'curl -fsS'), ['IG-09l']],
       ['l: -q after another option, where curl ignores it', plant('curl -q -fsS', 'curl -fsS -q'), ['IG-09l']],
+      // Each of curl's own options that writes the exchange (the POST body holding the role's session,
+      // or the answer holding its sign-in token) to a file or the terminal, reads more options, or
+      // stops checking the certificate (C0.11 review 6 HELPER-02): the run is pinned whole, so none is
+      // let in.
+      ...[
+        '--trace "$BG_HOME/curl.trace"',
+        '--trace-ascii "$BG_HOME/curl.trace"',
+        '--libcurl "$BG_HOME/curl.c"',
+        '-v',
+        '--stderr "$BG_HOME/curl.err"',
+        '-o "$BG_HOME/token.json"',
+        '--output "$BG_HOME/token.json"',
+        '-D "$BG_HOME/headers"',
+        '-K "$BG_HOME/curl.cfg"',
+        '--config "$BG_HOME/curl.cfg"',
+        '-k',
+        '--insecure',
+      ].map((option): [string, string, string[]] => [
+        `l: curl given ${option.split(' ')[0]}`,
+        plant('curl -q -fsS', `curl -q ${option} -fsS`),
+        ['IG-09l'],
+      ]),
+      [
+        'l: a trace option after the endpoint',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://signin.aws.amazon.com/federation --trace-ascii "$BG_HOME/curl.trace" 2>/dev/null',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: curl’s errors written to a file',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://signin.aws.amazon.com/federation 2>"$BG_HOME/curl.err"',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: the sign-in answer kept in a file',
+        plant(" 2>/dev/null | jq -r '.SigninToken", ' 2>/dev/null | tee "$BG_HOME/token.json" | jq -r \'.SigninToken'),
+        ['IG-09l'],
+      ],
       ['e: curl’s config, a key log and the CA overrides inherited', plant(tls, ''), ['IG-09e']],
       [
         'e: the TLS settings unset only after the first aws command',

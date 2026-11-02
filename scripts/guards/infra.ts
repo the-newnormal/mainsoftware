@@ -1199,6 +1199,15 @@ const SHELL_START = [
   'bash --rcfile "$rc" -i || true',
 ].join(' ')
 const RC_EXPANDED = /\$\{?rc\b/
+// The console's one curl run, its continuation joined, matched whole by IG-09 (l): -q first (curl
+// ignores it anywhere else), so it reads no .curlrc, and no option, redirect or pipe beyond these, so
+// nothing traces or writes the exchange, the POST body holding the role's session or the answer
+// holding its sign-in token (--trace, --trace-ascii, --libcurl, -v, --stderr, -o, -D, a tee), reads
+// more options (-K) or turns the certificate check off (-k).
+const CONSOLE_CURL = [
+  `curl -q -fsS --proto '=https' --tlsv1.2 --data-urlencode 'Action=getSigninToken' --data-urlencode 'Session@-'`,
+  `https://signin.aws.amazon.com/federation 2>/dev/null | jq -r '.SigninToken // empty'); then`,
+].join(' ')
 // What IG-09 (e) has the helper unset besides every AWS_ variable: curl's config folders, a TLS key
 // log the CLI and curl both write, the CA overrides the CLI and curl honour, and Node's switch that
 // turns its certificate check off, its options whole (a TLS key log, the system's CAs or code loaded
@@ -1958,8 +1967,8 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     fail('k', 'the open entry is written before the shell opens, and the close entry after it ends')
   }
 
-  // l: curl only in the console function, only to the sign-in endpoint, its link printed only when
-  // --console asks.
+  // l: curl only in the console function, only to the sign-in endpoint, each run exactly the pinned
+  // line, its link printed only when --console asks.
   if (
     curls.length > 0 &&
     (consoleFns.length !== 1 ||
@@ -1972,15 +1981,13 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     if (urls.length === 0 || urls.some(url => url !== 'https://signin.aws.amazon.com/federation')) {
       fail('l', `line ${line.line}: curl goes only to https://signin.aws.amazon.com/federation`)
     }
-    // And each run takes -q as its first argument (curl ignores it anywhere else), so it reads no
-    // .curlrc, which could trace the POST body, the session in it, or turn the certificate check off.
-    const command = line.text.replace(/\bcommand\s+-v\s+curl\b/g, '')
-    if (
-      [...command.matchAll(/(?:^|[\s;&|(])curl(?=\s)/g)].some(
-        run => wordsAsWritten(command.slice((run.index ?? 0) + run[0].length))[0] !== '-q',
+    // And each run is the pinned line whole (CONSOLE_CURL), so neither a .curlrc nor an option of its
+    // own traces or writes the exchange, the session in its POST body (C0.11 review 6 HELPER-02).
+    if (line.text !== CONSOLE_CURL) {
+      fail(
+        'l',
+        `line ${line.line}: curl runs only as \`${CONSOLE_CURL}\`: -q first, so it reads no .curlrc, and no other option, redirect or pipe, so nothing traces or writes the session`,
       )
-    ) {
-      fail('l', `line ${line.line}: curl runs with -q first, so it reads no .curlrc`)
     }
   }
   // The console function runs only from a main-flow line that asks for --console, written

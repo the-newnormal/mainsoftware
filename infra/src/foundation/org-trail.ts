@@ -46,6 +46,11 @@ import { cloudWatchRetention } from '../config/retention.ts'
 import { document } from './denies.ts'
 
 // The reviewer's saved queries (C11-D17), each over the copy alone, run once at set-up by the runbook.
+// Each shows two times: @timestamp, when the copy received the event, which a query's time range and
+// the metric filters' datapoints go by, and eventTime, when the call was made, minutes earlier, by
+// which the review assigns a row to a quarter and reads one call following another (C0.11 review 6
+// SEED-01). Entry writes sort by eventTime, since one delivery batch can share an @timestamp; eventTime
+// is ISO 8601 in UTC, so its text sorts as its time.
 export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: string }> = [
   // Every break-glass assumption, refused ones included, with its session name, source identity and
   // reason. The role's trust constrains no session name, so the name is what ties a writer in
@@ -55,7 +60,7 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'BreakGlassSessions',
     name: 'hearth/review/break-glass-sessions',
     query: [
-      'fields @timestamp, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode',
+      'fields @timestamp, eventTime, recipientAccountId, requestParameters.roleSessionName, requestParameters.sourceIdentity, requestParameters.tags.0.value, errorCode',
       `filter eventSource = "sts.amazonaws.com" and eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/${ROLE.breakGlass}$/`,
       'sort @timestamp desc',
     ].join(' | '),
@@ -64,7 +69,7 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'AdminSessions',
     name: 'hearth/review/admin-sessions',
     query: [
-      'fields @timestamp, recipientAccountId, eventName, requestParameters.roleArn, errorCode',
+      'fields @timestamp, eventTime, recipientAccountId, eventName, requestParameters.roleArn, errorCode',
       `filter (eventName = "AssumeRoleWithSAML" and requestParameters.roleArn like /AWSReservedSSO_Hearth(OrgAdmin|SetUp)_/) or (eventName = "AssumeRole" and requestParameters.roleArn like /:role\\/(${ROLE.oaar}|cdk-${QUALIFIER.base}-[^\\/]+)$/)`,
       'sort @timestamp desc',
     ].join(' | '),
@@ -73,7 +78,7 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'DeployRoleSessions',
     name: 'hearth/review/deploy-role-sessions',
     query: [
-      'fields @timestamp, recipientAccountId, requestParameters.roleArn, errorCode',
+      'fields @timestamp, eventTime, recipientAccountId, requestParameters.roleArn, errorCode',
       'filter eventName = "AssumeRoleWithWebIdentity" and requestParameters.roleArn like /:role\\/hearth-gh-/',
       'sort recipientAccountId asc, @timestamp desc',
     ].join(' | '),
@@ -82,7 +87,7 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'RootAndAssumeRoot',
     name: 'hearth/review/root-and-assume-root',
     query: [
-      'fields @timestamp, recipientAccountId, eventSource, eventName, errorCode',
+      'fields @timestamp, eventTime, recipientAccountId, eventSource, eventName, errorCode',
       'filter (userIdentity.type = "Root" and not ispresent(userIdentity.invokedBy)) or eventName = "AssumeRoot"',
       'sort @timestamp desc',
     ].join(' | '),
@@ -91,7 +96,7 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'RecoveryMoves',
     name: 'hearth/review/recovery-moves',
     query: [
-      'fields @timestamp, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode',
+      'fields @timestamp, eventTime, requestParameters.accountId, requestParameters.sourceParentId, requestParameters.destinationParentId, errorCode',
       'filter eventSource = "organizations.amazonaws.com" and eventName = "MoveAccount"',
       'sort @timestamp desc',
     ].join(' | '),
@@ -108,9 +113,9 @@ export const REVIEW_QUERIES: ReadonlyArray<{ id: string; name: string; query: st
     id: 'BreakGlassEntryWrites',
     name: 'hearth/review/break-glass-entry-writes',
     query: [
-      'fields @timestamp, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode',
+      'fields @timestamp, eventTime, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode',
       `filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^${LOG_BUCKET_PREFIX.breakGlass}/`,
-      'sort requestParameters.key asc, @timestamp asc',
+      'sort requestParameters.key asc, eventTime asc',
     ].join(' | '),
   },
 ]

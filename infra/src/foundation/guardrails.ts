@@ -376,11 +376,18 @@ function baseline2Statements(): IamStatement[] {
       Condition: { Bool: { 'ram:AllowsExternalPrincipals': 'true' } },
     },
     // Set at an account's set-up through OrganizationAccountAccessRole, which is fenced once the
-    // account sits in its OU.
+    // account sits in its OU. STS's Regional endpoint status is here too: deactivating STS in
+    // ap-southeast-1 refuses every assumption of break-glass in the account (its trust and
+    // HearthBreakGlassEntry's Allow both require that Region), so only tier 2 may change it, to repair
+    // it from Recovery.
     {
       Sid: 'SetUpOnly',
       Effect: 'Deny',
-      Action: ['s3:PutAccountPublicAccessBlock', 'ec2:DisableEbsEncryptionByDefault'],
+      Action: [
+        's3:PutAccountPublicAccessBlock',
+        'ec2:DisableEbsEncryptionByDefault',
+        'iam:SetSTSRegionalEndpointStatus',
+      ],
       Resource: '*',
       Condition: exceptFor(OAAR),
     },
