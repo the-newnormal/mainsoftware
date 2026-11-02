@@ -25,6 +25,15 @@
 // with the DPO's confirmation gives it one deadline, before PR 1 merges (or in PR 1's "Before
 // merging" steps), and no other ("before a case records", "before Hearth holds", before a later
 // step).
+//
+// And for C0.11's ids (TECH-SPEC T24): every C11-Dnn (decision) and C11-Qnn (owner question) that
+// code cites in apps/, packages/, scripts/, db/, infra/ (its .env.example included) and .github/ is
+// one T24 records, and T24's decision index has a row for every one from C11-D01 and C11-Q01 to the
+// last its index row names ("C11-D01 to C11-D79", "C11-Q01 to C11-Q11"), with no gap. C0.11 PR 1 writes T24's whole decision
+// index, one line each with the PR that builds it, so the case holds from PR 1 while the numbered
+// items fill in PR by PR. A C11 id is read whole: the T20 reader's Q id needs no word character or
+// hyphen before it, so C11-Q01 is never read as Q01, and none of the AQ, PD or LH readers matches
+// one (proved on planted text below).
 import { describe, expect, it } from 'vitest'
 import { readRepoFile, repoFiles } from './repo-files'
 
@@ -40,7 +49,8 @@ function idsIn(text: string, options: { q: boolean }): Set<string> {
     ids.add(`AQ-${first}`)
     if (second !== undefined) ids.add(`AQ-${second}`)
   }
-  if (options.q) for (const [id] of text.matchAll(/\bQ\d+\b/g)) ids.add(id)
+  // A Q id stands alone: C11-Q01 is C0.11's, never T20's Q01.
+  if (options.q) for (const [id] of text.matchAll(/(?<![\w-])Q\d+\b/g)) ids.add(id)
   return ids
 }
 
@@ -292,5 +302,112 @@ describe('LCG-07 (C0.10 review DOCS-07, LH-45, LH-46): T23 gives the DPO’s leg
     // T23 does name the confirmation, so an empty match would mean the guard reads nothing.
     expect(named.length).toBeGreaterThan(3)
     expect(legalDeadlineProblems(spec)).toEqual([])
+  })
+})
+
+// The C0.11 ids a text names: C11-Dnn and C11-Qnn, each read whole.
+function c11IdsIn(text: string): Set<string> {
+  const ids = new Set<string>()
+  for (const [id] of text.matchAll(/\bC11-[DQ]\d{2,}\b/g)) ids.add(id)
+  return ids
+}
+
+// Where code cites C0.11's ids: code, SQL and shell in apps/, packages/, scripts/, db/ and infra/,
+// infra/'s JSON and .env.example, and .github/'s workflows and environments.
+const C11_CODE =
+  /^(?:(?:apps|packages|scripts|db|infra)\/.+\.(?:[cm]?[jt]sx?|sh|sql)|infra\/.+\.json|infra\/\.env\.example|\.github\/.+\.(?:ya?ml|json))$/
+
+// Each cited C11 id T24 doesn't record, as "path: id".
+function danglingC11(files: ReadonlyMap<string, string>, recorded: ReadonlySet<string>): string[] {
+  const found: string[] = []
+  for (const [path, text] of files) {
+    for (const id of c11IdsIn(text)) if (!recorded.has(id)) found.push(`${path}: ${id}`)
+  }
+  return found
+}
+
+// The last decision and question the T24 index row names ("C11-D01 to C11-D79", "C11-Q01 to
+// C11-Q11"), the largest of each if it names several runs.
+function lastC11Named(spec: string, kind: 'D' | 'Q'): number | undefined {
+  const row = spec.split('\n').find(line => line.startsWith('| T24 |'))
+  const lasts = [...(row ?? '').matchAll(new RegExp(`\\bC11-${kind}01 to C11-${kind}(\\d+)\\b`, 'g'))].map(match =>
+    Number(match[1]),
+  )
+  return lasts.length === 0 ? undefined : Math.max(...lasts)
+}
+
+// The C11 ids T24's decision index rows name: each row starts with its id (`| C11-D22 | …`). The gap
+// check reads only these, so an id cited elsewhere in T24 (an item, an answer) never hides a deleted
+// row.
+function c11IndexIdsIn(section: string): Set<string> {
+  const ids = new Set<string>()
+  for (const [, id] of section.matchAll(/^\| (C11-[DQ]\d{2,}) \|/gm)) if (id !== undefined) ids.add(id)
+  return ids
+}
+
+const missingC11 = (recorded: ReadonlySet<string>, kind: 'D' | 'Q', last: number): string[] =>
+  Array.from({ length: last }, (_, i) => `C11-${kind}${String(i + 1).padStart(2, '0')}`).filter(id => !recorded.has(id))
+
+describe('C0.11 T24: the C11 ids code cites are recorded in TECH-SPEC T24, with no gap', () => {
+  it('reads C11 ids whole and apart from the AQ, PD, LH and T20 readers, and finds a dangling id and a gap, on planted text', () => {
+    const planted = '// C11-D05 and C11-Q01 (C11-Q10, D08); T24 item 9'
+    expect([...c11IdsIn(planted)].sort()).toEqual(['C11-D05', 'C11-Q01', 'C11-Q10'])
+    // The other readers see none of them: T20's Q reader once read C11-Q01 as Q01.
+    expect([...idsIn(planted, { q: true })]).toEqual([])
+    expect([...pdIdsIn(planted)]).toEqual([])
+    expect([...lhIdsIn(planted)]).toEqual([])
+    expect([...idsIn('// (Q10) and AQ-05; C11-Q10', { q: true })].sort()).toEqual(['AQ-05', 'Q10'])
+    // And the C11 reader sees none of theirs, nor a C11 id run into another word.
+    expect([...c11IdsIn('// Q01, AQ-01, PD-01, LH-01, D05, XC11-D05 and C11-D5')]).toEqual([])
+    const recorded = c11IdsIn('C11-D01, C11-D02 and C11-Q01')
+    const files = new Map([
+      ['infra/src/config/env.ts', '// C11-D01, C11-D02 and C11-Q01'],
+      ['infra/.env.example', '# C11-Q02'],
+      ['.github/workflows/deploy.yml', '# C11-D03'],
+    ])
+    expect(danglingC11(files, recorded)).toEqual([
+      'infra/.env.example: C11-Q02',
+      '.github/workflows/deploy.yml: C11-D03',
+    ])
+    expect(
+      lastC11Named('| T23 | C11-D01 to C11-D99 |\n| T24 | x (C11-D01 to C11-D79; C11-Q01 to C11-Q11) |', 'D'),
+    ).toBe(79)
+    expect(lastC11Named('| T24 | x (C11-D01 to C11-D79; C11-Q01 to C11-Q11) |', 'Q')).toBe(11)
+    expect(lastC11Named('| T23 | C11-D01 to C11-D79 |', 'D')).toBeUndefined()
+    expect(missingC11(c11IdsIn('C11-D01, C11-D02 and C11-D04'), 'D', 4)).toEqual(['C11-D03'])
+    // A row deleted from the index is a gap, however often its id appears elsewhere in T24.
+    const index =
+      '| C11-D01 | a | 1 |\n| C11-D03 | c, beside C11-D02 | 2 |\n- **C11-Q01** answered\n| C11-Q02 | q | 1 |'
+    expect([...c11IndexIdsIn(index)].sort()).toEqual(['C11-D01', 'C11-D03', 'C11-Q02'])
+    expect(missingC11(c11IndexIdsIn(index), 'D', 3)).toEqual(['C11-D02'])
+    expect(missingC11(c11IndexIdsIn(index), 'Q', 2)).toEqual(['C11-Q01'])
+    expect(C11_CODE.test('infra/src/config/env.ts')).toBe(true)
+    expect(C11_CODE.test('infra/cdk.json')).toBe(true)
+    expect(C11_CODE.test('infra/.env.example')).toBe(true)
+    expect(C11_CODE.test('.github/environments/prod.json')).toBe(true)
+    expect(C11_CODE.test('docs/TECH-SPEC.md')).toBe(false)
+  })
+
+  it('every C11 id in code is one T24 records', () => {
+    const recorded = c11IdsIn(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T24'))
+    const files = new Map(
+      repoFiles()
+        .filter(path => C11_CODE.test(path) && path !== SELF)
+        .map(path => [path, readRepoFile(path)] as const),
+    )
+    // infra/ does cite C0.11's ids, so an empty match would mean the guard reads nothing.
+    expect([...files.values()].some(text => c11IdsIn(text).size > 0)).toBe(true)
+    expect(danglingC11(files, recorded)).toEqual([])
+  })
+
+  it('T24’s decision index has a row for each of C11-D01 to C11-D79 or later, and C11-Q01 to C11-Q11 or later, as its index row names', () => {
+    const spec = readRepoFile('docs/TECH-SPEC.md')
+    const t24 = c11IndexIdsIn(sectionOf(spec, 'T24'))
+    const lastD = lastC11Named(spec, 'D')
+    const lastQ = lastC11Named(spec, 'Q')
+    expect(lastD).toBeGreaterThanOrEqual(79)
+    expect(lastQ).toBeGreaterThanOrEqual(11)
+    expect(missingC11(t24, 'D', lastD ?? 0)).toEqual([])
+    expect(missingC11(t24, 'Q', lastQ ?? 0)).toEqual([])
   })
 })

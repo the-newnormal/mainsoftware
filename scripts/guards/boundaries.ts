@@ -1,7 +1,9 @@
 // Import boundaries between workspaces (BUILD-PLAN INF-ARCHLINT; CLAUDE.md, Code and docs). Shared
 // code goes in packages/, so an app never imports another app (apps/web never imports apps/server),
 // packages/* import no app and not infra/, and nothing imports demo/: it is the reference UI, ported
-// by copying (BUILD-PLAN 1E.5), never a library. INF-ARCHLINT's other rules live elsewhere: the
+// by copying (BUILD-PLAN 1E.5), never a library. infra/ imports only @hearth/shared among workspaces,
+// and @hearth/server/config only from a test (IG-08, C0.11; IAC-21), so neither CDK entry can load
+// the server, another package or an app. INF-ARCHLINT's other rules live elsewhere: the
 // model-SDK ban in ai-free.ts, and the sole index reader (A2) and the Rule 9 module's allow-list
 // (privileged-imports.test.ts) land with the modules they guard.
 import { posix } from 'node:path'
@@ -121,10 +123,26 @@ export function landsIn(file: string, specifier: string, workspaces: Workspace[]
   return workspaces.find(w => w.name === name)
 }
 
-// Why an import from one workspace into another is refused, or undefined if it's allowed.
-export function boundaryBreach(from: Workspace, to: Workspace): string | undefined {
+// The import an infra test may make of the server: its config module, for IAC-21's loadConfig()
+// check over every task definition (C0.11 PR 3).
+export const INFRA_SERVER_CONFIG = '@hearth/server/config'
+
+// Why an import from one workspace into another is refused, or undefined if it's allowed. `at` names
+// the importing file and the specifier as written, which infra/'s rule reads (IG-08).
+export function boundaryBreach(
+  from: Workspace,
+  to: Workspace,
+  at?: { file: string; specifier: string },
+): string | undefined {
   if (from.dir === to.dir) return undefined
   if (to.dir === 'demo/') return 'demo/ is the reference UI: port what you need (BUILD-PLAN 1E.5), never import it'
+  if (from.dir === 'infra/' && to.dir !== 'packages/shared/') {
+    const configFromTest =
+      to.dir === 'apps/server/' && at?.specifier === INFRA_SERVER_CONFIG && /\.test\.ts$/.test(at.file)
+    if (!configFromTest) {
+      return `infra/ imports only @hearth/shared among workspaces, and ${INFRA_SERVER_CONFIG} only from a test (IG-08)`
+    }
+  }
   if (from.dir.startsWith('apps/') && to.dir.startsWith('apps/')) {
     return 'an app never imports another app; shared code goes in packages/'
   }

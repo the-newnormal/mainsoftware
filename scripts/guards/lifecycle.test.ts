@@ -56,7 +56,10 @@ const S3_CALL =
   /\b(?:deleteObjects?|putBucketLifecycleConfiguration|deleteBucketLifecycle|putBucketVersioning|putObjectLegalHold|putObjectRetention|putObjectLockConfiguration)(?:Command)?\b/gi
 
 // The files that may name one, each with its reason: C0.15's S3 deletion module joins with its first
-// delete, and nothing else.
+// delete, and nothing else. infra/ writes every S3 deny in an SCP, bucket policy or role as a
+// wildcard this pattern doesn't read as a call (s3:Delete*, s3:PutBucket*, s3:PutLifecycle*,
+// s3:PutObjectRe*, s3:PutObjectLe*, s3:BypassGovernance*), so denying a delete never needs an entry
+// here (C0.11, C11-D08).
 const S3_ALLOWED: ReadonlyArray<{ path: string; why: string }> = []
 
 // The CDK files that may give a lifecycle rule an untagged expiry: none. C0.12's backstop carries a

@@ -6,6 +6,9 @@ dist/
 coverage/
 *.tsbuildinfo
 cdk.out/
+# The CDK CLI's lookup cache records account ids and AZs, and this repository is public; infra makes
+# no lookups (C0.11, IG-02, IG-03), so a context file is never wanted.
+cdk.context.json
 test-results/
 playwright-report/
 blob-report/

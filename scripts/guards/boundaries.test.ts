@@ -15,9 +15,10 @@ const workspaces: Workspace[] = files
 const web = { dir: 'apps/web/', name: '@hearth/web' }
 const server = { dir: 'apps/server/', name: '@hearth/server', imports: { '#src/*': './src/*' } }
 const access = { dir: 'packages/access/', name: '@hearth/access' }
+const shared = { dir: 'packages/shared/', name: '@hearth/shared' }
 const infra = { dir: 'infra/', name: '@hearth/infra' }
 const demo = { dir: 'demo/', name: 'hearth-demo' }
-const fixture = [web, server, access, infra, demo]
+const fixture = [web, server, access, shared, infra, demo]
 
 describe('INF-ARCHLINT import boundaries: the rules', () => {
   it('finds the workspace an import lands in, by package name or relative path', () => {
@@ -43,7 +44,7 @@ describe('INF-ARCHLINT import boundaries: the rules', () => {
   it("resolves a #specifier through the importing workspace's imports map (T2)", () => {
     expect(landsIn('apps/server/src/a.ts', '#src/config.ts', fixture)).toBe(server)
     const leaky = { ...server, imports: { '#web/*': '@hearth/web/*', '#up/*': './../web/*' } }
-    const withLeak = [web, leaky, access, infra, demo]
+    const withLeak = [web, leaky, access, shared, infra, demo]
     expect(landsIn('apps/server/src/a.ts', '#web/src/x.ts', withLeak)).toBe(web)
     expect(landsIn('apps/server/src/a.ts', '#up/src/x.ts', withLeak)).toBe(web)
     expect(landsIn('apps/server/src/a.ts', '#missing', withLeak)).toBeUndefined()
@@ -71,11 +72,24 @@ describe('INF-ARCHLINT import boundaries: the rules', () => {
     expect(boundaryBreach(web, demo)).toMatch(/reference UI/)
   })
 
-  it('lets apps and infra import packages, and a workspace import itself', () => {
+  it('lets apps import packages, infra import @hearth/shared, and a workspace import itself', () => {
     expect(boundaryBreach(web, access)).toBeUndefined()
     expect(boundaryBreach(server, access)).toBeUndefined()
-    expect(boundaryBreach(infra, access)).toBeUndefined()
+    expect(boundaryBreach(infra, shared)).toBeUndefined()
     expect(boundaryBreach(web, web)).toBeUndefined()
+  })
+
+  it('IG-08 (C0.11): infra imports no other package and no app, and the server only as @hearth/server/config from a test', () => {
+    expect(boundaryBreach(infra, access)).toMatch(/only @hearth\/shared/)
+    expect(boundaryBreach(infra, web)).toMatch(/only @hearth\/shared/)
+    expect(boundaryBreach(infra, server)).toMatch(/only @hearth\/shared/)
+    const config = { file: 'infra/src/workload/services.test.ts', specifier: '@hearth/server/config' }
+    expect(boundaryBreach(infra, server, config)).toBeUndefined()
+    expect(boundaryBreach(infra, server, { ...config, file: 'infra/src/workload/services.ts' })).toMatch(/from a test/)
+    expect(boundaryBreach(infra, server, { ...config, specifier: '@hearth/server' })).toMatch(/from a test/)
+    expect(boundaryBreach(infra, server, { ...config, specifier: '../../apps/server/src/config.ts' })).toMatch(
+      /from a test/,
+    )
   })
 
   it("lets an imports map alias only the workspace's own files", () => {
@@ -126,7 +140,7 @@ describe('INF-ARCHLINT import boundaries: the repo', () => {
       if (!from) return []
       return importsOf(readRepoFile(path), path).flatMap(spec => {
         const to = landsIn(path, spec, workspaces)
-        const why = to && boundaryBreach(from, to)
+        const why = to && boundaryBreach(from, to, { file: path, specifier: spec })
         return why ? [`${path}: imports '${spec}' (${why})`] : []
       })
     })
