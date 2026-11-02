@@ -184,6 +184,7 @@ const REGION_NOT_ACTIONS = [
   'trustedadvisor:*',
   's3:ListAllMyBuckets',
   's3:GetAccountPublic*',
+  's3:PutAccountPublicAccessBlock',
   'ec2:DescribeRegions',
   'guardduty:*',
   'cloudtrail:DescribeTrails',
@@ -1056,6 +1057,17 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       REGION_NOT_ACTIONS.filter(action => /^(?:guardduty:|cloudtrail:|s3:GetBucketLocation$)/.test(action)),
     ).toEqual(fenced)
     expect(fenced.filter(action => /^(?:cloudtrail|s3):(?!Describe|Get|List)/.test(action))).toEqual([])
+    // The one S3 or EC2 write it leaves to any Region, the account's public access block (one setting
+    // for every Region, which the console sets through us-east-1), stays SetUpOnly's, so only
+    // OrganizationAccountAccessRole makes it (C0.11 review 7 IAM-01).
+    const writes = REGION_NOT_ACTIONS.filter(action => /^(?:s3|ec2):(?!Describe|Get|List)/.test(action))
+    expect(writes).toEqual(['s3:PutAccountPublicAccessBlock'])
+    const baseline2 = JSON.parse(String(policiesIn(foundation).get('hearth-baseline-2')?.Properties?.Content)) as {
+      Statement: Statement[]
+    }
+    const setUpOnly = baseline2.Statement.find(statement => statement.Sid === 'SetUpOnly')
+    expect(list(setUpOnly?.Action)).toEqual(expect.arrayContaining(writes))
+    expect(setUpOnly?.Condition).toEqual(except(OAAR))
   })
 
   it('IAC-02 C11-D05: Root holds four of Hearth’s SCPs, which with AWS’s FullAWSAccess are the five Organizations allows; every other target holds at most five of a type', () => {

@@ -2,11 +2,15 @@
 // read policies whatever resource carries them (IAC-01's model check, IAC-02's SCPs and RCP, IAC-10's
 // IAM rules, IAC-11's break-glass trust, IAC-12's endpoint policies, IAC-23's archive readers): role
 // trusts and inline policies, managed and inline policy resources, bucket, key, topic, queue,
-// repository, secret and log resource policies, endpoint policies, SCPs and RCPs, and permission
-// sets' inline policies. A document given as an intrinsic (a Fn::Join building JSON) can't be read
-// statically, so it is returned as unreadable rather than skipped, and a test fails on it; so is one
-// with a statement that isn't an object with a literal Effect, or an Action or NotAction entry that
-// isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action). A
+// repository, secret, log and log group resource policies, endpoint policies, SCPs and RCPs, and
+// permission sets' inline policies. Every resource type is classified, as a type holding documents
+// where DOCUMENT_PROPERTIES says, or as one of NO_DOCUMENT_TYPES, which hold none: a resource of any
+// other type may hold a document the walker doesn't read (an event bus policy, an access point's), so
+// it is reported unreadable, and no check over the statements passes until a person classifies its
+// type (C0.11 review 7 TESTS-02). A document given as an intrinsic (a Fn::Join building JSON) can't
+// be read statically, so it is returned as unreadable rather than skipped, and a test fails on it; so
+// is one with a statement that isn't an object with a literal Effect, or an Action or NotAction entry
+// that isn't a string (an intrinsic building `bedrock:*` would otherwise read as no model action). A
 // statement given as Fn::If, as the CDK CLI's bootstrap template adds its trusted accounts' trust, is
 // read as each of its branches (AWS::NoValue dropped), marked conditional, and so is every statement
 // of a resource that carries a Condition; a Fn::If above a statement (around a whole document or a
@@ -34,7 +38,8 @@ import {
 } from '../config/models.ts'
 
 // Where each resource type keeps its policy documents. `Policies` is a list of { PolicyDocument }.
-const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+// policies.test.ts plants a document in each place listed here and holds the table to that list.
+export const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
   'AWS::IAM::Role': ['AssumeRolePolicyDocument', 'Policies'],
   'AWS::IAM::User': ['Policies'],
   'AWS::IAM::Group': ['Policies'],
@@ -53,9 +58,39 @@ const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
   'AWS::ECR::Repository': ['RepositoryPolicyText'],
   'AWS::SecretsManager::ResourcePolicy': ['ResourcePolicy'],
   'AWS::Logs::ResourcePolicy': ['PolicyDocument'],
+  'AWS::Logs::LogGroup': ['ResourcePolicyDocument'],
   'AWS::Organizations::Policy': ['Content'],
   'AWS::SSO::PermissionSet': ['InlinePolicy'],
 }
+
+// The resource types the landing-zone and bootstrap templates hold, and the helper tests plant, that
+// hold no IAM policy document, each read against its CloudFormation schema: a parameter's Policies
+// are its expiry and notification rules, a topic's DataProtectionPolicy and ArchivePolicy and a
+// subscription's filter, delivery and redrive policies are SNS's own, and a role's or permission
+// set's ARN properties (a boundary, a managed policy) are read by managedPolicyAttachments. A type
+// in neither this list nor DOCUMENT_PROPERTIES is reported unreadable, so a new one is classified, by
+// a reviewed change to this owner's-read file, before any check over the statements passes.
+export const NO_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  'AWS::AccessAnalyzer::Analyzer',
+  'AWS::Budgets::Budget',
+  'AWS::CE::AnomalyMonitor',
+  'AWS::CE::AnomalySubscription',
+  'AWS::CloudTrail::Trail',
+  'AWS::CloudWatch::Alarm',
+  'AWS::Events::Rule',
+  'AWS::IAM::OIDCProvider',
+  'AWS::KMS::Alias',
+  'AWS::Logs::MetricFilter',
+  'AWS::Logs::QueryDefinition',
+  'AWS::Route53::HostedZone',
+  'AWS::Route53::RecordSet',
+  'AWS::S3::Bucket',
+  'AWS::SNS::Subscription',
+  'AWS::SNS::Topic',
+  'AWS::SSM::Parameter',
+  'AWS::SSO::Assignment',
+  'AWS::SSO::InstanceAccessControlAttributeConfiguration',
+])
 
 // The Organizations policy types whose content is an IAM policy (the AI opt-out's isn't).
 const IAM_ORGANIZATIONS_TYPES = new Set(['SERVICE_CONTROL_POLICY', 'RESOURCE_CONTROL_POLICY'])
@@ -219,14 +254,28 @@ export function modelGrants(statements: readonly PolicyStatementAt[]): PolicySta
   )
 }
 
-// The documents no static reading resolves, or that hold a statement none does, as "logicalId where".
+// The documents no static reading resolves, or that hold a statement none does, as "logicalId where",
+// then each resource whose type is in neither DOCUMENT_PROPERTIES nor NO_DOCUMENT_TYPES (or that has
+// no type), which may hold a document the walker never reads, as "logicalId type: an unclassified
+// resource type".
 export function unreadablePolicies(template: Record<string, unknown>): string[] {
-  return policyDocuments(template)
-    .filter(
-      found =>
-        found.document === undefined || !statementsOf(found.document).every(({ statement }) => isReadable(statement)),
-    )
-    .map(found => `${found.logicalId} ${found.where}`)
+  const resources = isObject(template.Resources) ? template.Resources : {}
+  const unclassified = Object.entries(resources).flatMap(([logicalId, resource]) => {
+    const type = isObject(resource) ? resource.Type : undefined
+    if (typeof type !== 'string') return [`${logicalId} (no type): an unclassified resource type`]
+    return Object.hasOwn(DOCUMENT_PROPERTIES, type) || NO_DOCUMENT_TYPES.has(type)
+      ? []
+      : [`${logicalId} ${type}: an unclassified resource type`]
+  })
+  return [
+    ...policyDocuments(template)
+      .filter(
+        found =>
+          found.document === undefined || !statementsOf(found.document).every(({ statement }) => isReadable(statement)),
+      )
+      .map(found => `${found.logicalId} ${found.where}`),
+    ...unclassified,
+  ]
 }
 
 // --- IAC-01's model check (C11-D06, C11-D10, C11-D75) ---------------------------------------------

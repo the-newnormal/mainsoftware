@@ -1,8 +1,11 @@
 // The test helpers later assertion tests stand on (C11-D70): an in-process synth with cdk.json's
-// context, and the policy walker, proved on a small stack holding one policy of each kind they read;
-// then IAC-01's check and what it stands on, each proved on planted templates, every breakage found
-// and the template without it passing. Model actions are built from the lists, never written (IG-10),
-// and ARNs joined from their parts (IG-01).
+// context, and the policy walker, proved on a small stack holding what aws-cdk-lib's constructs
+// render (a role's trust and policy, a managed, bucket, log resource and permission set's policy and
+// an SCP) and what only CloudFormation can assemble, and on a planted template holding a document in
+// every place the walker's table names, which the test holds the table to; a resource of a type the
+// walker hasn't classified is reported, not skipped; then IAC-01's check and what it stands on, each
+// proved on planted templates, every breakage found and the template without it passing. Model
+// actions are built from the lists, never written (IG-10), and ARNs joined from their parts (IG-01).
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import * as logs from 'aws-cdk-lib/aws-logs'
@@ -16,11 +19,13 @@ import { REGION } from '../config/profiles.ts'
 import { fixtureAccount } from './fixture.ts'
 import {
   attachedPolicyName,
+  DOCUMENT_PROPERTIES,
   isModelDenyInPlace,
   type ModelCheckAllowance,
   managedPolicyAttachments,
   modelCheck,
   modelGrants,
+  NO_DOCUMENT_TYPES,
   namesModelAction,
   policyDocuments,
   policyStatements,
@@ -365,6 +370,107 @@ describe('C11-D70: the policy walker', () => {
     }
     // And nothing aws-cdk-lib's own constructs write, whose actions and effects are always literal.
     expect(unreadable.filter(entry => /^(?:Role|Managed|Bucket|Scp|Set|LogsPolicy)/.test(entry))).toEqual([])
+  })
+
+  // C0.11 review 7 TESTS-02: every place the walker's table reads a document, written out here, each
+  // planted with a statement of its own and read back through the walker. The table names exactly
+  // these places, so an entry dropped or misspelt there, or one added without its plant here, fails.
+  it('reads a document planted in every place its table names, and the table names exactly those places', () => {
+    const places = [
+      'AWS::IAM::Role AssumeRolePolicyDocument',
+      'AWS::IAM::Role Policies',
+      'AWS::IAM::User Policies',
+      'AWS::IAM::Group Policies',
+      'AWS::IAM::Policy PolicyDocument',
+      'AWS::IAM::ManagedPolicy PolicyDocument',
+      'AWS::IAM::RolePolicy PolicyDocument',
+      'AWS::IAM::UserPolicy PolicyDocument',
+      'AWS::IAM::GroupPolicy PolicyDocument',
+      'AWS::S3::BucketPolicy PolicyDocument',
+      'AWS::KMS::Key KeyPolicy',
+      'AWS::KMS::ReplicaKey KeyPolicy',
+      'AWS::Backup::BackupVault AccessPolicy',
+      'AWS::EC2::VPCEndpoint PolicyDocument',
+      'AWS::SNS::TopicPolicy PolicyDocument',
+      'AWS::SQS::QueuePolicy PolicyDocument',
+      'AWS::ECR::Repository RepositoryPolicyText',
+      'AWS::SecretsManager::ResourcePolicy ResourcePolicy',
+      'AWS::Logs::ResourcePolicy PolicyDocument',
+      'AWS::Logs::LogGroup ResourcePolicyDocument',
+      'AWS::Organizations::Policy Content',
+      'AWS::SSO::PermissionSet InlinePolicy',
+    ]
+    const table = Object.entries(DOCUMENT_PROPERTIES).flatMap(([type, properties]) =>
+      properties.map(property => `${type} ${property}`),
+    )
+    expect(table.sort()).toEqual([...places].sort())
+    const everywhere = {
+      Resources: Object.fromEntries(
+        places.map((place, index) => {
+          const [type = '', property = ''] = place.split(' ')
+          const document = {
+            Version: '2012-10-17',
+            Statement: [{ Effect: 'Deny', Action: `planted:Place${index}`, Resource: '*' }],
+          }
+          const properties = {
+            ...(property === 'Policies'
+              ? { Policies: [{ PolicyName: 'planted', PolicyDocument: document }] }
+              : { [property]: document }),
+            ...(type === 'AWS::Organizations::Policy' ? { Type: 'SERVICE_CONTROL_POLICY' } : {}),
+          }
+          return [`Plant${index}`, { Type: type, Properties: properties }]
+        }),
+      ),
+    }
+    expect(unreadablePolicies(everywhere)).toEqual([])
+    expect(
+      policyStatements(everywhere).map(
+        s => `${s.type} ${s.where.replace('[0].PolicyDocument', '')} ${s.actions.join(',')}`,
+      ),
+    ).toEqual(places.map((place, index) => `${place} planted:Place${index}`))
+  })
+
+  // A type outside the table may hold a document the walker never reads (an event bus policy's
+  // statement, an access point's policy), so it is reported until a person classifies it, and IAC-01's
+  // check can't pass over it; a type listed as holding none isn't.
+  it('reports a resource of a type it hasn’t classified, or with no type, and IAC-01’s check fails on it', () => {
+    const unclassified = {
+      Resources: {
+        Bus: {
+          Type: 'AWS::Events::EventBusPolicy',
+          Properties: {
+            StatementId: 'planted',
+            Statement: { Effect: 'Allow', Principal: '*', Action: 'events:PutEvents', Resource: '*' },
+          },
+        },
+        Point: {
+          Type: 'AWS::S3::AccessPoint',
+          Properties: {
+            Bucket: 'planted',
+            Policy: {
+              Version: '2012-10-17',
+              Statement: [{ Effect: 'Allow', Principal: '*', Action: 's3:Delete*', Resource: '*' }],
+            },
+          },
+        },
+        Typeless: { Properties: {} },
+        Topic: { Type: 'AWS::SNS::Topic', Properties: {} },
+      },
+    }
+    expect(policyStatements(unclassified)).toEqual([])
+    const reported = [
+      'Bus AWS::Events::EventBusPolicy: an unclassified resource type',
+      'Point AWS::S3::AccessPoint: an unclassified resource type',
+      'Typeless (no type): an unclassified resource type',
+    ]
+    expect(unreadablePolicies(unclassified)).toEqual(reported)
+    expect(modelCheck(unclassified, { grants: [], attachments: [] })).toEqual(
+      reported.map(entry => `${entry}: unreadable`),
+    )
+  })
+
+  it('classifies each type once: none is both a type holding documents and one holding none', () => {
+    expect([...NO_DOCUMENT_TYPES].filter(type => Object.hasOwn(DOCUMENT_PROPERTIES, type))).toEqual([])
   })
 })
 

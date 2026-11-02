@@ -1901,12 +1901,14 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     }
   }
   // Every entry is written with >|, so noclobber, however it came on, never leaves an earlier entry's
-  // body under a later key (C0.11 review 5 HELPER-01).
+  // body under a later key (C0.11 review 5 HELPER-01): any other redirection into the entry file is
+  // refused, > and its numbered and &> forms, and >> and &>>, whose append would put the earlier
+  // body and the new one in one invalid entry, and >& (C0.11 review 7 CR-05).
   for (const line of lines) {
-    if (/(?<!>)>(?![>|])\s*"?\$\{?entry_file\b/.test(line.text.split('\n')[0] ?? '')) {
+    if (/>(?!\|)[>&]?\s*"?\$\{?entry_file\b/.test(line.text.split('\n')[0] ?? '')) {
       fail(
         'k',
-        `line ${line.line}: an entry is written with >|, so noclobber never leaves an earlier body under its key`,
+        `line ${line.line}: an entry is written with >| alone, so noclobber never leaves an earlier body under its key and no append joins two`,
       )
     }
   }

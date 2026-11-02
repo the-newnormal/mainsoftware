@@ -171,6 +171,9 @@ describe('IAC-01 C11-D06: no model permission in any landing-zone template', () 
     ])
   })
 
+  // unreadablePolicies also reports each resource of a type the walker hasn't classified, which may
+  // hold a document it never reads, so a new type fails here until a person classifies it (C0.11
+  // review 7 TESTS-02).
   it.each(STACKS.map(stack => stack.name))(
     'IAC-01 %s: every policy reads, and the model check passes with Foundation’s three attachments its only allowances',
     name => {

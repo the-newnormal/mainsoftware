@@ -235,9 +235,11 @@ export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
         // (b) long-lived credentials, identity providers and Cognito identity pools, STS's Regional
         // endpoint status (deactivating it in ap-southeast-1 refuses every break-glass session in the
         // account; hearth-baseline-2's SetUpOnly refuses it to all but OAAR, so a denied attempt shows
-        // here: C0.11 review 6 IAM-01; the event's name is proved at set-up, hence the wildcard), the
-        // services that hand a role's credentials to a certificate or a code (IAM Roles Anywhere, SSM's
-        // hybrid activations and the role an activated machine takes, IoT's role aliases), flow logs
+        // here: C0.11 review 6 IAM-01; whether CloudTrail records the change, and under which source and
+        // name, is unproved until one is recorded, since the set-up makes none: TECH-SPEC T24's A6 row
+        // and the set-up runbook; hence the wildcard), the services that hand a role's credentials to a
+        // certificate or a code (IAM Roles Anywhere, SSM's hybrid activations and the role an activated
+        // machine takes, IoT's role aliases), flow logs
         `{ ${any(
           all(
             is('eventSource', 'iam.amazonaws.com'),

@@ -1941,6 +1941,38 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ),
         ['IG-09k'],
       ],
+      // C0.11 review 7 CR-05: an append keeps the earlier body and adds the new one, an invalid entry.
+      [
+        'k: the close appended with >>',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    >>"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the open entry appended with >>',
+        plant(
+          `expires: $expires}' \\\n    >|"$entry_file"\n  put_entry "$key" || refuse`,
+          `expires: $expires}' \\\n    >> "$entry_file"\n  put_entry "$key" || refuse`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the amend appended with &>>',
+        plant(`ids: $ids}' \\\n    >|"$entry_file"`, `ids: $ids}' \\\n    &>>"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the continuation written with >&',
+        plant(
+          `expires: $expires}' \\\n      >|"$entry_file"\n    put_entry "$(entry_key "$session" continuation)"`,
+          `expires: $expires}' \\\n      >&"$entry_file"\n    put_entry "$(entry_key "$session" continuation)"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close written with 1>',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    1>"\${entry_file}"`),
+        ['IG-09k'],
+      ],
       [
         'k: the continuation only straight after the role is taken',
         plant(

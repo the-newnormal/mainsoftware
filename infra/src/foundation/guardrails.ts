@@ -118,9 +118,11 @@ const TRAIL_VALIDATION_READS: readonly string[] = [
 
 // The global services hearth-region leaves to any Region (C11-D05): IAM, Organizations, STS, Route 53,
 // CloudFront, Support, billing and cost, Health, the account's own settings and Identity Center, plus
-// the calls the CLI and the console route to us-east-1 (listing buckets, the account's public access
-// block, describing Regions), and GuardDuty and the trail's validation reads, which the next two
-// statements fence to their two Regions.
+// the calls the CLI and the console route to us-east-1 (listing buckets, reading and setting the
+// account's public access block, describing Regions), and GuardDuty and the trail's validation reads,
+// which the next two statements fence to their two Regions. The account's public access block is one
+// setting for every Region, so setting it from us-east-1 sends nothing elsewhere, and SetUpOnly in
+// hearth-baseline-2 still denies the write to everyone but OrganizationAccountAccessRole.
 export const REGION_NOT_ACTIONS: readonly string[] = [
   'iam:*',
   'organizations:*',
@@ -143,6 +145,7 @@ export const REGION_NOT_ACTIONS: readonly string[] = [
   'trustedadvisor:*',
   's3:ListAllMyBuckets',
   's3:GetAccountPublic*',
+  's3:PutAccountPublicAccessBlock',
   'ec2:DescribeRegions',
   'guardduty:*',
   ...TRAIL_VALIDATION_READS,

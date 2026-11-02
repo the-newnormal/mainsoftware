@@ -26,10 +26,18 @@ export interface NagAllowance {
   reason: string
 }
 
-// The log buckets keep no server access log: their data events log every access (C11-D17), and an
-// access-log bucket would need an expiry with no tag, a second LCG-02 exception (C11-D19).
+// The log buckets keep no server access log, and an access-log bucket would need an expiry with no
+// tag, a second LCG-02 exception (C11-D19). What the organisation trail's data events record instead
+// differs by bucket (C11-D17): on the break-glass log and the archive, every object read and write;
+// on the trail bucket, every object read and every write but PutObject, which the trail leaves out
+// so CloudTrail's own deliveries don't log themselves. A PutObject there by anyone else is recorded
+// nowhere, and validate-logs shows a delivered file overwritten but not one added beside the digests;
+// recording it is the owner's alternative in TECH-SPEC T24 item 6 (C0.11 review 1 TRUST-03), so this
+// allowance is decided on that gap.
 const NO_ACCESS_LOGS =
-  'Data events in the organisation trail log every access; an access-log bucket would need an untagged expiry (C11-D17, C11-D19)'
+  'Data events in the organisation trail log every object read and write; an access-log bucket would need an untagged expiry (C11-D17, C11-D19)'
+const TRAIL_BUCKET_NO_ACCESS_LOGS =
+  "Data events in the organisation trail log every object read and every write but PutObject, left out so CloudTrail's deliveries don't log themselves, so a PutObject by anyone else is unrecorded; an access-log bucket would need an untagged expiry (C11-D17, C11-D19)"
 // Break-glass reads and triages by service-wide read patterns and its own account's names, and denies
 // every write it doesn't need, for an hour under an alarmed session with a reason.
 const BREAK_GLASS =
@@ -49,7 +57,7 @@ export const NAG_ALLOWANCES: readonly NagAllowance[] = [
     reason:
       "CloudTrail names each account's stream at delivery, so its role writes any stream of the one copy log group (C11-D17)",
   },
-  { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/TrailBucket/Resource', reason: NO_ACCESS_LOGS },
+  { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/TrailBucket/Resource', reason: TRAIL_BUCKET_NO_ACCESS_LOGS },
   { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/BreakGlassLogBucket/Resource', reason: NO_ACCESS_LOGS },
   { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/ArchiveBucket/Resource', reason: NO_ACCESS_LOGS },
   { rule: 'AwsSolutions-IAM5', path: 'Hearth-LogArchive/BreakGlass/Role', reason: BREAK_GLASS },
