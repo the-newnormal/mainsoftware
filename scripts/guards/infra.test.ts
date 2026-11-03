@@ -2014,6 +2014,32 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         ),
         ['IG-09k'],
       ],
+      // C0.11 review 12 CR-17: the session field set as the object is built, then changed by what
+      // follows it in the program, or $session bound to something else first.
+      [
+        'k: the close’s session overwritten after it is built (C0.11 review 12 CR-17)',
+        plant(
+          `outcome: $outcome}' \\\n    >|"$entry_file"`,
+          `outcome: $outcome} | .session = $at' \\\n    >|"$entry_file"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close’s session set again by setpath (C0.11 review 12 CR-17)',
+        plant(
+          `outcome: $outcome}' \\\n    >|"$entry_file"`,
+          `outcome: $outcome} | setpath(["session"]; $at)' \\\n    >|"$entry_file"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: $session bound by --argjson before the close’s --arg (C0.11 review 12 CR-17)',
+        plant(
+          '--arg environment "$environment" --arg session "$first_session"',
+          `--arg environment "$environment" --argjson session '"x"' --arg session "$first_session"`,
+        ),
+        ['IG-09k'],
+      ],
     ]
     for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
   })

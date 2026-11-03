@@ -1199,6 +1199,17 @@ const SHELL_START = [
   'bash --rcfile "$rc" -i || true',
 ].join(' ')
 const RC_EXPANDED = /\$\{?rc\b/
+// The close entry's one jq run, its continuations joined, matched whole by IG-09 (k) (C0.11 review 12
+// CR-17): $session is bound once, by --arg to "$first_session", with no --argjson, --slurpfile or
+// --rawfile of the same name ahead of it, and the program builds the object and nothing more, so no
+// later filter (.session =, |=, setpath, del, with_entries, a second object) sets the field again.
+const CLOSE_ENTRY = [
+  `jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg session "$first_session"`,
+  `--arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson modes "$modes_json" --argjson ids "$ids_json"`,
+  `--arg outcome "$outcome"`,
+  `'{schema: $schema, entry: "close", environment: $environment, session: $session, at: $at, modes: $modes, ids: $ids, outcome: $outcome}'`,
+  `>|"$entry_file"`,
+].join(' ')
 // The console's one curl run, its continuation joined, matched whole by IG-09 (l): -q first (curl
 // ignores it anywhere else), so it reads no .curlrc, and no option, redirect or pipe beyond these, so
 // nothing traces or writes the exchange, the POST body holding the role's session or the answer
@@ -1859,31 +1870,25 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
     }
   }
   // The close is the first session's, whichever session writes it (C0.11 review 11 CR-15): the line
-  // before its one jq is `key="$(entry_key "$first_session" close)"`, the jq gives `session` once, as
-  // "$first_session", its program sets the session field from that alone, and the put after it sends
-  // "$key". So a late close, written by a later session, still names the first session and lands in
-  // its folder; the later session's own entry is its continuation.
+  // before its one jq is `key="$(entry_key "$first_session" close)"`, the jq is CLOSE_ENTRY whole, so
+  // its session field is "$first_session" and nothing sets it again (C0.11 review 12 CR-17), and the
+  // put after it sends "$key". So a late close, written by a later session, still names the first
+  // session and lands in its folder; the later session's own entry is its continuation.
   {
     const closes = lines.flatMap((line, index) => (/\bentry:\s*"close"/.test(line.text) ? [index] : []))
     const at = closes[0] ?? -1
-    const words = wordsAsWritten(lines[at]?.text ?? '')
-    const sessions = words.flatMap((word, i) => (word === '--arg' && words[i + 1] === 'session' ? [words[i + 2]] : []))
-    const program = jqPrograms(lines[at]?.text ?? '')[0] ?? ''
     const put = wordsAsWritten(lines[at + 1]?.text ?? '')
     if (
       closes.length !== 1 ||
       lines[at - 1]?.text !== 'key="$(entry_key "$first_session" close)"' ||
-      sessions.length !== 1 ||
-      sessions[0] !== '"$first_session"' ||
-      (program.match(/\bsession:/g) ?? []).length !== 1 ||
-      !/\bsession:\s*\$session\s*[,}]/.test(program) ||
+      lines[at]?.text !== CLOSE_ENTRY ||
       put.length !== 2 ||
       put[0] !== 'put_entry' ||
       put[1] !== '"$key"'
     ) {
       fail(
         'k',
-        'the close is the first session’s: key="$(entry_key "$first_session" close)" straight before its one jq, which gives --arg session "$first_session" once and sets session: $session, then put_entry "$key"',
+        `the close is the first session’s: key="$(entry_key "$first_session" close)" straight before its one jq, which is \`${CLOSE_ENTRY}\` whole, then put_entry "$key"`,
       )
     }
   }

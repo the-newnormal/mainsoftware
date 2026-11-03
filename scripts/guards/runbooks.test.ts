@@ -36,7 +36,9 @@
 //   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them,
 //   and an account in Recovery, where OAAR isn't fenced, moves back into its OU first), and the set-up's
 //   step N confirming each alert subscription with authentication and reading it back
-//   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't.
+//   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
+// - RB-08 (C0.11 review 12 CR-19): every table row has as many cells as its header, counted as GFM
+//   counts them, so a | in a command is written \| even inside backticks (the page shows a plain |).
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -734,5 +736,68 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01): 
 
   it('security-alerts.md and the set-up runbook hold both', () => {
     expect(landingZoneProblems(readRepoFile(SECURITY_ALERTS), readRepoFile(AWS_SET_UP))).toEqual([])
+  })
+})
+
+// --- RB-08: every table row has its header's cells -------------------------------------------------
+
+// Each table row, outside fenced code, whose cells differ in number from its header's, as "line: its
+// cells, its header's". GFM splits a row on every pipe no backslash escapes, inside a code span too, and
+// drops the cells past the header's, so an unescaped | in a command loses the rest of its row. A table
+// ends at a blank line or the start of another block (a heading, a list item, a quote, a fence).
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/
+const TABLE_ENDS = /^\s*$|^\s*(?:#|>|[-*+]\s|\d+[.)]\s|```|~~~)/
+const cellCount = (row: string) =>
+  row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+    .split(/(?<!\\)\|/).length
+
+function rowsOffHeader(text: string): string[] {
+  const lines = text
+    .replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gm, block => block.replace(/[^\n]/g, ' '))
+    .split('\n')
+  const found: string[] = []
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const header = lines[i] ?? ''
+    const width = cellCount(header)
+    if (!header.includes('|') || !TABLE_DELIMITER.test(lines[i + 1] ?? '') || cellCount(lines[i + 1] ?? '') !== width)
+      continue
+    for (i += 2; i < lines.length && !TABLE_ENDS.test(lines[i] ?? ''); i++) {
+      const cells = cellCount(lines[i] ?? '')
+      if (cells !== width) found.push(`${i + 1}: ${cells}, its header ${width}`)
+    }
+  }
+  return found
+}
+
+describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cells, a | in a command escaped', () => {
+  it('finds a row an unescaped | splits, or one short of cells, on planted text, and passes the rest', () => {
+    const text = [
+      '| Alert | First check |',
+      '|---|---|',
+      "| A1 | `jq '.a \\| .b'` |",
+      "| A2 | `jq '.a | .b'` |",
+      '| A3 |',
+      '',
+      '```sh',
+      '| x | y |',
+      '|---|---|',
+      '| a | b | c |',
+      '```',
+      '',
+      '  | Indented | Too |',
+      '  |---|---|',
+      '  | a | b | c |',
+      '- a list item | not a row',
+    ].join('\n')
+    expect(rowsOffHeader(text)).toEqual(['4: 3, its header 2', '5: 1, its header 2', '15: 3, its header 2'])
+  })
+
+  it('every table in the runbooks', () => {
+    const runbooks = repoFiles().filter(isRunbook).sort()
+    expect(runbooks.length).toBeGreaterThan(1)
+    expect(runbooks.flatMap(path => rowsOffHeader(readRepoFile(path)).map(row => `${path}:${row}`))).toEqual([])
   })
 })

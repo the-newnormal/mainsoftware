@@ -78,7 +78,10 @@ interface AssignmentSpec {
 
 // What the reviewer reads: the trail's copy in management, and in log-archive the trail's and the
 // break-glass entries' buckets and objects, decrypted through S3 under each one's encryption context
-// alone, and the keys' configuration; never the archive bucket or its key (C11-D17, C11-D21).
+// alone, and every key's configuration, the archive key's included (KeyReadBack). Never the archive
+// bucket (NeverTheArchive denies every S3 action on it), and never kms:Decrypt, kms:ReEncrypt* or
+// kms:GenerateDataKey* with the archive key, named by its alias (NeverTheArchiveKey; C11-D17,
+// C11-D21).
 function reviewStatements(config: LandingZoneConfig): IamStatement[] {
   const { management, logArchive } = config.accounts
   const logGroup = arnPattern({
