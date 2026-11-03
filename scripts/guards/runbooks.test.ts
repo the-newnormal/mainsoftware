@@ -34,8 +34,9 @@
 // - RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone's runbooks keep the two
 //   steps no code can hold: security-alerts.md's containment (removing someone from a group stops
 //   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them,
-//   and is seen refusing a call before its cut-off (review 14 CR-24), and an account in Recovery,
-//   where OAAR isn't fenced, moves back into its OU first), and the set-up's
+//   and is seen refusing a call before its cut-off (review 14 CR-24), as management's inline deny is
+//   before the revoke (review 14 I14-01), and an account in Recovery, where OAAR isn't fenced, moves
+//   back into its OU first), and the set-up's
 //   step N confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
 // - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
@@ -694,6 +695,11 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
     if (!containment.includes('explicit deny in a service control policy')) {
       found.push('security-alerts.md: no check that the SCP binds before its cut-off')
     }
+    // So does a permission set's inline deny in management, and until it binds the set's old sessions
+    // can still take roles, so it must be seen refusing a call before the revoke (C0.11 review 14 I14-01).
+    if (!containment.includes('explicit deny in an identity-based policy')) {
+      found.push("security-alerts.md: no check that management's inline deny binds before the revoke")
+    }
   }
   const stepN = setUp.split(/^### N\. .*$/m)[1]?.split(/^##+ /m)[0]
   if (stepN === undefined) found.push('aws-account-set-up.md: no step N')
@@ -708,10 +714,10 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
   return found
 }
 
-describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, review 14 CR-24): the landing zone’s runbooks keep containment, OAAR’s and the check that it binds included, and authenticated subscriptions', () => {
+describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, review 14 CR-24, I14-01): the landing zone’s runbooks keep containment, OAAR’s and the checks that each deny binds included, and authenticated subscriptions', () => {
   it('finds each gap on planted text, and passes the right words', () => {
     const alerts =
-      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions. An account in `Recovery` moves it back into its own OU. An SCP denies where `aws:TokenIssueTime` is before then and `aws:PrincipalArn` is like `*:role/OrganizationAccountAccessRole`. A call is refused `with an explicit deny in a service control policy` before the cut-off.\n\n## Check it worked\n'
+      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions. An account in `Recovery` moves it back into its own OU. An SCP denies where `aws:TokenIssueTime` is before then and `aws:PrincipalArn` is like `*:role/OrganizationAccountAccessRole`. A call is refused `with an explicit deny in a service control policy` before the cut-off. In management, one is refused `with an explicit deny in an identity-based policy` first.\n\n## Check it worked\n'
     const setUp =
       '### N. Confirm each email subscription\n\n`aws sns confirm-subscription --authenticate-on-unsubscribe true`, then `ConfirmationWasAuthenticated` prints `true`.\n\n### O. Next\n'
     expect(landingZoneProblems(alerts, setUp)).toEqual([])
@@ -732,6 +738,9 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     ])
     expect(landingZoneProblems(alerts.replace('explicit deny in a service control policy', 'error'), setUp)).toEqual([
       'security-alerts.md: no check that the SCP binds before its cut-off',
+    ])
+    expect(landingZoneProblems(alerts.replace('explicit deny in an identity-based policy', 'error'), setUp)).toEqual([
+      "security-alerts.md: no check that management's inline deny binds before the revoke",
     ])
     expect(landingZoneProblems('## Steps\n', setUp)).toEqual([
       'security-alerts.md: no "### Containing an unexpected session"',
