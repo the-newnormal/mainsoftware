@@ -59,142 +59,44 @@ First, which id is which. The queries and the buckets show accounts and OUs by i
    - each entry was written by the session its key names, from `hearth/review/break-glass-entry-writes`: the key's successful put came from the session after `assumed-role/hearth-break-glass/` in its `userIdentity.arn`, and the writer's source identity is the one on the `hearth/review/break-glass-sessions` row in the key's account whose `requestParameters.roleSessionName` equals that session name: match by name, never by source identity alone. Read the row whose `recipientAccountId` is the key's account, since log-archive's copy of another account's put may carry no session. Two writers are expected besides: a close written by the continuation session whose entry's `continues` names the key's session, with the same source identity, and an amend, `<the amend's own session>-amend-<the amended session's time>.json`, written by the amend's own session. Refused puts of a key that holds an entry have one expected shape: its successful put by one of those writers, followed within minutes, by `eventTime`, only by refused puts of it with `PreconditionFailed`, from that same session or one whose continuation entry `continues` the same session, under the same source identity. That is the AWS CLI retrying a put whose reply was lost, which then meets the stored entry, and, for a close, the helper's own unprompted second try, made with the same session's credentials (or, if the hour's last two minutes began in between, by a new session that writes its own continuation entry first). The helper then reported the entry unwritten, so the person's note of an unwritten entry may stand beside an entry that exists. The CLI retries an assumption the same way: when the reply to the helper's `assume-role` is lost, it sends the call again under the same name, and AWS grants it again. So two or three successful assumptions under one name in one account, within about three minutes of each other by `eventTime`, all with the same source identity and the same reason, are that retry: note it, it isn't a finding (the role's trust holds a session's source identity to the caller's own sign-in, so nobody else's session can match it). A name's time is the person's clock, read just before the helper assumes the role: normally seconds before the assumption's `eventTime`; up to about three minutes before it when the CLI retried; and off by as much as that clock is off AWS's, which can be up to about five minutes, since AWS refuses a signed request further off. Where the session wrote an open entry, its `at`, from the same clock, comes a few seconds after the name's time, or up to about three minutes after when the CLI retried. Note a larger gap with the person's account of it (a slow network, their machine's clock). Each of these is a finding for [A suspected breach of personal data](breach.md): any other writer; two sessions sharing a name (one session name on more than one successful assumption in one account, in `hearth/review/break-glass-sessions`) beyond the CLI's retry; a successful assumption whose name isn't of the helper's form, `hearth-bg-` and a UTC time, or whose time is further from its `eventTime` than those bounds with nothing to account for it; any other refused put of a key that already holds an entry (beyond step P.1's drill, which the set-up's notes record), an `AccessDenied` or one by another session or source identity among them; an entry with no put row. The role's trust doesn't constrain session names, so another session in the account can take an open session's name: the by-name match then finds two assumptions under it that aren't the CLI's retry, which is the finding itself. Record counts, never a key or a name.
 4. Each hearthbase assumption (A15) the second query lists has an `lz:` reason and a merged PR, a reviewed Foundation deploy (with its A3; the RCP's subjects come from `infra/.env.local` too, and step 6 reads them as they stand), the set-up's first deploys, or a recorded tier-2 change.
 5. Each `HearthOrgAdmin` session and each assumption of `OrganizationAccountAccessRole` has a reason: a reviewed Foundation deploy, a tier-2 change, or the set-up. A `HearthSetUp` session after the set-up is a finding. Each move `hearth/review/recovery-moves` lists is a recorded tier-2 change, the account moved from its own OU (log-archive's `Security`, a workload account's `Workloads`) into `Recovery` and back into that same OU, or one of the set-up's moves, each account from the root into its own OU; any other move is a finding, even one undone since, and so is a refused one that no recorded change explains.
-6. Each deploy-role session matches the deploy history (from C0.11 PR 4). Then check whom GitHub's deploy roles and the RCP let in, as they stand and as the quarter's calls set them. This step judges what each subject is. Who made each change, and in which deploy, steps 3 to 5 and 9 have already reconciled: A15, and A6 (i), which alarms on every IAM write to these roles, refused ones included.
+6. Each deploy-role session matches the deploy history (from C0.11 PR 4). Then check whom GitHub's deploy roles and the RCP let in. This catches a mistake or an unreviewed change in the deploy subjects, which come from `infra/.env.local` rather than a PR, and any drift from the subjects the code renders. It doesn't try to stop an Owner hiding a change on purpose: whoever can write these trusts or the RCP (a reviewed `lz:pr-` deploy, OAAR under tier 2, `HearthOrgAdmin` in management) could also stop the trail, and their writes raise A5 or A6 (i) at the time, which are triaged then (TECH-SPEC T24 item 29).
 
-   Four places hold the subjects: non-prod's `hearth-gh-deploy`, for GitHub's `nonprod` environment; prod's `hearth-gh-deploy`, for `prod`; prod's `hearth-gh-diff`, for `prod-plan`; and the RCP's `WebIdentityOnlyDeploySubjects`, which lists all three. A subject is this repository's when it is exactly `repo:<R>:environment:<the environment>:job_workflow_ref:<R>/.github/workflows/deploy.yml@refs/heads/main`, each `<R>` being this repository as GitHub names it now, as `owner/name` or as `owner@<owner id>/name@<repository id>`. Either form in either place names this repository alone: a form GitHub doesn't send only refuses deploys, which the set-up runbook's step E.2 corrects. A role's environment comes from its account and its name, never from its subject. Nothing counts how often a subject changed, and no row older than the quarter is read: what stood when the quarter began is what the last review passed.
+   Four places hold the subjects: non-prod's `hearth-gh-deploy`, for GitHub's `nonprod` environment, prod's `hearth-gh-deploy`, for `prod`, and prod's `hearth-gh-diff`, for `prod-plan` (`infra/src/baseline/github-oidc.ts`); and the RCP's `WebIdentityOnlyDeploySubjects`, which lists all three (`infra/src/foundation/guardrails.ts`). Each must be what the code renders (`SUBJECT_SHAPE` in `infra/src/config/env.ts`): `repo:<R>:environment:<the environment>:job_workflow_ref:<R>/.github/workflows/deploy.yml@refs/heads/main`, each `<R>` this repository as GitHub names it now, as `owner/name` or as `owner@<owner id>/name@<repository id>`. Either form names this repository alone, and a form GitHub doesn't send only refuses deploys. A role's environment comes from its account and its name, never from its subject.
 
-   **Set up the comparison** in each shell that runs a read below: your log-archive session and your management session. Paste it with the account ids the Owner showed before step 1. Its first two lines print this repository's name and two ids, read as *Before you start* says, and every shell must print the same line. In a break-glass shell (an A10 triaged by the person on call), `gh` isn't signed in, since the helper gives the shell its own `HOME`: run the first two lines in your own shell, and in the break-glass shell paste `read -r n o i <<<'<the line your own shell printed>'; REPO="$(jq -cn --arg name "$n" --arg owner "$o" --arg id "$i" '{$name, $owner, $id}')"` in place of the first.
+   **Set up the comparison** in your log-archive session, with the account ids the Owner showed before step 1, and the Owner in their management session. Its first line reads this repository's name and ids, as *Before you start* says, and prints them: both shells must print the same line. Where `gh` isn't signed in (a break-glass shell), set `REPO='<the line your own shell printed>'` in place of the first line.
 
    ```sh
-   REPO="$(env -u GH_REPO -u GH_HOST gh api 'repos/{owner}/{repo}' --jq '{name: .full_name, owner: (.owner.id | tostring), id: (.id | tostring)}')"
-   jq -r '"\(.name) \(.owner) \(.id)"' <<<"$REPO"
-   NONPROD='<the non-prod account id>' PROD='<the prod account id>' FORMERS='[]'
-   judge() {
-     jq -r --argjson repo "$REPO" --argjson formers "$FORMERS" --arg nonprod "$NONPROD" --arg prod "$PROD" '
-       def gh: "token.actions.githubusercontent.com";
-       def ids: ($repo.name | split("/")) as [$o, $n] | "\($o)@\($repo.owner)/\($n)@\($repo.id)";
-       def environment($account; $role):
-         if $role == "hearth-gh-deploy" and $account == $nonprod then "nonprod"
-         elif $role == "hearth-gh-deploy" and $account == $prod then "prod"
-         elif $role == "hearth-gh-diff" and $account == $prod then "prod-plan"
-         else null end;
-       def place:
-         if . == $repo.name then "name"
-         elif . == ids then "ids"
-         elif test("^[A-Za-z0-9-]+@[0-9]+/[A-Za-z0-9._-]+@" + $repo.id + "$") or IN($formers[]) then "former"
-         elif test("^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$") then "check"
-         else "other" end;
-       def subject($environment):
-         (if type == "string" then capture("^repo:(?<a>[^:]+):environment:(?<e>[^:]+):job_workflow_ref:(?<b>[^:]+)/[.]github/workflows/deploy[.]yml@refs/heads/main$") else empty end // null) as $p
-         | if $p == null then "FINDING shape \(.)"
-           elif $p.e != $environment then "FINDING environment \(.)"
-           else [($p.a, $p.b) | place] as $w
-             | if any($w[]; . == "other") then "FINDING repository \(.)"
-               elif any($w[]; . == "check") then "FINDING name \([($p.a, $p.b) | select(place == "check")] | unique | join(" "))"
-               elif any($w[]; . == "former") then "former \(.)"
-               else "expected \($w | join("/"))" end end;
-       def provider($account): type == "string"
-         and (split(":") | length == 6 and .[0] == "arn" and .[2] == "iam" and .[4] == $account and .[5] == "oidc-provider/" + gh);
-       def trust($account; $environment):
-         (if type == "string" then (try fromjson catch null) else . end) as $d
-         | ([$d.Statement?] | flatten) as $s
-         | if ($d | type) != "object" then "FINDING unreadable"
-           elif ($s | length) != 1 or ($s[0] | type) != "object" then "FINDING statements"
-           elif ($s[0] | ((keys - ["Sid"]) != ["Action", "Condition", "Effect", "Principal"]) or .Effect != "Allow"
-               or ([.Action] | flatten) != ["sts:AssumeRoleWithWebIdentity"]
-               or (.Principal | type != "object" or keys != ["Federated"] or (.Federated | provider($account) | not))
-               or (.Condition | type != "object" or keys != ["StringEquals"])
-               or (.Condition.StringEquals | type != "object" or keys != [gh + ":aud", gh + ":sub"])
-               or .Condition.StringEquals[gh + ":aud"] != "sts.amazonaws.com")
-           then "FINDING trust"
-           else $s[0].Condition.StringEquals[gh + ":sub"] | subject($environment) end;
-       def finding($statuses):
-         .resourceOwnerAccount as $account | (.resource | sub("^.*:role/"; "")) as $role
-         | select(($role | startswith("hearth-gh-")) or (.principal.Federated? // "" | tostring | contains(gh)))
-         | environment($account; $role) as $environment
-         | [.analyzedAt, .status, $account, $role, $environment,
-            (if (.status | IN($statuses[]) | not) then "FINDING status \(.status)"
-             elif .error != null then "FINDING error \(.error)"
-             elif (.principal // {} | keys) != ["Federated"] or (.principal.Federated | provider($account) | not) then "FINDING principal"
-             elif (.condition // {} | keys) != [gh + ":aud", gh + ":sub"] or .condition[gh + ":aud"] != "sts.amazonaws.com" then "FINDING condition"
-             else .condition[gh + ":sub"] | subject($environment) end)]
-         | @tsv;
-     '"$1"
-   }
+   REPO="$(env -u GH_REPO -u GH_HOST gh api 'repos/{owner}/{repo}' --jq '[.full_name, "\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"]')"; jq -c . <<<"$REPO"
+   NONPROD='<the non-prod account id>' PROD='<the prod account id>'
+   judge() { jq -r --argjson r "$REPO" --arg nonprod "$NONPROD" --arg prod "$PROD" 'def gh: "token.actions.githubusercontent.com";
+     def ok($e): $e != null and IN([$r[] as $a | $r[] as $b | "repo:\($a):environment:\($e):job_workflow_ref:\($b)/.github/workflows/deploy.yml@refs/heads/main"][]);
+     def line: .resourceOwnerAccount as $a | (.resource | sub("^.*:role/"; "")) as $n
+       | {"\($nonprod) hearth-gh-deploy": "nonprod", "\($prod) hearth-gh-deploy": "prod", "\($prod) hearth-gh-diff": "prod-plan"}["\($a) \($n)"] as $e
+       | [.analyzedAt, $a, $n, if .principal == {Federated: (["arn", "aws", "iam", "", $a, "oidc-provider/" + gh] | join(":"))}
+           and .condition == {(gh + ":aud"): "sts.amazonaws.com", (gh + ":sub"): .condition[gh + ":sub"]} and (.condition[gh + ":sub"] | ok($e))
+         then "expected" else "FINDING" end] | @tsv; '"$1"; }
    ```
 
-   `judge` prints, for each subject, `expected` and the form in each place (`name` or `ids`); `former` and the subject, for a former name of this repository; or `FINDING`, what kind, and what the place holds (*What each result means*, below). Its `finding` judges one of the analyzer's findings, holding its status to those it is given. Any role but the three has no environment (its column is empty), so every subject on it reads `FINDING environment`.
-
-   1. **The trusts as they stand**, in your log-archive session, from the organisation analyzer, `hearth-org-external`. It reads every role in every account. It has no archive rule, and only tier 2 could archive a finding, which A6 reports. This lists each active or archived finding on a role named `hearth-gh-…` or trusting GitHub's provider, with when the analyzer last read the role (`analyzedAt`):
-
+   1. **The trusts as they stand**, in your log-archive session, from the organisation analyzer, which reads every role in every account: each active finding on a `hearth-gh-` role or naming GitHub's provider, with when the analyzer last read the role (`analyzedAt`).
       ```sh
-      ANALYZER="$(aws accessanalyzer list-analyzers --region ap-southeast-1 --type ORGANIZATION --query "analyzers[?name=='hearth-org-external' && status=='ACTIVE'].arn" --output text)"
-      aws accessanalyzer list-findings --region ap-southeast-1 --analyzer-arn "$ANALYZER" \
-        --filter '{"resourceType": {"eq": ["AWS::IAM::Role"]}, "status": {"eq": ["ACTIVE", "ARCHIVED"]}}' --output json \
-      | judge '.findings[] | finding(["ACTIVE"])'
+      ANALYZER="$(aws accessanalyzer list-analyzers --region ap-southeast-1 --type ORGANIZATION --query "analyzers[?name=='hearth-org-external'].arn" --output text)"
+      aws accessanalyzer list-findings --region ap-southeast-1 --analyzer-arn "$ANALYZER" --output json --filter '{"resourceType": {"eq": ["AWS::IAM::Role"]}, "status": {"eq": ["ACTIVE"]}}' \
+      | judge '.findings[] | select(tostring | contains(":role/hearth-gh-") or contains(gh)) | line'
       ```
-
-      Expect exactly three lines: non-prod's `hearth-gh-deploy`, prod's `hearth-gh-deploy` and prod's `hearth-gh-diff`, each `expected`, and each read (`analyzedAt`) after that role's last line in the second read that isn't `refused`; a refused call changes nothing for the analyzer to read. A role changed in the last day may still show its old finding, or none yet: read again the next day. If a day later a line was still read before that change, it is a finding: the analyzer hasn't read the role since, so its trust is unchecked.
-   2. **Every trust the quarter's calls set**, in your management session, from the trail's copy, over the quarter and a day either side by the copy's own times (at the first review, from the set-up's first day). Take each line into the quarter by its `eventTime` (step 1). `jq` turns each day into the milliseconds since 1970, in UTC, that the command takes. It lists each `CreateRole`, `UpdateAssumeRolePolicy` and `DeleteRole` of a role named `hearth-gh-…` or whose trust names GitHub's provider, refused ones included, and holds each trust to the one statement `infra/src/baseline/github-oidc.ts` writes. Over a quarter it may take several minutes:
-
-      ```sh
-      aws logs filter-log-events --region ap-southeast-1 --log-group-name /hearth/security/org-trail \
-        --start-time "$(jq -n '"<the day before the quarter>T00:00:00Z" | fromdateiso8601 * 1000')" \
-        --end-time "$(jq -n '"<the day after the quarter>T23:59:59Z" | fromdateiso8601 * 1000')" \
-        --filter-pattern '{ ($.eventSource = "iam.amazonaws.com") && (($.eventName = "CreateRole") || ($.eventName = "UpdateAssumeRolePolicy") || ($.eventName = "DeleteRole")) && (($.requestParameters.roleName = "hearth-gh-*") || ($.requestParameters.assumeRolePolicyDocument = "*token.actions.githubusercontent.com*") || ($.requestParameters.policyDocument = "*token.actions.githubusercontent.com*")) }' \
-        --query 'events[].message' --output json \
-      | judge '.[] | fromjson
-        | .recipientAccountId as $account | (.requestParameters.roleName // "-") as $role
-        | environment($account; $role) as $environment
-        | (if .eventName == "DeleteRole" then "deleted"
-           else (.requestParameters.assumeRolePolicyDocument // .requestParameters.policyDocument)
-             | if . == null then "unread" else trust($account; $environment) end end) as $verdict
-        | [.eventTime, $account, .eventName, $role, $environment,
-           (if .errorCode then "refused \(.errorCode) \($verdict)" else $verdict end)]
-        | @tsv'
-      ```
-
-      Each line must read `expected`, `former` or `deleted`, or `refused` on a role named `hearth-gh-…`. A `refused` line changed nothing: it shows the subject the call tried to set. On a `hearth-gh-…` role, step 9 reconciles it with its A6 (i) episode, whose triage treats an unexplained refused write as an incident. A6 (i) watches those names alone, so a `refused` line on a role of any other name has no alarm behind it: it is a finding, investigated as an A6 would be (a denied attempt counts). Each role a `deleted` line names must be back in the first read.
-   3. **The RCP as it stands**, in your management session, where `HearthSecurityReview` reads the organisation's policies and their targets:
-
+   2. **The RCP as it stands**, run by the Owner while you watch, a line for each environment:
       ```sh
       RCP="$(aws organizations list-policies --filter RESOURCE_CONTROL_POLICY --query "Policies[?Name=='hearth-data-perimeter'].Id" --output text)"
-      aws organizations describe-policy --policy-id "$RCP" --query Policy.Content --output text \
-      | judge '[[.Statement] | flatten | .[] | select(.Sid? == "WebIdentityOnlyDeploySubjects")] as $found
-        | (try $found[0].Condition.StringNotEquals[gh + ":sub"] catch null) as $s
-        | if ($found | length) != 1
-             or ($found[0] | ((keys - ["Sid"]) != ["Action", "Condition", "Effect", "Principal", "Resource"])
-               or .Effect != "Deny" or .Principal != "*" or .Resource != "*" or .Action != "sts:AssumeRoleWithWebIdentity"
-               or (.Condition | type != "object" or keys != ["StringNotEquals"])
-               or (.Condition.StringNotEquals | type != "object" or keys != [gh + ":sub"]))
-             or ($s | type) != "array" or ($s | length) != 3
-             or ([$s[] | strings | capture(":environment:(?<e>[^:]+):").e] | sort) != ["nonprod", "prod", "prod-plan"]
-          then "FINDING statement \($found | tojson)"
-          else $s[] | capture(":environment:(?<e>[^:]+):").e as $e | [$e, subject($e)] | @tsv end'
-      aws organizations list-targets-for-policy --policy-id "$RCP" --query 'Targets[].[Type,TargetId]' --output text
+      aws organizations describe-policy --policy-id "$RCP" --query Policy.Content --output text | judge '[.Statement[] | select(.Sid == "WebIdentityOnlyDeploySubjects") | .Condition.StringNotEquals[gh + ":sub"]] as [$s]
+        | ("nonprod", "prod", "prod-plan") as $e | [$e, if ($s | type) == "array" and ($s | length) == 3 and ([$s[] | select(ok($e))] | length) == 1 then "expected" else "FINDING" end] | @tsv'
+      ```
+   3. **The quarter's changes**, with this query on `/hearth/security/org-trail` in your management session, over the quarter and a day either side (step 1; at the first review, from the set-up's first day): every call that set or removed a GitHub role's trust, and every change to the organisation's policies, refused ones included.
+      ```
+      fields @timestamp, eventTime, recipientAccountId, eventName, coalesce(requestParameters.roleName, requestParameters.policyId, requestParameters.name) as target, errorCode
+      | filter (eventSource = "iam.amazonaws.com" and requestParameters.roleName like /^hearth-gh-/ and eventName in ["CreateRole", "UpdateAssumeRolePolicy", "DeleteRole"]) or (eventSource = "organizations.amazonaws.com" and eventName in ["CreatePolicy", "UpdatePolicy", "DeletePolicy", "AttachPolicy", "DetachPolicy"])
+      | sort @timestamp asc
       ```
 
-      Expect three lines, one for each environment, each `expected`, then one target: `ACCOUNT` and non-prod's account id while `RCP_TARGET` in `infra/src/foundation/options.ts` on `main` is `'nonprod'`, or `ROOT` and the root's id once it is `'root'`.
-   4. **The quarter's A10 emails**, in your log-archive session, with `ANALYZER` set as the first read sets it. A10 comes from log-archive's own rule on the analyzer, not from the trail's copy, and a trust whose subject changes gets a new finding, which emails (TECH-SPEC T24 item 5), so this shows a trust that was set and replaced even if the copy missed both calls. For each of the quarter's A10 emails on a role (`AWS::IAM::Role`), read its finding by the id the email names, whatever its status now:
-
-      ```sh
-      aws accessanalyzer get-finding --region ap-southeast-1 --analyzer-arn "$ANALYZER" --id '<the finding id the email names>' --output json \
-      | judge '.finding | finding(["ACTIVE", "RESOLVED"])'
-      ```
-
-      It prints one line for a GitHub role's finding, with its status (`RESOLVED` once a later change replaced that trust), and nothing for another role's, which the A10 row's own check covers. Each line must read `expected` or `former`; an `ACTIVE` one is also in the first read. The analyzer deletes a resolved finding after a while, and then answers that it holds none (`ResourceNotFoundException`): the email's triage note, which records the finding's status and verdict ([A security alert](security-alerts.md)'s A10 row), stands in for it. An email whose finding is gone and whose note doesn't record them is a finding.
-
-   What each result means:
-
-   - **It passed** when the first read prints three `expected` lines, each read after its role's last line in the second read that isn't `refused`; every line of the second read is `expected`, `former`, `refused` or `deleted`, and each deleted role is back; the third prints three `expected` lines and the one target; and every A10 email on a role reads `expected` or `former`, by its finding or, once that is gone, by its note. Record that each read passed, never a subject, a name or an id.
-   - **`former`**: a place names a former name of this repository. Either it is an `owner@<owner id>/name@<repository id>` form that carries this repository's id under another owner, name or owner id, which only this repository could ever send, since GitHub never reuses a repository's id; or it is an `owner/name` that GitHub still sends here (next item). On a trust that no longer stands (a second-read line, or a `RESOLVED` fourth-read line) it passes: a trust set before a rename, or put back by a redeploy's rollback. In the first or third read, a trust or the RCP still names it: a finding the owner fixes at once by the set-up runbook's step E.2.
-   - **`FINDING name`** lists each `owner/name` in the subject that isn't this repository's. Each may be a former name, after a rename or transfer. For each, run `env -u GH_REPO -u GH_HOST gh api repos/<that owner>/<that name> --jq '.id, .created_at'`. GitHub answers a former name with the repository it now names, so if it prints this repository's id (the last on the comparison's first line), nobody else holds that path. Then set `FORMERS='["<that owner>/<that name>"]'` (each such name, comma-separated) and run the read again: the line now reads `former`. This is the one time GitHub is asked about a name taken from a line, and only for the id and creation time it prints. If it prints another id, or answers that it can't find the repository (a private one may hold the path), the line is a finding for [A suspected breach of personal data](breach.md), with one exception. On a second-read line, or a `RESOLVED` fourth-read line the second read also shows, a repository created (`created_at`) after the role's next line in the second read that isn't `refused`, the call that replaced that trust, reached the path only after the trust stopped naming it, since no repository is at a path before it is created. That line admitted nobody else: an owner's finding, not a breach, since the set-up runbook's step E.2 keeps a path the repository left free until the next review.
-   - **Fewer than three lines in the first read.** First see whether the analyzer reads the roles at all: `aws accessanalyzer list-findings --region ap-southeast-1 --analyzer-arn "$ANALYZER" --filter '{"resourceType": {"eq": ["AWS::IAM::Role"]}}' --query 'length(findings)'` counts every role finding, Identity Center's among them. None means the analyzer has stopped reading: a finding, and the trusts stay unchecked until the owner fixes it. Otherwise the missing role's last line in the second read decides. A `deleted` line in a deploy that steps 3 to 5 account for, and whose A6 (i) episode step 9 reconciles, is a finding the owner fixes by deploying that Baseline again. Anything else is a finding for [A suspected breach of personal data](breach.md): a trust the analyzer no longer reports may still let someone in.
-   - **The RCP still on non-prod's account** once `main` names the root: step O's Foundation deploy hasn't run. A finding the owner fixes by deploying it.
-   - **`unread`**: the row's trust isn't in the field the second read expects. Read that event's message (the same command without `| judge …`) and judge its trust by eye, as the read would. The owner corrects this step by a reviewed PR; until then it is a finding.
-   - **`FINDING error`**: the analyzer couldn't read the role, so its trust is unchecked. A finding to raise, never a pass; the second read still judges what the quarter's calls set.
-   - **A command that fails** (`AccessDenied`, an empty `ANALYZER`, no `hearth-data-perimeter`) is a finding, never a pass, but for the fourth read's answer for a deleted finding.
-   - **Anything else** is a finding for [A suspected breach of personal data](breach.md): every other `FINDING` (another repository or ids, another environment or workflow, another provider or principal, a condition added, changed or dropped, an archived finding, an RCP statement of any other shape), a line beyond the three in the first read, and an RCP on no target, on two, or on one that `main` doesn't name.
+   It passed when the first read prints exactly three lines, the three roles', each `expected` and read after that role's last row in the third read with no `errorCode`; the second prints `expected` for each environment; and each row of the third falls in an A6 (i) or A5 episode, matched as step 8 matches A4's, and is a reviewed deploy (steps 3 and 4), a recorded tier-2 change (step 5) or the set-up, or, refused, is explained by its episode's triage. Record that each read passed, never a subject, a name or an id. A role changed in the last day may not have been read yet: read again the next day. Anything else is a finding, and so is a command that fails (`AccessDenied`, an empty `ANALYZER` or `RCP`). The subjects change only by the set-up runbook's step E.2, its one correction of the form or its rename path, each deploy citing the PR that records it. So a subject still naming a former name of this repository, before a rename's redeploys, is a finding the owner fixes at once by that path, and a role a reviewed deploy removed is one the owner fixes by deploying that Baseline again. Every other finding goes to [A suspected breach of personal data](breach.md): another repository, environment, workflow or provider, a fourth role trusting GitHub, a missing role, or a change nothing explains.
 7. List the quarter's `HearthSecurityReview` sessions, your own included, with this query on the same log group (no saved query lists them), and check each against who should hold the set. Run it again at the end of the review, over today: today's own sessions, in management and in log-archive, must be listed (the copy receives them within about 15 minutes). If they aren't, the copy has stopped receiving the trail, and every assured alarm with it: it is a finding, and the Owner reads the trail's delivery to it at once (step 9).
 
    ```
