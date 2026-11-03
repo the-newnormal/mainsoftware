@@ -1858,6 +1858,35 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
       )
     }
   }
+  // The close is the first session's, whichever session writes it (C0.11 review 11 CR-15): the line
+  // before its one jq is `key="$(entry_key "$first_session" close)"`, the jq gives `session` once, as
+  // "$first_session", its program sets the session field from that alone, and the put after it sends
+  // "$key". So a late close, written by a later session, still names the first session and lands in
+  // its folder; the later session's own entry is its continuation.
+  {
+    const closes = lines.flatMap((line, index) => (/\bentry:\s*"close"/.test(line.text) ? [index] : []))
+    const at = closes[0] ?? -1
+    const words = wordsAsWritten(lines[at]?.text ?? '')
+    const sessions = words.flatMap((word, i) => (word === '--arg' && words[i + 1] === 'session' ? [words[i + 2]] : []))
+    const program = jqPrograms(lines[at]?.text ?? '')[0] ?? ''
+    const put = wordsAsWritten(lines[at + 1]?.text ?? '')
+    if (
+      closes.length !== 1 ||
+      lines[at - 1]?.text !== 'key="$(entry_key "$first_session" close)"' ||
+      sessions.length !== 1 ||
+      sessions[0] !== '"$first_session"' ||
+      (program.match(/\bsession:/g) ?? []).length !== 1 ||
+      !/\bsession:\s*\$session\s*[,}]/.test(program) ||
+      put.length !== 2 ||
+      put[0] !== 'put_entry' ||
+      put[1] !== '"$key"'
+    ) {
+      fail(
+        'k',
+        'the close is the first session’s: key="$(entry_key "$first_session" close)" straight before its one jq, which gives --arg session "$first_session" once and sets session: $session, then put_entry "$key"',
+      )
+    }
+  }
   // The role is taken for a late close only on a sign-in this run has checked (C0.11 review 4 HELPER-02): sign_in
   // starts `sign_in=checked` at the top before the trap; the second sign-in's function sets
   // `sign_in=unchecked` before its `aws sso login` and `sign_in=checked` as its last line; nothing

@@ -1992,6 +1992,32 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
   }, 30_000)
 
+  // C0.11 review 11 CR-15: a late close is written by a later session, and must still name the first
+  // and land in its folder.
+  it('k: the close names the first session, in its payload, its key and its put', () => {
+    const cases: Array<[string, string, string[]]> = [
+      [
+        'k: the close names the later session',
+        plant('--arg session "$first_session"', '--arg session "$session"'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close keyed by the later session',
+        plant('key="$(entry_key "$first_session" close)"', 'key="$(entry_key "$session" close)"'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close put under the later session’s key',
+        plant(
+          '  put_entry "$key" || return 1\n  closed=yes\n',
+          '  put_entry "$(entry_key "$session" close)" || return 1\n  closed=yes\n',
+        ),
+        ['IG-09k'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  })
+
   it('a: refuse_inherited_shell, run as a script, refuses each start-up state bash inherits and passes with none', () => {
     const fn = shellFunction(helper, 'refuse_inherited_shell') ?? ''
     expect(fn).toContain('refuse_inherited_shell() {')

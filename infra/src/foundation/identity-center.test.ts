@@ -177,12 +177,6 @@ const SETS: Record<string, { session: string; managed: string[]; inline: unknown
         ],
         Resource: '*',
       },
-      {
-        Sid: 'ReadPolicies',
-        Effect: 'Allow',
-        Action: ['organizations:ListPolicies', 'organizations:DescribePolicy', 'organizations:ListTargetsForPolicy'],
-        Resource: '*',
-      },
       { Sid: 'NeverTheArchive', Effect: 'Deny', Action: 's3:*', Resource: [archiveBucket, `${archiveBucket}/*`] },
       {
         Sid: 'NeverTheArchiveKey',

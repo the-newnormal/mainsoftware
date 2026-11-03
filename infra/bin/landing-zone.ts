@@ -1,9 +1,10 @@
 // A person's entry (C11-D23, C11-D25; TECH-SPEC T24 item 10): Hearth-Foundation, Hearth-LogArchive
 // and the Baselines, with explicit accounts from the person's own environment (src/config/env.ts),
-// one target a run. A person synthesises it in a shell with no AWS credentials,
-//   AWS_EC2_METADATA_DISABLED=true npx cdk synth --app "node --env-file=.env.local bin/landing-zone.ts" --no-lookups
-// and runs the asset check (C11-D76, docs/runbooks/aws-account-set-up.md step F), and only then, in
-// the credentialed shell, from a folder with no cdk.json (beside one, the CLI first runs any `build`
+// one target a run. A person synthesises it in a shell with no AWS credentials, from infra/,
+//   HEARTH_TARGET=<target> AWS_EC2_METADATA_DISABLED=true npx cdk synth --app "node --env-file=.env.local bin/landing-zone.ts" --no-lookups
+// (<target> one of foundation, log-archive, nonprod-baseline or prod-baseline) and runs the asset
+// check (C11-D76, docs/runbooks/aws-account-set-up.md step F), and only then, in the credentialed
+// shell, from a folder with no cdk.json (beside one, the CLI first runs any `build`
 // command it names, with those credentials) and with the checkout's own CLI, reads the diff and
 // deploys the synthesised assembly (`cdk deploy --app <checkout>/infra/cdk.out`), so no repository
 // code runs where landing-zone or break-glass credentials exist. CI synthesises every
