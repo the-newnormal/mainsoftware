@@ -839,25 +839,24 @@ describe('IAC-10 C11-D55: prod’s hearth-gh-diff', () => {
 // has the immutable form first and owner/name in job_workflow_ref, so both forms are read. aws answers
 // only the code's analyzer and RCP: a finding for each statement of each synthesised GitHub trust (the
 // role's ARN, path included, its principal and its condition's keys and values, as Access Analyzer
-// reports a role's trust), and the synthesised RCP. Every line must read expected, so a change to the
-// trusts or the RCP that leaves the runbook behind (the set-up runbook's step O.2 fallback among them)
-// fails here, not at the next review. Another repository, and each fault planted below, must read
-// FINDING, so each refusal is held. bash finds only the stand-ins, jq, env and cat, and gh's and AWS's
-// own configuration points nowhere, so a stand-in that can't run fails the case rather than reaching
-// a real gh or aws (C0.11 review 12).
+// reports a role's trust), and the synthesised RCP. A finding carries no condition's operator, so a
+// GitHub trust conditioned by anything but StringEquals fails the case (C0.11 review 13 CR-23). Every
+// line must read expected, so a change to the trusts or the RCP that leaves the runbook behind (the
+// set-up runbook's step O.2 fallback among them) fails here, not at the next review. Another
+// repository, and each fault planted below, must read FINDING, so each refusal is held. bash finds
+// only the stand-ins (gh, aws, and an env that takes only -u), jq and cat, and gh's and AWS's own
+// configuration points nowhere, so a stand-in that can't run fails the case rather than reaching a real
+// gh or aws (C0.11 review 12, review 13 T13-03).
 describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 reads the trusts and the RCP the code renders as expected', () => {
   it('IAC-10: read 1 prints one expected line for each GitHub role, read 2 one for each environment, and another repository or a planted fault FINDING (C0.11 review 12)', () => {
     const review = readFileSync(new URL('../../../docs/runbooks/break-glass-review.md', import.meta.url), 'utf8')
     const step = review.slice(review.indexOf('\n6. '), review.indexOf('\n7. '))
     const blocks = [...step.matchAll(/^ *```sh\n([\s\S]*?)^ *```$/gm)].map(match => match[1] ?? '')
     expect(blocks).toHaveLength(3)
-    // A block that looks past bash's PATH would reach a real gh or aws: command -p, a path to either,
-    // any use of PATH, or env clearing its environment, whose search then falls back to /bin:/usr/bin
-    // (C0.11 review 12 P2-03).
-    for (const block of blocks)
-      expect(block).not.toMatch(
-        /\bcommand\s+-p\b|\/(?:aws|gh)\b|\bPATH\b|\benv\b[^\n]*\s(?:-\w*i\w*|--ignore-environment|-)(?=\s)/,
-      )
+    // A block that looks past bash's PATH would reach a real gh or aws: command -p, a path to either
+    // or to env (whose -i searches /bin:/usr/bin), or any use of PATH. The env bash finds is a stand-in
+    // that refuses every option but -u, however it is spelt (C0.11 review 12 P2-03, review 13 T13-03).
+    for (const block of blocks) expect(block).not.toMatch(/\bcommand\s+-p\b|\/(?:aws|gh|env)\b|\bPATH\b/)
     const ids = { "'<the non-prod account id>'": ACCOUNT.nonprod, "'<the prod account id>'": ACCOUNT.prod }
     let setUp = blocks[0] ?? ''
     for (const [placeholder, account] of Object.entries(ids)) {
@@ -873,15 +872,20 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
           const trust = r.Properties?.AssumeRolePolicyDocument as {
             Statement: Array<{ Principal?: { Federated?: unknown }; Condition?: Record<string, object> }>
           }
-          return trust.Statement.map(statement => ({
-            resource: String(renderedString({ 'Fn::GetAtt': [id, 'Arn'] }, context)),
-            resourceType: 'AWS::IAM::Role',
-            resourceOwnerAccount: ACCOUNT[kind],
-            status: 'ACTIVE',
-            principal: { Federated: String(renderedString(statement.Principal?.Federated, context)) },
-            condition: Object.assign({}, ...Object.values(statement.Condition ?? {})) as Record<string, unknown>,
-            analyzedAt,
-          }))
+          return trust.Statement.map(statement => {
+            expect(Object.keys(statement.Condition ?? {}), "step 6 reads a condition's keys and values only").toEqual([
+              'StringEquals',
+            ])
+            return {
+              resource: String(renderedString({ 'Fn::GetAtt': [id, 'Arn'] }, context)),
+              resourceType: 'AWS::IAM::Role',
+              resourceOwnerAccount: ACCOUNT[kind],
+              status: 'ACTIVE',
+              principal: { Federated: String(renderedString(statement.Principal?.Federated, context)) },
+              condition: { ...statement.Condition?.StringEquals } as Record<string, unknown>,
+              analyzedAt,
+            }
+          })
         })
     })
     const [, analyzer] = one(lz.templates.logArchive, 'AWS::AccessAnalyzer::Analyzer', 'Type', 'ORGANIZATION')
@@ -892,15 +896,27 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
     const [owner = '', name = ''] = fixture.github.repository.split('/')
     const dir = mkdtempSync(join(tmpdir(), 'hearth-step6-'))
     try {
-      // bash, and the three tools the blocks and stand-ins need, from this machine's PATH.
-      const found = spawnSync('bash', ['-c', 'type -P bash jq env cat'], { encoding: 'utf8' })
+      // bash, and the two tools the blocks and stand-ins need, from this machine's PATH.
+      const found = spawnSync('bash', ['-c', 'type -P bash jq cat'], { encoding: 'utf8' })
       expect(found.status, 'step 6 needs bash and jq').toBe(0)
       const [bash = '', ...tools] = found.stdout.trim().split('\n')
-      for (const [i, tool] of ['jq', 'env', 'cat'].entries()) symlinkSync(tools[i] ?? '', join(dir, tool))
+      for (const [i, tool] of ['jq', 'cat'].entries()) symlinkSync(tools[i] ?? '', join(dir, tool))
       const standIn = (command: string, lines: string[]) => {
         writeFileSync(join(dir, command), ['#!/bin/sh', ...lines, ''].join('\n'))
         chmodSync(join(dir, command), 0o755)
       }
+      // env unsets each -u NAME, then runs the command through the shell's own search, the stand-ins'
+      // folder; any other option or an assignment fails, so no spelling of -i reaches /usr/bin.
+      standIn('env', [
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    -u) [ "$#" -ge 3 ] && unset "$2" || exit 1; shift 2 ;;',
+        '    -*|*=*) echo "env stand-in: $1 is not -u NAME" >&2; exit 1 ;;',
+        '    *) exec "$@" ;;',
+        '  esac',
+        'done',
+        'exit 1',
+      ])
       standIn('aws', [
         'case " $* " in',
         `*" list-analyzers "*" analyzers[?name=='${String(analyzer.Properties?.AnalyzerName)}'].arn "*) echo analyzer ;;`,
@@ -923,10 +939,13 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
         AWS_EC2_METADATA_DISABLED: 'true',
         STEP6: dir,
       }
-      const where = spawnSync(bash, ['-c', 'type -P gh aws'], { encoding: 'utf8', env })
-      expect(where.stdout, 'bash finds the stand-ins and no other gh or aws').toBe(
-        `${join(dir, 'gh')}\n${join(dir, 'aws')}\n`,
+      const where = spawnSync(bash, ['-c', 'type -P gh aws env'], { encoding: 'utf8', env })
+      expect(where.stdout, 'bash finds the stand-ins and no other gh, aws or env').toBe(
+        `${join(dir, 'gh')}\n${join(dir, 'aws')}\n${join(dir, 'env')}\n`,
       )
+      for (const option of ['-i', '--ignore-env', '-S-i', '-', 'PATH=/usr/bin'])
+        expect(spawnSync(bash, ['-c', `env ${option} cat /dev/null`], { env }).status, option).not.toBe(0)
+      expect(spawnSync(bash, ['-c', 'env -u GH_REPO -u GH_HOST cat /dev/null'], { env }).status).toBe(0)
       // The lines a read prints after the set-up's own, the repository's, over these answers.
       const run = (read: string, plant: { name?: string; findings?: unknown[]; policy?: unknown } = {}) => {
         const repository = plant.name ?? name
@@ -957,11 +976,6 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
       )
       expect(run(blocks[2] ?? '', { name: 'another' })).toEqual(environments.map(e => `${e}\tFINDING`).sort())
 
-      // Read 1's refusals, a fault each, each one line FINDING: another environment's subject (which
-      // the RCP lists, so only read 1 finds it), the workflow on another branch, another audience,
-      // another condition key, GitHub's provider in another account, another role trusting GitHub's
-      // provider, and a GitHub role trusting a principal outside the organisation with no GitHub key
-      // (C0.11 review 12 P2-01, P2-02).
       const gh = 'token.actions.githubusercontent.com'
       const [first, ...others] = findings
       if (first === undefined) throw new Error('no GitHub trust')
@@ -973,9 +987,42 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
         { ...first, condition: { ...first.condition, [`${gh}:sub`]: subject } },
         ...others,
       ]
-      for (const plant of [
-        subjectOf(sub.replace(/:environment:[^:]+:/, `:environment:${elsewhere}:`)),
-        subjectOf(sub.replace(/@refs\/heads\/main$/, '@refs/heads/other')),
+      // Either form of this repository in each place reads expected, the fixture's arrangement among
+      // the four (C0.11 review 13 T13-02).
+      const forms = [
+        fixture.github.repository,
+        `${owner}@${fixture.github.ownerId}/${name}@${fixture.github.repositoryId}`,
+      ] as const
+      const placed = (inRepo: string, inWorkflow: string) =>
+        sub
+          .replace(/^repo:[^:]+:/, `repo:${inRepo}:`)
+          .replace(/:job_workflow_ref:[^/]+\/[^/]+\//, `:job_workflow_ref:${inWorkflow}/`)
+      expect(placed(forms[1], forms[0])).toBe(sub)
+      for (const inRepo of forms)
+        for (const inWorkflow of forms) {
+          const lines = run(blocks[1] ?? '', { findings: subjectOf(placed(inRepo, inWorkflow)) })
+          expect(
+            lines.map(line => line.split('\t').at(-1)),
+            `${inRepo} then ${inWorkflow}`,
+          ).toEqual(roles.map(() => 'expected'))
+        }
+
+      // Read 1's refusals, a fault each, each one line FINDING: another environment's subject (which
+      // the RCP lists, so only read 1 finds it), the workflow on another branch, another repository in
+      // repo: alone, another in job_workflow_ref alone, another workflow file, another audience, another
+      // condition key, GitHub's provider in another account, another role trusting GitHub's provider,
+      // and a GitHub role trusting a principal outside the organisation with no GitHub key (C0.11 review
+      // 12 P2-01, P2-02, review 13 T13-01). Each subject planted differs from the fixture's.
+      const changed = (subject: string) => {
+        expect(subject).not.toBe(sub)
+        return subjectOf(subject)
+      }
+      for (const [i, plant] of [
+        changed(sub.replace(/:environment:[^:]+:/, `:environment:${elsewhere}:`)),
+        changed(sub.replace(/@refs\/heads\/main$/, '@refs/heads/other')),
+        changed(sub.replace(/^repo:[^:]+:/, 'repo:elsewhere/hearth:')),
+        changed(sub.replace(/:job_workflow_ref:[^/]+\/[^/]+\//, ':job_workflow_ref:elsewhere/hearth/')),
+        changed(sub.replace('/deploy.yml@', '/other.yml@')),
         [{ ...first, condition: { ...first.condition, [`${gh}:aud`]: 'sts.example.com' } }, ...others],
         [{ ...first, condition: { ...first.condition, [`${gh}:actor`]: owner } }, ...others],
         [
@@ -989,8 +1036,11 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
         ],
         [...findings, { ...first, resource: first.resource.replace(/[^/]*$/, 'hearth-other') }],
         [...findings, { ...first, principal: { AWS: fixtureAccount(999) }, condition: {} }],
-      ]) {
-        expect(run(blocks[1] ?? '', { findings: plant }).filter(line => line.endsWith('\tFINDING'))).toHaveLength(1)
+      ].entries()) {
+        expect(
+          run(blocks[1] ?? '', { findings: plant }).filter(line => line.endsWith('\tFINDING')),
+          `read 1's fault ${i}`,
+        ).toHaveLength(1)
       }
       // Read 2's, each FINDING for every environment: a fourth subject naming another repository, a
       // further condition, and the statement allowing rather than denying.

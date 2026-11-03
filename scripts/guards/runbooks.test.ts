@@ -37,9 +37,11 @@
 //   and an account in Recovery, where OAAR isn't fenced, moves back into its OU first), and the set-up's
 //   step N confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
-// - RB-08 (C0.11 review 12 CR-19, P2-04): every table row has as many cells as its header, counted
-//   as GFM counts them, and no unescaped | inside backticks, where GFM splits the row too, so a | in a
-//   command is written \| (the page shows a plain |).
+// - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
+//   header, counted as GFM counts them, and no unescaped | inside backticks, where GFM splits the row
+//   too, so a | in a command is written \| (the page shows a plain |); a delimiter row has its
+//   header's cells too, since GFM renders no table otherwise, and no table sits in a quote, which RB-08
+//   doesn't read.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -746,10 +748,14 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01): 
 // cells, its header's", and each with an unescaped | inside backticks, as "line: a | in code". GFM
 // splits a row on every pipe no backslash escapes, inside a code span too, and drops the cells past the
 // header's, so an unescaped | in a command loses the rest of its row, or splits the command where a row
-// is a cell short. A table ends at a blank line or the start of another block (a heading, a list item,
-// a quote, a fence).
+// is a cell short. A delimiter row whose cells differ from its header's makes no table at all, as
+// "line: delimiter n, its header m", and a table in a quote, which the rest doesn't read, is reported
+// as "line: a table in a quote"; a delimiter row needs a pipe, so a setext --- under a line with a |
+// makes a heading, not a table. A table ends at a blank line or the start of another block (a heading,
+// a list item, a quote, a fence).
 const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/
 const TABLE_ENDS = /^\s*$|^\s*(?:#|>|[-*+]\s|\d+[.)]\s|```|~~~)/
+const QUOTED = /^(?:\s*>)+\s?/
 const cellCount = (row: string) =>
   row
     .trim()
@@ -767,9 +773,18 @@ function rowsOffHeader(text: string): string[] {
   const found: string[] = []
   for (let i = 0; i + 1 < lines.length; i++) {
     const header = lines[i] ?? ''
-    const width = cellCount(header)
-    if (!header.includes('|') || !TABLE_DELIMITER.test(lines[i + 1] ?? '') || cellCount(lines[i + 1] ?? '') !== width)
+    const delimiter = lines[i + 1] ?? ''
+    if (!header.includes('|') || !delimiter.includes('|')) continue
+    if (QUOTED.test(header) && QUOTED.test(delimiter) && TABLE_DELIMITER.test(delimiter.replace(QUOTED, ''))) {
+      found.push(`${i + 1}: a table in a quote`)
       continue
+    }
+    if (!TABLE_DELIMITER.test(delimiter)) continue
+    const width = cellCount(header)
+    if (cellCount(delimiter) !== width) {
+      found.push(`${i + 2}: delimiter ${cellCount(delimiter)}, its header ${width}`)
+      continue
+    }
     for (i += 2; i < lines.length && !TABLE_ENDS.test(lines[i] ?? ''); i++) {
       const cells = cellCount(lines[i] ?? '')
       if (cells !== width) found.push(`${i + 1}: ${cells}, its header ${width}`)
@@ -780,7 +795,7 @@ function rowsOffHeader(text: string): string[] {
 }
 
 describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cells, a | in a command escaped', () => {
-  it('finds a row an unescaped | splits, one short of cells, or one with an unescaped | in code (C0.11 review 12 P2-04), on planted text, and passes the rest', () => {
+  it('finds a row an unescaped | splits, one short of cells, one with an unescaped | in code of any backtick run, a delimiter short of its header, or a table in a quote (C0.11 review 12 P2-04, review 13 T13-04, T13-05), on planted text, and passes the rest', () => {
     const text = [
       '| Alert | First check |',
       '|---|---|',
@@ -803,6 +818,19 @@ describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cell
       '|---|---|---|',
       "| A10 | `jq '.a | .b'` |",
       '| A11 | `a` | `b` |',
+      '| A12 | ``echo `x` | y`` |',
+      '| A13 | ``a ` b`` | `c` |',
+      '',
+      '| One | Two | Three |',
+      '|---|---|',
+      '| a | b | c |',
+      '',
+      '> | Quoted | Table |',
+      '> |---|---|',
+      '> | x | `a | b` |',
+      '',
+      'Not | a table',
+      '---',
     ].join('\n')
     expect(rowsOffHeader(text)).toEqual([
       '4: 3, its header 2',
@@ -810,6 +838,9 @@ describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cell
       '5: 1, its header 2',
       '15: 3, its header 2',
       '20: a | in code',
+      '22: a | in code',
+      '26: delimiter 2, its header 3',
+      '29: a table in a quote',
     ])
   })
 
