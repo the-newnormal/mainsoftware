@@ -76,9 +76,10 @@ interface AssignmentSpec {
   account: AccountName
 }
 
-// What the reviewer reads: the trail's copy in management, and in log-archive the trail's and the
-// break-glass entries' buckets and objects, decrypted through S3 under each one's encryption context
-// alone, and the keys' configuration; never the archive bucket or its key (C11-D17, C11-D21).
+// What the reviewer reads: the trail's copy and the organisation's policies in management, and in
+// log-archive the trail's and the break-glass entries' buckets and objects, decrypted through S3 under
+// each one's encryption context alone, and the keys' configuration; never the archive bucket or its
+// key (C11-D17, C11-D21).
 function reviewStatements(config: LandingZoneConfig): IamStatement[] {
   const { management, logArchive } = config.accounts
   const logGroup = arnPattern({
@@ -177,6 +178,16 @@ function reviewStatements(config: LandingZoneConfig): IamStatement[] {
         'cloudtrail:ListPublicKeys',
         'organizations:DescribeOrganization',
       ],
+      Resource: '*',
+    },
+    // The organisation's policies and their targets, so the quarterly review reads the RCP's deploy
+    // subjects itself rather than from an Owner's screen (the break-glass review runbook's step 6).
+    // Each is a read that returns no account's email, and answers only in management, since no account
+    // is delegated policy management.
+    {
+      Sid: 'ReadPolicies',
+      Effect: 'Allow',
+      Action: ['organizations:ListPolicies', 'organizations:DescribePolicy', 'organizations:ListTargetsForPolicy'],
       Resource: '*',
     },
     { Sid: 'NeverTheArchive', Effect: 'Deny', Action: 's3:*', Resource: [archiveBucket, archiveObjects] },
