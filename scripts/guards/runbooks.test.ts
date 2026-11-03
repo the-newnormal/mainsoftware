@@ -40,10 +40,9 @@
 //   the revoke, does the same for its inline deny (review 14 I14-01, review 15 CR-26, CR-27); each
 //   probe signs out in a named folder (review 16b G2); and after its cut-off, management reads the
 //   groups, the set's assignments in every account and the user again, redoing step 1 and the list
-//   if a live session undid it (review 16b G3, O16b-01, X-02)), and the set-up's step N confirming
-//   each alert subscription with authentication and
-//   reading it back (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since
-//   CloudFormation can't;
+//   if a live session undid it (review 16b G3, O16b-01, O16b-05, X-02)), and the set-up's step N
+//   confirming each alert subscription with authentication and reading it back
+//   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
 // - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
 //   header, counted as GFM counts them, and no unescaped | inside backticks, where GFM splits the row
 //   too, so a | in a command is written \| (the page shows a plain |); a delimiter row has its
