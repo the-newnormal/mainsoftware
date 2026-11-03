@@ -117,7 +117,7 @@ Its messages are fixed, and the AWS CLI's own errors are silenced, since they wo
 
 ## Tier 2
 
-For anything tier 1 can't do, and every change to the log-archive account: an Owner with `HearthOrgAdmin` moves the account into `Recovery` (A5, and A3 for the session), assumes `OrganizationAccountAccessRole` there, deploys through hearthbase (A15) from a credential-free synth and its asset check, and moves the account back, as [the set-up runbook's step Q](aws-account-set-up.md#q-a-week-later-compliance-as-tier-2) does. Root's guardrails still bind: nobody can delete or unlock the logs. Tier 2 writes no break-glass log entry, so the person who ran it records its reason for the quarterly review.
+For anything tier 1 can't do, and every change to the log-archive account: an Owner with `HearthOrgAdmin` moves the account into `Recovery` (A5, and A3 for the session), assumes `OrganizationAccountAccessRole` there, deploys through hearthbase (A15) from a credential-free synth and its asset check, and moves the account back, as [the set-up runbook's step Q](aws-account-set-up.md#q-a-week-later-compliance-as-tier-2) does. Root's guardrails still bind: nobody can delete or unlock the logs. Tier 2 writes no break-glass log entry, so the person who ran it records its reason for the quarterly review, and, if it wrote a GitHub role's trust, that it left that trust as the code renders it (the review's step 6).
 
 ## Check it worked
 

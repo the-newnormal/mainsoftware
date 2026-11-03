@@ -7,20 +7,25 @@
 //   on both sides, its grant and the role's trust in the committed bootstrap template, which takes one
 //   from hearth-break-glass alone; and every deny unconditional;
 // - IAC-10: GitHub's provider and roles, each trust exactly one environment's subject of the deploy
-//   workflow on main; hearth-gh-deploy stops and tags only its own one-off tasks and assumes only the
-//   two hearthapp roles; hearth-gh-diff reads the prod stacks and nothing else; hearth-boundary's
-//   statements, NoNewIdentityProviders among them, within a managed policy's limit;
+//   workflow on main, which the quarterly review's step 6 reads, run on them and the RCP, as expected;
+//   hearth-gh-deploy stops and tags only its own one-off tasks and assumes only the two hearthapp
+//   roles; hearth-gh-diff reads the prod stacks and nothing else; hearth-boundary's statements,
+//   NoNewIdentityProviders among them, within a managed policy's limit;
 // - the fast rules each account holds, their patterns, states and inputs, and the topic they email;
 // - C11-D43: the zones, Amazon's CAA alone, retained once made, and prod's `nonprod.` delegation only once its
 //   name servers are committed, which the committed synth follows and two variants pin (filled and
 //   empty), so committing them turns none of these red; C11-D44: the server image's repository.
 // prod's statements also name the restore stage, which lives in its account (C11-Q02). Expected ARNs
 // are joined from their parts (IG-01) and the model deny comes from the lists (IG-10).
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { DEPLOY_WORKFLOW_REF, githubSubject } from '../config/env.ts'
 import { globsOverlap, modelDenyActions } from '../config/models.ts'
 import { appHost, NONPROD_NAME_SERVERS, userContentHost } from '../config/profiles.ts'
+import { RCP_NAME } from '../foundation/guardrails.ts'
 import type { NameServers } from '../foundation/options.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
@@ -823,6 +828,97 @@ describe('IAC-10 C11-D55: prod’s hearth-gh-diff', () => {
       },
     ])
     expect(() => roleIn('nonprod', 'hearth-gh-diff')).toThrow('0 AWS::IAM::Role')
+  })
+})
+
+// The quarterly review's step 6 (docs/runbooks/break-glass-review.md) judges AWS against what it spells
+// out: the subject's shape, the provider, the audience, each role's account and environment, and the
+// RCP's statement (C0.11 review 11 V22B-05, V233-01). Its three sh blocks run here as a person runs
+// them, with bash and jq (as the review needs; CI's runner has both), and gh and aws stand-ins that
+// print the fixture's repository, a finding for each statement of each synthesised GitHub trust (its
+// principal and its condition's keys and values, as Access Analyzer reports a role's trust) and the
+// synthesised RCP. Every line must read expected, so a change to the trusts or the RCP that leaves the
+// runbook behind (the set-up runbook's step O.2 fallback among them) fails here, not at the next
+// review; and another repository must read FINDING on every line, so the reads can fail.
+describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 reads the trusts and the RCP the code renders as expected', () => {
+  it('IAC-10: read 1 prints one expected line for each GitHub role, read 2 one for each environment, and another repository FINDING on each', () => {
+    const review = readFileSync(new URL('../../../docs/runbooks/break-glass-review.md', import.meta.url), 'utf8')
+    const step = review.slice(review.indexOf('\n6. '), review.indexOf('\n7. '))
+    const blocks = [...step.matchAll(/^ *```sh\n([\s\S]*?)^ *```$/gm)].map(match => match[1] ?? '')
+    expect(blocks).toHaveLength(3)
+    const ids = { "'<the non-prod account id>'": ACCOUNT.nonprod, "'<the prod account id>'": ACCOUNT.prod }
+    let setUp = blocks[0] ?? ''
+    for (const [placeholder, account] of Object.entries(ids)) {
+      expect(setUp.split(placeholder)).toHaveLength(2)
+      setUp = setUp.replace(placeholder, `'${account}'`)
+    }
+    const analyzedAt = '2026-10-01T00:00:00Z'
+    const findings = KINDS.flatMap(kind =>
+      ofType(templateOf(kind), 'AWS::IAM::Role')
+        .filter(([, r]) => String(r.Properties?.RoleName).startsWith('hearth-gh-'))
+        .flatMap(([, r]) => {
+          const trust = r.Properties?.AssumeRolePolicyDocument as {
+            Statement: Array<{ Principal?: { Federated?: unknown }; Condition?: Record<string, object> }>
+          }
+          return trust.Statement.map(statement => ({
+            resource: arn('iam', '', ACCOUNT[kind], `role/${String(r.Properties?.RoleName)}`),
+            resourceType: 'AWS::IAM::Role',
+            resourceOwnerAccount: ACCOUNT[kind],
+            status: 'ACTIVE',
+            principal: {
+              Federated: renderedString(statement.Principal?.Federated, {
+                account: ACCOUNT[kind],
+                region: REGION,
+                template: templateOf(kind),
+              }),
+            },
+            condition: Object.assign({}, ...Object.values(statement.Condition ?? {})),
+            analyzedAt,
+          }))
+        }),
+    )
+    const [, rcp] = one(lz.templates.foundation, 'AWS::Organizations::Policy', 'Name', RCP_NAME)
+    const content = rcp.Properties?.Content
+    const [owner, name] = fixture.github.repository.split('/')
+    const forms = [
+      fixture.github.repository,
+      `${owner}@${fixture.github.ownerId}/${name}@${fixture.github.repositoryId}`,
+    ]
+    const dir = mkdtempSync(join(tmpdir(), 'hearth-step6-'))
+    try {
+      writeFileSync(join(dir, 'findings.json'), JSON.stringify({ findings }))
+      writeFileSync(join(dir, 'rcp.json'), typeof content === 'string' ? content : JSON.stringify(content))
+      const standIn = (command: string, body: string) => {
+        writeFileSync(join(dir, command), `#!/bin/sh\n${body}\n`)
+        chmodSync(join(dir, command), 0o755)
+      }
+      standIn(
+        'aws',
+        'case "$*" in *list-analyzers*) echo analyzer ;; *list-findings*) cat "$STEP6/findings.json" ;; *list-policies*) echo policy ;; *describe-policy*) cat "$STEP6/rcp.json" ;; *) exit 1 ;; esac',
+      )
+      standIn('gh', 'printf "%s\\n" "$STEP6_REPO"')
+      // The lines a read prints after the set-up's own, the repository's.
+      const run = (read: string, repository: readonly string[]) => {
+        const result = spawnSync('bash', ['-c', `set -euo pipefail\n${setUp}\n${read}`], {
+          encoding: 'utf8',
+          env: { PATH: `${dir}:${process.env.PATH ?? ''}`, STEP6: dir, STEP6_REPO: JSON.stringify(repository) },
+        })
+        expect(result.status, result.stderr).toBe(0)
+        return result.stdout.trim().split('\n').slice(1).sort()
+      }
+      const roles = KINDS.flatMap(kind => GITHUB_ROLES[kind].map(({ role }) => [ACCOUNT[kind], role]))
+      const environments = [...new Set(KINDS.flatMap(kind => GITHUB_ROLES[kind].map(e => e.environment)))]
+      const trusts = run(blocks[1] ?? '', forms)
+      expect(trusts.map(line => line.split('\t').slice(1))).toEqual(roles.map(r => [...r, 'expected']).sort())
+      expect(trusts.every(line => line.startsWith(`${analyzedAt}\t`))).toBe(true)
+      expect(step).toContain(`the first read prints exactly ${['one', 'two', 'three', 'four'][roles.length - 1]} lines`)
+      expect(run(blocks[2] ?? '', forms)).toEqual(environments.map(e => `${e}\texpected`).sort())
+      const other = forms.map(form => form.replace(`/${name}`, '/another'))
+      expect(run(blocks[1] ?? '', other).map(line => line.split('\t').at(-1))).toEqual(roles.map(() => 'FINDING'))
+      expect(run(blocks[2] ?? '', other)).toEqual(environments.map(e => `${e}\tFINDING`).sort())
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
