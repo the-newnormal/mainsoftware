@@ -55,8 +55,10 @@ export function fixtureConfig(): LandingZoneConfig {
       repository: 'example-org/hearth',
       ownerId: '1',
       repositoryId: '2',
+      // The immutable form first and owner/name in job_workflow_ref, as the set-up's step E.2 expects
+      // this repository's subject, so the tests read both forms (C0.11 review 12).
       subjectFormat:
-        'repo:{repository}:environment:{environment}:job_workflow_ref:{repository}/.github/workflows/deploy.yml@refs/heads/main',
+        'repo:{owner}@{ownerId}/{name}@{repositoryId}:environment:{environment}:job_workflow_ref:{repository}/.github/workflows/deploy.yml@refs/heads/main',
     },
     alertEmail: ['hearth-ops', 'example.invalid'].join('@'),
     // C11-Q09 as the owner answered it (31 Oct 2026), as fictional as the rest.

@@ -88,22 +88,22 @@ describe('C11-D25: the person’s configuration, read from HEARTH_* variables', 
 })
 
 describe('C11-D55: the OIDC subject each trust names exactly', () => {
-  it('renders the fixture’s format for each GitHub environment, naming the deploy workflow on main', () => {
+  it('renders the fixture’s format, the immutable form’s ids filled, for each GitHub environment, naming the deploy workflow on main', () => {
     const { github } = fixtureConfig()
     expect(githubSubject(github, 'prod')).toBe(
-      `repo:example-org/hearth:environment:prod:job_workflow_ref:example-org/hearth/${DEPLOY_WORKFLOW_REF}`,
+      `repo:example-org@1/hearth@2:environment:prod:job_workflow_ref:example-org/hearth/${DEPLOY_WORKFLOW_REF}`,
     )
     expect(githubSubject(github, 'nonprod')).toContain(':environment:nonprod:')
     expect(githubSubject(github, 'prod-plan')).toContain(':environment:prod-plan:')
   })
 
-  it('fills the immutable form’s ids too', () => {
+  it('renders the owner/name form too', () => {
     const github = {
       ...fixtureConfig().github,
-      subjectFormat: `repo:{owner}@{ownerId}/{name}@{repositoryId}:environment:{environment}:job_workflow_ref:{repository}/${DEPLOY_WORKFLOW_REF}`,
+      subjectFormat: `repo:{repository}:environment:{environment}:job_workflow_ref:{repository}/${DEPLOY_WORKFLOW_REF}`,
     }
     expect(githubSubject(github, 'nonprod')).toBe(
-      `repo:example-org@1/hearth@2:environment:nonprod:job_workflow_ref:example-org/hearth/${DEPLOY_WORKFLOW_REF}`,
+      `repo:example-org/hearth:environment:nonprod:job_workflow_ref:example-org/hearth/${DEPLOY_WORKFLOW_REF}`,
     )
   })
 

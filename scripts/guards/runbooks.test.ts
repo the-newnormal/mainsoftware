@@ -37,8 +37,9 @@
 //   and an account in Recovery, where OAAR isn't fenced, moves back into its OU first), and the set-up's
 //   step N confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
-// - RB-08 (C0.11 review 12 CR-19): every table row has as many cells as its header, counted as GFM
-//   counts them, so a | in a command is written \| even inside backticks (the page shows a plain |).
+// - RB-08 (C0.11 review 12 CR-19, P2-04): every table row has as many cells as its header, counted
+//   as GFM counts them, and no unescaped | inside backticks, where GFM splits the row too, so a | in a
+//   command is written \| (the page shows a plain |).
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -742,9 +743,11 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01): 
 // --- RB-08: every table row has its header's cells -------------------------------------------------
 
 // Each table row, outside fenced code, whose cells differ in number from its header's, as "line: its
-// cells, its header's". GFM splits a row on every pipe no backslash escapes, inside a code span too, and
-// drops the cells past the header's, so an unescaped | in a command loses the rest of its row. A table
-// ends at a blank line or the start of another block (a heading, a list item, a quote, a fence).
+// cells, its header's", and each with an unescaped | inside backticks, as "line: a | in code". GFM
+// splits a row on every pipe no backslash escapes, inside a code span too, and drops the cells past the
+// header's, so an unescaped | in a command loses the rest of its row, or splits the command where a row
+// is a cell short. A table ends at a blank line or the start of another block (a heading, a list item,
+// a quote, a fence).
 const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/
 const TABLE_ENDS = /^\s*$|^\s*(?:#|>|[-*+]\s|\d+[.)]\s|```|~~~)/
 const cellCount = (row: string) =>
@@ -753,6 +756,9 @@ const cellCount = (row: string) =>
     .replace(/^\|/, '')
     .replace(/(?<!\\)\|$/, '')
     .split(/(?<!\\)\|/).length
+// A code span is a run of backticks up to the next run of the same length.
+const pipeInCode = (row: string) =>
+  [...row.matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].some(span => /(?<!\\)\|/.test(span[2] ?? ''))
 
 function rowsOffHeader(text: string): string[] {
   const lines = text
@@ -767,13 +773,14 @@ function rowsOffHeader(text: string): string[] {
     for (i += 2; i < lines.length && !TABLE_ENDS.test(lines[i] ?? ''); i++) {
       const cells = cellCount(lines[i] ?? '')
       if (cells !== width) found.push(`${i + 1}: ${cells}, its header ${width}`)
+      if (pipeInCode(lines[i] ?? '')) found.push(`${i + 1}: a | in code`)
     }
   }
   return found
 }
 
 describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cells, a | in a command escaped', () => {
-  it('finds a row an unescaped | splits, or one short of cells, on planted text, and passes the rest', () => {
+  it('finds a row an unescaped | splits, one short of cells, or one with an unescaped | in code (C0.11 review 12 P2-04), on planted text, and passes the rest', () => {
     const text = [
       '| Alert | First check |',
       '|---|---|',
@@ -791,8 +798,19 @@ describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cell
       '  |---|---|',
       '  | a | b | c |',
       '- a list item | not a row',
+      '',
+      '| Alert | First check | Note |',
+      '|---|---|---|',
+      "| A10 | `jq '.a | .b'` |",
+      '| A11 | `a` | `b` |',
     ].join('\n')
-    expect(rowsOffHeader(text)).toEqual(['4: 3, its header 2', '5: 1, its header 2', '15: 3, its header 2'])
+    expect(rowsOffHeader(text)).toEqual([
+      '4: 3, its header 2',
+      '4: a | in code',
+      '5: 1, its header 2',
+      '15: 3, its header 2',
+      '20: a | in code',
+    ])
   })
 
   it('every table in the runbooks', () => {

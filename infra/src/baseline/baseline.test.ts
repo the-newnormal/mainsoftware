@@ -18,7 +18,7 @@
 // prod's statements also name the restore stage, which lives in its account (C11-Q02). Expected ARNs
 // are joined from their parts (IG-01) and the model deny comes from the lists (IG-10).
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
@@ -27,7 +27,7 @@ import { globsOverlap, modelDenyActions } from '../config/models.ts'
 import { appHost, NONPROD_NAME_SERVERS, userContentHost } from '../config/profiles.ts'
 import { RCP_NAME } from '../foundation/guardrails.ts'
 import type { NameServers } from '../foundation/options.ts'
-import { fixtureConfig } from '../testing/fixture.ts'
+import { fixtureAccount, fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
 import { policyStatements, renderedString } from '../testing/policies.ts'
 import { REASON_SHAPES } from './break-glass.ts'
@@ -834,18 +834,30 @@ describe('IAC-10 C11-D55: prod’s hearth-gh-diff', () => {
 // The quarterly review's step 6 (docs/runbooks/break-glass-review.md) judges AWS against what it spells
 // out: the subject's shape, the provider, the audience, each role's account and environment, and the
 // RCP's statement (C0.11 review 11 V22B-05, V233-01). Its three sh blocks run here as a person runs
-// them, with bash and jq (as the review needs; CI's runner has both), and gh and aws stand-ins that
-// print the fixture's repository, a finding for each statement of each synthesised GitHub trust (its
-// principal and its condition's keys and values, as Access Analyzer reports a role's trust) and the
-// synthesised RCP. Every line must read expected, so a change to the trusts or the RCP that leaves the
-// runbook behind (the set-up runbook's step O.2 fallback among them) fails here, not at the next
-// review; and another repository must read FINDING on every line, so the reads can fail.
+// them, with bash and jq (as the review needs; CI's runner has both), and gh and aws stand-ins. gh runs
+// the block's own --jq over the fixture's repository as GitHub's API returns it; the fixture's subject
+// has the immutable form first and owner/name in job_workflow_ref, so both forms are read. aws answers
+// only the code's analyzer and RCP: a finding for each statement of each synthesised GitHub trust (the
+// role's ARN, path included, its principal and its condition's keys and values, as Access Analyzer
+// reports a role's trust), and the synthesised RCP. Every line must read expected, so a change to the
+// trusts or the RCP that leaves the runbook behind (the set-up runbook's step O.2 fallback among them)
+// fails here, not at the next review. Another repository, and each fault planted below, must read
+// FINDING, so each refusal is held. bash finds only the stand-ins, jq, env and cat, and gh's and AWS's
+// own configuration points nowhere, so a stand-in that can't run fails the case rather than reaching
+// a real gh or aws (C0.11 review 12).
 describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 reads the trusts and the RCP the code renders as expected', () => {
-  it('IAC-10: read 1 prints one expected line for each GitHub role, read 2 one for each environment, and another repository FINDING on each', () => {
+  it('IAC-10: read 1 prints one expected line for each GitHub role, read 2 one for each environment, and another repository or a planted fault FINDING (C0.11 review 12)', () => {
     const review = readFileSync(new URL('../../../docs/runbooks/break-glass-review.md', import.meta.url), 'utf8')
     const step = review.slice(review.indexOf('\n6. '), review.indexOf('\n7. '))
     const blocks = [...step.matchAll(/^ *```sh\n([\s\S]*?)^ *```$/gm)].map(match => match[1] ?? '')
     expect(blocks).toHaveLength(3)
+    // A block that looks past bash's PATH would reach a real gh or aws: command -p, a path to either,
+    // any use of PATH, or env clearing its environment, whose search then falls back to /bin:/usr/bin
+    // (C0.11 review 12 P2-03).
+    for (const block of blocks)
+      expect(block).not.toMatch(
+        /\bcommand\s+-p\b|\/(?:aws|gh)\b|\bPATH\b|\benv\b[^\n]*\s(?:-\w*i\w*|--ignore-environment|-)(?=\s)/,
+      )
     const ids = { "'<the non-prod account id>'": ACCOUNT.nonprod, "'<the prod account id>'": ACCOUNT.prod }
     let setUp = blocks[0] ?? ''
     for (const [placeholder, account] of Object.entries(ids)) {
@@ -853,69 +865,149 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
       setUp = setUp.replace(placeholder, `'${account}'`)
     }
     const analyzedAt = '2026-10-01T00:00:00Z'
-    const findings = KINDS.flatMap(kind =>
-      ofType(templateOf(kind), 'AWS::IAM::Role')
+    const findings = KINDS.flatMap(kind => {
+      const context = { account: ACCOUNT[kind], region: REGION, template: templateOf(kind) }
+      return ofType(templateOf(kind), 'AWS::IAM::Role')
         .filter(([, r]) => String(r.Properties?.RoleName).startsWith('hearth-gh-'))
-        .flatMap(([, r]) => {
+        .flatMap(([id, r]) => {
           const trust = r.Properties?.AssumeRolePolicyDocument as {
             Statement: Array<{ Principal?: { Federated?: unknown }; Condition?: Record<string, object> }>
           }
           return trust.Statement.map(statement => ({
-            resource: arn('iam', '', ACCOUNT[kind], `role/${String(r.Properties?.RoleName)}`),
+            resource: String(renderedString({ 'Fn::GetAtt': [id, 'Arn'] }, context)),
             resourceType: 'AWS::IAM::Role',
             resourceOwnerAccount: ACCOUNT[kind],
             status: 'ACTIVE',
-            principal: {
-              Federated: renderedString(statement.Principal?.Federated, {
-                account: ACCOUNT[kind],
-                region: REGION,
-                template: templateOf(kind),
-              }),
-            },
-            condition: Object.assign({}, ...Object.values(statement.Condition ?? {})),
+            principal: { Federated: String(renderedString(statement.Principal?.Federated, context)) },
+            condition: Object.assign({}, ...Object.values(statement.Condition ?? {})) as Record<string, unknown>,
             analyzedAt,
           }))
-        }),
-    )
+        })
+    })
+    const [, analyzer] = one(lz.templates.logArchive, 'AWS::AccessAnalyzer::Analyzer', 'Type', 'ORGANIZATION')
     const [, rcp] = one(lz.templates.foundation, 'AWS::Organizations::Policy', 'Name', RCP_NAME)
     const content = rcp.Properties?.Content
-    const [owner, name] = fixture.github.repository.split('/')
-    const forms = [
-      fixture.github.repository,
-      `${owner}@${fixture.github.ownerId}/${name}@${fixture.github.repositoryId}`,
-    ]
+    type Statement = { Sid?: string; Condition?: Record<string, Record<string, unknown>> }
+    const policy = (typeof content === 'string' ? JSON.parse(content) : content) as { Statement: Statement[] }
+    const [owner = '', name = ''] = fixture.github.repository.split('/')
     const dir = mkdtempSync(join(tmpdir(), 'hearth-step6-'))
     try {
-      writeFileSync(join(dir, 'findings.json'), JSON.stringify({ findings }))
-      writeFileSync(join(dir, 'rcp.json'), typeof content === 'string' ? content : JSON.stringify(content))
-      const standIn = (command: string, body: string) => {
-        writeFileSync(join(dir, command), `#!/bin/sh\n${body}\n`)
+      // bash, and the three tools the blocks and stand-ins need, from this machine's PATH.
+      const found = spawnSync('bash', ['-c', 'type -P bash jq env cat'], { encoding: 'utf8' })
+      expect(found.status, 'step 6 needs bash and jq').toBe(0)
+      const [bash = '', ...tools] = found.stdout.trim().split('\n')
+      for (const [i, tool] of ['jq', 'env', 'cat'].entries()) symlinkSync(tools[i] ?? '', join(dir, tool))
+      const standIn = (command: string, lines: string[]) => {
+        writeFileSync(join(dir, command), ['#!/bin/sh', ...lines, ''].join('\n'))
         chmodSync(join(dir, command), 0o755)
       }
-      standIn(
-        'aws',
-        'case "$*" in *list-analyzers*) echo analyzer ;; *list-findings*) cat "$STEP6/findings.json" ;; *list-policies*) echo policy ;; *describe-policy*) cat "$STEP6/rcp.json" ;; *) exit 1 ;; esac',
+      standIn('aws', [
+        'case " $* " in',
+        `*" list-analyzers "*" analyzers[?name=='${String(analyzer.Properties?.AnalyzerName)}'].arn "*) echo analyzer ;;`,
+        '*" list-findings "*" --analyzer-arn analyzer "*) cat "$STEP6/findings.json" ;;',
+        `*" list-policies "*" Policies[?Name=='${RCP_NAME}'].Id "*) echo policy ;;`,
+        '*" describe-policy --policy-id policy "*) cat "$STEP6/rcp.json" ;;',
+        '*) exit 1 ;;',
+        'esac',
+      ])
+      standIn('gh', [
+        `[ "$#" = 4 ] && [ "$1" = api ] && [ "$2" = 'repos/{owner}/{repo}' ] && [ "$3" = --jq ] || exit 1`,
+        'exec jq -cr "$4" "$STEP6/repo.json"',
+      ])
+      const env = {
+        PATH: dir,
+        HOME: dir,
+        GH_CONFIG_DIR: dir,
+        AWS_CONFIG_FILE: '/dev/null',
+        AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
+        AWS_EC2_METADATA_DISABLED: 'true',
+        STEP6: dir,
+      }
+      const where = spawnSync(bash, ['-c', 'type -P gh aws'], { encoding: 'utf8', env })
+      expect(where.stdout, 'bash finds the stand-ins and no other gh or aws').toBe(
+        `${join(dir, 'gh')}\n${join(dir, 'aws')}\n`,
       )
-      standIn('gh', 'printf "%s\\n" "$STEP6_REPO"')
-      // The lines a read prints after the set-up's own, the repository's.
-      const run = (read: string, repository: readonly string[]) => {
-        const result = spawnSync('bash', ['-c', `set -euo pipefail\n${setUp}\n${read}`], {
-          encoding: 'utf8',
-          env: { PATH: `${dir}:${process.env.PATH ?? ''}`, STEP6: dir, STEP6_REPO: JSON.stringify(repository) },
-        })
+      // The lines a read prints after the set-up's own, the repository's, over these answers.
+      const run = (read: string, plant: { name?: string; findings?: unknown[]; policy?: unknown } = {}) => {
+        const repository = plant.name ?? name
+        const answers = {
+          'repo.json': {
+            full_name: `${owner}/${repository}`,
+            name: repository,
+            id: Number(fixture.github.repositoryId),
+            owner: { login: owner, id: Number(fixture.github.ownerId) },
+          },
+          'findings.json': { findings: plant.findings ?? findings },
+          'rcp.json': plant.policy ?? policy,
+        }
+        for (const [file, value] of Object.entries(answers)) writeFileSync(join(dir, file), JSON.stringify(value))
+        const result = spawnSync(bash, ['-c', `set -euo pipefail\n${setUp}\n${read}`], { encoding: 'utf8', env })
         expect(result.status, result.stderr).toBe(0)
         return result.stdout.trim().split('\n').slice(1).sort()
       }
       const roles = KINDS.flatMap(kind => GITHUB_ROLES[kind].map(({ role }) => [ACCOUNT[kind], role]))
       const environments = [...new Set(KINDS.flatMap(kind => GITHUB_ROLES[kind].map(e => e.environment)))]
-      const trusts = run(blocks[1] ?? '', forms)
+      const trusts = run(blocks[1] ?? '')
       expect(trusts.map(line => line.split('\t').slice(1))).toEqual(roles.map(r => [...r, 'expected']).sort())
       expect(trusts.every(line => line.startsWith(`${analyzedAt}\t`))).toBe(true)
       expect(step).toContain(`the first read prints exactly ${['one', 'two', 'three', 'four'][roles.length - 1]} lines`)
-      expect(run(blocks[2] ?? '', forms)).toEqual(environments.map(e => `${e}\texpected`).sort())
-      const other = forms.map(form => form.replace(`/${name}`, '/another'))
-      expect(run(blocks[1] ?? '', other).map(line => line.split('\t').at(-1))).toEqual(roles.map(() => 'FINDING'))
-      expect(run(blocks[2] ?? '', other)).toEqual(environments.map(e => `${e}\tFINDING`).sort())
+      expect(run(blocks[2] ?? '')).toEqual(environments.map(e => `${e}\texpected`).sort())
+      expect(run(blocks[1] ?? '', { name: 'another' }).map(line => line.split('\t').at(-1))).toEqual(
+        roles.map(() => 'FINDING'),
+      )
+      expect(run(blocks[2] ?? '', { name: 'another' })).toEqual(environments.map(e => `${e}\tFINDING`).sort())
+
+      // Read 1's refusals, a fault each, each one line FINDING: another environment's subject (which
+      // the RCP lists, so only read 1 finds it), the workflow on another branch, another audience,
+      // another condition key, GitHub's provider in another account, another role trusting GitHub's
+      // provider, and a GitHub role trusting a principal outside the organisation with no GitHub key
+      // (C0.11 review 12 P2-01, P2-02).
+      const gh = 'token.actions.githubusercontent.com'
+      const [first, ...others] = findings
+      if (first === undefined) throw new Error('no GitHub trust')
+      const sub = String(first.condition[`${gh}:sub`])
+      const elsewhere = environments.find(e => !sub.includes(`:environment:${e}:`))
+      expect(sub.match(/:environment:[^:]+:/g)).toHaveLength(1)
+      expect(sub.endsWith('@refs/heads/main')).toBe(true)
+      const subjectOf = (subject: string) => [
+        { ...first, condition: { ...first.condition, [`${gh}:sub`]: subject } },
+        ...others,
+      ]
+      for (const plant of [
+        subjectOf(sub.replace(/:environment:[^:]+:/, `:environment:${elsewhere}:`)),
+        subjectOf(sub.replace(/@refs\/heads\/main$/, '@refs/heads/other')),
+        [{ ...first, condition: { ...first.condition, [`${gh}:aud`]: 'sts.example.com' } }, ...others],
+        [{ ...first, condition: { ...first.condition, [`${gh}:actor`]: owner } }, ...others],
+        [
+          {
+            ...first,
+            principal: {
+              Federated: first.principal.Federated.replace(`:${first.resourceOwnerAccount}:`, `:${logArchive}:`),
+            },
+          },
+          ...others,
+        ],
+        [...findings, { ...first, resource: first.resource.replace(/[^/]*$/, 'hearth-other') }],
+        [...findings, { ...first, principal: { AWS: fixtureAccount(999) }, condition: {} }],
+      ]) {
+        expect(run(blocks[1] ?? '', { findings: plant }).filter(line => line.endsWith('\tFINDING'))).toHaveLength(1)
+      }
+      // Read 2's, each FINDING for every environment: a fourth subject naming another repository, a
+      // further condition, and the statement allowing rather than denying.
+      const ours = (statement: Statement) => statement.Sid === 'WebIdentityOnlyDeploySubjects'
+      const subjects = policy.Statement.find(ours)?.Condition?.StringNotEquals?.[`${gh}:sub`] as string[]
+      for (const change of [
+        {
+          Condition: {
+            StringNotEquals: { [`${gh}:sub`]: [...subjects, subjects[0]?.replace(`/${name}@`, '/elsewhere@')] },
+          },
+        },
+        { Condition: { StringNotEquals: { [`${gh}:sub`]: subjects }, Bool: { 'aws:ViaAWSService': 'false' } } },
+        { Effect: 'Allow' },
+      ]) {
+        const plant = { ...policy, Statement: policy.Statement.map(s => (ours(s) ? { ...s, ...change } : s)) }
+        expect(run(blocks[2] ?? '', { policy: plant })).toEqual(environments.map(e => `${e}\tFINDING`).sort())
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
