@@ -1009,20 +1009,29 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
 
       // Read 1's refusals, a fault each, each one line FINDING: another environment's subject (which
       // the RCP lists, so only read 1 finds it), the workflow on another branch, another repository in
-      // repo: alone, another in job_workflow_ref alone, another workflow file, another audience, another
-      // condition key, GitHub's provider in another account, another role trusting GitHub's provider,
-      // and a GitHub role trusting a principal outside the organisation with no GitHub key (C0.11 review
-      // 12 P2-01, P2-02, review 13 T13-01). Each subject planted differs from the fixture's.
+      // repo: alone, another in job_workflow_ref alone, another workflow file, another repository id or
+      // owner id in the immutable form, in each place (the ids are what make that form name this
+      // repository alone), another audience, another condition key, GitHub's provider in another
+      // account, another role trusting GitHub's provider, and a GitHub role trusting a principal outside
+      // the organisation with no GitHub key (C0.11 review 12 P2-01, P2-02, review 13 T13-01, P13-01).
+      // Each subject planted differs from the fixture's.
       const changed = (subject: string) => {
         expect(subject).not.toBe(sub)
         return subjectOf(subject)
       }
+      const { ownerId, repositoryId } = fixture.github
+      const anotherRepository = `${owner}@${ownerId}/${name}@${Number(repositoryId) + 1}`
+      const anotherOwner = `${owner}@${Number(ownerId) + 1}/${name}@${repositoryId}`
       for (const [i, plant] of [
         changed(sub.replace(/:environment:[^:]+:/, `:environment:${elsewhere}:`)),
         changed(sub.replace(/@refs\/heads\/main$/, '@refs/heads/other')),
         changed(sub.replace(/^repo:[^:]+:/, 'repo:elsewhere/hearth:')),
         changed(sub.replace(/:job_workflow_ref:[^/]+\/[^/]+\//, ':job_workflow_ref:elsewhere/hearth/')),
         changed(sub.replace('/deploy.yml@', '/other.yml@')),
+        changed(placed(anotherRepository, forms[0])),
+        changed(placed(anotherOwner, forms[0])),
+        changed(placed(forms[1], anotherRepository)),
+        changed(placed(forms[1], anotherOwner)),
         [{ ...first, condition: { ...first.condition, [`${gh}:aud`]: 'sts.example.com' } }, ...others],
         [{ ...first, condition: { ...first.condition, [`${gh}:actor`]: owner } }, ...others],
         [
