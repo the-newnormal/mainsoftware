@@ -33,11 +33,12 @@
 //   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11);
 // - RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone's runbooks keep the two
 //   steps no code can hold: security-alerts.md's containment (removing someone from a group stops
-//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them,
-//   and is seen refusing a call before its cut-off (review 14 CR-24), as management's inline deny is
-//   before the revoke (review 14 I14-01), and an account in Recovery, where OAAR isn't fenced, moves
-//   back into its OU first), and the set-up's
-//   step N confirming each alert subscription with authentication and reading it back
+//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them;
+//   an account in Recovery, where OAAR isn't fenced, moves back into its OU first; step 4 sees, before
+//   the cut-off, a call from a session issued before it refused by the SCP, and moves the cut-off
+//   later if none is (review 14 CR-24, review 15 G15-01, G15-02); and management's paragraph, ahead
+//   of the revoke, does the same for its inline deny (review 14 I14-01, review 15 CR-26, CR-27)), and
+//   the set-up's step N confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
 // - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
 //   header, counted as GFM counts them, and no unescaped | inside backticks, where GFM splits the row
@@ -690,15 +691,41 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
     if (!/\bmoves it back into its own OU\b/.test(containment)) {
       found.push('security-alerts.md: no "moves it back into its own OU"')
     }
-    // Organizations applies the SCP only after a delay, and a session it hasn't yet bound can take a
-    // role issued after the cut-off, so a call must be seen refused by it first (C0.11 review 14 CR-24).
-    if (!containment.includes('explicit deny in a service control policy')) {
-      found.push('security-alerts.md: no check that the SCP binds before its cut-off')
+    // Organizations applies the SCP only after a delay, and a session it hasn't bound by the cut-off can
+    // take a role issued after it, so step 4 has a call from a session issued before the cut-off seen
+    // refused by it before the cut-off, and moves the cut-off later if none is (C0.11 review 14 CR-24).
+    // Both are read in step 4 alone, so a check made after the cut-off, or words moved to another step,
+    // fail (C0.11 review 15 G15-01, G15-02).
+    const step4 = containment.match(/^4\. [\s\S]*?(?=^5\. )/m)?.[0] ?? ''
+    if (
+      !/\bchecks? before the cut-off that it binds: [^.]*\bissued before the cut-off\b[^.]*`with an explicit deny in a service control policy`/.test(
+        step4,
+      )
+    ) {
+      found.push('security-alerts.md: step 4 has no check that the SCP binds before its cut-off')
+    }
+    if (!/\bIf none is refused by the cut-off, move the cut-off\b/.test(step4)) {
+      found.push("security-alerts.md: step 4 doesn't move the cut-off later when the SCP hasn't bound by it")
     }
     // So does a permission set's inline deny in management, and until it binds the set's old sessions
-    // can still take roles, so it must be seen refusing a call before the revoke (C0.11 review 14 I14-01).
-    if (!containment.includes('explicit deny in an identity-based policy')) {
-      found.push("security-alerts.md: no check that management's inline deny binds before the revoke")
+    // can still take roles, so management's paragraph, ahead of the revoke, has a call seen refused by
+    // it before its cut-off, and moves the cut-off later if none is (C0.11 review 14 I14-01, review 15
+    // CR-26, CR-27). Both are read from "No SCP binds management." up to the revoke, so a check made
+    // after the revoke fails.
+    const management = containment.split(/^No SCP binds management\./m)[1]?.split('*Revoke active sessions*')[0] ?? ''
+    if (
+      !/\bfirst sees, before the cut-off, a call\b[^.]*`with an explicit deny in an identity-based policy`/.test(
+        management,
+      )
+    ) {
+      found.push(
+        'security-alerts.md: management has no check, before the revoke, that its inline deny binds by its cut-off',
+      )
+    }
+    if (!/\bIf none is refused by the cut-off, the Owner moves the cut-off\b/.test(management)) {
+      found.push(
+        "security-alerts.md: management doesn't move the cut-off later when its inline deny hasn't bound by it",
+      )
     }
   }
   const stepN = setUp.split(/^### N\. .*$/m)[1]?.split(/^##+ /m)[0]
@@ -714,10 +741,42 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
   return found
 }
 
-describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, review 14 CR-24, I14-01): the landing zone’s runbooks keep containment, OAAR’s and the checks that each deny binds included, and authenticated subscriptions', () => {
+describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, review 14 CR-24, I14-01, review 15 G15-01, G15-02, CR-26, CR-27): the landing zone’s runbooks keep containment, OAAR’s and the checks that each deny binds by its cut-off included, and authenticated subscriptions', () => {
+  // Step 4's check and its fallback, and management's, each a sentence of its own.
+  const scpCheck =
+    'So the person on call checks before the cut-off that it binds: a call from their own session, issued before the cut-off, is refused `with an explicit deny in a service control policy`.'
+  const scpLater = 'If none is refused by the cut-off, move the cut-off a few minutes later and check again.'
+  const inlineCheck =
+    'The Owner first sees, before the cut-off, a call from their own session refused `with an explicit deny in an identity-based policy`.'
+  const inlineLater = 'If none is refused by the cut-off, the Owner moves the cut-off later and checks again.'
+  const revoke = '- Uses IAM’s *Revoke active sessions* on each role.'
+  const step4Missing = 'security-alerts.md: step 4 has no check that the SCP binds before its cut-off'
+  const step4NotLater = "security-alerts.md: step 4 doesn't move the cut-off later when the SCP hasn't bound by it"
+  const inlineMissing =
+    'security-alerts.md: management has no check, before the revoke, that its inline deny binds by its cut-off'
+  const inlineNotLater =
+    "security-alerts.md: management doesn't move the cut-off later when its inline deny hasn't bound by it"
+
   it('finds each gap on planted text, and passes the right words', () => {
-    const alerts =
-      '## Steps\n\n### Containing an unexpected session\n\nRemoving someone from a group stops only new sessions. An account in `Recovery` moves it back into its own OU. An SCP denies where `aws:TokenIssueTime` is before then and `aws:PrincipalArn` is like `*:role/OrganizationAccountAccessRole`. A call is refused `with an explicit deny in a service control policy` before the cut-off. In management, one is refused `with an explicit deny in an identity-based policy` first.\n\n## Check it worked\n'
+    const alerts = [
+      '## Steps',
+      '',
+      '### Containing an unexpected session',
+      '',
+      'Removing someone from a group stops only new sessions.',
+      '',
+      '3. If the account sits in `Recovery`, moves it back into its own OU.',
+      `4. An SCP denies where \`aws:TokenIssueTime\` is before the cut-off and \`aws:PrincipalArn\` is like \`*:role/OrganizationAccountAccessRole\`. ${scpCheck}`,
+      `   - ${scpLater}`,
+      '5. Looks in the trail.',
+      '',
+      `No SCP binds management. ${inlineCheck} ${inlineLater} Then:`,
+      '',
+      revoke,
+      '',
+      '## Check it worked',
+      '',
+    ].join('\n')
     const setUp =
       '### N. Confirm each email subscription\n\n`aws sns confirm-subscription --authenticate-on-unsubscribe true`, then `ConfirmationWasAuthenticated` prints `true`.\n\n### O. Next\n'
     expect(landingZoneProblems(alerts, setUp)).toEqual([])
@@ -736,11 +795,56 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     expect(landingZoneProblems(alerts.replace('moves it back into its own OU', 'stays where it is'), setUp)).toEqual([
       'security-alerts.md: no "moves it back into its own OU"',
     ])
+    // Step 4's check: the refusal's words, made before the cut-off, from a session issued before it, in
+    // step 4 itself, and the cut-off moved later when none comes.
     expect(landingZoneProblems(alerts.replace('explicit deny in a service control policy', 'error'), setUp)).toEqual([
-      'security-alerts.md: no check that the SCP binds before its cut-off',
+      step4Missing,
     ])
+    expect(
+      landingZoneProblems(
+        alerts.replace('checks before the cut-off that it binds', 'checks once the cut-off has passed that it binds'),
+        setUp,
+      ),
+    ).toEqual([step4Missing])
+    expect(landingZoneProblems(alerts.replace('issued before the cut-off', 'issued at any time'), setUp)).toEqual([
+      step4Missing,
+    ])
+    expect(
+      landingZoneProblems(
+        alerts.replace(` ${scpCheck}`, '').replace('5. Looks in the trail.', `5. Looks in the trail. ${scpCheck}`),
+        setUp,
+      ),
+    ).toEqual([step4Missing])
+    expect(landingZoneProblems(alerts.replace(scpLater, 'If none is refused, wait.'), setUp)).toEqual([step4NotLater])
+    expect(landingZoneProblems(alerts.replace('5. Looks in the trail.', 'Looks in the trail.'), setUp)).toEqual([
+      step4Missing,
+      step4NotLater,
+    ])
+    // Management's check: the refusal's words, before the cut-off, in its own paragraph ahead of the
+    // revoke, and the cut-off moved later when none comes.
     expect(landingZoneProblems(alerts.replace('explicit deny in an identity-based policy', 'error'), setUp)).toEqual([
-      "security-alerts.md: no check that management's inline deny binds before the revoke",
+      inlineMissing,
+    ])
+    expect(
+      landingZoneProblems(alerts.replace('first sees, before the cut-off, a call', 'first sees a call'), setUp),
+    ).toEqual([inlineMissing])
+    expect(
+      landingZoneProblems(alerts.replace(` ${inlineCheck}`, '').replace(revoke, `${revoke}\n- ${inlineCheck}`), setUp),
+    ).toEqual([inlineMissing])
+    expect(
+      landingZoneProblems(
+        alerts
+          .replace(` ${inlineCheck}`, '')
+          .replace('5. Looks in the trail.', `5. Looks in the trail. ${inlineCheck}`),
+        setUp,
+      ),
+    ).toEqual([inlineMissing])
+    expect(landingZoneProblems(alerts.replace(inlineLater, 'If none is refused, the Owner waits.'), setUp)).toEqual([
+      inlineNotLater,
+    ])
+    expect(landingZoneProblems(alerts.replace('No SCP binds management.', 'In management:'), setUp)).toEqual([
+      inlineMissing,
+      inlineNotLater,
     ])
     expect(landingZoneProblems('## Steps\n', setUp)).toEqual([
       'security-alerts.md: no "### Containing an unexpected session"',
