@@ -1073,7 +1073,9 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
   })
 })
 
-// hearth-boundary (C11-D26), statement by statement, in one account.
+// hearth-boundary (C11-D26), statement by statement, in one account. Its SMS statements left by
+// IAC-10's drop order when the owner's answer of 5 Nov 2026 (PR 2 question 1) added four model
+// actions; hearth-baseline-2 denies AWS's own SMS in every member account (IAC-02).
 function boundaryStatements(account: string): unknown[] {
   const iam = (resource: string) => arn('iam', '', account, resource)
   const self = iam('policy/hearth-boundary')
@@ -1198,27 +1200,6 @@ function boundaryStatements(account: string): unknown[] {
       ],
       Resource: '*',
     },
-    {
-      Sid: 'NoAwsSms',
-      Effect: 'Deny',
-      Action: [
-        'sms-voice:*',
-        'mobiletargeting:*',
-        'sns:SetSMSAttributes',
-        'sns:CreateSMSSandboxPhoneNumber',
-        'sns:VerifySMSSandboxPhoneNumber',
-        'sns:OptInPhoneNumber',
-      ],
-      Resource: '*',
-    },
-    {
-      Sid: 'NoSmsSubscriptions',
-      Effect: 'Deny',
-      Action: 'sns:Subscribe',
-      Resource: '*',
-      Condition: { StringEquals: { 'sns:Protocol': 'sms' } },
-    },
-    { Sid: 'NoDirectPublish', Effect: 'Deny', Action: 'sns:Publish', NotResource: arn('sns', '*', '*', '*') },
   ]
 }
 
@@ -1244,7 +1225,7 @@ describe.each(KINDS)('IAC-10 C11-D26: %s’s hearth-boundary', kind => {
     const [, boundary] = one(templateOf(kind), 'AWS::IAM::ManagedPolicy', 'ManagedPolicyName', 'hearth-boundary')
     expect(
       JSON.stringify(boundary.Properties?.PolicyDocument).length,
-      'past the limit, drop the SMS statements, then NoRouteOut and BreakGlassParameter (the SCPs still deny all three), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
+      'past the limit, drop NoRouteOut, then BreakGlassParameter (the SCPs still deny both; the SMS statements left first, PR 2 question 1), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
     ).toBeLessThanOrEqual(MANAGED_LIMIT)
   })
 

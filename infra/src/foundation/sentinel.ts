@@ -100,7 +100,9 @@ export interface AssuredAlarm {
 // datapoint holding an alarm up: one at the threshold, put in every few minutes, keeps the alarm in
 // ALARM, where it emails nobody about a real match (above). Triage and the read-backs are what find
 // that; a deny of PutMetricData into Hearth/Security on HearthOrgAdmin would refuse it to that set's
-// sessions, but not to management's root or a role a session makes, and is the owner's to choose.
+// sessions, but not to management's root or a role a session makes, and the owner declined it on
+// 5 Nov 2026 (PR 2 question 35), asking instead for the hold-up to be closed here in code by a later
+// owner's-read PR (question 36, TECH-SPEC T24).
 const alarmStatistic = (threshold: number) =>
   threshold === 1 ? cloudwatch.Stats.MAXIMUM : cloudwatch.Stats.SAMPLE_COUNT
 

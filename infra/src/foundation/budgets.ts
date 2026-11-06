@@ -2,14 +2,15 @@
 // cost budgets, the organisation's and one per account, in the amounts the owner chose (C11-Q09, 31 Oct
 // 2026: USD 650 in all, prod 350, non-prod 250, management 25 and log-archive 25), held in the person's
 // environment rather than committed (C11-D25). Each emails management's hearth-ops-alerts topic at
-// 80 % and 100 % of actual spend and at 100 % of forecast. Costs are counted before GST, the basis the
-// amounts were chosen on, so the 80 % alert keeps its headroom (TECH-SPEC T24's C11-Q09 entry).
+// 80 % and 100 % of actual spend and at 100 % of forecast. Costs count GST: the owner chose that on
+// 5 Nov 2026 (PR 2 question 3), keeping the amounts, so each environment's 80 % alert keeps only about
+// USD 9 to 20 of headroom over its expected spend (TECH-SPEC T24's C11-Q09 entry).
 //
-// Each budget measures unblended cost and filters out the Tax record type, so credits, refunds,
-// support and discounts still count. AWS Budgets takes either Metrics with a FilterExpression or the
-// older CostTypes with CostFilters, never a mix, and the older pair is deprecated; every budget here
-// uses the newer one, the organisation's with only the tax filter and each account's with that filter
-// and its linked account.
+// Each budget measures unblended cost of every record type, tax, credits, refunds, support and
+// discounts included: no record type is filtered out. AWS Budgets takes either Metrics, with or
+// without a FilterExpression, or the older CostTypes with CostFilters, never a mix, and the older pair
+// is deprecated; every budget here uses the newer one, the organisation's with no filter and each
+// account's filtered to its linked account alone.
 //
 // One anomaly monitor watches spend by service and alerts the topic at once on an anomaly whose total
 // impact is at least USD 10. Cost Explorer may already hold a default AWS-services monitor, which
@@ -27,11 +28,6 @@ import type { LandingZoneConfig } from '../config/env.ts'
 
 // The anomaly alert's floor, in US dollars of total impact.
 export const ANOMALY_IMPACT_USD = 10
-
-// Every charge but tax (C11-Q09's pre-GST basis).
-const NOT_TAX: budgets.CfnBudget.ExpressionProperty = {
-  not: { dimensions: { key: 'RECORD_TYPE', values: ['Tax'], matchOptions: ['EQUALS'] } },
-}
 
 export interface BudgetsProps {
   config: LandingZoneConfig
@@ -65,15 +61,13 @@ export class Budgets extends Construct {
           timeUnit: 'MONTHLY',
           budgetLimit: { amount: entry.amount, unit: 'USD' },
           metrics: ['UnblendedCost'],
-          filterExpression:
-            entry.account === undefined
-              ? NOT_TAX
-              : {
-                  and: [
-                    { dimensions: { key: 'LINKED_ACCOUNT', values: [entry.account], matchOptions: ['EQUALS'] } },
-                    NOT_TAX,
-                  ],
+          ...(entry.account === undefined
+            ? {}
+            : {
+                filterExpression: {
+                  dimensions: { key: 'LINKED_ACCOUNT', values: [entry.account], matchOptions: ['EQUALS'] },
                 },
+              }),
         },
         notificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
       })

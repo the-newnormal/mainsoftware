@@ -1078,6 +1078,19 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         plant("--if-none-match '*' >/dev/null 2>&1\n}", "--if-none-match '*' >/dev/null 2>&1\n  return 0\n}"),
         ['IG-09k'],
       ],
+      [
+        'k: put_entry puts another file',
+        plant('--key "$1" --body "$entry_file" --content-type', '--key "$1" --body "$HOME/entry.json" --content-type'),
+        ['IG-09k'],
+      ],
+      [
+        'k: put_entry puts the entry file and then another',
+        plant(
+          '--key "$1" --body "$entry_file" --content-type',
+          '--key "$1" --body "$entry_file" --body=/tmp/other.json --content-type',
+        ),
+        ['IG-09k'],
+      ],
       ['k: the open entry called under ||', plant('\nopen_session\n', '\nopen_session || true\n'), ['IG-09k']],
       [
         'k: the open entry after the shell',

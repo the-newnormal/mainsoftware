@@ -1832,6 +1832,12 @@ export function breakGlassFindings(path: string, text: string): Finding[] {
   ) {
     fail('k', 'put_entry runs the one put-object and nothing after it, so its status is the put’s')
   }
+  // And what it puts is the entry the run just wrote, `--body "$entry_file"` exactly and once, so no
+  // other file, spelling or second --body stands in for it (CodeRabbit after C0.11 PR 2's round 16).
+  const putText = put[0]?.text ?? ''
+  if ((putText.match(/--body\b/g) ?? []).length !== 1 || !/\s--body "\$entry_file"\s/.test(putText)) {
+    fail('k', 'put_entry puts the entry file and nothing else: --body "$entry_file", once')
+  }
   const failedPut =
     /^put_entry\s(?:(?!\|\||&&|;).)*\s\|\|\s(?:refuse (?:'[^']*'|"[^"$`\\]*")|(?:return|exit) [1-9]\d*)$/
   for (const line of lines) {

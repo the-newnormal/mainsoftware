@@ -14,8 +14,9 @@
 //   an hour after the copy's last event;
 // - the reviewer's six saved queries over the copy alone, the break-glass entries' writers among them;
 // - every log group in every landing-zone template in its retention class, retained and protected;
-// - five budgets in the amounts C11-Q09 chose, before tax, each alerting the topic at 80 % and 100 %
-//   of actual spend and 100 % of forecast, and the anomaly monitor and its subscription.
+// - five budgets in the amounts C11-Q09 chose, GST included (PR 2 question 3), each alerting the topic
+//   at 80 % and 100 % of actual spend and 100 % of forecast, and the anomaly monitor and its
+//   subscription.
 // The trail's bucket is checked against LogArchive's actual bucket, so the convention that crosses
 // accounts without a reference can't drift. Expected ARNs are joined from their parts (IG-01), and the
 // S3 event names LCG-02 reads as calls are joined from theirs.
@@ -528,7 +529,7 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
     expect(fixture.budgetsUsd).toEqual({ organisation: 650, management: 25, logArchive: 25, nonprod: 250, prod: 350 })
   })
 
-  it('C11-D20 A12: five monthly cost budgets, the organisation’s and each account’s, before tax, each alerting management’s topic at 80 % and 100 % of actual spend and 100 % of forecast, retained once made', () => {
+  it('C11-D20 A12 C11-Q09: five monthly cost budgets, the organisation’s and each account’s, GST included (PR 2 question 3), each alerting management’s topic at 80 % and 100 % of actual spend and 100 % of forecast, retained once made', () => {
     const budgets = lz.stacks.foundation?.node.tryFindChild('Budgets')
     expect(budgets?.node.children.map(child => child.node.id)).toEqual([
       'Organisation',
@@ -543,8 +544,7 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
       Notification: { NotificationType, ComparisonOperator: 'GREATER_THAN', Threshold, ThresholdType: 'PERCENTAGE' },
       Subscribers: [{ SubscriptionType: 'SNS', Address: { Ref: topic } }],
     })
-    // Unblended cost of every record type but tax, the organisation's whole and each account's alone.
-    const notTax = { Not: { Dimensions: { Key: 'RECORD_TYPE', Values: ['Tax'], MatchOptions: ['EQUALS'] } } }
+    // Unblended cost of every record type, tax included, the organisation's whole and each account's alone.
     const budget = (name: string, amount: number, account?: string) => ({
       Budget: {
         BudgetName: name,
@@ -552,10 +552,11 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
         TimeUnit: 'MONTHLY',
         BudgetLimit: { Amount: amount, Unit: 'USD' },
         Metrics: ['UnblendedCost'],
-        FilterExpression:
-          account === undefined
-            ? notTax
-            : { And: [{ Dimensions: { Key: 'LINKED_ACCOUNT', Values: [account], MatchOptions: ['EQUALS'] } }, notTax] },
+        ...(account === undefined
+          ? {}
+          : {
+              FilterExpression: { Dimensions: { Key: 'LINKED_ACCOUNT', Values: [account], MatchOptions: ['EQUALS'] } },
+            }),
       },
       NotificationsWithSubscribers: [notify('ACTUAL', 80), notify('ACTUAL', 100), notify('FORECASTED', 100)],
     })
@@ -575,7 +576,7 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
     }
   })
 
-  it('C11-D20 A12: every budget in every landing-zone template uses one of AWS Budgets’ two pairs, Metrics with a FilterExpression or CostTypes with CostFilters, never a mix, which CreateBudget refuses', () => {
+  it('C11-D20 A12: every budget in every landing-zone template uses one of AWS Budgets’ two pairs, Metrics with any FilterExpression or CostTypes with CostFilters, never a mix, which CreateBudget refuses, and none leaves tax or another record type out', () => {
     const budgets = Object.values(lz.templates).flatMap(template => ofType(template, 'AWS::Budgets::Budget'))
     expect(budgets).toHaveLength(5)
     for (const [id, r] of budgets) {
@@ -585,6 +586,8 @@ describe('C11-D20 A12 C11-Q09: budgets and Cost Anomaly Detection', () => {
       const older = has('CostTypes') || has('CostFilters')
       expect(newer && older, `${id} mixes the two pairs`).toBe(false)
       if (has('FilterExpression')) expect(has('Metrics'), `${id}: a FilterExpression needs its Metrics`).toBe(true)
+      // GST counts (C11-Q09, PR 2 question 3): no record type is left out, by either pair.
+      expect(JSON.stringify(data), `${id} leaves a record type out`).not.toMatch(/RECORD_TYPE|IncludeTax/)
     }
   })
 

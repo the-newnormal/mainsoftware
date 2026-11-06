@@ -37,10 +37,12 @@
 //   an account in Recovery, where OAAR isn't fenced, moves back into its OU first; step 4 sees, before
 //   the cut-off, a call from a session issued before it refused by the SCP, and moves the cut-off
 //   later if none is (review 14 CR-24, review 15 G15-01, G15-02); management's paragraph, ahead of
-//   the revoke, does the same for its inline deny (review 14 I14-01, review 15 CR-26, CR-27); each
-//   probe signs out in a named folder (review 16b G2); and after its cut-off, management reads the
-//   groups, the set's assignments in every account and the user again, redoing step 1 and the list
-//   if a live session undid it (review 16b G3, O16b-01, O16b-05, X-02)), and the set-up's step N
+//   the revoke, does the same for its inline deny with a session issued after the provisioning
+//   (review 14 I14-01, review 15 CR-26, CR-27, CodeRabbit after round 16); each probe signs out in a
+//   named folder (review 16b G2) and signs in again there before it probes (CodeRabbit after round
+//   16); and after its cut-off, management reads the groups, the set's assignments in every account
+//   and the user again, redoing step 1 and the list if a live session undid it (review 16b G3,
+//   O16b-01, O16b-05, X-02)), and the set-up's step N
 //   confirming each alert subscription with authentication and reading it back
 //   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
 // - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
@@ -677,6 +679,19 @@ describe('RB-06 (C0.10 review PRIVACY-02, LH-61): the runbooks say how a request
 
 // --- RB-07: the landing zone's containment and authenticated subscriptions --------------------------
 
+// Whether a probe, after it signs out in its folder, signs in again in that folder before its first
+// call: a probe made before the new sign-in reuses the session the sign-out ended, or no session at
+// all, so its refusal shows nothing (CodeRabbit after C0.11 PR 2's round 16).
+const PROBE_SIGN_OUT = '`HOME=<the folder> aws sso logout`'
+const PROBE_SIGN_IN = '`HOME=<the folder> aws sso login --profile '
+const PROBE_CALL = '`HOME=<the folder> aws iam get-account-summary --profile '
+function signsInAgainBeforeProbe(text: string): boolean {
+  const signOut = text.indexOf(PROBE_SIGN_OUT)
+  const signIn = signOut < 0 ? -1 : text.indexOf(PROBE_SIGN_IN, signOut)
+  const probe = text.indexOf(PROBE_CALL)
+  return signIn >= 0 && probe > signIn
+}
+
 // What security-alerts.md and the set-up runbook leave out of the two steps no code can hold
 // (C0.11 review 1 DETECTION-05, DETECTION-08; TECH-SPEC T24 items 4 and 5).
 function landingZoneProblems(alerts: string, setUp: string): string[] {
@@ -715,15 +730,18 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
     // words (C0.11 review 16b G2).
     if (!step4.includes('`HOME=<the folder> aws sso logout`')) {
       found.push("security-alerts.md: step 4's probe doesn't sign out in a named folder")
+    } else if (!signsInAgainBeforeProbe(step4)) {
+      found.push("security-alerts.md: step 4's probe doesn't sign in again in its folder before it probes")
     }
     // So does a permission set's inline deny in management, and until it binds the set's old sessions
     // can still take roles, so management's paragraph, ahead of the revoke, has a call seen refused by
-    // it before its cut-off, and moves the cut-off later if none is (C0.11 review 14 I14-01, review 15
-    // CR-26, CR-27). Both are read from "No SCP binds management." up to the revoke, so a check made
-    // after the revoke fails.
+    // it before its cut-off, from a session issued after the provisioning, so the refusal is the new
+    // statement's, and moves the cut-off later if none is (C0.11 review 14 I14-01, review 15 CR-26,
+    // CR-27; CodeRabbit after round 16). Both are read from "No SCP binds management." up to the
+    // revoke, so a check made after the revoke fails.
     const management = containment.split(/^No SCP binds management\./m)[1]?.split('*Revoke active sessions*')[0] ?? ''
     if (
-      !/\bfirst sees, before the cut-off, a call\b[^.]*`with an explicit deny in an identity-based policy`/.test(
+      !/\bfirst sees, before the cut-off, a call\b[^.]*\bissued after the provisioning\b[^.]*`with an explicit deny in an identity-based policy`/.test(
         management,
       )
     ) {
@@ -738,6 +756,8 @@ function landingZoneProblems(alerts: string, setUp: string): string[] {
     }
     if (!management.includes('`HOME=<the folder> aws sso logout`')) {
       found.push("security-alerts.md: management's probe doesn't sign out in a named folder")
+    } else if (!signsInAgainBeforeProbe(management)) {
+      found.push("security-alerts.md: management's probe doesn't sign in again in its folder before it probes")
     }
     // Until the inline deny binds, a live session can put its person back in the group or the
     // assignment, in any account, or enable the user again, and sign in after the cut-off. So after the
@@ -773,12 +793,19 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     'So the person on call checks before the cut-off that it binds: a call from their own session, issued before the cut-off, is refused `with an explicit deny in a service control policy`.'
   const scpLater = 'If none is refused by the cut-off, move the cut-off a few minutes later and check again.'
   const inlineCheck =
-    'The Owner first sees, before the cut-off, a call from their own session refused `with an explicit deny in an identity-based policy`.'
+    'The Owner first sees, before the cut-off, a call from their own session issued after the provisioning, refused `with an explicit deny in an identity-based policy`.'
   const inlineLater = 'If none is refused by the cut-off, the Owner moves the cut-off later and checks again.'
   const revoke = '- Uses IAM’s *Revoke active sessions* on each role.'
-  // Each probe's sign-out in its folder, and management's read after its cut-off.
-  const scpSignOut = "Sign out in the helper's folder: `HOME=<the folder> aws sso logout`."
-  const inlineSignOut = "They sign out in the set's folder: `HOME=<the folder> aws sso logout`."
+  // Each probe's sign-out in its folder, its sign-in there again and its call, and management's read
+  // after its cut-off.
+  const scpSignIn = '`HOME=<the folder> aws sso login --profile hearth-<env>-entry`'
+  const scpSignOut = `Sign out in the helper's folder and in again: \`HOME=<the folder> aws sso logout\`, then ${scpSignIn}.`
+  const scpProbe =
+    'Call `HOME=<the folder> aws iam get-account-summary --profile hearth-<env>-entry` until it is refused.'
+  const inlineSignIn = '`HOME=<the folder> aws sso login --profile <that profile>`'
+  const inlineSignOut = `They sign out and in again in the set's folder: \`HOME=<the folder> aws sso logout\`, then ${inlineSignIn}.`
+  const inlineProbe =
+    'Then they call `HOME=<the folder> aws iam get-account-summary --profile <that profile>` until it is refused.'
   const reread =
     "- Reads again each group's members and the set's assignments in every account, and whether the user is still disabled. If it, or the search below, shows step 1 undone, the Owner redoes step 1, then moves the cut-off later, provisions the set again and checks again, and goes through this list again from its first bullet."
   const step4Missing = 'security-alerts.md: step 4 has no check that the SCP binds before its cut-off'
@@ -789,6 +816,8 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     "security-alerts.md: management doesn't move the cut-off later when its inline deny hasn't bound by it"
   const step4NoFolder = "security-alerts.md: step 4's probe doesn't sign out in a named folder"
   const inlineNoFolder = "security-alerts.md: management's probe doesn't sign out in a named folder"
+  const step4NoSignIn = "security-alerts.md: step 4's probe doesn't sign in again in its folder before it probes"
+  const inlineNoSignIn = "security-alerts.md: management's probe doesn't sign in again in its folder before it probes"
   const noReread = "security-alerts.md: management doesn't read the group and the assignments again after its cut-off"
 
   it('finds each gap on planted text, and passes the right words', () => {
@@ -802,10 +831,11 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
       '3. If the account sits in `Recovery`, moves it back into its own OU.',
       `4. An SCP denies where \`aws:TokenIssueTime\` is before the cut-off and \`aws:PrincipalArn\` is like \`*:role/OrganizationAccountAccessRole\`. ${scpCheck}`,
       `   - ${scpSignOut}`,
+      `   - ${scpProbe}`,
       `   - ${scpLater}`,
       '5. Looks in the trail.',
       '',
-      `No SCP binds management. ${inlineCheck} ${inlineSignOut} ${inlineLater} Then, signed in again after the cut-off:`,
+      `No SCP binds management. ${inlineCheck} ${inlineSignOut} ${inlineProbe} ${inlineLater} Then, signed in again after the cut-off:`,
       '',
       reread,
       revoke,
@@ -865,6 +895,25 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     expect(
       landingZoneProblems(alerts.replace(inlineSignOut, 'They sign out with `aws sso logout` and in again.'), setUp),
     ).toEqual([inlineNoFolder])
+    // And signs in again in that folder before it probes: no sign-in, one in another folder, or the
+    // probe ahead of the sign-in, fails (CodeRabbit after round 16).
+    expect(landingZoneProblems(alerts.replace(`, then ${scpSignIn}`, ''), setUp)).toEqual([step4NoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(scpSignIn, '`aws sso login --profile hearth-<env>-entry`'), setUp),
+    ).toEqual([step4NoSignIn])
+    expect(
+      landingZoneProblems(
+        alerts.replace(`   - ${scpSignOut}\n   - ${scpProbe}`, `   - ${scpProbe}\n   - ${scpSignOut}`),
+        setUp,
+      ),
+    ).toEqual([step4NoSignIn])
+    expect(landingZoneProblems(alerts.replace(`, then ${inlineSignIn}`, ''), setUp)).toEqual([inlineNoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(inlineSignIn, '`aws sso login --profile <that profile>`'), setUp),
+    ).toEqual([inlineNoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(`${inlineSignOut} ${inlineProbe}`, `${inlineProbe} ${inlineSignOut}`), setUp),
+    ).toEqual([inlineNoSignIn])
     // Management's check: the refusal's words, before the cut-off, in its own paragraph ahead of the
     // revoke, and the cut-off moved later when none comes.
     expect(landingZoneProblems(alerts.replace('explicit deny in an identity-based policy', 'error'), setUp)).toEqual([
@@ -873,6 +922,12 @@ describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, r
     expect(
       landingZoneProblems(alerts.replace('first sees, before the cut-off, a call', 'first sees a call'), setUp),
     ).toEqual([inlineMissing])
+    // From a session issued after the provisioning, so the refusal is the new statement's (CodeRabbit
+    // after round 16).
+    expect(
+      landingZoneProblems(alerts.replace('issued after the provisioning', 'issued before the provisioning'), setUp),
+    ).toEqual([inlineMissing])
+    expect(landingZoneProblems(alerts.replace(' issued after the provisioning,', ''), setUp)).toEqual([inlineMissing])
     expect(
       landingZoneProblems(alerts.replace(` ${inlineCheck}`, '').replace(revoke, `${revoke}\n- ${inlineCheck}`), setUp),
     ).toEqual([inlineMissing])

@@ -250,7 +250,7 @@ const WHEN_FULL = {
   'hearth-break-glass':
     'move the denies into the customer-managed hearth-break-glass-denies attached by its Roles (TECH-SPEC T24 item 4), before adding a statement',
   'hearth-boundary':
-    'drop the SMS statements, then NoRouteOut (the SCPs still deny both), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
+    'drop NoRouteOut, then BreakGlassParameter (the SCPs still deny both; the SMS statements left first, PR 2 question 1), never NoModels, NoLongLivedCredentials or NoNewIdentityProviders',
 } as Record<string, string>
 
 // A document's size as IAM counts it: its JSON with no whitespace. A reference CloudFormation

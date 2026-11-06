@@ -428,7 +428,11 @@
                     "b2bi:GenerateMapping",
                     "sms-voice:Send*VoiceMessage",
                     "profile:*Recommender*",
-                    "profile:GetProfileRecommendations"
+                    "profile:GetProfileRecommendations",
+                    "iam:GetHumanReadableSummary",
+                    "glue:GetGeneratedCode",
+                    "support-console:GetIssueTextSummary",
+                    "support-console:GetIssueClassificationPredictions"
                   ],
                   "Resource": "*"
                 }
@@ -913,7 +917,11 @@
                     "b2bi:GenerateMapping",
                     "sms-voice:Send*VoiceMessage",
                     "profile:*Recommender*",
-                    "profile:GetProfileRecommendations"
+                    "profile:GetProfileRecommendations",
+                    "iam:GetHumanReadableSummary",
+                    "glue:GetGeneratedCode",
+                    "support-console:GetIssueTextSummary",
+                    "support-console:GetIssueClassificationPredictions"
                   ],
                   "Resource": "*"
                 }
@@ -1192,7 +1200,11 @@
                     "b2bi:GenerateMapping",
                     "sms-voice:Send*VoiceMessage",
                     "profile:*Recommender*",
-                    "profile:GetProfileRecommendations"
+                    "profile:GetProfileRecommendations",
+                    "iam:GetHumanReadableSummary",
+                    "glue:GetGeneratedCode",
+                    "support-console:GetIssueTextSummary",
+                    "support-console:GetIssueClassificationPredictions"
                   ],
                   "Resource": "*"
                 }
@@ -1479,7 +1491,11 @@
                     "b2bi:GenerateMapping",
                     "sms-voice:Send*VoiceMessage",
                     "profile:*Recommender*",
-                    "profile:GetProfileRecommendations"
+                    "profile:GetProfileRecommendations",
+                    "iam:GetHumanReadableSummary",
+                    "glue:GetGeneratedCode",
+                    "support-console:GetIssueTextSummary",
+                    "support-console:GetIssueClassificationPredictions"
                   ],
                   "Resource": "*"
                 }
@@ -1835,7 +1851,11 @@
                     "b2bi:GenerateMapping",
                     "sms-voice:Send*VoiceMessage",
                     "profile:*Recommender*",
-                    "profile:GetProfileRecommendations"
+                    "profile:GetProfileRecommendations",
+                    "iam:GetHumanReadableSummary",
+                    "glue:GetGeneratedCode",
+                    "support-console:GetIssueTextSummary",
+                    "support-console:GetIssueClassificationPredictions"
                   ],
                   "Resource": "*"
                 }

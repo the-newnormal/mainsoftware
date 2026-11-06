@@ -316,7 +316,10 @@ describe('C11-D70: the policy walker', () => {
       'AllButIam',
       'Conditional',
     ])
-    expect(grantsModelAction('iam:*')).toBe(false)
+    // An allowed service's wildcard grants none. IAM's no longer qualifies: since the owner's answer of
+    // 5 Nov 2026 (PR 2 question 1), one of its actions is a model action.
+    expect(grantsModelAction('s3:*')).toBe(false)
+    expect(grantsModelAction('iam:*')).toBe(true)
   })
 
   it('reads an inline user policy, and reports an Organizations policy whose type only CloudFormation resolves', () => {

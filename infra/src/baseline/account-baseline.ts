@@ -38,7 +38,6 @@ import {
   NO_NEW_IDENTITY_PROVIDERS,
   ROUTE_OUT_ACTIONS,
   rule9SecretDenies,
-  smsDenies,
 } from '../foundation/denies.ts'
 import type { ResolvedLandingZoneOptions } from '../foundation/options.ts'
 import { BreakGlassRole } from './break-glass.ts'
@@ -113,11 +112,13 @@ export class BaselineStack extends cdk.Stack {
 // long-lived credentials and new identity providers; IAM writes to the roles and names the
 // guardrails protect, Identity Center's own SAML provider among them, and passing a Rule 9 or CDK role; writes to the break-glass helper's parameter
 // (C11-D13); the Rule 9 secrets; the audit services; deletes and
-// lock changes on the log-archive buckets; a route out of the VPC; and AWS's own SMS. A role takes
-// one boundary, so it can't be split: it stays within a managed policy's 6,144 characters, which
-// IAC-10 measures, and were it to grow past them, the SMS statements go first, then the route-out one
-// and the break-glass parameter's (the SCPs still deny all three), never the model, credential or
-// identity-provider denies.
+// lock changes on the log-archive buckets; and a route out of the VPC. A role takes one boundary, so
+// it can't be split: it stays within a managed policy's 6,144 characters, which IAC-10 measures, and
+// statements leave it in a fixed order when it would pass them. The SMS statements left first, when
+// the owner's answer of 5 Nov 2026 (PR 2 question 1) added four model actions; hearth-baseline-2
+// still denies AWS's own SMS in every member account. The route-out one and the break-glass
+// parameter's go next (the SCPs still deny both), never the model, credential or identity-provider
+// denies.
 class Boundary extends Construct {
   readonly policy: iam.CfnManagedPolicy
 
@@ -201,7 +202,6 @@ class Boundary extends Construct {
         },
         { Sid: 'LogBuckets', Effect: 'Deny', Action: LOG_BUCKET_DENY_ACTIONS, Resource: LOG_BUCKET_PATTERNS() },
         { Sid: 'NoRouteOut', Effect: 'Deny', Action: ROUTE_OUT_ACTIONS, Resource: '*' },
-        ...smsDenies(),
       ]),
     })
     // Retained once made, but deleted when the create that made it rolls back, so a failed first
