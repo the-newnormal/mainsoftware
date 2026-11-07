@@ -8,21 +8,31 @@ import { fixtureAccount } from '../testing/fixture.ts'
 import { testApp } from '../testing/synth.ts'
 import { accountRoot, arnPattern, awsManagedPolicyArn, bucketArns, PARTITION, roleArn } from './arns.ts'
 import {
+  authSecretName,
   baselineStackName,
   clusterName,
   execRoleName,
+  FLOW_LOG_KIND,
   iamVariable,
   LOG_BUCKET_PREFIX,
+  loadBalancerName,
   logBucketName,
+  logGroupName,
   QUALIFIER,
   SSM_PARAMETER,
+  serviceName,
   stagesIn,
   TAG_KEY,
+  TASK_ROLE_KINDS,
   TOOLKIT_STACK,
+  targetGroupName,
   taskFamily,
   taskRoleName,
+  valkeyGroupId,
+  WORKLOAD_STACK_PARTS,
+  workloadStackName,
 } from './names.ts'
-import { REGION } from './profiles.ts'
+import { ENVIRONMENTS, REGION } from './profiles.ts'
 
 // An ARN joined here from its parts, as a test builds what it expects.
 const joined = (...parts: string[]) => ['arn', 'aws', ...parts].join(':')
@@ -51,8 +61,59 @@ describe('C11-D27: the names that cross stacks and PRs', () => {
     expect(baselineStackName('*')).toBe('Hearth-*-Baseline')
   })
 
-  it('C11-D09 C11-D11: the tag keys a policy matches and another stack, the helper or C0.12 sets', () => {
-    expect(TAG_KEY).toEqual({ user: 'hearth-user', reason: 'hearth-reason', access: 'hearth:access' })
+  it('C11-D27: the workload’s four stacks per environment, and the pattern naming one part in every environment', () => {
+    expect(WORKLOAD_STACK_PARTS).toEqual(['Platform', 'Data', 'Tasks', 'Services'])
+    expect(workloadStackName('restore', 'Tasks')).toBe('Hearth-restore-Tasks')
+    expect(workloadStackName('nonprod', 'Platform')).toBe('Hearth-nonprod-Platform')
+    expect(workloadStackName('prod', 'Services')).toBe('Hearth-prod-Services')
+    expect(workloadStackName('*', 'Data')).toBe('Hearth-*-Data')
+  })
+
+  it('C11-D35 C11-D38 C11-D39 C11-D41: the workload’s families, services, load balancer, target groups, Valkey and secret', () => {
+    expect(taskFamily('nonprod', 'api')).toBe('hearth-nonprod-api')
+    expect(taskFamily('restore', 'probe')).toBe('hearth-restore-probe')
+    expect(serviceName('prod', 'worker')).toBe('hearth-prod-worker')
+    expect(serviceName('restore', 'realtime')).toBe('hearth-restore-realtime')
+    expect(loadBalancerName('nonprod')).toBe('hearth-nonprod')
+    expect(targetGroupName('prod', 'realtime')).toBe('hearth-prod-realtime')
+    expect(targetGroupName('nonprod', 'api')).toBe('hearth-nonprod-api')
+    expect(valkeyGroupId('prod')).toBe('hearth-prod')
+    expect(authSecretName('nonprod')).toBe('hearth/nonprod/auth-secret')
+    expect(logGroupName('nonprod', FLOW_LOG_KIND)).toBe('/hearth/nonprod/vpc-flow')
+    for (const env of ENVIRONMENTS) {
+      // ELB names a load balancer and a target group in at most 32 characters.
+      expect(loadBalancerName(env).length).toBeLessThanOrEqual(32)
+      for (const role of ['api', 'realtime'] as const) expect(targetGroupName(env, role).length).toBeLessThanOrEqual(32)
+      // ElastiCache's replication group id: lower case, a letter first, at most 40 characters, no
+      // hyphen at the end or two together.
+      expect(valkeyGroupId(env)).toMatch(/^[a-z](?:[a-z0-9]|-(?!-))*[a-z0-9]$/)
+      expect(valkeyGroupId(env).length).toBeLessThanOrEqual(40)
+      // IAM names a role in at most 64 characters.
+      for (const kind of TASK_ROLE_KINDS) {
+        expect(taskRoleName(env, kind).length).toBeLessThanOrEqual(64)
+        expect(execRoleName(env, kind).length).toBeLessThanOrEqual(64)
+      }
+    }
+  })
+
+  it('C11-D24 C11-D30: the parameters the workload’s stacks, the pipeline and break-glass read by name', () => {
+    expect(SSM_PARAMETER.organisationId).toBe('/hearth/organisation/id')
+    expect(SSM_PARAMETER.isolatedSubnets('nonprod')).toBe('/hearth/nonprod/network/isolated-subnets')
+    expect(SSM_PARAMETER.securityGroup('prod', 'valkey')).toBe('/hearth/prod/security-group/valkey')
+    expect(SSM_PARAMETER.securityGroup('restore', 'bastion')).toBe('/hearth/restore/security-group/bastion')
+    expect(SSM_PARAMETER.targetGroup('nonprod', 'api')).toBe('/hearth/nonprod/target-group/api')
+    expect(SSM_PARAMETER.targetGroup('prod', 'realtime')).toBe('/hearth/prod/target-group/realtime')
+    expect(SSM_PARAMETER.valkeyEndpoint('restore')).toBe('/hearth/restore/valkey/endpoint')
+    expect(SSM_PARAMETER.authSecretArn('prod')).toBe('/hearth/prod/auth-secret/arn')
+  })
+
+  it('C11-D09 C11-D11 T24 item 11: the tag keys a policy matches and another stack, the helper or C0.12 sets', () => {
+    expect(TAG_KEY).toEqual({
+      user: 'hearth-user',
+      reason: 'hearth-reason',
+      access: 'hearth:access',
+      role: 'hearth-role',
+    })
     // The helper sets the reason tag in shell, which can't import this file.
     const helper = readFileSync(new URL('../../bin/break-glass.sh', import.meta.url), 'utf8')
     expect(helper).toContain(`--tags "Key=${TAG_KEY.reason},Value=$reason"`)
