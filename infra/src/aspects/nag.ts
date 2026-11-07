@@ -1,22 +1,25 @@
-// The landing zone's reviewed exceptions to its two template checks (C11-D70; TECH-SPEC T24 item 28),
-// as data:
-// - NAG_ALLOWANCES: each cdk-nag AwsSolutions finding the landing zone keeps, by rule and by the
-//   construct path of the resource it is raised on, with its reason. cdk-nag 3.0.2 runs only in
-//   nag.test.ts (IAC-15), which applies these: no entry loads cdk-nag, a devDependency, and cdk-nag 3's
-//   own acknowledgements name each finding by an id holding the fixture's account ids, which no source
+// The landing zone's and the workload's reviewed exceptions to their two template checks (C11-D70;
+// TECH-SPEC T24 item 28), as data:
+// - NAG_ALLOWANCES: each cdk-nag AwsSolutions finding a stack keeps, by rule and by the construct
+//   path of the resource it is raised on, with its reason. cdk-nag 3.0.2 runs only in nag.test.ts
+//   (IAC-15), which applies these: no entry loads cdk-nag, a devDependency, and cdk-nag 3's own
+//   acknowledgements name each finding by an id holding the fixture's account ids, which no source
 //   may hold (IG-01). One allowance covers every finding of its rule on its resource (AwsSolutions-IAM5
-//   raises one for each wildcard action or resource), and IAC-16 holds each to being used;
+//   raises one for each wildcard action or resource), and IAC-16 holds each to being used. A workload
+//   path starts with its stage (`nonprod/Platform/…`), and the workload's are written once for every
+//   stage that builds the resource;
 // - VALIDATE_ACKNOWLEDGEMENTS: each CloudFormation Validate finding (cdk.json's
 //   validateAgainstDefaultRules) kept, acknowledged on its construct by acknowledgeValidate(), which
-//   addLandingZone() calls, so the CLI's synth and the tests see the same. It holds only reviewed
-//   exceptions, today the two E3510s on the account variable below: any other finding is fixed rather
-//   than kept, and one raised on a stack is always fixed, since an acknowledgement on a stack would
-//   cover all of it.
+//   addLandingZone() and addWorkload() call, so the CLI's synth and the tests see the same. It holds
+//   only reviewed exceptions, today the two E3510s on the account variable below, and none in the
+//   workload: any other finding is fixed rather than kept, and one raised on a stack is always fixed,
+//   since an acknowledgement on a stack would cover all of it.
 // Every reason is at least 20 characters and cites the C11 decision that keeps the finding. This file
-// imports aws-cdk-lib and the stacks' names alone, never cdk-nag. It decides which findings the
-// landing zone keeps, so it is on the owner's-read list (C11-D74).
+// imports aws-cdk-lib, the stacks' names and the profiles alone, never cdk-nag. It decides which
+// findings the landing zone and the workload keep, so it is on the owner's-read list (C11-D74).
 import * as cdk from 'aws-cdk-lib'
-import { baselineStackName, STACK } from '../config/names.ts'
+import { baselineStackName, STACK, WORKLOAD_STACK_PARTS } from '../config/names.ts'
+import { ENVIRONMENTS, PROFILES } from '../config/profiles.ts'
 
 export interface NagAllowance {
   // The AwsSolutions rule, without the finding's bracketed detail (`AwsSolutions-IAM5`).
@@ -50,6 +53,58 @@ const BOUNDARY =
 const GITHUB_ROLES =
   "GitHub's roles name their own environments' cluster, task families, stacks and log groups by pattern, and only the calls that take no resource on * (C11-D55)"
 
+// The workload's (C0.11 PR 3), one entry per stage that builds the resource.
+const ALB_OPEN =
+  'The load balancer answers 443 from the internet until C0.12 puts CloudFront in front of it; nothing behind it holds data or can send an SMS (C11-D31)'
+const ALB_NO_ACCESS_LOGS = 'Load balancer access logs come with C0.13, in a retention class of their own (C11-D41)'
+const NO_CONTAINER_INSIGHTS = "Container Insights waits for C0.13's observability decision, for its cost (C11-D39)"
+const PLAIN_ENVIRONMENT =
+  'The plain environment holds no secret: the AUTH_SECRET is a reference, and C0.12 moves the database and Valkey URLs to secrets (C11-D37)'
+const VALKEY_ONE_NODE =
+  "One Valkey node, as C11-Q01's answer pulled it forward, until C0.12 decides on a replica; reachable only from the api, realtime and worker groups (C11-D35)"
+const VALKEY_NO_AUTH =
+  "No Valkey AUTH until C0.12's ACL users; it is reachable over TLS only from the api, realtime and worker groups (C11-D35)"
+const NO_ROTATION = "The AUTH_SECRET's rotation, with AUTH_SECRET_PREVIOUS, is C0.12's (C11-D35)"
+const EXEC_ROLES =
+  "The registry token takes no resource, and each execution role writes only its own log group's streams (C11-D38)"
+const ECS_EXEC_CHANNELS =
+  "ECS Exec's four channel actions take no resource, and only the bastion's task role holds them (C11-D40)"
+const FLOW_LOG_ROLE = 'VPC Flow Logs names each stream at delivery, in the one flow-log group (C11-D32)'
+
+// The kinds whose execution roles the Platform stack makes, as their construct ids name them.
+const EXEC_ROLE_IDS = ['Api', 'Realtime', 'Worker', 'Migrate', 'Probe', 'Bastion'] as const
+// The services' task definitions, which carry a plain environment.
+const SERVICE_TASK_IDS = ['Api', 'Realtime', 'Worker'] as const
+
+// One stage's allowances. The restore stage has no load balancer, and its Valkey exists only while
+// restoreActive is set, so its two Valkey allowances are used by that build alone (C11-D45).
+function workloadAllowances(env: (typeof ENVIRONMENTS)[number]): NagAllowance[] {
+  return [
+    ...(PROFILES[env].alb === undefined
+      ? []
+      : [
+          { rule: 'AwsSolutions-EC23', path: `${env}/Platform/Network/Groups/Alb`, reason: ALB_OPEN },
+          { rule: 'AwsSolutions-ELB2', path: `${env}/Platform/LoadBalancer/Alb/Resource`, reason: ALB_NO_ACCESS_LOGS },
+        ]),
+    { rule: 'AwsSolutions-ECS4', path: `${env}/Platform/Cluster`, reason: NO_CONTAINER_INSIGHTS },
+    ...EXEC_ROLE_IDS.map(id => ({
+      rule: 'AwsSolutions-IAM5',
+      path: `${env}/Platform/Roles/${id}Exec`,
+      reason: EXEC_ROLES,
+    })),
+    { rule: 'AwsSolutions-IAM5', path: `${env}/Platform/Roles/BastionTask`, reason: ECS_EXEC_CHANNELS },
+    { rule: 'AwsSolutions-IAM5', path: `${env}/Platform/Network/FlowLogRole`, reason: FLOW_LOG_ROLE },
+    { rule: 'AwsSolutions-AEC4', path: `${env}/Data/Valkey/Group`, reason: VALKEY_ONE_NODE },
+    { rule: 'AwsSolutions-AEC6', path: `${env}/Data/Valkey/Group`, reason: VALKEY_NO_AUTH },
+    { rule: 'AwsSolutions-SMG4', path: `${env}/Data/AuthSecret/Resource`, reason: NO_ROTATION },
+    ...SERVICE_TASK_IDS.map(id => ({
+      rule: 'AwsSolutions-ECS2',
+      path: `${env}/Services/${id}Task/Resource`,
+      reason: PLAIN_ENVIRONMENT,
+    })),
+  ]
+}
+
 export const NAG_ALLOWANCES: readonly NagAllowance[] = [
   {
     rule: 'AwsSolutions-IAM5',
@@ -67,6 +122,7 @@ export const NAG_ALLOWANCES: readonly NagAllowance[] = [
     { rule: 'AwsSolutions-IAM5', path: `Hearth-${account}-Baseline/GithubOidc/DeployRole`, reason: GITHUB_ROLES },
   ]),
   { rule: 'AwsSolutions-IAM5', path: 'Hearth-prod-Baseline/GithubOidc/DiffRole', reason: GITHUB_ROLES },
+  ...ENVIRONMENTS.flatMap(env => workloadAllowances(env)),
 ]
 
 export interface ValidateAcknowledgement {
@@ -95,7 +151,7 @@ export const VALIDATE_ACKNOWLEDGEMENTS: readonly ValidateAcknowledgement[] = [
   },
 ]
 
-// The stacks the landing zone builds (C11-D27), each in its own run but the fixture's.
+// The stacks the landing zone builds (C11-D27), each in its own run but the fixture's, by construct path.
 const LANDING_ZONE_STACKS: readonly string[] = [
   STACK.foundation,
   STACK.logArchive,
@@ -103,22 +159,35 @@ const LANDING_ZONE_STACKS: readonly string[] = [
   baselineStackName('prod'),
 ]
 
+// The stacks the workload builds, by construct path: each stage's four (`nonprod/Platform`).
+const WORKLOAD_STACKS: readonly string[] = ENVIRONMENTS.flatMap(env =>
+  WORKLOAD_STACK_PARTS.map(part => `${env}/${part}`),
+)
+
+// The stack a path belongs to: the longest known stack path it is, or starts with followed by `/`.
+function stackOf(path: string): string | undefined {
+  return [...LANDING_ZONE_STACKS, ...WORKLOAD_STACKS]
+    .filter(stack => path === stack || path.startsWith(`${stack}/`))
+    .sort((a, b) => b.length - a.length)[0]
+}
+
 // Acknowledges each CloudFormation Validate finding on its own construct. An entry belongs to the
-// stack its path starts with, and a person's run builds one target, so it applies only in a run that
-// builds that stack (every run of the fixture's does). There its path must be exactly one construct,
-// neither the app nor a stack, so no acknowledgement covers more than the resource it names. An entry
-// whose path starts with no landing-zone stack is refused in every run, so a misspelt stack can't
-// leave it waiting for a run that never comes.
+// stack its path starts with (a landing-zone stack's id, or a workload stage's `<env>/<Part>`), and a
+// person's run builds one target and the drill one stage, so it applies only in a run that builds that
+// stack (every run of the fixture's does). There its path must be exactly one construct, neither the
+// app nor a stack, so no acknowledgement covers more than the resource it names. An entry whose path
+// starts with no stack either entry builds is refused in every run, so a misspelt stack can't leave
+// it waiting for a run that never comes.
 export function acknowledgeValidate(
   app: cdk.App,
   acknowledgements: readonly ValidateAcknowledgement[] = VALIDATE_ACKNOWLEDGEMENTS,
 ): void {
-  const built = new Set(app.node.children.filter(child => cdk.Stack.isStack(child)).map(stack => stack.node.id))
   const all = app.node.findAll()
+  const built = new Set(all.filter(construct => cdk.Stack.isStack(construct)).map(stack => stack.node.path))
   for (const entry of acknowledgements) {
-    const stack = entry.path.split('/')[0] ?? ''
-    if (!LANDING_ZONE_STACKS.includes(stack)) {
-      throw new Error(`${entry.id} names ${entry.path}, in no stack the landing zone builds`)
+    const stack = stackOf(entry.path)
+    if (stack === undefined) {
+      throw new Error(`${entry.id} names ${entry.path}, in no stack the landing zone builds or a workload stage holds`)
     }
     if (!built.has(stack)) continue
     const found = all.filter(construct => construct.node.path === entry.path)
