@@ -20,8 +20,10 @@
 //   one, and nothing is attached but each role's boundary;
 // - IAC-10: every role bounded by hearth-boundary, the twelve task and execution roles by name and
 //   nothing for rule9, each role's trust and policies exactly C11-D38's, the perimeter exactly where
-//   the profile has it (C11-D33), and no Allow of a database login, a session into a task, a role
-//   passed on or an S3 delete;
+//   the profile has it (C11-D33), no Allow of a database login, a session into a task, a role
+//   passed on or an S3 delete, and no policy document but a role's own trust and inline policy and an
+//   endpoint's policy, so no policy, user or group resource grants a role more and no resource policy
+//   opens a workload resource;
 // - IAC-12: the VPC endpoints exactly C11-D30's, by service, each policy exactly its statements under
 //   the organisation's id read from SSM, and an interface endpoint nowhere the stage has none;
 // - IAC-13's workload half: the landing zone's list, a cross-stack reference's output and
@@ -35,9 +37,14 @@
 // - the network's invariants (C11-D29 to C11-D31, C11-D37, C11-D45), which no SCP backs and none can
 //   target the restore stage with: no egress to the internet from any group and EC2's placeholder as
 //   every group's one inline egress, no route but a public table's default to its own internet
-//   gateway, none of EC2's other ways out or in, no public address, the restore stage's isolation
-//   (IAC-20's isolation half), every image by digest and every secret by reference. The exact rules,
-//   CIDRs and counts are src/workload's tests'.
+//   gateway, none of EC2's other ways out or in and none of other services' ways in (VPC Lattice,
+//   API Gateway's VPC links, CloudFront's VPC origins, Global Accelerator, a classic load balancer),
+//   one application load balancer per stage, in its Platform, every security group and rule in the
+//   stage's Platform, every ingress from the stage's own groups but that load balancer's tcp 443
+//   from anywhere, no public address, the restore stage's isolation (IAC-20's isolation half), every
+//   image by digest, every secret by reference, and no plain environment value with a URL's
+//   password, a secret's dynamic reference or a shape no static reading fixes. The exact rules, CIDRs
+//   and counts are src/workload's tests'.
 // The planted cases come first, each found, so no check passes by reading nothing. This file holds
 // rules every template is held to, so it is on the owner's-read list (C11-D74). Expected ARNs are
 // joined from their parts here (IG-01), rendered with a made-up account for the workload's, model
@@ -51,6 +58,7 @@ import { fixtureAccount, fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
 import {
   attachedPolicyName,
+  DOCUMENT_PROPERTIES,
   isModelDenyInPlace,
   type ModelCheckAllowance,
   managedPolicyAttachments,
@@ -800,6 +808,29 @@ function keptGrants(template: Template): string[] {
     ])
 }
 
+// The policy documents a workload template may hold (C11-D38, C11-D30): a role's own trust and inline
+// policy, which the cases below pin, and an endpoint's policy, which IAC-12 pins; a log group may be
+// made, holding none. Any other resource that holds a document, or grants a role more by naming it (a
+// policy, a managed policy, a role's, user's or group's policy, a user, a group), and any resource
+// policy (a secret's, a log group's, a bucket's, a key's), is reported, so no file off the
+// owner's-read list grants a workload role more, or opens one of the workload's resources, without a
+// change to this file.
+const ADMITTED_DOCUMENTS: Readonly<Record<string, readonly string[]>> = {
+  'AWS::IAM::Role': ['AssumeRolePolicyDocument', 'Policies'],
+  'AWS::EC2::VPCEndpoint': ['PolicyDocument'],
+  'AWS::Logs::LogGroup': [],
+}
+function otherPolicies(template: Template): string[] {
+  return resources(template).flatMap(([id, r]) => {
+    if (!Object.hasOwn(DOCUMENT_PROPERTIES, r.Type)) return []
+    if (!Object.hasOwn(ADMITTED_DOCUMENTS, r.Type)) return [`${id}: ${r.Type}`]
+    const admitted = ADMITTED_DOCUMENTS[r.Type] ?? []
+    return (DOCUMENT_PROPERTIES[r.Type] ?? [])
+      .filter(place => !admitted.includes(place) && r.Properties?.[place] !== undefined)
+      .map(place => `${id}: ${r.Type} ${place}`)
+  })
+}
+
 describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () => {
   it('IAC-10 C11-D26: every role in every workload template carries hearth-boundary at creation', () => {
     for (const { label, template } of workloadTemplates()) {
@@ -915,6 +946,83 @@ describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () =>
 
   it('IAC-10 C11-D12: no Allow in any workload template grants a database login, a session into a task, a role passed on, an S3 delete, or anything on `*`, and none has NotAction', () => {
     for (const { label, template } of workloadTemplates()) expect(keptGrants(template), label).toEqual([])
+  })
+
+  it('IAC-10 C11-D38 finds a policy naming a role by name and by Ref, a managed, role, user or group policy, a user, a group, a secret’s resource policy and a log group’s, planted in copies of the real templates', () => {
+    const platform = workloadTemplate(workload, 'nonprod', 'Platform')
+    const services = workloadTemplate(workload, 'nonprod', 'Services')
+    const data = workloadTemplate(workload, 'nonprod', 'Data')
+    for (const template of [platform, services, data]) expect(otherPolicies(template)).toEqual([])
+    const document = (Action: string, Resource: unknown) => ({
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Allow', Action, Resource }],
+    })
+    const authSecret = { Ref: parameterNamed(services, ['', 'hearth', 'nonprod', 'auth-secret', 'arn'].join('/')) }
+    const read = plantedIn(services, resources => {
+      resources.Reader = {
+        Type: 'AWS::IAM::Policy',
+        Properties: {
+          PolicyName: 'planted',
+          Roles: ['hearth-nonprod-worker-task'],
+          PolicyDocument: document('secretsmanager:GetSecretValue', authSecret),
+        },
+      }
+    })
+    expect(unreadablePolicies(read)).toEqual([])
+    expect(otherPolicies(read)).toEqual(['Reader: AWS::IAM::Policy'])
+    const [roleId] = ofType(platform, 'AWS::IAM::Role').find(
+      ([, r]) => r.Properties?.RoleName === 'hearth-nonprod-worker-task',
+    ) as [string, Resource]
+    const [logGroup] = ofType(platform, 'AWS::Logs::LogGroup')[0] as [string, Resource]
+    const granted = plantedIn(platform, resources => {
+      const group = resources[logGroup]
+      if (group?.Properties !== undefined) {
+        group.Properties.ResourcePolicyDocument = document('logs:GetLogEvents', '*')
+      }
+      const reads = document('ssm:GetParameter', '*')
+      resources.Managed = {
+        Type: 'AWS::IAM::ManagedPolicy',
+        Properties: { Roles: [{ Ref: roleId }], PolicyDocument: reads },
+      }
+      resources.Inline = {
+        Type: 'AWS::IAM::RolePolicy',
+        Properties: { RoleName: { Ref: roleId }, PolicyName: 'planted', PolicyDocument: reads },
+      }
+      resources.User = { Type: 'AWS::IAM::User', Properties: {} }
+      resources.UserInline = {
+        Type: 'AWS::IAM::UserPolicy',
+        Properties: { UserName: { Ref: 'User' }, PolicyName: 'planted', PolicyDocument: reads },
+      }
+      resources.Group = { Type: 'AWS::IAM::Group', Properties: {} }
+      resources.GroupInline = {
+        Type: 'AWS::IAM::GroupPolicy',
+        Properties: { GroupName: { Ref: 'Group' }, PolicyName: 'planted', PolicyDocument: reads },
+      }
+    })
+    expect(otherPolicies(granted)).toEqual([
+      `${logGroup}: AWS::Logs::LogGroup ResourcePolicyDocument`,
+      'Managed: AWS::IAM::ManagedPolicy',
+      'Inline: AWS::IAM::RolePolicy',
+      'User: AWS::IAM::User',
+      'UserInline: AWS::IAM::UserPolicy',
+      'Group: AWS::IAM::Group',
+      'GroupInline: AWS::IAM::GroupPolicy',
+    ])
+    const [secretId] = ofType(data, 'AWS::SecretsManager::Secret')[0] as [string, Resource]
+    const opened = plantedIn(data, resources => {
+      resources.Opened = {
+        Type: 'AWS::SecretsManager::ResourcePolicy',
+        Properties: {
+          SecretId: { Ref: secretId },
+          ResourcePolicy: document('secretsmanager:GetSecretValue', '*'),
+        },
+      }
+    })
+    expect(otherPolicies(opened)).toEqual(['Opened: AWS::SecretsManager::ResourcePolicy'])
+  })
+
+  it('IAC-10 C11-D38: no workload template holds a policy document but a role’s own trust and inline policy and an endpoint’s policy, nor a policy, user or group resource that grants a role more, committed or with restoreActive set', () => {
+    for (const { label, template } of workloadTemplates()) expect(otherPolicies(template), label).toEqual([])
   })
 
   it('IAC-10 C11-D11: no workload role’s session lasts more than an hour, and every role’s inline policies and trust fit IAM’s limits', () => {
@@ -1399,9 +1507,14 @@ const NO_TRAFFIC = {
   ToPort: 86,
 }
 const OPEN = ['0.0.0.0/0', '::/0']
-// EC2's ways out of a VPC and into one but the bastion's (C11-D29, C11-D40): NAT, egress-only gateways,
-// peering, transit, VPN, Client VPN, Instance Connect, endpoint services (a PrivateLink service of
-// Hearth's own), Verified Access, carrier and local gateways.
+// The ways out of a VPC and into one but the bastion's and the load balancer's (C11-D29, C11-D40):
+// EC2's NAT, egress-only gateways, peering, transit, VPN, Client VPN, Instance Connect, endpoint
+// services (a PrivateLink service of Hearth's own), Verified Access, carrier and local gateways and
+// Elastic IPs; and other services' ways into a VPC: VPC Lattice (a resource gateway is a point of
+// ingress into the VPC, by CloudFormation's own description), API Gateway's VPC links, CloudFront's
+// VPC origins, Global Accelerator and the classic load balancer. NoOtherWayIn names only EC2's four
+// products, so the rest are held here; an unclassified type also fails IAC-01 until policies.ts
+// classifies it.
 const OTHER_WAYS = [
   /^AWS::EC2::NatGateway$/,
   /^AWS::EC2::EgressOnlyInternetGateway$/,
@@ -1416,6 +1529,13 @@ const OTHER_WAYS = [
   /^AWS::EC2::VerifiedAccess/,
   /^AWS::EC2::CarrierGateway$/,
   /^AWS::EC2::LocalGateway/,
+  /^AWS::EC2::EIP/,
+  /^AWS::VpcLattice::/,
+  /^AWS::ApiGateway::VpcLink$/,
+  /^AWS::ApiGatewayV2::VpcLink$/,
+  /^AWS::CloudFront::VpcOrigin$/,
+  /^AWS::GlobalAccelerator::/,
+  /^AWS::ElasticLoadBalancing::/,
 ]
 // What only the stages with a load balancer may hold (C11-D45): the restore stage is sealed.
 const PUBLIC_TYPES = [
@@ -1428,6 +1548,15 @@ const PUBLIC_TYPES = [
   'AWS::CertificateManager::Certificate',
   'AWS::Route53::RecordSet',
 ]
+// The properties an ingress rule names its peer by.
+const INGRESS_PEERS = [
+  'CidrIp',
+  'CidrIpv6',
+  'SourcePrefixListId',
+  'SourceSecurityGroupId',
+  'SourceSecurityGroupName',
+  'SourceSecurityGroupOwnerId',
+] as const
 // A route's targets other than an internet gateway, any of which would be another way out.
 const ROUTE_TARGETS = [
   'CarrierGatewayId',
@@ -1454,6 +1583,35 @@ const SECRET_NAMES = [
   /^S3_SECRET_ACCESS_KEY$/,
   /(?:SECRET|TOKEN|PASSWORD|KEY)$/,
 ]
+// What a part of an environment value no template fixes (an SSM parameter's value) is written as, so
+// a check can see where such a part sits: the object replacement character, which no value holds.
+const UNFIXED = '\uFFFC'
+// An environment value as the task will hold it: literal text, or a Fn::Join of literal text and Refs,
+// each Ref rendered where the template fixes it and UNFIXED where it doesn't. Any other shape (an
+// Fn::If, an Fn::Sub, an import) is undefined, which the check refuses rather than reads.
+function environmentText(value: unknown, template: Template): string | undefined {
+  if (typeof value === 'string') return value
+  if (refOf(value) !== undefined && Object.keys(value as object).length === 1) {
+    return renderedString(value, { account: ACCOUNT, region: REGION, template }) ?? UNFIXED
+  }
+  const join = isObject(value) && Object.keys(value).length === 1 ? value['Fn::Join'] : undefined
+  if (!Array.isArray(join) || join.length !== 2 || typeof join[0] !== 'string' || !Array.isArray(join[1])) {
+    return undefined
+  }
+  const parts = join[1].map(part => environmentText(part, template))
+  return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
+}
+// A URL's user information, the text between its `://` and the `@` before its host.
+const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/([^/?#@]*)@/gi
+// Whether a value holds a URL whose user information has a password, or an unfixed part that could
+// carry one: the text CloudFormation resolves into a task definition's plain environment, which anyone
+// who can describe it reads.
+const holdsUrlPassword = (text: string) =>
+  [...text.matchAll(URL_USERINFO)].some(
+    ([, userinfo]) => userinfo !== undefined && (userinfo.includes(':') || userinfo.includes(UNFIXED)),
+  )
+// A dynamic reference that resolves a secret into the template, and so into the plain environment.
+const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
 
 // Each place a workload template breaks one of the network's invariants, as problems. C0.12's egress
 // proxy group (tagged hearth:egress-proxy) will be the one exception to the egress rules, in the same
@@ -1492,6 +1650,41 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
       if (OPEN.includes(String(cidr))) found.push(`${id}: egress to ${String(cidr)}`)
     }
   }
+  // Ingress (C11-D31): every rule, inline or its own resource, on one of the stage's own groups and
+  // from one of them, but the load balancer's group's tcp 443 from anywhere, so nothing outside the
+  // stage's groups reaches a task, an endpoint or Valkey but through the one load balancer. The exact
+  // rules are network.test.ts's. The restore stage's load balancer is reported above.
+  const groups = new Set(ofType(template, 'AWS::EC2::SecurityGroup').map(([id]) => id))
+  const ownGroup = (value: unknown) => groups.has(getAttOf(value, 'GroupId') ?? '')
+  const balancers = env === 'restore' ? [] : ofType(template, 'AWS::ElasticLoadBalancingV2::LoadBalancer')
+  const balancerGroups = new Set(
+    balancers.flatMap(([, r]) =>
+      asList(r.Properties?.SecurityGroups).flatMap(group => getAttOf(group, 'GroupId') ?? []),
+    ),
+  )
+  const admitted = (group: string, rule: Record<string, unknown>) => {
+    const peers = INGRESS_PEERS.filter(key => rule[key] !== undefined)
+    if (peers.length !== 1) return false
+    if (peers[0] === 'SourceSecurityGroupId') return ownGroup(rule.SourceSecurityGroupId)
+    const https = rule.IpProtocol === 'tcp' && rule.FromPort === 443 && rule.ToPort === 443
+    return balancerGroups.has(group) && peers[0] === 'CidrIp' && rule.CidrIp === '0.0.0.0/0' && https
+  }
+  for (const [id, r] of ofType(template, 'AWS::EC2::SecurityGroup')) {
+    for (const rule of (r.Properties?.SecurityGroupIngress ?? []) as Array<Record<string, unknown>>) {
+      if (!admitted(id, rule)) found.push(`${id}: inline ingress from outside the stage's own groups`)
+    }
+  }
+  for (const [id, r] of ofType(template, 'AWS::EC2::SecurityGroupIngress')) {
+    const group = getAttOf(r.Properties?.GroupId, 'GroupId') ?? ''
+    if (!groups.has(group) || !admitted(group, r.Properties ?? {})) {
+      found.push(`${id}: ingress from outside the stage's own groups`)
+    }
+  }
+  for (const [id, r] of balancers) {
+    if (r.Properties?.Type !== 'application') found.push(`${id}: not an application load balancer`)
+    const named = asList(r.Properties?.SecurityGroups)
+    if (named.length !== 1 || !ownGroup(named[0])) found.push(`${id}: not in one of the stage's own groups alone`)
+  }
   for (const [id, r] of ofType(template, 'AWS::EC2::Route')) {
     const p = r.Properties ?? {}
     if (p.DestinationIpv6CidrBlock !== undefined) found.push(`${id}: an IPv6 route`)
@@ -1525,8 +1718,12 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
           found.push(`${id}: ${secret.Name} not by reference to the stage's AUTH_SECRET`)
         }
       }
-      for (const { Name } of (container.Environment ?? []) as Array<{ Name: string }>) {
+      for (const { Name, Value } of (container.Environment ?? []) as Array<{ Name: string; Value: unknown }>) {
         if (SECRET_NAMES.some(name => name.test(Name))) found.push(`${id}: ${Name} in the plain environment`)
+        const text = environmentText(Value, template)
+        if (text === undefined) found.push(`${id}: ${Name} is a value no static reading fixes`)
+        else if (SECRET_REFERENCE.test(text)) found.push(`${id}: ${Name} resolves a secret into the plain environment`)
+        else if (holdsUrlPassword(text)) found.push(`${id}: ${Name} holds a URL with a password`)
       }
     }
   }
@@ -1535,6 +1732,26 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
   }
   return found
 }
+
+// The part of each load balancer a stage's templates hold: one, in its Platform, where the stage has
+// one, so no second load balancer of any type is another way in (C11-D31, C11-D45).
+const stageBalancers = (templates: ReadonlyArray<readonly [string, Template]>): string[] =>
+  templates.flatMap(([part, template]) => ofType(template, 'AWS::ElasticLoadBalancingV2::LoadBalancer').map(() => part))
+// The security groups and rules a stack other than its stage's Platform holds, which must be none
+// (C11-D31): every group and rule is Platform's, so no later stack opens a way between the groups it
+// reads by name, which the ingress check above, reading one template, can't resolve. The exact rule
+// table is network.test.ts's.
+const SECURITY_GROUP_TYPES = [
+  'AWS::EC2::SecurityGroup',
+  'AWS::EC2::SecurityGroupIngress',
+  'AWS::EC2::SecurityGroupEgress',
+]
+const groupsOutsidePlatform = (name: string, template: Template): string[] =>
+  name.endsWith('-Platform')
+    ? []
+    : resources(template)
+        .filter(([, r]) => SECURITY_GROUP_TYPES.includes(r.Type))
+        .map(([id, r]) => `${id}: ${r.Type}`)
 
 describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () => {
   it('IAC-03 IAC-04 IAC-20 C11-D37: the invariants find each break, planted in copies of the real templates', () => {
@@ -1624,11 +1841,85 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
       'AWS::EC2::VerifiedAccessEndpoint',
       'AWS::EC2::CarrierGateway',
       'AWS::EC2::LocalGatewayRouteTable',
+      'AWS::EC2::EIP',
+      'AWS::EC2::EIPAssociation',
+      'AWS::VpcLattice::ResourceGateway',
+      'AWS::VpcLattice::ServiceNetworkVpcAssociation',
+      'AWS::ApiGateway::VpcLink',
+      'AWS::ApiGatewayV2::VpcLink',
+      'AWS::CloudFront::VpcOrigin',
+      'AWS::GlobalAccelerator::EndpointGroup',
+      'AWS::ElasticLoadBalancing::LoadBalancer',
     ]
     const ways = plantedIn(nonprod, resources => {
       for (const [i, Type] of types.entries()) resources[`Way${i}`] = { Type }
     })
     expect(networkProblems(ways, 'nonprod')).toEqual(types.map((type, i) => `Way${i}: ${type}`))
+    // Ingress from outside the stage's own groups: Valkey from the VPC's range, inline and as its own
+    // rule, the api from a prefix list, a rule on a group the template doesn't make, one naming two
+    // peers, and the load balancer's group from anywhere on IPv6 and on another port; its own tcp 443
+    // from anywhere is admitted as a rule of its own too.
+    const alb = groupOf(nonprod, 'load balancer in front of api and realtime')
+    const valkeyGroup = groupOf(nonprod, 'Valkey')
+    const group = (id: string) => ({ 'Fn::GetAtt': [id, 'GroupId'] })
+    const ingress = (properties: Record<string, unknown>) => (resources: Record<string, Resource>) => {
+      resources.Planted = { Type: 'AWS::EC2::SecurityGroupIngress', Properties: { IpProtocol: 'tcp', ...properties } }
+    }
+    const vpcRange = ['10', '0', '0', '0/8'].join('.')
+    const refused = ["Planted: ingress from outside the stage's own groups"]
+    for (const properties of [
+      { GroupId: group(valkeyGroup), CidrIp: vpcRange, FromPort: 6379, ToPort: 6379 },
+      { GroupId: group(api), SourcePrefixListId: 'pl-planted', FromPort: 3000, ToPort: 3000 },
+      { GroupId: { Ref: 'PlantedGroup' }, SourceSecurityGroupId: group(api), FromPort: 6379, ToPort: 6379 },
+      {
+        GroupId: group(valkeyGroup),
+        SourceSecurityGroupId: group(api),
+        CidrIp: vpcRange,
+        FromPort: 6379,
+        ToPort: 6379,
+      },
+      { GroupId: group(api), CidrIp: '0.0.0.0/0', FromPort: 443, ToPort: 443 },
+      { GroupId: group(alb), CidrIpv6: '::/0', FromPort: 443, ToPort: 443 },
+      { GroupId: group(alb), CidrIp: '0.0.0.0/0', FromPort: 80, ToPort: 80 },
+    ]) {
+      expect(networkProblems(plantedIn(nonprod, ingress(properties)), 'nonprod'), JSON.stringify(properties)).toEqual(
+        refused,
+      )
+    }
+    expect(
+      networkProblems(
+        plantedIn(nonprod, ingress({ GroupId: group(alb), CidrIp: '0.0.0.0/0', FromPort: 443, ToPort: 443 })),
+        'nonprod',
+      ),
+    ).toEqual([])
+    const inline = plantedIn(nonprod, resources => {
+      const properties = resources[valkeyGroup]?.Properties
+      if (properties !== undefined) {
+        properties.SecurityGroupIngress = [{ CidrIp: vpcRange, IpProtocol: 'tcp', FromPort: 6379, ToPort: 6379 }]
+      }
+      const balancerGroup = resources[alb]?.Properties
+      if (balancerGroup !== undefined) {
+        balancerGroup.SecurityGroupIngress = [
+          ...((balancerGroup.SecurityGroupIngress ?? []) as unknown[]),
+          { CidrIpv6: '::/0', IpProtocol: 'tcp', FromPort: 443, ToPort: 443 },
+        ]
+      }
+    })
+    expect(networkProblems(inline, 'nonprod')).toEqual([
+      `${alb}: inline ingress from outside the stage's own groups`,
+      `${valkeyGroup}: inline ingress from outside the stage's own groups`,
+    ])
+    // A load balancer of another type, or outside the stage's one group (the stage's count is below).
+    const [balancer] = ofType(nonprod, 'AWS::ElasticLoadBalancingV2::LoadBalancer')[0] as [string, Resource]
+    const balancers = plantedIn(nonprod, resources => {
+      const properties = resources[balancer]?.Properties
+      if (properties !== undefined) properties.Type = 'network'
+      resources.Ungrouped = { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'application' } }
+    })
+    expect(networkProblems(balancers, 'nonprod')).toEqual([
+      `${balancer}: not an application load balancer`,
+      "Ungrouped: not in one of the stage's own groups alone",
+    ])
     const service = plantedIn(services, resources => {
       const network = resources.ApiService?.Properties?.NetworkConfiguration as {
         AwsvpcConfiguration: Record<string, unknown>
@@ -1691,6 +1982,39 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
         'nonprod',
       ),
     ).toEqual([`${apiTask}: TWILIO_AUTH_TOKEN in the plain environment`])
+    // A value set in place of the api's own, each as C0.12's Valkey users or a database password might
+    // be written: the password in literal text or an SSM parameter's value inside the user information,
+    // a secret's dynamic reference, and a shape no static reading fixes.
+    const valued = (Name: string, Value: unknown) =>
+      networkProblems(
+        container(c => {
+          const environment = (c.Environment ?? []) as Array<{ Name: string; Value: unknown }>
+          c.Environment = [...environment.filter(e => e.Name !== Name), { Name, Value }]
+        }),
+        'nonprod',
+      )
+    const host = { Ref: parameterNamed(services, ['', 'hearth', 'nonprod', 'valkey', 'endpoint'].join('/')) }
+    const valkey = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', ...parts, '@', host, ':6379']] })
+    expect(host.Ref).toBeDefined()
+    expect(valued('VALKEY_URL', valkey('hearth_api:', host))).toEqual([
+      `${apiTask}: VALKEY_URL holds a URL with a password`,
+    ])
+    expect(valued('VALKEY_URL', valkey(['hearth_api', 'planted'].join(':')))).toEqual([
+      `${apiTask}: VALKEY_URL holds a URL with a password`,
+    ])
+    expect(valued('VALKEY_URL', valkey(host))).toEqual([`${apiTask}: VALKEY_URL holds a URL with a password`])
+    expect(valued('VALKEY_URL', valkey('hearth_api'))).toEqual([])
+    expect(
+      valued('DATABASE_URL', ['postgres://hearth_app:', 'planted', '@database.pending.invalid:5432/hearth'].join('')),
+    ).toEqual([`${apiTask}: DATABASE_URL holds a URL with a password`])
+    expect(
+      valued('DATABASE_URL', {
+        'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:planted}}', '@h']],
+      }),
+    ).toEqual([`${apiTask}: DATABASE_URL resolves a secret into the plain environment`])
+    expect(valued('VALKEY_URL', { 'Fn::If': ['Planted', valkey('hearth_api'), 'rediss://h:6379'] })).toEqual([
+      `${apiTask}: VALKEY_URL is a value no static reading fixes`,
+    ])
     const written = plantedIn(data, resources => {
       const [id] = ofType(data, 'AWS::SecretsManager::Secret')[0] ?? []
       const secret = resources[id ?? '']
@@ -1699,6 +2023,41 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     expect(networkProblems(written, 'nonprod')).toEqual([
       `${ofType(data, 'AWS::SecretsManager::Secret')[0]?.[0]}: a secret written into the template`,
     ])
+  })
+
+  it('IAC-03 C11-D31: no security group or rule outside a stage’s Platform, committed or with restoreActive set; one planted in each of copies of the real Services, Data and Tasks templates is found', () => {
+    const plant = (part: 'Services' | 'Data' | 'Tasks', type: string) =>
+      groupsOutsidePlatform(
+        `Hearth-nonprod-${part}`,
+        plantedIn(workloadTemplate(workload, 'nonprod', part), resources => {
+          resources.Planted = { Type: type, Properties: {} }
+        }),
+      )
+    expect(plant('Services', 'AWS::EC2::SecurityGroupEgress')).toEqual(['Planted: AWS::EC2::SecurityGroupEgress'])
+    expect(plant('Data', 'AWS::EC2::SecurityGroupIngress')).toEqual(['Planted: AWS::EC2::SecurityGroupIngress'])
+    expect(plant('Tasks', 'AWS::EC2::SecurityGroup')).toEqual(['Planted: AWS::EC2::SecurityGroup'])
+    expect(
+      workloadTemplates()
+        .filter(({ name }) => name.endsWith('-Platform'))
+        .map(({ template }) => ofType(template, 'AWS::EC2::SecurityGroup').length > 0),
+    ).toEqual(builds().flatMap(() => ENVIRONMENTS.map(() => true)))
+    for (const { label, name, template } of workloadTemplates()) {
+      expect(groupsOutsidePlatform(name, template), label).toEqual([])
+    }
+  })
+
+  it('IAC-03 C11-D31: a stage holds one load balancer, in its Platform, and the restore stage none; a second, planted in a copy of a real Services template, is found', () => {
+    const stage = (synth: WorkloadSynth, env: EnvironmentName, swap?: Template) =>
+      stageBalancers(PARTS.map(part => [part, part === 'Services' && swap ? swap : workloadTemplate(synth, env, part)]))
+    const second = plantedIn(workloadTemplate(workload, 'nonprod', 'Services'), resources => {
+      resources.Second = { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'network' } }
+    })
+    expect(stage(workload, 'nonprod', second)).toEqual(['Platform', 'Services'])
+    for (const [build, synth] of builds()) {
+      for (const env of ENVIRONMENTS) {
+        expect(stage(synth, env), `${build} ${env}`).toEqual(env === 'restore' ? [] : ['Platform'])
+      }
+    }
   })
 
   it('IAC-03 IAC-04 IAC-20 C11-D37: every workload template keeps them, committed and with restoreActive set', () => {

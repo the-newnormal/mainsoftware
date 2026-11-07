@@ -6,9 +6,11 @@
 // - IAC-09: every task definition, the three services' and the three one-offs', field by field: the
 //   image by the release's digest, the node user, the read-only root but the bastion's, the open-file
 //   limit, the logs, each kind's command and each service role's environment exactly, the AUTH_SECRET
-//   by reference to the api alone, the hearth-role tag on the one-offs, and no variable C0.12 or a
-//   person sets; a profile that gates the probe changes only its command, and one with a database or
-//   an SMS provider is refused;
+//   by reference to the api alone, the hearth-role tag on the one-offs, no variable C0.12 or a
+//   person sets, and no value, flattened, that holds a URL's password or a Ref in its user
+//   information, resolves a secret, or is anything but text or a join of text and Refs; a profile
+//   that gates the probe changes only its command, and one with a database or an SMS provider is
+//   refused;
 // - IAC-21: each service role's environment, its references resolved to fictional values, passes the
 //   server's own configuration check, which reads back the role, environment, origin, port and host;
 // - C11-D39: each stage's cluster, and each ECS service, property by property, with the grace period
@@ -99,8 +101,8 @@ const LIVE = ['nonprod', 'prod'] as const
 // --- IAC-08: the load balancer ---------------------------------------------------------------------
 
 // Each target group's check and settings (C11-D41, C11-D42): realtime on /ready/local, the api on
-// /health, each plain HTTP/1 to port 3000 by IP, with no stickiness, round robin, and the server's 10 s
-// drain.
+// /health, each plain HTTP/1 to port 3000 by IP, with no stickiness, round robin, and T19 item 16's
+// 10 s deregistration delay.
 const TARGET_GROUPS = {
   api: { path: '/health', interval: 15 },
   realtime: { path: '/ready/local', interval: 10 },
@@ -443,8 +445,31 @@ const FORBIDDEN_NAMES = [
   /^S3_ACCESS_KEY_ID$/,
   /^S3_SECRET_ACCESS_KEY$/,
 ]
-// A URL's user information with a password in it.
-const USERINFO_PASSWORD = /^[a-z]+:\/\/[^/@]*:[^/@]*@/
+// What a Ref is written as when a value is flattened, so a check sees where a value the template
+// doesn't fix (an SSM parameter's) sits: the object replacement character, which no value holds.
+const REF = '\uFFFC'
+// A value flattened as the task will hold it: literal text, a Ref written as REF, or a Fn::Join of
+// those. Any other shape (an Fn::If, an Fn::Sub, an import) is undefined, which the check refuses
+// rather than reads.
+function flattened(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (refOf(value) !== undefined && Object.keys(value as object).length === 1) return REF
+  const join = isObject(value) && Object.keys(value).length === 1 ? value['Fn::Join'] : undefined
+  if (!Array.isArray(join) || join.length !== 2 || typeof join[0] !== 'string' || !Array.isArray(join[1])) {
+    return undefined
+  }
+  const parts = join[1].map(part => flattened(part))
+  return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
+}
+// A URL's user information, the text between its `://` and the `@` before its host.
+const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/([^/?#@]*)@/gi
+// Whether a value holds a URL whose user information has a password, or a Ref that could carry one.
+const holdsUrlPassword = (text: string) =>
+  [...text.matchAll(URL_USERINFO)].some(
+    ([, userinfo]) => userinfo !== undefined && (userinfo.includes(':') || userinfo.includes(REF)),
+  )
+// A dynamic reference that resolves a secret into the template, and so into the plain environment.
+const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
 
 describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
   it('IAC-09: each stage holds six definitions, the three services’ in Services and the three one-offs’ in Tasks, and no other', () => {
@@ -505,16 +530,47 @@ describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
     }
   })
 
-  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a URL with a password', () => {
-    const planted = (Name: string, Value: string) => [{ Name, Value }]
+  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a URL with a password, resolves a secret or is anything but text or a join of text and Refs', () => {
+    const planted = (Name: string, Value: unknown) => [{ Name, Value }]
     const problems = (environment: Array<{ Name: string; Value: unknown }>) => [
       ...environment.filter(e => FORBIDDEN_NAMES.some(name => name.test(e.Name))).map(e => e.Name),
-      ...environment.filter(e => typeof e.Value === 'string' && USERINFO_PASSWORD.test(e.Value)).map(e => e.Name),
+      ...environment.flatMap(e => {
+        const text = flattened(e.Value)
+        if (text === undefined) return [`${e.Name} is not text or a join of text and Refs`]
+        if (SECRET_REFERENCE.test(text)) return [`${e.Name} resolves a secret`]
+        return holdsUrlPassword(text) ? [`${e.Name} holds a URL with a password`] : []
+      }),
     ]
     expect(problems(planted('TWILIO_API_KEY_SID', 'x'))).toEqual(['TWILIO_API_KEY_SID'])
     expect(problems(planted('SMS_PROVIDER', 'twilio'))).toEqual(['SMS_PROVIDER'])
     expect(problems(planted('DATABASE_URL', ['postgres://hearth_app:', 'x', '@h:5432/hearth'].join('')))).toEqual([
-      'DATABASE_URL',
+      'DATABASE_URL holds a URL with a password',
+    ])
+    // VALKEY_URL is always a Fn::Join over the endpoint's SSM parameter, so the plants are built from
+    // the api's own: the password beside a user, or a Ref, in the user information is refused, and a
+    // user alone, or the host the template writes, is not.
+    const [api] = containersOf(definitionsOf(committed).get('hearth-nonprod-api') as Definition)
+    const valkey = api?.Environment?.find(e => e.Name === 'VALKEY_URL')?.Value as { 'Fn::Join': [string, unknown[]] }
+    const host = valkey['Fn::Join'][1].find(part => refOf(part) !== undefined)
+    expect(host).toBeDefined()
+    expect(flattened(valkey)).toBe(`rediss://${REF}:6379`)
+    const joined = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', ...parts, '@', host, ':6379']] })
+    expect(problems(planted('VALKEY_URL', joined('hearth_api:', host)))).toEqual([
+      'VALKEY_URL holds a URL with a password',
+    ])
+    expect(problems(planted('VALKEY_URL', joined(host)))).toEqual(['VALKEY_URL holds a URL with a password'])
+    expect(problems(planted('VALKEY_URL', joined('hearth_api')))).toEqual([])
+    expect(problems(planted('VALKEY_URL', valkey))).toEqual([])
+    expect(
+      problems(
+        planted('DATABASE_URL', { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:x}}', '@h']] }),
+      ),
+    ).toEqual(['DATABASE_URL resolves a secret'])
+    expect(problems(planted('VALKEY_URL', ['{{resolve:ssm-secure:', 'x}}'].join('')))).toEqual([
+      'VALKEY_URL resolves a secret',
+    ])
+    expect(problems(planted('VALKEY_URL', { 'Fn::If': ['Planted', valkey, 'rediss://h:6379'] }))).toEqual([
+      'VALKEY_URL is not text or a join of text and Refs',
     ])
     for (const synth of [committed, active]) {
       for (const definition of definitionsOf(synth).values()) {

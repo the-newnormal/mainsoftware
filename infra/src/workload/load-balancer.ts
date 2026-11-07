@@ -15,8 +15,8 @@
 // /health (C11-D42): with /ready, a shared outage would fail every api task's check at once and ECS
 // would replace them all, so /ready gates a release through the readiness probe instead (C11-D53).
 // Both target groups are plain HTTP to port 3000 inside the VPC until C0.19 decides (C11-Q11), with
-// no stickiness, round robin, and a 10 s deregistration delay, the server's drain after SIGTERM
-// (T19 item 16).
+// no stickiness, round robin, and a 10 s deregistration delay (T19 item 16's ceiling; ECS waits it
+// out before SIGTERM, so the server's own drain follows it).
 //
 // The idle timeout is 60 s, where C11-D41 said 120 s (TECH-SPEC T24 item 16): the server keeps an
 // idle connection open for Fastify's default 72 s, and a load balancer whose idle timeout outlasts
