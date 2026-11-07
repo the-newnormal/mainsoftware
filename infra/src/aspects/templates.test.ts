@@ -1437,7 +1437,7 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
 }
 
 describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () => {
-  it('finds each break, planted in copies of the real templates', () => {
+  it('IAC-03 IAC-04 IAC-20 C11-D37: the invariants find each break, planted in copies of the real templates', () => {
     const nonprod = workloadTemplate(workload, 'nonprod', 'Platform')
     const restore = workloadTemplate(workload, 'restore', 'Platform')
     const services = workloadTemplate(workload, 'nonprod', 'Services')
@@ -1601,7 +1601,7 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     ])
   })
 
-  it('every workload template keeps them, committed and with restoreActive set', () => {
+  it('IAC-03 IAC-04 IAC-20 C11-D37: every workload template keeps them, committed and with restoreActive set', () => {
     for (const { label, env, template } of workloadTemplates()) {
       expect(networkProblems(template, env), label).toEqual([])
     }
