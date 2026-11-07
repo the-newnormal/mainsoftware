@@ -63,7 +63,7 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 
 - A case reference uses the queue's own alphabet, which has no vowels, so it can't spell a name. A date is a real day, never after today, counted in Singapore (UTC+8): between midnight and 8 a.m. there, Singapore's date is a day ahead of UTC's, and it is the one to give.
 - In log-archive the helper takes only `incident:` and `drill:`.
-- Every session may read the stage's logs and run queries, describe the stacks, services and networking, read `/hearth/*` parameters, update a service (an incident rollback to an earlier task definition included) and stop a task; from C0.11 PR 3, run the bastion, exec into it and forward a port through it. Log-archive's role writes its own entries and triages instead: GuardDuty's and Access Analyzer's findings, CloudTrail's event history, and the configuration of the trail and break-glass-log buckets and of the keys. It reads no trail file and nothing of the archive bucket, and administers nothing.
+- Every session may read the stage's logs and run queries, describe the stacks, services and networking, read `/hearth/*` parameters, update a service (an incident rollback to an earlier task definition included) and stop a task; and run the bastion and open a port forward through it (*The bastion and a port forward*), the only way into a VPC. Log-archive's role writes its own entries and triages instead: GuardDuty's and Access Analyzer's findings, CloudTrail's event history, and the configuration of the trail and break-glass-log buckets and of the keys. It reads no trail file and nothing of the archive bucket, and administers nothing.
 - The master secret, from C0.12, is for C0.12's infra SQL and incident repair alone, never to read anyone's data.
 
 ## Steps
@@ -84,6 +84,18 @@ The reason rides in the session's `hearth-reason` tag into the organisation trai
 3. In the break-glass shell, as the same user, from a folder with no `cdk.json` (never that checkout's `infra/`: beside a `cdk.json` the CLI first runs any `build` command it names, with the session's credentials), with that checkout's own CLI and the assembly's path, `CHECKOUT` being the checkout's path: `"$CHECKOUT/node_modules/.bin/cdk" diff --app "$CHECKOUT/infra/cdk.out"`, read it whole (anything it changes that PR N doesn't, a GitHub role's trust among them, stops the deploy, but for the subjects alone under the PR of [the set-up runbook's step E.2](aws-account-set-up.md#e-githubs-oidc-subject-and-the-rest-of-the-configuration) correction or rename), then `"$CHECKOUT/node_modules/.bin/cdk" deploy --app "$CHECKOUT/infra/cdk.out"`. Never use `npx` there, which outside the checkout would fetch the CLI from the registry, and never pass `--app` the entry itself.
 4. Watch the CLI's warnings. One that the session's credentials "could not be used to assume" `cdk-hearthbase-lookup-role-…` and it is "Proceeding anyway" is expected: the role never takes the lookup role. The same warning naming `cdk-hearthbase-deploy-role-…` or `cdk-hearthbase-file-publishing-role-…` means the chain into hearthbase was refused, and the deploy will fail on CloudFormation's AccessDenied: stop, and check (*When it stops*).
 5. Until TECH-SPEC T24 item 4 records it, the first such deploy that changes a Baseline (its diff isn't empty) settles one fact no unchanged deploy can, since the CLI skips an unchanged stack and CloudFormation then never takes the hearthbase execution role: whether CloudFormation's use of that role carries the session's source identity. Afterwards, an Owner with `HearthOrgAdmin` in management, or the second reviewer with `HearthSecurityReview`, finds in `/hearth/security/org-trail` the calls CloudFormation made under `cdk-hearthbase-cfn-exec-role-…` during the deploy, in that account, and reads whether they carry it (`userIdentity.sessionContext.sourceIdentity`), for a PR to item 4.
+
+### The bastion and a port forward
+
+The bastion is a task of the server image that runs nothing but a one-hour sleep, with no environment, secret or port, and only `hearth-break-glass` may start it. Its one use, in every account and under every reason, the set-up runbook's non-prod proof included, is a port forward through Session Manager to one private address: from C0.12, the database's writer endpoint. Never an interactive shell and never `aws ecs execute-command`: the cluster keeps no record of an exec session's output, and A8 alarms on every exec and session in prod. You need the AWS CLI's Session Manager plugin installed before the session opens. `<env>` below is the stage the session works in: `nonprod` or `prod`, or `restore` for the restore stage in prod's account.
+
+1. As the person on call, in the break-glass shell of a session open under the reason your runbook gives, read the stage's isolated subnets and the bastion's security group from SSM: `aws ssm get-parameter --name /hearth/<env>/network/isolated-subnets --query Parameter.Value --output text` (the subnet ids, comma-separated) and `aws ssm get-parameter --name /hearth/<env>/security-group/bastion --query Parameter.Value --output text`.
+2. In the same shell, start the bastion: `aws ecs run-task --cluster hearth-<env> --task-definition hearth-<env>-bastion --launch-type FARGATE --enable-execute-command --propagate-tags TASK_DEFINITION --network-configuration "awsvpcConfiguration={subnets=[<subnet ids>],securityGroups=[<group id>],assignPublicIp=DISABLED}"`, and note the task's id, the last part of the task it prints. In prod, A8 pairs with A1.
+3. Wait until it runs, `aws ecs wait tasks-running --cluster hearth-<env> --tasks <task id>`, then read its container's runtime id: `aws ecs describe-tasks --cluster hearth-<env> --tasks <task id> --query 'tasks[0].containers[0].runtimeId' --output text`.
+4. In a second tab of the same break-glass shell, open the forward: `aws ssm start-session --target ecs:hearth-<env>_<task id>_<runtime id> --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters host=<writer endpoint>,portNumber=5432,localPortNumber=15432`. Port 15432 keeps clear of a local Postgres. Leave it running while you work in the first tab: the bytes it carries are TLS to Postgres, and nothing of them is logged; CloudTrail records `RunTask`, `ExecuteCommand` and `StartSession`.
+5. When you are done, stop the forward (Ctrl-C in its tab), then the bastion, in the first tab: `aws ecs stop-task --cluster hearth-<env> --task <task id>`. It stops itself after an hour anyway, so a longer piece of work needs a new bastion.
+
+The database end of it waits for C0.12, which makes the writer endpoint, the logins and the CA bundle the client checks it with. Give `port-forward` among the modes when you close the session.
 
 ### Closing a session
 
@@ -127,7 +139,7 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 
 ## Afterwards
 
-- Stop anything you started (from C0.11 PR 3, the bastion).
+- Stop anything you started: the bastion (*The bastion and a port forward*, step 5), though it stops itself after an hour.
 - Tell the DPO when a `case:`, `bootstrap:` or `recover:` use is done.
 - Anything unexpected you saw goes to [A suspected breach of personal data](breach.md).
 - Note for the quarterly review anything unusual: a continuation, a close entry that wasn't written, an amend, an open or amend entry that wasn't written, a refused attempt.
@@ -136,7 +148,8 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 
 - Set `session_replication_role` to `replica`: the database's deletion guard doesn't fire in replica mode.
 - Use the Rule 9 credential: production access never uses it, and the role is denied it.
-- Use `localhost` for `PGHOST`; use `127.0.0.1`.
+- Use `localhost` for `PGHOST`; use `127.0.0.1`, and give the certificate's name in `OWNER_BOOTSTRAP_TLS_NAME`.
+- Run `aws ecs execute-command` into the bastion, or open a shell in it any other way, with no exception: its port forward is its only use.
 - Paste a bootstrap document anywhere.
 - Run `aws sts assume-role` yourself, or break glass any other way than the helper.
 - Put a name, a number, an address or any free text in a reason.
@@ -153,6 +166,8 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 - `infra/src/foundation/guardrails.ts`
 - `infra/src/foundation/log-archive.ts`
 - `infra/src/foundation/identity-center.ts`
+- `infra/src/workload/tasks.ts`
+- `infra/src/workload/network.ts`
 - `packages/shared/src/cases.ts`
 - `CASE_REFERENCE_PATTERN`
 - `scripts/owner-bootstrap/target.ts`

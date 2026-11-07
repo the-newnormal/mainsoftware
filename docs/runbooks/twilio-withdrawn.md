@@ -39,7 +39,7 @@ If there is no current DPO (the only one has left or lost the role), the re-clea
 
 ### Branch A: re-clear Twilio Verify
 
-1. The person on call pauses the deploy pipeline before taking the checkout, then prepares the run and opens a production session under the logged break-glass role, as [Running the Owner bootstrap script](first-owner-set-up.md#running-the-owner-bootstrap-script) says.
+1. The person on call pauses the deploy pipeline before taking the checkout, then prepares the run and opens a production session under the logged break-glass role, as [Running the Owner bootstrap script](first-owner-set-up.md#running-the-owner-bootstrap-script) says. The network path is the set-up's ([In production: the network path, in order](first-owner-set-up.md#in-production-the-network-path-in-order), steps 1 to 7), with two differences: the reason is `recover:twilio` (`infra/bin/break-glass.sh prod recover:twilio`), which reaches the bootstrap login but never the bootstrap secret, so nothing is loaded from Secrets Manager; and the input is the recovery document, typed into `doc` in step 2 below. At the end, after step 3 or wherever this branch stops, the person on call stops the forward and the bastion, runs `unset doc PGPASSWORD`, exits the break-glass shell with the ids the commit printed, and resumes the pipeline, as that section's steps 9 and 10 say.
 2. The person on call types the recovery document once into `doc` with `doc="$(cat)"`, then presses Enter and Ctrl-D (Ctrl-D ends the input only at the start of a line), and runs the recovery mode's plan, `OWNER_BOOTSTRAP_INPUT="$doc" node scripts/owner-bootstrap.ts recover --database <the database>`. The document holds no name or number, so echo stays on: `{ "environment": "<DEPLOY_ENV's value>", "dpo": "<the DPO's person id>", "reviewOn": "<YYYY-MM-DD>", "reason": "<one sentence>", "fromEntry": [] }`. `environment` is exactly the target's `DEPLOY_ENV` (`nonprod` for a drill, `prod` in production): the script refuses any other. `fromEntry` lists only a stated fact the DPO decided changed (Before you start, step 5), and is otherwise empty.
    - The plan changes nothing. It repeats the inputs back, and prints how many DPOs are signed in, Twilio Verify's clearance now, where the facts come from, which facts would change and the send state it would leave.
    - The person on call checks its line starting `named DPO` against what the DPO gave.
@@ -50,7 +50,7 @@ If there is no current DPO (the only one has left or lost the role), the re-clea
 6. If it timed out waiting for a lock (exit 3, "a lock was busy: run it once more"), the person on call runs it once more, unless they stopped it themselves.
 7. If it lost the connection while committing, or was stopped then (exit 4), the person on call runs the plan (the same command without `--commit`) and reads its `Twilio Verify now` line. Cleared by `break_glass` with the clearance id the `committing` line named means this run committed: go to Check it worked. Another clearance means someone else cleared it (step 5). `not cleared` means it didn't commit, so the person on call runs it again with `--commit`. What the plan answers after that line (a DPO signed in, cleared already) doesn't decide this.
 
-Until C0.11 and C0.12 there is no production, so this branch runs only against throwaway databases. In local development, rebuild the database with `npm run db:reset`; never call the function by hand.
+Until C0.12 makes production's database there is nothing to re-clear in production, so this branch runs only against throwaway databases. In local development, rebuild the database with `npm run db:reset`; never call the function by hand.
 
 ### Branch B: don't re-clear
 
@@ -88,6 +88,7 @@ Until C0.11 and C0.12 there is no production, so this branch runs only against t
 ## Code paths
 
 - `scripts/owner-bootstrap.ts`
+- `infra/src/workload/tasks.ts`
 - `bootstrap_transfer_clearance()`
 - `clear_transfer_entry()`
 - `withdraw_transfer_clearance()`
