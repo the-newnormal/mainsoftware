@@ -13,7 +13,9 @@
 //   the copy's intake alarm, which FILL holds to twelve real five-minute periods, so it alarms about
 //   an hour after the copy's last event;
 // - the reviewer's six saved queries over the copy alone, the break-glass entries' writers among them;
-// - every log group in every landing-zone template in its retention class, retained and protected;
+// - every log group in every landing-zone template in its retention class, retained and protected,
+//   and every workload group in its class (app_logs, network_logs), retained but unprotected, each
+//   container logging to a group its own stage's Platform makes (IAC-07, C0.11 PR 3);
 // - five budgets in the amounts C11-Q09 chose, GST included (PR 2 question 3), each alerting the topic
 //   at 80 % and 100 % of actual spend and 100 % of forecast, and the anomaly monitor and its
 //   subscription.
@@ -22,9 +24,11 @@
 // S3 event names LCG-02 reads as calls are joined from theirs.
 import { CLOUDWATCH_RETENTION_DAYS, RETENTION_CLASSES } from '@hearth/shared'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { ENVIRONMENTS } from '../config/profiles.ts'
 import { logsClassDays } from '../config/retention.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
+import { synthWorkload, type WorkloadSynth } from '../testing/workload.ts'
 
 type Template = Record<string, unknown>
 interface Resource {
@@ -178,11 +182,24 @@ const QUERIES: Record<string, string> = {
     'fields @timestamp, eventTime, recipientAccountId, requestParameters.key, userIdentity.arn, userIdentity.sessionContext.sourceIdentity, errorCode | filter eventSource = "s3.amazonaws.com" and eventName = "PutObject" and requestParameters.bucketName like /^hearth-break-glass-log-/ | sort requestParameters.key asc, eventTime asc',
 }
 
-// Each log group a landing-zone template may hold, by name, and its retention class (IAC-07). PR 3
-// adds the workload's: each role's group in app_logs, and the VPC's flow log in network_logs.
-const LOG_GROUP_CLASSES: Record<string, 'cloudtrail'> = { '/hearth/security/org-trail': 'cloudtrail' }
+// Each log group a template may hold, by name, and its retention class (IAC-07): the organisation
+// trail's copy, and in each workload stage each task kind's group in app_logs and the VPC's flow log in
+// network_logs (C11-D32).
+const WORKLOAD_KINDS = ['api', 'realtime', 'worker', 'migrate', 'probe', 'bastion'] as const
+const LOG_GROUP_CLASSES: Record<string, 'cloudtrail' | 'app_logs' | 'network_logs'> = {
+  '/hearth/security/org-trail': 'cloudtrail',
+  ...Object.fromEntries(
+    ENVIRONMENTS.flatMap(env => [
+      ...WORKLOAD_KINDS.map(kind => [`/hearth/${env}/${kind}`, 'app_logs'] as const),
+      [`/hearth/${env}/vpc-flow`, 'network_logs'] as const,
+    ]),
+  ),
+}
 
 let lz: LandingZoneSynth
+// The workload, committed and with restoreActive set (C11-D45).
+let workload: WorkloadSynth
+let active: WorkloadSynth
 let foundation: Template
 let topic: string
 let topicPolicy: string
@@ -190,6 +207,8 @@ let logGroup: string
 
 beforeAll(() => {
   lz = synthLandingZone()
+  workload = synthWorkload()
+  active = synthWorkload({ run: { restoreActive: true } })
   foundation = lz.templates.foundation
   topic = one(foundation, 'AWS::SNS::Topic', 'TopicName', 'hearth-ops-alerts')[0]
   topicPolicy = ofType(foundation, 'AWS::SNS::TopicPolicy')[0]?.[0] ?? ''
@@ -521,6 +540,61 @@ describe('IAC-07 C11-D17: log groups', () => {
       expect(group.DeletionPolicy, name).toBe('Retain')
       expect(group.UpdateReplacePolicy, name).toBe('Retain')
     }
+  })
+
+  it('IAC-07 C11-D32: every workload log group, committed or with restoreActive set, is its stage’s Platform’s, in its retention class, kept that long, of the standard class, and retained but not protected from deletion (a protected group would outlive a create that rolled back and refuse its retry by name)', () => {
+    for (const synth of [workload, active]) {
+      for (const [stack, template] of Object.entries(synth.templates)) {
+        const groups = ofType(template, 'AWS::Logs::LogGroup')
+        const env = stack.split('-')[1] ?? ''
+        if (!stack.endsWith('-Platform')) {
+          expect(groups, stack).toEqual([])
+          continue
+        }
+        expect(groups.map(([, r]) => r.Properties?.LogGroupName).sort(), stack).toEqual(
+          [...WORKLOAD_KINDS, 'vpc-flow'].map(kind => `/hearth/${env}/${kind}`).sort(),
+        )
+        for (const [, group] of groups) {
+          const name = String(group.Properties?.LogGroupName)
+          const logClass = LOG_GROUP_CLASSES[name]
+          if (logClass === undefined) throw new Error(`${name} is in no retention class`)
+          const days = logsClassDays(logClass)
+          expect(RETENTION_CLASSES[logClass].period).toMatchObject({ kind: 'days', days })
+          expect(CLOUDWATCH_RETENTION_DAYS as readonly number[]).toContain(days)
+          expect(group.Properties, name).toEqual({
+            LogGroupName: name,
+            RetentionInDays: days,
+            LogGroupClass: 'STANDARD',
+          })
+          expect(group.DeletionPolicy, name).toBe('RetainExceptOnCreate')
+          expect(group.UpdateReplacePolicy, name).toBe('Retain')
+        }
+      }
+    }
+  })
+
+  it('IAC-07 C11-D36: every workload container logs through awslogs to a group its own stage’s Platform makes, and LOG_GROUP_CLASSES names no group no template holds', () => {
+    const held = new Set<string>(['/hearth/security/org-trail'])
+    for (const synth of [workload, active]) {
+      for (const [stack, template] of Object.entries(synth.templates)) {
+        const env = stack.split('-')[1] ?? ''
+        const platform = synth.templates[`Hearth-${env}-Platform`] ?? {}
+        const made = new Set(ofType(platform, 'AWS::Logs::LogGroup').map(([, r]) => String(r.Properties?.LogGroupName)))
+        for (const name of made) held.add(name)
+        for (const [id, definition] of ofType(template, 'AWS::ECS::TaskDefinition')) {
+          const containers = (definition.Properties?.ContainerDefinitions ?? []) as Array<{
+            LogConfiguration?: { LogDriver?: string; Options?: Record<string, unknown> }
+          }>
+          expect(containers.length, `${stack} ${id}`).toBeGreaterThan(0)
+          for (const container of containers) {
+            expect(container.LogConfiguration?.LogDriver, `${stack} ${id}`).toBe('awslogs')
+            const group = String(container.LogConfiguration?.Options?.['awslogs-group'])
+            expect(made.has(group), `${stack} ${id} logs to ${group}`).toBe(true)
+          }
+        }
+      }
+    }
+    expect(Object.keys(LOG_GROUP_CLASSES).sort()).toEqual([...held].sort())
   })
 })
 

@@ -1,31 +1,38 @@
-// IAC-15 and IAC-16 (C11-D70; TECH-SPEC T24 item 28): the landing zone's two template checks and the
-// exceptions they keep.
-// - IAC-15 runs cdk-nag 3.0.2's AwsSolutions pack over each landing-zone stack, here alone (cdk-nag
-//   is a devDependency no entry loads), and expects nothing left once NAG_ALLOWANCES has removed the
-//   findings it keeps, each matched by its rule (the finding's name before any bracket) and its
-//   violating resource's construct path, one resource at a time, since one finding can list several.
+// IAC-15 and IAC-16 (C11-D70; TECH-SPEC T24 item 28): the landing zone's and the workload's two
+// template checks and the exceptions they keep.
+// - IAC-15 runs cdk-nag 3.0.2's AwsSolutions pack over each landing-zone stack and each workload stack,
+//   of the committed build and of the one with restoreActive set (whose restore stage holds Valkey),
+//   here alone (cdk-nag is a devDependency no entry loads), and expects nothing left once
+//   NAG_ALLOWANCES has removed the findings it keeps, each matched by its rule (the finding's name
+//   before any bracket) and its violating resource's construct path, one resource at a time, since one
+//   finding can list several.
 // - IAC-16 holds each allowance, and each CloudFormation Validate acknowledgement acknowledgeValidate()
 //   applies, to the same rules: a rule or id of the right shape; a reason of at least 20 characters
 //   citing the C11 decision that keeps it; a path that is exactly one resource, never a stack or the
-//   app, so nothing is kept in bulk; no entry twice; and each one used, so a stale one fails. A
-//   Validate acknowledgement is used when the synth's validation report lists the finding it
-//   suppressed; one raised on a stack can't name a resource, so it is fixed rather than kept.
+//   app, so nothing is kept in bulk; no entry twice; and each one used, so a stale one fails. An
+//   allowance is held over the three builds together: its path is one resource in a build that holds
+//   it, and some build's findings use it. A Validate acknowledgement is used when the synth's
+//   validation report lists the finding it suppressed; one raised on a stack can't name a resource,
+//   so it is fixed rather than kept. The workload keeps none: Validate runs over its stacks (proved on
+//   a planted finding, which a warning reports without failing the synth) and finds nothing.
 // - acknowledgeValidate() applies an acknowledgement only in a run that builds its stack, since a
 //   person's run builds one target, and refuses one naming no landing-zone stack in any run.
 // - No acknowledgement escapes the list: in infra/, only nag.ts and the bootstrap template's generator
 //   acknowledge a Validate finding.
 // Each rule is proved on planted lists first. This file holds the rules every exception is held to, so
 // it is on the owner's-read list (C11-D74).
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as cdk from 'aws-cdk-lib'
 import { AwsSolutionsChecks } from 'cdk-nag'
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { addLandingZone } from '../foundation/landing-zone.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
-import { testApp } from '../testing/synth.ts'
+import { synthesise, testApp } from '../testing/synth.ts'
+import { synthWorkload, type WorkloadSynth } from '../testing/workload.ts'
+import { addWorkload, fakeRelease } from '../workload/stage.ts'
 import {
   acknowledgeValidate,
   NAG_ALLOWANCES,
@@ -35,9 +42,16 @@ import {
 } from './nag.ts'
 
 let lz: LandingZoneSynth
+// The workload, committed and with restoreActive set (C11-D45).
+let workload: WorkloadSynth
+let active: WorkloadSynth
+// The three builds every allowance is held over.
+const apps = () => [lz.app, workload.app, active.app]
 
 beforeAll(() => {
   lz = synthLandingZone()
+  workload = synthWorkload()
+  active = synthWorkload({ run: { restoreActive: true } })
 }, 60_000)
 
 // One cdk-nag finding on one resource: its rule without the bracketed detail, and the resource's path.
@@ -46,19 +60,23 @@ interface Finding {
   path: string
 }
 
-// Every AwsSolutions finding in an app's stacks, resource by resource, worked out once per app.
+// Every AwsSolutions finding in an app's stacks, its stages' included, resource by resource, worked out
+// once per app.
 const findingsOf = new WeakMap<cdk.App, Finding[]>()
 function nagFindings(app: cdk.App): Finding[] {
   const known = findingsOf.get(app)
   if (known !== undefined) return known
-  const found = app.node.children.filter(cdk.Stack.isStack).flatMap(stack =>
-    new AwsSolutionsChecks().validateScope(stack).violations.flatMap(violation =>
-      violation.violatingResources.map(resource => ({
-        rule: violation.ruleName.replace(/\[.*$/, ''),
-        path: resource.constructPath ?? `${stack.node.path}/${resource.resourceLogicalId ?? '(no id)'}`,
-      })),
-    ),
-  )
+  const found = app.node
+    .findAll()
+    .filter(cdk.Stack.isStack)
+    .flatMap(stack =>
+      new AwsSolutionsChecks().validateScope(stack).violations.flatMap(violation =>
+        violation.violatingResources.map(resource => ({
+          rule: violation.ruleName.replace(/\[.*$/, ''),
+          path: resource.constructPath ?? `${stack.node.path}/${resource.resourceLogicalId ?? '(no id)'}`,
+        })),
+      ),
+    )
   findingsOf.set(app, found)
   return found
 }
@@ -80,27 +98,31 @@ function reasonProblems(reason: string): string[] {
   ]
 }
 
-// Why a path can't name what an exception is kept on: it must be exactly one construct of the app,
-// a CloudFormation resource, never a stack or the app, so no exception covers more than one resource.
-function pathProblems(path: string, app: cdk.App): string[] {
-  const found = app.node.findAll().filter(construct => construct.node.path === path)
-  const [target] = found
-  if (found.length !== 1 || target === undefined) return [`its path is ${found.length} constructs, not one`]
+// Why a path can't name what an exception is kept on: it must be exactly one construct of an app that
+// holds it (none holding two), a CloudFormation resource, never a stack or the app, so no exception
+// covers more than one resource. The restore stage's Valkey is in the restoreActive build alone.
+function pathProblems(path: string, apps: readonly cdk.App[]): string[] {
+  const found = apps.map(app => app.node.findAll().filter(construct => construct.node.path === path))
+  const most = Math.max(...found.map(constructs => constructs.length))
+  const target = found.find(constructs => constructs.length === 1)?.[0]
+  const app = apps[found.findIndex(constructs => constructs.length === 1)]
+  if (most !== 1 || target === undefined) return [`its path is ${most} constructs, not one`]
   if (target === app || cdk.Stack.isStack(target)) return ['its path is a whole stack or the app']
   if (!cdk.CfnResource.isCfnResource(target)) return ["its path isn't a resource"]
   return []
 }
 
-// IAC-16 over NAG_ALLOWANCES: every rule above, and each allowance used by a finding on its resource.
-function allowanceProblems(list: readonly NagAllowance[], app: cdk.App): string[] {
-  const findings = nagFindings(app)
+// IAC-16 over NAG_ALLOWANCES: every rule above, and each allowance used by a finding on its resource in
+// one of the builds.
+function allowanceProblems(list: readonly NagAllowance[], apps: readonly cdk.App[]): string[] {
+  const findings = apps.flatMap(nagFindings)
   const seen = new Set<string>()
   return list.flatMap(allowance => {
     const at = `${allowance.rule} ${allowance.path}`
     const problems = [
       ...(NAG_RULE.test(allowance.rule) ? [] : ['its rule is no AwsSolutions rule']),
       ...reasonProblems(allowance.reason),
-      ...pathProblems(allowance.path, app),
+      ...pathProblems(allowance.path, apps),
       ...(seen.has(at) ? ['it is listed twice'] : []),
       ...(findings.some(finding => finding.rule === allowance.rule && finding.path === allowance.path)
         ? []
@@ -146,7 +168,7 @@ function acknowledgementProblems(
     const problems = [
       ...(VALIDATE_ID.test(entry.id) ? [] : ['its id is no CloudFormation Validate finding']),
       ...reasonProblems(entry.reason),
-      ...pathProblems(entry.path, app),
+      ...pathProblems(entry.path, [app]),
       ...(seen.has(at) ? ['it is listed twice'] : []),
       ...(used ? [] : ['it suppressed no finding']),
     ]
@@ -157,16 +179,42 @@ function acknowledgementProblems(
 
 // --- IAC-15 ---------------------------------------------------------------------------------------
 
-describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone', () => {
-  it('IAC-15: without its allowances the pack finds exactly the rules and resources NAG_ALLOWANCES keeps, so the check reads every stack', () => {
-    const pairs = [...new Set(nagFindings(lz.app).map(finding => `${finding.rule} ${finding.path}`))].sort()
+describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone and the workload', () => {
+  it('IAC-15: without its allowances the pack finds exactly the rules and resources NAG_ALLOWANCES keeps, over the landing zone and both workload builds together, so the check reads every stack', () => {
+    const pairs = [
+      ...new Set(
+        apps()
+          .flatMap(nagFindings)
+          .map(finding => `${finding.rule} ${finding.path}`),
+      ),
+    ].sort()
     expect(pairs.length).toBeGreaterThan(0)
     expect(pairs).toEqual(NAG_ALLOWANCES.map(allowance => `${allowance.rule} ${allowance.path}`).sort())
   })
 
-  it('IAC-15: no finding is left once NAG_ALLOWANCES has removed the ones it keeps', () => {
-    const left = nagFindings(lz.app).filter(finding => !allowed(finding, NAG_ALLOWANCES))
-    expect(left.map(finding => `${finding.rule} ${finding.path}`)).toEqual([])
+  it('IAC-15: each build’s findings read its own stacks: the landing zone’s alone, and each workload build’s every stage’s, the restore stage’s Valkey with restoreActive set alone', () => {
+    const stacksOf = (app: cdk.App) => new Set(nagFindings(app).map(finding => finding.path.split('/')[0]))
+    expect([...stacksOf(lz.app)].sort()).toEqual([
+      'Hearth-Foundation',
+      'Hearth-LogArchive',
+      'Hearth-nonprod-Baseline',
+      'Hearth-prod-Baseline',
+    ])
+    expect([...stacksOf(workload.app)].sort()).toEqual(['nonprod', 'prod', 'restore'])
+    const valkey = (app: cdk.App) =>
+      nagFindings(app)
+        .filter(finding => finding.path === 'restore/Data/Valkey/Group')
+        .map(finding => finding.rule)
+        .sort()
+    expect(valkey(workload.app)).toEqual([])
+    expect(valkey(active.app)).toEqual(['AwsSolutions-AEC4', 'AwsSolutions-AEC6'])
+  })
+
+  it('IAC-15: no finding is left once NAG_ALLOWANCES has removed the ones it keeps, in any build', () => {
+    for (const app of apps()) {
+      const left = nagFindings(app).filter(finding => !allowed(finding, NAG_ALLOWANCES))
+      expect(left.map(finding => `${finding.rule} ${finding.path}`)).toEqual([])
+    }
   })
 
   it('IAC-15 C11-D27: each stack’s top-level construct ids, which every allowance’s and acknowledgement’s path starts from', () => {
@@ -195,8 +243,85 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone', 
       'BreakGlassLogBucketName',
       ...bootstrap,
     ])
-    expect(children(lz.stacks.nonprodBaseline)).toEqual([...baseline, 'BreakGlassLogBucketName', ...bootstrap])
-    expect(children(lz.stacks.prodBaseline)).toEqual([...baseline, 'BreakGlassLogBucketName', ...bootstrap])
+    expect(children(lz.stacks.nonprodBaseline)).toEqual([
+      ...baseline,
+      'BreakGlassLogBucketName',
+      'OrganisationId',
+      ...bootstrap,
+    ])
+    expect(children(lz.stacks.prodBaseline)).toEqual([
+      ...baseline,
+      'BreakGlassLogBucketName',
+      'OrganisationId',
+      ...bootstrap,
+    ])
+  })
+
+  it('IAC-15 C11-D27: each workload stack’s top-level construct ids, by stage, both builds, besides the SSM parameters it reads, whose names aws-cdk-lib writes into the ids', () => {
+    // CDK names the construct that reads an SSM parameter after the parameter's name and a fixed UUID,
+    // so those ids are read by the name alone.
+    const reads = 'SsmParameterValue:'
+    const children = (stack: cdk.Stack) =>
+      stack.node.children.map(child => child.node.id).filter(id => !id.startsWith(reads))
+    const read = (stack: cdk.Stack) => [
+      ...new Set(
+        stack.node.children
+          .map(child => child.node.id)
+          .filter(id => id.startsWith(reads))
+          .map(id => id.split(':')[1]),
+      ),
+    ]
+    const tail = ['Boundary', 'BootstrapVersion', 'CheckBootstrapVersion']
+    const roles = (kind: string) => [
+      `MutableRole${kind}TaskRole`,
+      `${kind}TaskRole`,
+      `MutableRole${kind}ExecRole`,
+      `${kind}ExecRole`,
+    ]
+    for (const synth of [workload, active]) {
+      for (const [env, stage] of Object.entries(synth.stages)) {
+        if (stage === undefined) continue
+        const alb = env !== 'restore'
+        expect(
+          stage.node.children.map(child => child.node.id),
+          env,
+        ).toEqual(['Platform', 'Data', 'Tasks', 'Services'])
+        expect(children(stage.platform), env).toEqual([
+          'Network',
+          'Custom::VpcRestrictDefaultSGCustomResourceProvider',
+          'Endpoints',
+          'Roles',
+          'Cluster',
+          'LogGroups',
+          ...(alb ? ['LoadBalancer'] : []),
+          'Parameters',
+          ...tail,
+        ])
+        expect(children(stage.data), env).toEqual(['Valkey', 'AuthSecret', 'Parameters', ...tail])
+        expect(children(stage.tasks), env).toEqual([
+          ...['Migrate', 'Probe', 'Bastion'].flatMap(kind => [...roles(kind), `${kind}Task`]),
+          'BastionLinux',
+          'Cluster',
+          'IsolatedSubnets',
+          'MigrateSecurityGroup',
+          'ProbeSecurityGroup',
+          'MigrateTaskDefinition',
+          'ProbeTaskDefinition',
+          'HasDatabase',
+          ...tail,
+        ])
+        expect(children(stage.services), env).toEqual([
+          'AuthSecret',
+          ...['Api', 'Realtime', 'Worker'].flatMap(kind => [...roles(kind), `${kind}Task`, `${kind}Service`]),
+          'Release',
+          ...tail,
+        ])
+        expect(read(stage.platform), env).toEqual([
+          '--hearth--organisation--id',
+          ...(alb ? [`--hearth--${env}--zone--app`] : []),
+        ])
+      }
+    }
   })
 })
 
@@ -220,7 +345,7 @@ describe('IAC-16 C11-D70: every exception the landing zone keeps', () => {
       { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/BreakGlassLogBucket/Resource', reason },
       { rule: 'AwsSolutions-S1', path: 'Hearth-LogArchive/SecKey/Resource', reason },
     ]
-    expect(allowanceProblems(planted, lz.app)).toEqual([
+    expect(allowanceProblems(planted, [lz.app])).toEqual([
       'AwsSolutions-IAM5[Resource::*] Hearth-LogArchive/BreakGlass/Role: its rule is no AwsSolutions rule',
       'AwsSolutions-IAM5[Resource::*] Hearth-LogArchive/BreakGlass/Role: it matches no finding',
       'AwsSolutions-S1 Hearth-LogArchive/TrailBucket/Resource: its reason is under 20 characters',
@@ -236,8 +361,27 @@ describe('IAC-16 C11-D70: every exception the landing zone keeps', () => {
     ])
   })
 
-  it('IAC-16: every NAG_ALLOWANCES entry keeps one rule on one resource, for a cited reason, and is used', () => {
-    expect(allowanceProblems(NAG_ALLOWANCES, lz.app)).toEqual([])
+  it('IAC-16 C11-D45: a workload allowance is held in the build that holds its resource: the restore stage’s Valkey is no resource of the committed build, and one of the restoreActive build, on planted lists', () => {
+    const reason = 'A planted allowance for the test, which cites C11-D35'
+    const planted: NagAllowance[] = [{ rule: 'AwsSolutions-AEC4', path: 'restore/Data/Valkey/Group', reason }]
+    expect(allowanceProblems(planted, [workload.app])).toEqual([
+      'AwsSolutions-AEC4 restore/Data/Valkey/Group: its path is 0 constructs, not one',
+      'AwsSolutions-AEC4 restore/Data/Valkey/Group: it matches no finding',
+    ])
+    expect(allowanceProblems(planted, [workload.app, active.app])).toEqual([])
+    expect(
+      allowanceProblems(
+        [{ rule: 'AwsSolutions-AEC4', path: 'nonprod/Data/Valkey', reason }],
+        [workload.app, active.app],
+      ),
+    ).toEqual([
+      "AwsSolutions-AEC4 nonprod/Data/Valkey: its path isn't a resource",
+      'AwsSolutions-AEC4 nonprod/Data/Valkey: it matches no finding',
+    ])
+  })
+
+  it('IAC-16: every NAG_ALLOWANCES entry keeps one rule on one resource, for a cited reason, and is used, over the landing zone and both workload builds', () => {
+    expect(allowanceProblems(NAG_ALLOWANCES, apps())).toEqual([])
   })
 
   it('IAC-16 finds a bad id, a short reason, a reason citing nothing, an unknown path, a stack, a duplicate and an unused acknowledgement, on planted lists', () => {
@@ -282,6 +426,55 @@ describe('IAC-16 C11-D70: every exception the landing zone keeps', () => {
       violation.violatingConstructs.map(construct => `${violation.acknowledgedId} ${construct.constructPath}`),
     )
     expect(suppressed.sort()).toEqual(VALIDATE_ACKNOWLEDGEMENTS.map(entry => `${entry.id} ${entry.path}`).sort())
+  })
+
+  it('IAC-16 C11-D70: CloudFormation Validate finds nothing in any workload stack, committed or with restoreActive set, and nothing is acknowledged there; a finding planted in one is reported on its construct', () => {
+    for (const synth of [workload, active]) {
+      const path = join(synth.synthesised.outdir, 'validation-report.json')
+      const report = existsSync(path)
+        ? (JSON.parse(readFileSync(path, 'utf8')) as ValidationReport)
+        : { pluginReports: [] }
+      const validate = report.pluginReports.find(plugin => plugin.pluginName === 'CloudFormation Validate')
+      expect(validate?.violations ?? []).toEqual([])
+      expect(validate?.suppressedViolations ?? []).toEqual([])
+    }
+    // A warning is reported without failing the synth, so the report is read rather than the synth's
+    // outcome; the drill builds the one stage the plant needs, and the report's printout is kept quiet.
+    const app = testApp()
+    const stages = addWorkload(app, { release: fakeRelease(), restoreActive: false, drill: true })
+    const service = stages.nonprod?.services.node.findChild('ApiService') as cdk.CfnResource
+    service.addPropertyOverride('LaunchType', 'NOT_A_LAUNCH_TYPE')
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let planted: ValidationReport['pluginReports'][number]
+    try {
+      planted = validateReport(synthesise(app).outdir)
+    } finally {
+      quiet.mockRestore()
+    }
+    const violations = planted.violations as Array<{
+      ruleName: string
+      violatingConstructs: Array<{ constructPath: string }>
+    }>
+    expect(violations.flatMap(v => v.violatingConstructs.map(c => `${v.ruleName} ${c.constructPath}`))).toEqual([
+      'W3030 nonprod/Services/ApiService',
+    ])
+  }, 60_000)
+
+  it('IAC-16 C11-D59: in a run that builds one stage, acknowledgeValidate() refuses a misspelt stack and a bad path in the stage it builds, and skips an entry for a stage it doesn’t build', () => {
+    const app = testApp()
+    addWorkload(app, { release: fakeRelease(), restoreActive: false, drill: true })
+    const reason = 'A planted acknowledgement for the test, which cites C11-D70'
+    const id = 'CloudFormation-Validate::W3030' as const
+    expect(() => acknowledgeValidate(app, [{ id, path: 'nonprod/Servics/ApiService', reason }])).toThrow(
+      'names nonprod/Servics/ApiService, in no stack the landing zone builds or a workload stage holds',
+    )
+    expect(() => acknowledgeValidate(app, [{ id, path: 'nonprod/Services/NoSuchService', reason }])).toThrow(
+      'names nonprod/Services/NoSuchService, which is 0 constructs, not one',
+    )
+    expect(() => acknowledgeValidate(app, [{ id, path: 'nonprod/Services', reason }])).toThrow(
+      'names nonprod/Services, a whole stack or the app',
+    )
+    expect(() => acknowledgeValidate(app, [{ id, path: 'prod/Services/ApiService', reason }])).not.toThrow()
   })
 
   it('IAC-16 C11-D25: in a run that builds one target, acknowledgeValidate() refuses a misspelt stack and a bad path in the stack it builds, and skips an entry for a stack it doesn’t build', () => {
