@@ -7,10 +7,10 @@
 //   image by the release's digest, the node user, the read-only root but the bastion's, the open-file
 //   limit, the logs, each kind's command and each service role's environment exactly, the AUTH_SECRET
 //   by reference to the api alone, the hearth-role tag on the one-offs, no variable C0.12 or a
-//   person sets, and no value, flattened, that holds a URL's password or a Ref in its user
-//   information, resolves a secret, or is anything but text or a join of text and Refs; a profile
-//   that gates the probe changes only its command, and one with a database or an SMS provider is
-//   refused;
+//   person sets, and no value, flattened, that holds a password anywhere in a URL (in its user
+//   information, or a query or fragment key that names one) or a Ref anywhere in a URL but its host,
+//   resolves a secret, or is anything but text or a join of text and Refs; a profile that gates the
+//   probe changes only its command, and one with a database or an SMS provider is refused;
 // - IAC-21: each service role's environment, its references resolved to fictional values, passes the
 //   server's own configuration check, which reads back the role, environment, origin, port and host;
 // - C11-D39: each stage's cluster, and each ECS service, property by property, with the grace period
@@ -461,13 +461,33 @@ function flattened(value: unknown): string | undefined {
   const parts = join[1].map(part => flattened(part))
   return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
 }
-// A URL's user information, the text between its `://` and the `@` before its host.
-const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/([^/?#@]*)@/gi
-// Whether a value holds a URL whose user information has a password, or a Ref that could carry one.
-const holdsUrlPassword = (text: string) =>
-  [...text.matchAll(URL_USERINFO)].some(
-    ([, userinfo]) => userinfo !== undefined && (userinfo.includes(':') || userinfo.includes(REF)),
-  )
+// A URL in a flattened value, from its scheme to the next space or the value's end: its authority
+// (user information, host and port), up to the first `/`, `?` or `#`, then the rest (its path, query
+// and fragment).
+const URL_PARTS = /[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/gi
+// A query or fragment key that names a credential, read percent-decoded, as the server's clients read
+// it: pg and ioredis both take a password from the query (`password`, in any case, `pass%77ord`
+// included) as readily as from the user information, and `sslpassword`, `pwd`, a token or a key are
+// refused too, as aspects/templates.test.ts's copy of this rule refuses them.
+const CREDENTIAL_KEY = /pass|pwd|secret|token|key/i
+// Whether a value holds a URL with a password anywhere in it, or a Ref that could carry one: a
+// password in its user information, a query or fragment key that names a credential, or a Ref
+// anywhere but its host (its user information, port, path, query or fragment). A query that names no
+// credential (`sslmode=verify-full`) is not refused.
+function holdsUrlPassword(text: string): boolean {
+  return [...text.matchAll(URL_PARTS)].some(([, authority = '', rest = '']) => {
+    const at = authority.lastIndexOf('@')
+    const userinfo = at === -1 ? '' : authority.slice(0, at)
+    const port = authority.slice(at + 1).replace(/^(?:\[[^\]]*\]|[^:]*)/, '')
+    if (userinfo.includes(':') || [userinfo, port, rest].some(part => part.includes(REF))) return true
+    const hash = rest.indexOf('#')
+    const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
+    const question = beforeHash.indexOf('?')
+    const query = question === -1 ? '' : beforeHash.slice(question + 1)
+    const fragment = hash === -1 ? '' : rest.slice(hash + 1)
+    return [query, fragment].some(part => [...new URLSearchParams(part).keys()].some(key => CREDENTIAL_KEY.test(key)))
+  })
+}
 // A dynamic reference that resolves a secret into the template, and so into the plain environment.
 const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
 
@@ -530,7 +550,7 @@ describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
     }
   })
 
-  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a URL with a password, resolves a secret or is anything but text or a join of text and Refs', () => {
+  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a password anywhere in a URL or a Ref anywhere in one but its host, resolves a secret or is anything but text or a join of text and Refs', () => {
     const planted = (Name: string, Value: unknown) => [{ Name, Value }]
     const problems = (environment: Array<{ Name: string; Value: unknown }>) => [
       ...environment.filter(e => FORBIDDEN_NAMES.some(name => name.test(e.Name))).map(e => e.Name),
@@ -561,6 +581,34 @@ describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
     expect(problems(planted('VALKEY_URL', joined(host)))).toEqual(['VALKEY_URL holds a URL with a password'])
     expect(problems(planted('VALKEY_URL', joined('hearth_api')))).toEqual([])
     expect(problems(planted('VALKEY_URL', valkey))).toEqual([])
+    // pg and ioredis read a password from the query as readily as from the user information, so a key
+    // that names a credential is refused there too, in any case and percent-encoded, with a user or
+    // without, and so is a Ref anywhere in a URL but its host (its port, path, query or fragment),
+    // where the template can't see what it holds; a query that names no credential is not.
+    const database = (query: string) => planted('DATABASE_URL', `${pendingUrl('hearth_app')}?${query}`)
+    for (const query of ['password=x', 'PASSWORD=x', 'pass%77ord=x', 'sslpassword=x', 'access_token=x']) {
+      expect(problems(database(query)), query).toEqual(['DATABASE_URL holds a URL with a password'])
+    }
+    expect(
+      problems(planted('DATABASE_URL', 'postgres://database.pending.invalid:5432/hearth?user=hearth_app&password=x')),
+    ).toEqual(['DATABASE_URL holds a URL with a password'])
+    expect(problems(database('sslmode=verify-full'))).toEqual([])
+    const queried = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', host, ':6379', ...parts]] })
+    for (const parts of [
+      ['?username=hearth_api&password=', host],
+      ['?password=', host],
+      ['?password=x'],
+      ['?x=', host],
+      ['#password=x'],
+      ['/', host],
+    ]) {
+      expect(problems(planted('VALKEY_URL', queried(...parts))), JSON.stringify(parts)).toEqual([
+        'VALKEY_URL holds a URL with a password',
+      ])
+    }
+    expect(problems(planted('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] }))).toEqual([
+      'VALKEY_URL holds a URL with a password',
+    ])
     expect(
       problems(
         planted('DATABASE_URL', { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:x}}', '@h']] }),

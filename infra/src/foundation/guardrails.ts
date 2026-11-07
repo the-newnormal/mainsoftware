@@ -570,9 +570,9 @@ function workloadFenceStatements(): IamStatement[] {
       Condition: exceptFor(APP_PUBLISH),
     },
     // The bastion's port forward is the only way into a workload VPC (C11-D40), so no one, the pipeline
-    // and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service or
-    // Verified Access (TECH-SPEC T24 item 13). An interface endpoint to a non-AWS service is held by
-    // IAC-12's exact set instead.
+    // and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service,
+    // Verified Access, or VPC Lattice's resource gateway, target group or VPC association (TECH-SPEC T24
+    // item 13). An interface endpoint to a non-AWS service is held by IAC-12's exact set instead.
     { Sid: 'NoOtherWayIn', Effect: 'Deny', Action: OTHER_WAYS_IN, Resource: '*' },
   ]
 }

@@ -571,7 +571,10 @@ function inputText(problem: InputProblem): string {
   }
 }
 
-const MIGRATE_FIRST = "run the deploy's migrate step first, or check out the deployed commit"
+// The commit the database was migrated by, never the deployed one: a rollback leaves the
+// release record's migratedCommit where it was (TECH-SPEC T22 item 71, T24 item 24).
+const MIGRATE_FIRST =
+  "run the deploy's migrate step first, or check out the commit the database was migrated by (the release record's migratedCommit)"
 
 function targetText(problem: TargetProblem): string {
   switch (problem.code) {

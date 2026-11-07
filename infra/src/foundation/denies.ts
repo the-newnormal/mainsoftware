@@ -163,13 +163,22 @@ export const ROUTE_OUT_ACTIONS: readonly string[] = [
 ]
 
 // Another way into a VPC than the bastion's alarmed port forward (C11-D29, C11-D40): nothing Hearth
-// builds uses one. An interface endpoint to a non-AWS service is held by IAC-12's exact endpoint set
-// instead, since its SCP condition is unproved (TECH-SPEC T24 item 13).
+// builds uses one, nor VPC Lattice at all. EC2's four products; Lattice's two ways in, a resource
+// gateway (a point of ingress into the VPC it names) and a target group (whose service carries
+// requests into the VPC its targets sit in, which needs no association of its own); and Lattice's
+// association of a VPC with a service network, which makes the VPC's own resources clients of that
+// network, a way out of a VPC that has none. Lattice's other writes reach a VPC only through one of
+// these or through an interface endpoint to a service network or a resource, which, like any other
+// interface endpoint to a non-AWS service, IAC-12's exact endpoint set holds instead, since its SCP
+// condition is unproved (TECH-SPEC T24 item 13).
 export const OTHER_WAYS_IN: readonly string[] = [
   'ec2:CreateClientVpnEndpoint',
   'ec2:CreateInstanceConnectEndpoint',
   'ec2:CreateVpcEndpointServiceConfiguration',
   'ec2:CreateVerifiedAccess*',
+  'vpc-lattice:CreateResourceGateway',
+  'vpc-lattice:CreateTargetGroup',
+  'vpc-lattice:CreateServiceNetworkVpcAssociation',
 ]
 
 // What would change who a Rule 9 role is or what it may do, or hand it to a task (C11-D05).

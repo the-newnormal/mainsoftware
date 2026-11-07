@@ -8,10 +8,10 @@
 // has an email's shape). The gate, the roles whose /ready must answer 200, is the one command
 // argument, written into the task definition from the profile's readyGate, `none` while that is
 // empty. It is an argument rather than a variable so that changing it is a command override, which
-// A7's command rule alarms on whoever makes it. A7's environment rule deliberately lets
-// hearth-gh-deploy's override of prod's probe through whatever it names, NODE_OPTIONS included,
-// which Node reads before this file runs, so what keeps a release gated is PR 4's DPW case, which
-// pins the override to PROBE_TARGETS alone (TECH-SPEC T24 items 5 and 15).
+// A7's command rule alarms on in prod, whoever makes it (non-prod has no A7). A7's environment rule
+// deliberately lets hearth-gh-deploy's override of prod's probe through whatever it names,
+// NODE_OPTIONS included, which Node reads before this file runs, so what keeps a release gated is
+// PR 4's DPW case, which pins the override to PROBE_TARGETS alone (TECH-SPEC T24 items 5 and 15).
 //
 // It loads no config and opens no connection but its fetches: loadConfig() would demand the server's
 // variables, and the probe starts with those two inputs alone. Each fetch has CHECK_TIMEOUT_MS plus a

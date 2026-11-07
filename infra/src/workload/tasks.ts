@@ -8,10 +8,11 @@
 //   after every deploy. Its only variable is PROBE_TARGETS, the run's one override; the roles whose
 //   /ready must answer 200 are its command's --gate= argument, from the profile's readyGate (none
 //   until C0.12). The gate is in the command, never the environment, so changing it is a command
-//   override, which A7RunCommand alarms on whoever makes it. That alone doesn't keep a release gated:
-//   A7RunEnvironment lets through any environment override of prod's probe the deploy role makes,
-//   NODE_OPTIONS or PROBE_TARGETS naming any task included, so PR 4's DPW case pins the override to
-//   PROBE_TARGETS alone, from the new deployment's tasks (TECH-SPEC T24 items 5 and 15).
+//   override, which A7RunCommand alarms on in prod, whoever makes it (non-prod's Baseline has no A7,
+//   TECH-SPEC T24 item 5). That alone doesn't keep a release gated: A7RunEnvironment lets through any
+//   environment override of prod's probe the deploy role makes, NODE_OPTIONS or PROBE_TARGETS naming
+//   any task included, so PR 4's DPW case pins the override to PROBE_TARGETS alone, from the new
+//   deployment's tasks (TECH-SPEC T24 items 5 and 15).
 // - hearth-<env>-bastion: the server image running a timer that exits after an hour, so it runs no
 //   server code; no environment, no secret, no port. Only hearth-break-glass may run it (C11-D11), with
 //   ECS Exec for its one sanctioned use, a port forward. ECS Exec needs to write, so its root is

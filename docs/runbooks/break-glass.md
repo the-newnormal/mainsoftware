@@ -149,6 +149,7 @@ For anything tier 1 can't do, and every change to the log-archive account: an Ow
 - Set `session_replication_role` to `replica`: the database's deletion guard doesn't fire in replica mode.
 - Use the Rule 9 credential: production access never uses it, and the role is denied it.
 - Use `localhost` as the port forward's address, or a `PGSSLMODE` below `verify-full`. The Owner bootstrap script takes `PGHOST=127.0.0.1` and the writer endpoint in `OWNER_BOOTSTRAP_TLS_NAME`, which only it reads ([Setting up the organisation and its first Owner](first-owner-set-up.md#running-the-owner-bootstrap-script)); any other client, psql included, takes the writer endpoint as `PGHOST` and `127.0.0.1` as `PGHOSTADDR`, so it checks the certificate against the endpoint's name ([A request for a copy of someone's personal data](access-request.md), step 3).
+- Run psql in the break-glass shell with its history on. The shell's home is the helper's folder, which outlives the session, so psql would keep every query typed there in a `.psql_history`, and its pager a `.lesshst`, outside `local-data/`: export `PSQL_HISTORY=/dev/null LESSHISTFILE=-` first ([A request for a copy of someone's personal data](access-request.md), step 3).
 - Run `aws ecs execute-command` into the bastion, or open a shell in it any other way, with no exception: its port forward is its only use.
 - Paste a bootstrap document anywhere.
 - Run `aws sts assume-role` yourself, or break glass any other way than the helper.

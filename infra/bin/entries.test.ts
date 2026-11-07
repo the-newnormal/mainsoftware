@@ -9,30 +9,34 @@
 //   digest or a hash (IG-01, C11-D24). It refuses every run it can't build with one line naming the
 //   key, never its value: no release, a malformed one, the marker beside one or set to anything but 1,
 //   another drill or restoreActive, and a real release while the domains are placeholders (C11-Q08).
-// - Every template it writes, read from its assembly here, equals what the workload assertions read
-//   from src/testing/workload.ts for the same run: the committed build (synthWorkload() with no
-//   options) and the two run variants they read, restoreActive and the drill. So neither that helper
-//   nor src/testing/synth.ts, which are off the owner's-read list, can hand those assertions a
-//   profile, a run or a context the entry doesn't build without failing this owner's-read file. A
-//   profile variant a test asks for by name is the test's own, in its own file.
+// - What it writes, read from its assembly here, equals what the workload assertions read from
+//   src/testing/workload.ts for the same run: the committed build (synthWorkload() with no options)
+//   and the two run variants they read, restoreActive and the drill. That is every template, every
+//   stack's artifact facts in the manifest (its place in the assembly, account, Region, termination
+//   protection, deploy role and bootstrap version and parameter: termination protection is in no
+//   template), and every asset manifest. So neither that helper nor src/testing/synth.ts, which are
+//   off the owner's-read list, can hand those assertions a profile, a run, a context or a stack's
+//   facts the entry doesn't build without failing this owner's-read file. A profile variant a test
+//   asks for by name is the test's own, in its own file.
 // - The landing-zone entry builds its four over the fixture, which is also what CI's synth:lz
-//   builds, and each template equals the committed build the landing-zone assertions read
-//   (synthLandingZone() with no options), for the same reason. A person's run builds one target
-//   (checkRun), and the entry refuses every real one while the committed domains are placeholders
-//   (C11-Q08), so each target is also built alone in-process, from the fixture's values read as a
-//   person's configuration, and must synthesise, CloudFormation Validate included, what the
-//   four-target build holds.
+//   builds, and its templates, stack facts and asset manifests equal the committed build the
+//   landing-zone assertions read (synthLandingZone() with no options), for the same reason. A
+//   person's run builds one target (checkRun), and the entry refuses every real one while the
+//   committed domains are placeholders (C11-Q08), so each target is also built alone in-process, from
+//   the fixture's values read as a person's configuration, and must synthesise, CloudFormation
+//   Validate included, what the four-target build holds.
 import { execFile } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { checkRun, LANDING_ZONE_TARGETS, type LandingZoneTarget, parseLandingZoneEnv } from '../src/config/env.ts'
 import { addLandingZone } from '../src/foundation/landing-zone.ts'
 import { configEnvironment, fixtureConfig } from '../src/testing/fixture.ts'
 import { synthLandingZone } from '../src/testing/landing-zone.ts'
-import { synthesise, templateOf, testApp } from '../src/testing/synth.ts'
+import { type Synthesised, synthesise, templateOf, testApp } from '../src/testing/synth.ts'
 import { synthWorkload, type WorkloadSynthOptions } from '../src/testing/workload.ts'
 
 const INFRA = fileURLToPath(new URL('..', import.meta.url))
@@ -76,24 +80,96 @@ function run(entry: string, environ: Record<string, string> = {}): Promise<Ran> 
   })
 }
 
+// What an assembly's manifest says of a stack beyond its template, read here as the CLI reads it, and
+// what the owner's-read assertions read of it from src/testing/synth.ts: its place in the assembly
+// (its display name, Stage/Stack, the CLI's hierarchical id), the account and Region it goes to,
+// whether termination protection is on (absent is off), the role the CLI assumes to deploy it, and
+// the bootstrap version and SSM parameter it checks. Termination protection is in no template, so
+// comparing templates alone would let a helper report it otherwise.
+interface StackFacts {
+  id: string
+  account: string
+  region: string
+  terminationProtection: boolean
+  assumeRoleArn: string | undefined
+  requiresBootstrapStackVersion: number | undefined
+  bootstrapStackVersionSsmParameter: string | undefined
+}
+
+// One artifact of an assembly's manifest, as much of it as this file reads.
+interface ArtifactManifest {
+  type: string
+  environment?: string
+  displayName?: string
+  properties?: {
+    stackName?: string
+    templateFile?: string
+    directoryName?: string
+    terminationProtection?: boolean
+    assumeRoleArn?: string
+    requiresBootstrapStackVersion?: number
+    bootstrapStackVersionSsmParameter?: string
+  }
+}
+
 // The stacks an assembly lists, its own and, through each stage's nested assembly, its stages': each
-// one's CloudFormation name and the path of the template file it names.
-function stackFilesIn(outdir: string): Array<{ stackName: string; templatePath: string }> {
+// one's CloudFormation name, the path of the template file it names, and its facts.
+function stackFilesIn(outdir: string): Array<{ stackName: string; templatePath: string; facts: StackFacts }> {
   const manifest = JSON.parse(readFileSync(join(outdir, 'manifest.json'), 'utf8')) as {
-    artifacts?: Record<
-      string,
-      { type: string; properties?: { stackName?: string; templateFile?: string; directoryName?: string } }
-    >
+    artifacts?: Record<string, ArtifactManifest>
   }
   return Object.entries(manifest.artifacts ?? {}).flatMap(([id, artifact]) => {
+    const properties = artifact.properties ?? {}
     if (artifact.type === 'aws:cloudformation:stack') {
-      const templatePath = join(outdir, artifact.properties?.templateFile ?? `${id}.template.json`)
-      return [{ stackName: artifact.properties?.stackName ?? id, templatePath }]
+      const templatePath = join(outdir, properties.templateFile ?? `${id}.template.json`)
+      const [, account, region] = /^aws:\/\/([^/]+)\/([^/]+)$/.exec(artifact.environment ?? '') ?? []
+      if (account === undefined || region === undefined) throw new Error(`${id} names no aws://account/region`)
+      const facts: StackFacts = {
+        id: artifact.displayName ?? id,
+        account,
+        region,
+        terminationProtection: properties.terminationProtection ?? false,
+        assumeRoleArn: properties.assumeRoleArn,
+        requiresBootstrapStackVersion: properties.requiresBootstrapStackVersion,
+        bootstrapStackVersionSsmParameter: properties.bootstrapStackVersionSsmParameter,
+      }
+      return [{ stackName: properties.stackName ?? id, templatePath, facts }]
     }
-    const nested = artifact.properties?.directoryName
+    const nested = properties.directoryName
     if (artifact.type === 'cdk:cloud-assembly' && nested !== undefined) return stackFilesIn(join(outdir, nested))
     return []
   })
+}
+
+// Each stack's facts as the assembly's manifest holds them, read here, by its CloudFormation name.
+function stackFactsIn(outdir: string): Map<string, StackFacts> {
+  return new Map(stackFilesIn(outdir).map(stack => [stack.stackName, stack.facts]))
+}
+
+// Each stack's facts as a helper reports them to the assertions, by its CloudFormation name: its id
+// beside every artifact fact it reports, so a fact the helper reports and this file doesn't read
+// shows as a difference too.
+function reportedFacts(synthesised: Synthesised): Map<string, unknown> {
+  return new Map(synthesised.stacks.map(stack => [stack.stackName, { id: stack.id, ...stack.artifact }]))
+}
+
+// Where what this file reads from an entry's assembly and what a helper reports differ, by name (a
+// stack's, or an asset manifest's path): each top-level key whose value isn't the same, `missing` for
+// a name only one side holds, and nothing when they agree.
+function reportDifferences(read: ReadonlyMap<string, unknown>, reported: ReadonlyMap<string, unknown>): string[] {
+  const found: string[] = []
+  for (const name of [...new Set([...read.keys(), ...reported.keys()])].sort()) {
+    const [left, right] = [read.get(name), reported.get(name)]
+    if (left === undefined || right === undefined) {
+      found.push(`${name}: missing`)
+      continue
+    }
+    const keys = new Set([...Object.keys(entriesOf(left)), ...Object.keys(entriesOf(right))])
+    for (const key of [...keys].sort()) {
+      if (!isDeepStrictEqual(entriesOf(left)[key], entriesOf(right)[key])) found.push(`${name}: ${key}`)
+    }
+  }
+  return found
 }
 
 // The stacks an assembly lists, by their CloudFormation names, sorted.
@@ -351,8 +427,88 @@ describe('C11-D23: the entries run under plain Node', () => {
     expect(files.filter(path => digitRunsOutsideHashes(readFileSync(join(ran.outdir, path), 'utf8')) > 0)).toEqual([])
   }, 60_000)
 
+  it('the binding finds a stack whose termination protection, deploy role, bootstrap version, account, Region or place a helper reports otherwise, a fact it reports that this file does not read, a stack or a manifest only one side holds, and an asset manifest that differs, on a planted assembly (C11-D70, C11-D74)', () => {
+    const outdir = mkdtempSync(join(tmpdir(), 'hearth-planted-'))
+    mkdirSync(join(outdir, 'assembly-x'))
+    const stack = (part: string, properties: Record<string, unknown>) => ({
+      type: 'aws:cloudformation:stack',
+      environment: 'aws://unknown-account/ap-southeast-1',
+      displayName: `x/${part}`,
+      properties: { templateFile: `x${part}.template.json`, stackName: `Hearth-x-${part}`, ...properties },
+    })
+    const deploy = {
+      assumeRoleArn: 'deploy',
+      requiresBootstrapStackVersion: 6,
+      bootstrapStackVersionSsmParameter: '/v',
+    }
+    const assembly = { type: 'cdk:cloud-assembly', properties: { directoryName: 'assembly-x', displayName: 'x' } }
+    writeFileSync(join(outdir, 'manifest.json'), JSON.stringify({ artifacts: { 'assembly-x': assembly } }))
+    writeFileSync(
+      join(outdir, 'assembly-x', 'manifest.json'),
+      JSON.stringify({
+        artifacts: {
+          xData: stack('Data', { terminationProtection: true, ...deploy }),
+          xTasks: stack('Tasks', deploy),
+        },
+      }),
+    )
+    const read = stackFactsIn(outdir)
+    // Absent is off, as the CLI reads it.
+    expect(read.get('Hearth-x-Tasks')?.terminationProtection).toBe(false)
+    const artifact = { account: 'unknown-account', region: 'ap-southeast-1', ...deploy }
+    const helper = (changes: Partial<Record<'Data' | 'Tasks', Record<string, unknown>>> = {}): Synthesised => ({
+      outdir,
+      stacks: (['Data', 'Tasks'] as const).map(part => ({
+        id: `x/${part}`,
+        stackName: `Hearth-x-${part}`,
+        template: {},
+        artifact: { ...artifact, terminationProtection: part === 'Data', ...changes[part] },
+      })),
+      assetManifests: new Map(),
+    })
+    expect(reportDifferences(read, reportedFacts(helper()))).toEqual([])
+    expect(reportDifferences(read, reportedFacts(helper({ Data: { terminationProtection: false } })))).toEqual([
+      'Hearth-x-Data: terminationProtection',
+    ])
+    expect(
+      reportDifferences(
+        read,
+        reportedFacts(
+          helper({
+            Data: { assumeRoleArn: 'other', requiresBootstrapStackVersion: 30 },
+            Tasks: { account: 'elsewhere', region: 'us-east-1', bootstrapStackVersionSsmParameter: '/w', more: 1 },
+          }),
+        ),
+      ),
+    ).toEqual([
+      'Hearth-x-Data: assumeRoleArn',
+      'Hearth-x-Data: requiresBootstrapStackVersion',
+      'Hearth-x-Tasks: account',
+      'Hearth-x-Tasks: bootstrapStackVersionSsmParameter',
+      'Hearth-x-Tasks: more',
+      'Hearth-x-Tasks: region',
+    ])
+    const moved = helper()
+    expect(
+      reportDifferences(read, reportedFacts({ ...moved, stacks: moved.stacks.map(s => ({ ...s, id: 'y' })) })),
+    ).toEqual(['Hearth-x-Data: id', 'Hearth-x-Tasks: id'])
+    expect(reportDifferences(read, reportedFacts({ ...moved, stacks: moved.stacks.slice(0, 1) }))).toEqual([
+      'Hearth-x-Tasks: missing',
+    ])
+    const destination = (role: string) => ({ files: { t: { destinations: { d: { assumeRoleArn: role } } } } })
+    expect(
+      reportDifferences(
+        new Map([['a.assets.json', destination('publish')]]),
+        new Map([
+          ['a.assets.json', destination('deploy')],
+          ['b.assets.json', destination('publish')],
+        ]),
+      ),
+    ).toEqual(['a.assets.json: files', 'b.assets.json: missing'])
+  })
+
   it.each(WORKLOAD_RUNS)(
-    'bin/workload.ts writes for %s, template for template, what the workload assertions read for it from synthWorkload(), so no test helper can hand them a profile, a run or a context the entry does not build (C11-D70, C11-D74)',
+    'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version) and each asset manifest, so no test helper can hand them a profile, a run, a context or a stack’s facts the entry does not build (C11-D70, C11-D74)',
     async (_name, context, options, stackNames) => {
       const ran =
         context === undefined
@@ -365,9 +521,11 @@ describe('C11-D23: the entries run under plain Node', () => {
       expect(ran.code).toBe(0)
       const rendered = templatesIn(ran.outdir)
       expect([...rendered.keys()].sort()).toEqual(stackNames)
-      const { templates } = synthWorkload(options)
+      const { templates, synthesised } = synthWorkload(options)
       expect(templateDifferences(rendered, templates)).toEqual({})
       expect(templates).toStrictEqual(Object.fromEntries(rendered))
+      expect(reportDifferences(stackFactsIn(ran.outdir), reportedFacts(synthesised))).toEqual([])
+      expect(reportDifferences(assetManifestsIn(ran.outdir), synthesised.assetManifests)).toEqual([])
     },
     120_000,
   )
@@ -430,16 +588,17 @@ describe('C11-D23: the entries run under plain Node', () => {
     expect(none.stderr).toContain('HEARTH_TARGET: is not set')
   }, 60_000)
 
-  it('bin/landing-zone.ts writes over the fixture, template for template, the committed build every landing-zone assertion reads (synthLandingZone() with no options), so no test helper can hand those assertions options or a context the entry does not build (C11-D70, C11-D74)', async () => {
+  it('bin/landing-zone.ts writes over the fixture the committed build every landing-zone assertion reads (synthLandingZone() with no options): each template, each stack’s artifact facts and each asset manifest, so no test helper can hand those assertions options, a context or a stack’s facts the entry does not build (C11-D70, C11-D74)', async () => {
     const ran = await fixtureLandingZoneRun()
     expect(ran.code).toBe(0)
     const rendered = templatesIn(ran.outdir)
-    const templates = Object.fromEntries(
-      synthLandingZone().synthesised.stacks.map(stack => [stack.stackName, stack.template]),
-    )
+    const { synthesised } = synthLandingZone()
+    const templates = Object.fromEntries(synthesised.stacks.map(stack => [stack.stackName, stack.template]))
     expect(Object.keys(templates).sort()).toEqual(Object.values(STACK_OF).sort())
     expect(templateDifferences(rendered, templates)).toEqual({})
     expect(templates).toStrictEqual(Object.fromEntries(rendered))
+    expect(reportDifferences(stackFactsIn(ran.outdir), reportedFacts(synthesised))).toEqual([])
+    expect(reportDifferences(assetManifestsIn(ran.outdir), synthesised.assetManifests)).toEqual([])
   }, 120_000)
 })
 

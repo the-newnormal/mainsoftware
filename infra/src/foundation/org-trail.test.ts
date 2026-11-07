@@ -197,9 +197,11 @@ const LOG_GROUP_CLASSES: Record<string, 'cloudtrail' | 'app_logs' | 'network_log
 }
 
 let lz: LandingZoneSynth
-// The workload, committed and with restoreActive set (C11-D45).
+// The workload in each build the pipeline deploys: committed, with restoreActive set (C11-D45), and the
+// drill's, the non-prod stage alone (C11-D59).
 let workload: WorkloadSynth
 let active: WorkloadSynth
+let drill: WorkloadSynth
 let foundation: Template
 let topic: string
 let topicPolicy: string
@@ -209,6 +211,7 @@ beforeAll(() => {
   lz = synthLandingZone()
   workload = synthWorkload()
   active = synthWorkload({ run: { restoreActive: true } })
+  drill = synthWorkload({ run: { drill: true } })
   foundation = lz.templates.foundation
   topic = one(foundation, 'AWS::SNS::Topic', 'TopicName', 'hearth-ops-alerts')[0]
   topicPolicy = ofType(foundation, 'AWS::SNS::TopicPolicy')[0]?.[0] ?? ''
@@ -542,8 +545,8 @@ describe('IAC-07 C11-D17: log groups', () => {
     }
   })
 
-  it('IAC-07 C11-D32: every workload log group, committed or with restoreActive set, is its stage’s Platform’s, in its retention class, kept that long, of the standard class, and retained but not protected from deletion (a protected group would outlive a create that rolled back and refuse its retry by name)', () => {
-    for (const synth of [workload, active]) {
+  it('IAC-07 C11-D32: every workload log group, in every build, is its stage’s Platform’s, in its retention class, kept that long, of the standard class, and retained but not protected from deletion (a protected group would outlive a create that rolled back and refuse its retry by name)', () => {
+    for (const synth of [workload, active, drill]) {
       for (const [stack, template] of Object.entries(synth.templates)) {
         const groups = ofType(template, 'AWS::Logs::LogGroup')
         const env = stack.split('-')[1] ?? ''
@@ -573,9 +576,9 @@ describe('IAC-07 C11-D17: log groups', () => {
     }
   })
 
-  it('IAC-07 C11-D36: every workload container logs through awslogs to a group its own stage’s Platform makes, and LOG_GROUP_CLASSES names no group no template holds', () => {
+  it('IAC-07 C11-D36: every workload container, in every build, logs through awslogs to a group its own stage’s Platform makes, and LOG_GROUP_CLASSES names no group no template holds', () => {
     const held = new Set<string>(['/hearth/security/org-trail'])
-    for (const synth of [workload, active]) {
+    for (const synth of [workload, active, drill]) {
       for (const [stack, template] of Object.entries(synth.templates)) {
         const env = stack.split('-')[1] ?? ''
         const platform = synth.templates[`Hearth-${env}-Platform`] ?? {}

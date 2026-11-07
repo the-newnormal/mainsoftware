@@ -148,12 +148,16 @@ const OIDC_PROVIDER_WRITES = [
 ]
 // Every write to a bucket or its objects, as the staging-bucket fences deny them.
 const BUCKET_WRITES = ['s3:Put*', 's3:Delete*', 's3:Replicate*', 's3:Restore*']
-// Another way into a VPC than the bastion's port forward, which NoOtherWayIn denies (C11-D40).
+// Another way into a VPC than the bastion's port forward, which NoOtherWayIn denies (C11-D40): EC2's
+// four products, and VPC Lattice's resource gateway, target group and VPC association.
 const VPC_WAYS_IN = [
   'ec2:CreateClientVpnEndpoint',
   'ec2:CreateInstanceConnectEndpoint',
   'ec2:CreateVpcEndpointServiceConfiguration',
   'ec2:CreateVerifiedAccess*',
+  'vpc-lattice:CreateResourceGateway',
+  'vpc-lattice:CreateTargetGroup',
+  'vpc-lattice:CreateServiceNetworkVpcAssociation',
 ]
 const OTHER_WAYS_IN = [
   'iam:CreateSAMLProvider',
@@ -954,13 +958,13 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     }
   })
 
-  it('IAC-02 C11-D26 C11-D40: hearth-workload-fences, with the workload stacks’, hearthapp’s staging bucket’s and NoOtherWayIn’s statements, holds 4,131 of its 5,120 characters (TECH-SPEC T24 items 2 and 28)', () => {
+  it('IAC-02 C11-D26 C11-D40: hearth-workload-fences, with the workload stacks’, hearthapp’s staging bucket’s and NoOtherWayIn’s statements, holds 4,248 of its 5,120 characters (TECH-SPEC T24 items 2 and 28)', () => {
     const content = String(policiesIn(foundation).get('hearth-workload-fences')?.Properties?.Content)
     expect(content.length, `hearth-workload-fences holds ${content.length} characters`).toBeLessThanOrEqual(
       POLICY_LIMIT,
     )
     // Measured, so a statement added or widened re-measures it here and in TECH-SPEC T24 item 2.
-    expect(content.length, 'record the new size in TECH-SPEC T24 item 2').toBe(4_131)
+    expect(content.length, 'record the new size in TECH-SPEC T24 item 2').toBe(4_248)
   })
 
   it('IAC-02 C11-D05: who each statement excepts, and no pattern wider than one role family', () => {
@@ -1524,7 +1528,7 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
     expect(denied({ action: 's3:GetObject', resource: appTemplate, principal: task })).toEqual([])
   })
 
-  it('IAC-02 C11-D40: nobody, the deploy and execution roles and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service or Verified Access, so the bastion stays the only way into a workload VPC; an interface endpoint is named by no statement, IAC-12’s exact set holding it (TECH-SPEC T24 item 13)', () => {
+  it('IAC-02 C11-D40: nobody, the deploy and execution roles and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service, Verified Access, or VPC Lattice’s resource gateway, target group or VPC association, so the bastion stays the only way into a workload VPC; reading VPC Lattice stays open, and an interface endpoint is named by no statement, IAC-12’s exact set holding it (TECH-SPEC T24 item 13)', () => {
     // A concrete principal for each pattern an SCP may name, in prod's account.
     const principals = [
       prodRole('OrganizationAccountAccessRole'),
@@ -1549,17 +1553,27 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
         pattern,
       ).not.toEqual([])
     }
+    const oaar = (principal: string) => principal.endsWith(':role/OrganizationAccountAccessRole')
     for (const action of [
       'ec2:CreateClientVpnEndpoint',
       'ec2:CreateInstanceConnectEndpoint',
       'ec2:CreateVpcEndpointServiceConfiguration',
       'ec2:CreateVerifiedAccessInstance',
+      'vpc-lattice:CreateResourceGateway',
+      'vpc-lattice:CreateTargetGroup',
+      'vpc-lattice:CreateServiceNetworkVpcAssociation',
     ]) {
       for (const principal of principals) {
-        const expected = principal.endsWith(':role/OrganizationAccountAccessRole')
-          ? ['NoOaar', 'NoOtherWayIn']
-          : ['NoOtherWayIn']
+        const expected = oaar(principal) ? ['NoOaar', 'NoOtherWayIn'] : ['NoOtherWayIn']
         expect(denied({ action, resource: '*', principal }), `${action} ${principal}`).toEqual(expected)
+      }
+    }
+    // Reading VPC Lattice is no way in, and the statement names no wider pattern than its own actions.
+    for (const action of ['vpc-lattice:ListServiceNetworks', 'vpc-lattice:GetResourceGateway']) {
+      for (const principal of principals) {
+        expect(denied({ action, resource: '*', principal }), `${action} ${principal}`).toEqual(
+          oaar(principal) ? ['NoOaar'] : [],
+        )
       }
     }
     expect(denied({ action: 'ec2:CreateVpcEndpoint', resource: '*', principal: appExec })).toEqual([])

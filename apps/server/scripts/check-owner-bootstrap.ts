@@ -1296,7 +1296,12 @@ const REFUSAL_CASES: Case[] = [
       const before = await digest(behind)
       const late = await script('set-up', behind, { commit: true, input: setUpDocument() })
       expectExit(late, 2, 'a database behind the checkout')
-      expectSaid(late, `This database hasn't applied ${newest}: run the deploy's migrate step first`, 'behind')
+      // The commit the database was migrated by, never the deployed one (T22 item 71, T24 item 24).
+      expectSaid(
+        late,
+        `This database hasn't applied ${newest}: run the deploy's migrate step first, or check out the commit the database was migrated by (the release record's migratedCommit).`,
+        'behind',
+      )
       expectNothingWritten(before, await digest(behind), 'behind')
 
       const ahead = await copy('bss05e_ahead')

@@ -18,7 +18,10 @@
 // helpers live here because foundation/denies.ts is out of the workload entry's graph (IG-08). An ARN
 // in the deploying account is joined from parts with its account as a pseudo-parameter (ownArn), an
 // account-less one comes from arnPattern(), and none is written as a literal (IG-01). This file holds
-// every workload grant and the network perimeter, so it is on the owner's-read list (C11-D74).
+// every task and execution role's grant and the task roles' perimeter, so it is on the owner's-read
+// list (C11-D74). The stage's two other roles aren't made here: the flow log's is network.ts's, and the
+// default-group handler's is aws-cdk-lib's, trimmed by network.ts. aspects/templates.test.ts, also on
+// that list, pins both exactly, and binds each task definition to its own kind's two roles here.
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { Construct } from 'constructs'

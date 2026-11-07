@@ -1,16 +1,17 @@
 // IAC-15 and IAC-16 (C11-D70; TECH-SPEC T24 item 28): the landing zone's and the workload's two
 // template checks and the exceptions they keep.
 // - IAC-15 runs cdk-nag 3.0.2's AwsSolutions pack over each landing-zone stack and each workload stack,
-//   of the committed build and of the one with restoreActive set (whose restore stage holds Valkey),
-//   here alone (cdk-nag is a devDependency no entry loads), and expects nothing left once
-//   NAG_ALLOWANCES has removed the findings it keeps, each matched by its rule (the finding's name
-//   before any bracket) and its violating resource's construct path, one resource at a time, since one
-//   finding can list several.
+//   of every build the pipeline deploys: the committed one, the one with restoreActive set (whose
+//   restore stage holds Valkey) and the drill's (the non-prod stage alone, C11-D59), here alone
+//   (cdk-nag is a devDependency no entry loads), and expects nothing left once NAG_ALLOWANCES has
+//   removed the findings it keeps, each matched by its rule (the finding's name before any bracket)
+//   and its violating resource's construct path, one resource at a time, since one finding can list
+//   several.
 // - IAC-16 holds each allowance, and each CloudFormation Validate acknowledgement acknowledgeValidate()
 //   applies, to the same rules: a rule or id of the right shape; a reason of at least 20 characters
 //   citing the C11 decision that keeps it; a path that is exactly one resource, never a stack or the
 //   app, so nothing is kept in bulk; no entry twice; and each one used, so a stale one fails. An
-//   allowance is held over the three builds together: its path is one resource in a build that holds
+//   allowance is held over the four builds together: its path is one resource in a build that holds
 //   it, and some build's findings use it. A Validate acknowledgement is used when the synth's
 //   validation report lists the finding it suppressed; one raised on a stack can't name a resource,
 //   so it is fixed rather than kept. The workload keeps none: Validate runs over its stacks (proved on
@@ -43,16 +44,19 @@ import {
 } from './nag.ts'
 
 let lz: LandingZoneSynth
-// The workload, committed and with restoreActive set (C11-D45).
+// The workload in each build the pipeline deploys: committed, with restoreActive set (C11-D45), and the
+// drill's (C11-D59).
 let workload: WorkloadSynth
 let active: WorkloadSynth
-// The three builds every allowance is held over.
-const apps = () => [lz.app, workload.app, active.app]
+let drill: WorkloadSynth
+// The four builds every allowance is held over.
+const apps = () => [lz.app, workload.app, active.app, drill.app]
 
 beforeAll(() => {
   lz = synthLandingZone()
   workload = synthWorkload()
   active = synthWorkload({ run: { restoreActive: true } })
+  drill = synthWorkload({ run: { drill: true } })
 }, 60_000)
 
 // One cdk-nag finding on one resource: its rule without the bracketed detail, and the resource's path.
@@ -181,7 +185,7 @@ function acknowledgementProblems(
 // --- IAC-15 ---------------------------------------------------------------------------------------
 
 describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone and the workload', () => {
-  it('IAC-15: without its allowances the pack finds exactly the rules and resources NAG_ALLOWANCES keeps, over the landing zone and both workload builds together, so the check reads every stack', () => {
+  it('IAC-15: without its allowances the pack finds exactly the rules and resources NAG_ALLOWANCES keeps, over the landing zone and every workload build together, so the check reads every stack', () => {
     const pairs = [
       ...new Set(
         apps()
@@ -193,7 +197,7 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
     expect(pairs).toEqual(NAG_ALLOWANCES.map(allowance => `${allowance.rule} ${allowance.path}`).sort())
   })
 
-  it('IAC-15: each build’s findings read its own stacks: the landing zone’s alone, and each workload build’s every stage’s, the restore stage’s Valkey with restoreActive set alone', () => {
+  it('IAC-15: each build’s findings read its own stacks: the landing zone’s alone, each workload build’s every stage it builds, and the restore stage’s Valkey with restoreActive set alone', () => {
     const stacksOf = (app: cdk.App) => new Set(nagFindings(app).map(finding => finding.path.split('/')[0]))
     expect([...stacksOf(lz.app)].sort()).toEqual([
       'Hearth-Foundation',
@@ -202,6 +206,8 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
       'Hearth-prod-Baseline',
     ])
     expect([...stacksOf(workload.app)].sort()).toEqual(['nonprod', 'prod', 'restore'])
+    expect([...stacksOf(active.app)].sort()).toEqual(['nonprod', 'prod', 'restore'])
+    expect([...stacksOf(drill.app)].sort()).toEqual(['nonprod'])
     const valkey = (app: cdk.App) =>
       nagFindings(app)
         .filter(finding => finding.path === 'restore/Data/Valkey/Group')
@@ -258,7 +264,7 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
     ])
   })
 
-  it('IAC-15 C11-D27: each workload stack’s top-level construct ids, by stage, both builds, besides the SSM parameters it reads, whose names aws-cdk-lib writes into the ids', () => {
+  it('IAC-15 C11-D27: each workload stack’s top-level construct ids, by stage, every build, besides the SSM parameters it reads, whose names aws-cdk-lib writes into the ids', () => {
     // CDK names the construct that reads an SSM parameter after the parameter's name and a fixed UUID,
     // so those ids are read by the name alone.
     const reads = 'SsmParameterValue:'
@@ -279,7 +285,7 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
       `MutableRole${kind}ExecRole`,
       `${kind}ExecRole`,
     ]
-    for (const synth of [workload, active]) {
+    for (const synth of [workload, active, drill]) {
       for (const [env, stage] of Object.entries(synth.stages)) {
         if (stage === undefined) continue
         const alb = env !== 'restore'
@@ -381,7 +387,7 @@ describe('IAC-16 C11-D70: every exception the landing zone and the workload keep
     ])
   })
 
-  it('IAC-16: every NAG_ALLOWANCES entry keeps one rule on one resource, for a cited reason, and is used, over the landing zone and both workload builds', () => {
+  it('IAC-16: every NAG_ALLOWANCES entry keeps one rule on one resource, for a cited reason, and is used, over the landing zone and every workload build', () => {
     expect(allowanceProblems(NAG_ALLOWANCES, apps())).toEqual([])
   })
 
@@ -429,8 +435,8 @@ describe('IAC-16 C11-D70: every exception the landing zone and the workload keep
     expect(suppressed.sort()).toEqual(VALIDATE_ACKNOWLEDGEMENTS.map(entry => `${entry.id} ${entry.path}`).sort())
   })
 
-  it('IAC-16 C11-D70: CloudFormation Validate finds nothing in any workload stack, committed or with restoreActive set, and nothing is acknowledged there; a finding planted in one is reported on its construct', () => {
-    for (const synth of [workload, active]) {
+  it('IAC-16 C11-D70: CloudFormation Validate finds nothing in any workload stack of any build, and nothing is acknowledged there; a finding planted in one is reported on its construct', () => {
+    for (const synth of [workload, active, drill]) {
       const path = join(synth.synthesised.outdir, 'validation-report.json')
       const report = existsSync(path)
         ? (JSON.parse(readFileSync(path, 'utf8')) as ValidationReport)

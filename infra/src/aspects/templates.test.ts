@@ -15,23 +15,29 @@
 //   protection, its account and Region, and the hearthbase deploy role (C11-D26, C11-D27);
 // - IAC-22: the assets are the templates alone, with no command and no Docker image (C11-D76);
 // - every event pattern holds no list inside a list, which EventBridge would never match.
-// Over the workload's twelve templates, committed and with restoreActive set (C0.11 PR 3):
+// Over the workload's templates in every build the pipeline deploys: the committed twelve, the twelve
+// with restoreActive set, and the drill's four, non-prod's alone (C0.11 PR 3, C11-D59):
 // - IAC-01: the model check, with no allowance at all: no Allow names a model action, none can grant
 //   one, and nothing is attached but each role's boundary;
 // - IAC-10: every role bounded by hearth-boundary, the twelve task and execution roles by name and
-//   nothing for rule9, each role's trust and policies exactly C11-D38's, the perimeter exactly where
-//   the profile has it (C11-D33), no Allow of a database login, a session into a task, a role
-//   passed on or an S3 delete, and no policy document but a role's own trust and inline policy and an
-//   endpoint's policy, so no policy, user or group resource grants a role more and no resource policy
-//   opens a workload resource;
+//   nothing for rule9, each one's trust and policies exactly C11-D38's, the perimeter on the task roles
+//   in non-prod and restore and on none in prod, pinned literally (C11-D33; the profile's switch is
+//   off the owner's-read list, so this pin is what holds it); the stage's only other roles the flow
+//   log's and the default-group handler's, each exactly its own trust and grant; every task
+//   definition on its own kind's task and execution roles, and a secret on the api's alone; no Allow
+//   of a database login, a session into a task, a role passed on or an S3 delete; and no policy
+//   document but a role's own trust and inline policy and an endpoint's policy, so no policy, user or
+//   group resource grants a role more and no resource policy opens a workload resource;
 // - IAC-12: the VPC endpoints exactly C11-D30's, by service, each policy exactly its statements under
-//   the organisation's id read from SSM, and an interface endpoint nowhere the stage has none;
+//   the organisation's id read from SSM, the resource statement pinned as the perimeter is, an
+//   interface endpoint nowhere the stage has none, and no endpoint outside the stage's Platform;
 // - IAC-13's workload half: the landing zone's list, a cross-stack reference's output and
 //   Fn::GetStackOutput, the one default-group handler and its custom resource allowed only together
 //   in a Platform template, and each stack's artifact;
 // - IAC-22's workload half: the templates and each Platform's one handler zip, which runs nothing;
 // - no trust a machine outside AWS could use (federated, Roles Anywhere, Systems Manager's hybrid
-//   activations, IoT's credentials provider; T24 item 28);
+//   activations, IoT's credentials provider; T24 item 28), and each service trusted only by its own
+//   roles: ECS's tasks by the twelve, VPC Flow Logs by the flow log's, Lambda by the handler's;
 // - one cluster per stage, whose ECS Exec logging is NONE, so a break-glass session into the network
 //   leaves nothing behind but CloudTrail's record of it (C11-D40, T24 item 15);
 // - the network's invariants (C11-D29 to C11-D31, C11-D37, C11-D45), which no SCP backs and none can
@@ -39,12 +45,13 @@
 //   every group's one inline egress, no route but a public table's default to its own internet
 //   gateway, none of EC2's other ways out or in and none of other services' ways in (VPC Lattice,
 //   API Gateway's VPC links, CloudFront's VPC origins, Global Accelerator, a classic load balancer),
-//   one application load balancer per stage, in its Platform, every security group and rule in the
-//   stage's Platform, every ingress from the stage's own groups but that load balancer's tcp 443
-//   from anywhere, no public address, the restore stage's isolation (IAC-20's isolation half), every
-//   image by digest, every secret by reference, and no plain environment value with a URL's
-//   password, a secret's dynamic reference or a shape no static reading fixes. The exact rules, CIDRs
-//   and counts are src/workload's tests'.
+//   one application load balancer per stage, in its Platform, every security group, rule and VPC
+//   endpoint in the stage's Platform, every ingress from the stage's own groups but that load
+//   balancer's tcp 443 from anywhere, no public address, the restore stage's isolation (IAC-20's
+//   isolation half), every image by digest, every secret by reference, and no plain environment value
+//   with a URL's password (in its user information, or a query or fragment key naming a credential),
+//   a part no template fixes anywhere in a URL but its host, a secret's dynamic reference or a shape
+//   no static reading fixes. The exact rules, CIDRs and counts are src/workload's tests'.
 // The planted cases come first, each found, so no check passes by reading nothing. This file holds
 // rules every template is held to, so it is on the owner's-read list (C11-D74). Expected ARNs are
 // joined from their parts here (IG-01), rendered with a made-up account for the workload's, model
@@ -115,14 +122,17 @@ const accountOf = (name: string) => STACKS.find(stack => stack.name === name)?.a
 const renderIn = (name: string) => (value: unknown) =>
   renderedString(value, { account: accountOf(name), region: REGION, template: templateOf(name) })
 
-// The workload, committed and with restoreActive set (C11-D45), and each build's twelve templates.
+// The workload in each build the pipeline deploys: committed, with restoreActive set (C11-D45), and
+// the drill's, the non-prod stage alone with its one break (C11-D59).
 let workload: WorkloadSynth
 let active: WorkloadSynth
+let drill: WorkloadSynth
 
 beforeAll(() => {
   lz = synthLandingZone()
   workload = synthWorkload()
   active = synthWorkload({ run: { restoreActive: true } })
+  drill = synthWorkload({ run: { drill: true } })
 }, 60_000)
 
 // hearth-boundary's one statement that allows everything, which a boundary uses to bound rather than
@@ -615,11 +625,16 @@ describe('IAC-22 C11-D76: the landing zone publishes its templates alone', () =>
 // The workload's four stacks per stage (C11-D27), and each build's templates by stack name.
 const PARTS = ['Platform', 'Data', 'Tasks', 'Services'] as const
 const KINDS = ['api', 'realtime', 'worker', 'migrate', 'probe', 'bastion'] as const
-const builds = (): ReadonlyArray<readonly [string, WorkloadSynth]> => [
-  ['committed', workload],
-  ['restore-active', active],
+// Each build the pipeline deploys, with the stages it holds: the drill's builds non-prod's alone, and
+// the pipeline deploys it to non-prod at each rehearsal (C11-D59), so every rule here reads it too.
+const builds = (): ReadonlyArray<readonly [string, WorkloadSynth, readonly EnvironmentName[]]> => [
+  ['committed', workload, ENVIRONMENTS],
+  ['restore-active', active, ENVIRONMENTS],
+  ['drill', drill, ['nonprod']],
 ]
-// Every workload template of both builds, as `<build> <stack>`.
+// The builds that hold a stage.
+const buildsWith = (env: EnvironmentName) => builds().filter(([, , envs]) => envs.includes(env))
+// Every workload template of every build, as `<build> <stack>`.
 function workloadTemplates(): Array<{ label: string; name: string; env: EnvironmentName; template: Template }> {
   return builds().flatMap(([build, synth]) =>
     Object.entries(synth.templates).map(([name, template]) => ({
@@ -793,6 +808,120 @@ function expectedRole(name: string, policyName: string, statements: Array<Record
 }
 const renderedRole = (role: Resource, template: Template) => renderedIn(role.Properties, template)
 
+// The two roles the stage holds beside the twelve, which network.ts and aws-cdk-lib make rather than
+// roles.ts, pinned here as exactly as those: the flow log's (C11-D32), which VPC Flow Logs alone, for
+// this account's own flow logs, may assume, to write to its own group; and the default-group handler's
+// (T24 item 28), which Lambda may assume, to revoke the VPC's default group's rules and nothing else,
+// with no managed policy (network.ts's confineDefaultSgHandler takes Lambda's logging one off).
+function expectedFlowLogRole(env: EnvironmentName) {
+  const group = workloadArn('logs', REGION, `log-group:/hearth/${env}/vpc-flow`)
+  return {
+    AssumeRolePolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'VpcFlowLogs',
+          Effect: 'Allow',
+          Principal: { Service: 'vpc-flow-logs.amazonaws.com' },
+          Action: 'sts:AssumeRole',
+          Condition: {
+            StringEquals: { 'aws:SourceAccount': ACCOUNT },
+            ArnLike: { 'aws:SourceArn': workloadArn('ec2', REGION, 'vpc-flow-log/*') },
+          },
+        },
+      ],
+    },
+    PermissionsBoundary: BOUNDARY_ARN,
+    Policies: [
+      {
+        PolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Sid: 'DeliverFlowLogs',
+              Effect: 'Allow',
+              Action: ['logs:CreateLogStream', 'logs:DescribeLogStreams', 'logs:PutLogEvents'],
+              Resource: [group, `${group}:*`],
+            },
+          ],
+        },
+        PolicyName: 'hearth-flow-log',
+      },
+    ],
+  }
+}
+// The handler's role, its one resource the VPC's default group, whose id the template reads from the
+// VPC (rendered as far as it goes: the group's id is the VPC's attribute).
+function expectedHandlerRole(vpc: string) {
+  return {
+    AssumeRolePolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Action: 'sts:AssumeRole', Effect: 'Allow', Principal: { Service: 'lambda.amazonaws.com' } }],
+    },
+    PermissionsBoundary: BOUNDARY_ARN,
+    Policies: [
+      {
+        PolicyName: 'Inline',
+        PolicyDocument: {
+          Version: '2012-10-17',
+          Statement: [
+            {
+              Effect: 'Allow',
+              Action: ['Authorize', 'Revoke'].flatMap(verb =>
+                ['Ingress', 'Egress'].map(direction => `ec2:${verb}SecurityGroup${direction}`),
+              ),
+              Resource: [
+                {
+                  'Fn::Join': [
+                    '',
+                    [
+                      ['arn', 'aws', 'ec2', REGION, ''].join(':'),
+                      ACCOUNT,
+                      ':security-group/',
+                      { 'Fn::GetAtt': [vpc, 'DefaultSecurityGroup'] },
+                    ],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  }
+}
+// The roles the resources of a type in a template name by a property's Fn::GetAtt Arn, by logical id,
+// and any named some other way as the type and property, so it matches no role.
+function roleBehind(template: Template, type: string, property: string): string[] {
+  return ofType(template, type).map(([, r]) => getAttOf(r.Properties?.[property], 'Arn') ?? `${type} ${property}?`)
+}
+
+// Each task definition's roles (C11-D35, C11-D38): its family names its kind, `hearth-<env>-<kind>`,
+// and it runs as that kind's task role and pulls with that kind's execution role, by their ARNs in the
+// account, so no definition takes another kind's grants, or a role the pins above don't read, through
+// a file off the owner's-read list; and only the api's holds a secret, the AUTH_SECRET its execution
+// role alone may read.
+function taskDefinitionProblems(template: Template, env: EnvironmentName): string[] {
+  const arn = (value: unknown) => renderedString(value, { account: ACCOUNT, region: REGION, template })
+  return ofType(template, 'AWS::ECS::TaskDefinition').flatMap(([id, r]) => {
+    const p = r.Properties ?? {}
+    const kind = KINDS.find(k => p.Family === `hearth-${env}-${k}`)
+    if (kind === undefined) return [`${id}: its family ${JSON.stringify(p.Family)} names no kind of the stage`]
+    const containers = asList(p.ContainerDefinitions) as Array<Record<string, unknown>>
+    return [
+      ...(arn(p.TaskRoleArn) === workloadArn('iam', '', `role/hearth-${env}-${kind}-task`)
+        ? []
+        : [`${id}: doesn't run as ${kind}'s task role`]),
+      ...(arn(p.ExecutionRoleArn) === workloadArn('iam', '', `role/hearth-${env}-${kind}-exec`)
+        ? []
+        : [`${id}: doesn't pull with ${kind}'s execution role`]),
+      ...(kind === 'api' || containers.every(c => asList(c.Secrets).length === 0)
+        ? []
+        : [`${id}: a secret outside the api's definition`]),
+    ]
+  })
+}
+
 // Every Allow in the workload, by template, which may not grant what IAC-10 keeps for break-glass and
 // the pipeline: a database login, a session into a task, a role passed on, an S3 delete, or anything
 // on `*`; nor may any Allow be written with NotAction, which grants everything it doesn't name.
@@ -845,31 +974,164 @@ describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () =>
   })
 
   it.each(ENVIRONMENTS)(
-    'IAC-10 C11-D38 %s: the stage’s named roles are exactly its six kinds’ task and execution roles, none for rule9, beside the flow log’s and the default-group handler’s unnamed roles',
+    'IAC-10 C11-D38 %s: the stage’s named roles are exactly its six kinds’ task and execution roles, none for rule9, and its only unnamed roles are its Platform’s flow log’s and default-group handler’s',
     env => {
-      for (const [build, synth] of builds()) {
-        const roles = PARTS.flatMap(part => ofType(workloadTemplate(synth, env, part), 'AWS::IAM::Role'))
+      for (const [build, synth] of buildsWith(env)) {
+        const roles = PARTS.flatMap(part =>
+          ofType(workloadTemplate(synth, env, part), 'AWS::IAM::Role').map(([id, r]) => ({ part, id, r })),
+        )
         expect(
           roles
-            .map(([, r]) => r.Properties?.RoleName)
+            .map(({ r }) => r.Properties?.RoleName)
             .filter(name => name !== undefined)
             .sort(),
           build,
         ).toEqual(KINDS.flatMap(kind => [`hearth-${env}-${kind}-exec`, `hearth-${env}-${kind}-task`]).sort())
+        const behind = (type: string, property: string) =>
+          PARTS.flatMap(part =>
+            roleBehind(workloadTemplate(synth, env, part), type, property).map(id => `${part} ${id}`),
+          )
+        const flowLog = behind('AWS::EC2::FlowLog', 'DeliverLogsPermissionArn')
+        const handler = behind('AWS::Lambda::Function', 'Role')
+        expect([flowLog.length, handler.length], build).toEqual([1, 1])
+        expect(flowLog[0]?.startsWith('Platform '), build).toBe(true)
         expect(
-          roles.filter(([, r]) => r.Properties?.RoleName === undefined),
+          roles
+            .filter(({ r }) => r.Properties?.RoleName === undefined)
+            .map(({ part, id }) => `${part} ${id}`)
+            .sort(),
           build,
-        ).toHaveLength(2)
+        ).toEqual([...flowLog, ...handler].sort())
         expect(JSON.stringify(roles), build).not.toContain('rule9')
       }
     },
   )
 
   it.each(ENVIRONMENTS)(
-    'IAC-10 C11-D33 C11-D38 %s: each task and execution role is exactly its trust, boundary and policy, the perimeter on the task roles exactly where the profile has it on, never on an execution role',
+    'IAC-10 C11-D32 %s: the flow log’s role and the default-group handler’s are each exactly their trust, boundary and policy',
     env => {
+      for (const [build, synth] of buildsWith(env)) {
+        const platform = workloadTemplate(synth, env, 'Platform')
+        const vpc = ofType(platform, 'AWS::EC2::VPC')[0]?.[0] ?? ''
+        const role = (id: string | undefined) =>
+          ofType(platform, 'AWS::IAM::Role').find(([roleId]) => roleId === id)?.[1] ?? { Type: 'missing' }
+        const [flowLog] = roleBehind(platform, 'AWS::EC2::FlowLog', 'DeliverLogsPermissionArn')
+        const [handler] = roleBehind(platform, 'AWS::Lambda::Function', 'Role')
+        expect(renderedRole(role(flowLog), platform), `${build} flow log`).toEqual(expectedFlowLogRole(env))
+        expect(renderedRole(role(handler), platform), `${build} handler`).toEqual(expectedHandlerRole(vpc))
+      }
+    },
+  )
+
+  it('IAC-10 C11-D32 C11-D38 finds the flow log’s role re-trusted and granted more, the handler’s granted a way out, and a definition on another kind’s roles, on a role from a parameter, with another kind’s secret or of no kind, planted in copies of the real templates', () => {
+    const platform = workloadTemplate(workload, 'nonprod', 'Platform')
+    const [flowLog = ''] = roleBehind(platform, 'AWS::EC2::FlowLog', 'DeliverLogsPermissionArn')
+    const [handler = ''] = roleBehind(platform, 'AWS::Lambda::Function', 'Role')
+    const vpc = ofType(platform, 'AWS::EC2::VPC')[0]?.[0] ?? ''
+    const edited = plantedIn(platform, resources => {
+      const flowLogRole = resources[flowLog]?.Properties as {
+        AssumeRolePolicyDocument: { Statement: unknown[] }
+        Policies: Array<{ PolicyDocument: { Statement: unknown[] } }>
+      }
+      flowLogRole.AssumeRolePolicyDocument.Statement.push({
+        Effect: 'Allow',
+        Principal: { Service: 'ecs-tasks.amazonaws.com' },
+        Action: 'sts:AssumeRole',
+      })
+      flowLogRole.Policies[0]?.PolicyDocument.Statement.push({
+        Effect: 'Allow',
+        Action: 'secretsmanager:GetSecretValue',
+        Resource: workloadArn('secretsmanager', REGION, 'secret:hearth/*'),
+      })
+      const handlerRole = resources[handler]?.Properties as {
+        Policies: Array<{ PolicyDocument: { Statement: unknown[] } }>
+      }
+      handlerRole.Policies[0]?.PolicyDocument.Statement.push({
+        Effect: 'Allow',
+        Action: 'ec2:CreateRoute',
+        Resource: '*',
+      })
+    })
+    const role = (template: Template, id: string) => (template.Resources as Record<string, Resource>)[id] as Resource
+    expect(renderedRole(role(platform, flowLog), platform)).toEqual(expectedFlowLogRole('nonprod'))
+    expect(renderedRole(role(platform, handler), platform)).toEqual(expectedHandlerRole(vpc))
+    expect(federatedTrustProblems(platform)).toEqual([])
+    expect(renderedRole(role(edited, flowLog), edited)).not.toEqual(expectedFlowLogRole('nonprod'))
+    expect(renderedRole(role(edited, handler), edited)).not.toEqual(expectedHandlerRole(vpc))
+    expect(federatedTrustProblems(edited)).toEqual([
+      `${flowLog}: trusts ecs-tasks.amazonaws.com, which only the twelve task and execution roles may`,
+    ])
+
+    const services = workloadTemplate(workload, 'nonprod', 'Services')
+    const tasks = workloadTemplate(workload, 'nonprod', 'Tasks')
+    expect(taskDefinitionProblems(services, 'nonprod')).toEqual([])
+    expect(taskDefinitionProblems(tasks, 'nonprod')).toEqual([])
+    const definition = (template: Template, kind: string) =>
+      ofType(template, 'AWS::ECS::TaskDefinition').find(
+        ([, r]) => r.Properties?.Family === `hearth-nonprod-${kind}`,
+      ) as [string, Resource]
+    const [api, apiDefinition] = definition(services, 'api')
+    const [worker] = definition(services, 'worker')
+    const [realtime] = definition(services, 'realtime')
+    const [bastion, bastionDefinition] = definition(tasks, 'bastion')
+    const parameter = parameterNamed(services, ['', 'hearth', 'nonprod', 'valkey', 'endpoint'].join('/'))
+    const swapped = plantedIn(services, resources => {
+      const apiProperties = resources[api]?.Properties ?? {}
+      const workerProperties = resources[worker]?.Properties ?? {}
+      const realtimeProperties = resources[realtime]?.Properties ?? {}
+      workerProperties.ExecutionRoleArn = structuredClone(apiDefinition.Properties?.ExecutionRoleArn)
+      const [workerContainer] = (workerProperties.ContainerDefinitions ?? []) as Array<Record<string, unknown>>
+      const [apiContainer] = (apiDefinition.Properties?.ContainerDefinitions ?? []) as Array<Record<string, unknown>>
+      if (workerContainer !== undefined) workerContainer.Secrets = structuredClone(apiContainer?.Secrets)
+      apiProperties.TaskRoleArn = structuredClone(bastionDefinition.Properties?.TaskRoleArn)
+      realtimeProperties.TaskRoleArn = { Ref: parameter }
+      resources.Unkinded = { Type: 'AWS::ECS::TaskDefinition', Properties: { Family: 'hearth-nonprod-planted' } }
+    })
+    expect(taskDefinitionProblems(swapped, 'nonprod')).toEqual([
+      `${api}: doesn't run as api's task role`,
+      `${realtime}: doesn't run as realtime's task role`,
+      `${worker}: doesn't pull with worker's execution role`,
+      `${worker}: a secret outside the api's definition`,
+      'Unkinded: its family "hearth-nonprod-planted" names no kind of the stage',
+    ])
+    const exec = plantedIn(tasks, resources => {
+      const properties = resources[bastion]?.Properties
+      if (properties !== undefined) delete properties.ExecutionRoleArn
+    })
+    expect(taskDefinitionProblems(exec, 'nonprod')).toEqual([`${bastion}: doesn't pull with bastion's execution role`])
+  })
+
+  it.each(ENVIRONMENTS)(
+    'IAC-10 C11-D35 C11-D38 %s: every task definition runs as its own kind’s task role and pulls with its own kind’s execution role, each kind has one, and only the api’s holds a secret',
+    env => {
+      for (const [build, synth] of buildsWith(env)) {
+        const templates = PARTS.map(part => workloadTemplate(synth, env, part))
+        expect(
+          templates.flatMap(template => taskDefinitionProblems(template, env)),
+          build,
+        ).toEqual([])
+        expect(
+          [
+            ...new Set(
+              templates.flatMap(template =>
+                ofType(template, 'AWS::ECS::TaskDefinition').map(([, r]) => r.Properties?.Family),
+              ),
+            ),
+          ].sort(),
+          build,
+        ).toEqual(KINDS.map(kind => `hearth-${env}-${kind}`).sort())
+      }
+    },
+  )
+
+  it.each(ENVIRONMENTS)(
+    'IAC-10 C11-D33 C11-D38 %s: each task and execution role is exactly its trust, boundary and policy, the perimeter on the task roles in non-prod and restore and on none in prod, pinned literally, never on an execution role',
+    env => {
+      // Literal, never read from PROFILES: taskRolePerimeter is off the owner's-read list, so this pin
+      // is what makes turning the perimeter off in non-prod or restore need the owner's read; turning
+      // it on in prod changes this line too (the variant case below proves prod's follows the profile).
       const perimeter = env !== 'prod'
-      for (const [build, synth] of builds()) {
+      for (const [build, synth] of buildsWith(env)) {
         const platform = workloadTemplate(synth, env, 'Platform')
         const vpc = ofType(platform, 'AWS::EC2::VPC')[0]?.[0] ?? ''
         for (const kind of KINDS) {
@@ -1021,7 +1283,7 @@ describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () =>
     expect(otherPolicies(opened)).toEqual(['Opened: AWS::SecretsManager::ResourcePolicy'])
   })
 
-  it('IAC-10 C11-D38: no workload template holds a policy document but a role’s own trust and inline policy and an endpoint’s policy, nor a policy, user or group resource that grants a role more, committed or with restoreActive set', () => {
+  it('IAC-10 C11-D38: no workload template holds a policy document but a role’s own trust and inline policy and an endpoint’s policy, nor a policy, user or group resource that grants a role more, in any build', () => {
     for (const { label, template } of workloadTemplates()) expect(otherPolicies(template), label).toEqual([])
   })
 
@@ -1192,7 +1454,7 @@ describe('IAC-12 C11-D30: the VPC endpoints', () => {
   it.each(ENVIRONMENTS)(
     'IAC-12 %s: the endpoints are exactly the S3 gateway and, where the stage runs, the five interface endpoints, each with private DNS in its AZs and the endpoints’ group alone',
     env => {
-      for (const [build, synth] of builds()) {
+      for (const [build, synth] of buildsWith(env)) {
         const interfaces = env !== 'restore' || build === 'restore-active'
         expect(endpointProblems(workloadTemplate(synth, env, 'Platform'), env, interfaces), build).toEqual([])
       }
@@ -1200,9 +1462,9 @@ describe('IAC-12 C11-D30: the VPC endpoints', () => {
   )
 
   it.each(ENVIRONMENTS)(
-    'IAC-12 %s: each endpoint’s policy is exactly its statements under the organisation’s id from SSM, the resource statement on in non-prod and restore and off in prod',
+    'IAC-12 %s: each endpoint’s policy is exactly its statements under the organisation’s id from SSM, the resource statement on in non-prod and restore and off in prod, pinned literally as the perimeter is',
     env => {
-      for (const [build, synth] of builds()) {
+      for (const [build, synth] of buildsWith(env)) {
         const platform = workloadTemplate(synth, env, 'Platform')
         const org = { Ref: parameterNamed(platform, ['', 'hearth', 'organisation', 'id'].join('/')) }
         expect(org.Ref, build).toBeDefined()
@@ -1270,18 +1532,18 @@ describe('IAC-13 C11-D24 C11-D76: what no workload template holds', () => {
     expect(forbiddenInTemplate(platform, 'landing-zone')).toHaveLength(2)
   })
 
-  it('IAC-13: no workload template holds any of them, committed or with restoreActive set', () => {
+  it('IAC-13: no workload template holds any of them, in any build', () => {
     for (const { label, name, template } of workloadTemplates()) {
       expect(forbiddenInTemplate(template, 'workload', name), label).toEqual([])
     }
   })
 
   it('IAC-13 C11-D24 C11-D26 C11-D27: the twelve stacks, each account-agnostic in ap-southeast-1, deployed through hearthapp’s deploy role after its bootstrap version, named Hearth-<env>-<Part>, termination-protected on Platform and Data alone', () => {
-    for (const [build, synth] of builds()) {
+    for (const [build, synth, envs] of builds()) {
       expect(
         synth.synthesised.stacks.map(stack => [stack.id, stack.stackName]),
         build,
-      ).toEqual(ENVIRONMENTS.flatMap(env => PARTS.map(part => [`${env}/${part}`, `Hearth-${env}-${part}`])))
+      ).toEqual(envs.flatMap(env => PARTS.map(part => [`${env}/${part}`, `Hearth-${env}-${part}`])))
       for (const stack of synth.synthesised.stacks) {
         const { account, region, terminationProtection, assumeRoleArn, bootstrapStackVersionSsmParameter } =
           stack.artifact
@@ -1325,9 +1587,9 @@ describe('IAC-22 C11-D76: the workload publishes its templates and each Platform
     ])
   })
 
-  it('IAC-22: every workload stack’s manifest, committed and with restoreActive set, lists its template and, a Platform’s, the one handler zip', () => {
-    for (const [build, synth] of builds()) {
-      expect(synth.synthesised.assetManifests.size, build).toBe(12)
+  it('IAC-22: every workload stack’s manifest of every build lists its template and, a Platform’s, the one handler zip', () => {
+    for (const [build, synth, envs] of builds()) {
+      expect(synth.synthesised.assetManifests.size, build).toBe(envs.length * PARTS.length)
       expect(assetProblems(synth.synthesised.assetManifests, 'workload'), build).toEqual([])
     }
   })
@@ -1335,21 +1597,26 @@ describe('IAC-22 C11-D76: the workload publishes its templates and each Platform
 
 // --- Federated trusts (TECH-SPEC T24 item 28) -------------------------------------------------------
 
-// The services a workload role may trust: ECS's tasks and VPC Flow Logs, and Lambda for the
-// default-group handler's own role alone.
-const TRUSTED_SERVICES = ['ecs-tasks.amazonaws.com', 'vpc-flow-logs.amazonaws.com']
+// The services a workload role may trust, each by the roles that may trust it: ECS's tasks by the
+// twelve task and execution roles, by name, VPC Flow Logs by the role a flow log delivers through, and
+// Lambda by the role the default-group handler runs as (C11-D32, C11-D38).
+const TRUSTED_SERVICES: Readonly<Record<string, string>> = {
+  'ecs-tasks.amazonaws.com': 'the twelve task and execution roles',
+  'vpc-flow-logs.amazonaws.com': "the flow log's role",
+  'lambda.amazonaws.com': "the default-group handler's role",
+}
 const HANDLER_SERVICE = 'lambda.amazonaws.com'
+const TASK_ROLE_NAME = new RegExp(`^hearth-(?:${ENVIRONMENTS.join('|')})-(?:${KINDS.join('|')})-(?:task|exec)$`)
 // The services that hand AWS credentials to a machine outside AWS: IAM Roles Anywhere, Systems
 // Manager's hybrid activations and IoT's credentials provider, refused by name as well as by the list.
 const OUTSIDE_SERVICES = ['rolesanywhere.amazonaws.com', 'ssm.amazonaws.com', 'credentials.iot.amazonaws.com']
 
 // Each way a template lets a machine outside AWS hold a workload role's credentials, as problems: a
 // federated or non-service principal in a trust, an action that federates, a service outside the
-// workload's own, and a resource that issues credentials outside AWS.
+// workload's own or outside the role's own, and a resource that issues credentials outside AWS.
 function federatedTrustProblems(template: Template): string[] {
-  const handlerRoles = new Set(
-    ofType(template, 'AWS::Lambda::Function').map(([, r]) => getAttOf(r.Properties?.Role, 'Arn')),
-  )
+  const handlerRoles = new Set(roleBehind(template, 'AWS::Lambda::Function', 'Role'))
+  const flowLogRoles = new Set(roleBehind(template, 'AWS::EC2::FlowLog', 'DeliverLogsPermissionArn'))
   const found: string[] = []
   for (const [id, role] of ofType(template, 'AWS::IAM::Role')) {
     const trust = role.Properties?.AssumeRolePolicyDocument as { Statement?: unknown } | undefined
@@ -1366,8 +1633,16 @@ function federatedTrustProblems(template: Template): string[] {
         if (OUTSIDE_SERVICES.includes(service)) {
           found.push(`${id}: trusts ${service}, which hands AWS credentials to a machine outside AWS`)
         }
-        const allowed = [...TRUSTED_SERVICES, ...(handlerRoles.has(id) ? [HANDLER_SERVICE] : [])]
-        if (!allowed.includes(service)) found.push(`${id}: trusts ${service}, outside the workload's services`)
+        const own = [
+          ...(TASK_ROLE_NAME.test(String(role.Properties?.RoleName)) ? ['ecs-tasks.amazonaws.com'] : []),
+          ...(flowLogRoles.has(id) ? ['vpc-flow-logs.amazonaws.com'] : []),
+          ...(handlerRoles.has(id) ? [HANDLER_SERVICE] : []),
+        ]
+        if (!Object.hasOwn(TRUSTED_SERVICES, service)) {
+          found.push(`${id}: trusts ${service}, outside the workload's services`)
+        } else if (!own.includes(service)) {
+          found.push(`${id}: trusts ${service}, which only ${TRUSTED_SERVICES[service]} may`)
+        }
       }
       if (statement.NotAction !== undefined) found.push(`${id}: a trust with NotAction`)
       for (const action of asList(statement.Action).map(String)) {
@@ -1388,18 +1663,31 @@ function federatedTrustProblems(template: Template): string[] {
 }
 
 describe('T24 item 28: no workload role trusts a machine outside AWS', () => {
-  it('T24 item 28 finds a federated principal, a federating action, an outside service by name and by the list, Lambda outside the handler, another principal, and the credential-issuing resources, on a planted template', () => {
-    const role = (Principal: unknown, Action: unknown = 'sts:AssumeRole') => ({
+  it('T24 item 28 finds a federated principal, a federating action, an outside service by name and by the list, a workload service on a role not its own, another principal, and the credential-issuing resources, on a planted template', () => {
+    const role = (Principal: unknown, Action: unknown = 'sts:AssumeRole', RoleName?: string) => ({
       Type: 'AWS::IAM::Role',
       Properties: {
         AssumeRolePolicyDocument: { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Principal, Action }] },
+        ...(RoleName === undefined ? {} : { RoleName }),
       },
     })
+    const ecsTasks = { Service: 'ecs-tasks.amazonaws.com' }
+    const flowLogs = { Service: 'vpc-flow-logs.amazonaws.com' }
     const planted: Template = {
       Resources: {
         Federated: role({ Federated: 'cognito-identity.amazonaws.com' }, 'sts:AssumeRoleWithWebIdentity'),
-        Saml: role({ Service: 'ecs-tasks.amazonaws.com' }, 'sts:AssumeRoleWithSAML'),
-        Wildcard: role({ Service: 'ecs-tasks.amazonaws.com' }, 'sts:*'),
+        Saml: role(ecsTasks, 'sts:AssumeRoleWithSAML', 'hearth-nonprod-api-task'),
+        Wildcard: role(ecsTasks, 'sts:*', 'hearth-nonprod-api-exec'),
+        // ECS's tasks on an unnamed role, a role of another name and the flow log's role, VPC Flow
+        // Logs on a task role, and Lambda on a role the handler doesn't run as.
+        Unnamed: role(ecsTasks),
+        Misnamed: role(ecsTasks, 'sts:AssumeRole', 'hearth-nonprod-planted-task'),
+        FlowLogRole: role({ Service: ['vpc-flow-logs.amazonaws.com', 'ecs-tasks.amazonaws.com'] }),
+        FlowLog: {
+          Type: 'AWS::EC2::FlowLog',
+          Properties: { DeliverLogsPermissionArn: { 'Fn::GetAtt': ['FlowLogRole', 'Arn'] } },
+        },
+        TaskFlowLogs: role(flowLogs, 'sts:AssumeRole', 'hearth-nonprod-worker-task'),
         Anywhere: role({ Service: 'rolesanywhere.amazonaws.com' }),
         Hybrid: role({ Service: 'ssm.amazonaws.com' }),
         Iot: role({ Service: 'credentials.iot.amazonaws.com' }),
@@ -1416,13 +1704,17 @@ describe('T24 item 28: no workload role trusts a machine outside AWS', () => {
       'Federated: sts:AssumeRoleWithWebIdentity federates',
       'Saml: sts:AssumeRoleWithSAML federates',
       'Wildcard: sts:* federates',
+      'Unnamed: trusts ecs-tasks.amazonaws.com, which only the twelve task and execution roles may',
+      'Misnamed: trusts ecs-tasks.amazonaws.com, which only the twelve task and execution roles may',
+      'FlowLogRole: trusts ecs-tasks.amazonaws.com, which only the twelve task and execution roles may',
+      "TaskFlowLogs: trusts vpc-flow-logs.amazonaws.com, which only the flow log's role may",
       'Anywhere: trusts rolesanywhere.amazonaws.com, which hands AWS credentials to a machine outside AWS',
       "Anywhere: trusts rolesanywhere.amazonaws.com, outside the workload's services",
       'Hybrid: trusts ssm.amazonaws.com, which hands AWS credentials to a machine outside AWS',
       "Hybrid: trusts ssm.amazonaws.com, outside the workload's services",
       'Iot: trusts credentials.iot.amazonaws.com, which hands AWS credentials to a machine outside AWS',
       "Iot: trusts credentials.iot.amazonaws.com, outside the workload's services",
-      `Lambda: trusts ${HANDLER_SERVICE}, outside the workload's services`,
+      `Lambda: trusts ${HANDLER_SERVICE}, which only the default-group handler's role may`,
       'Account: trusts a principal of type AWS',
       'Anyone: trusts "*", not a service',
       'TrustAnchor: AWS::RolesAnywhere::TrustAnchor, which issues AWS credentials outside AWS',
@@ -1431,7 +1723,7 @@ describe('T24 item 28: no workload role trusts a machine outside AWS', () => {
     ])
   })
 
-  it('T24 item 28: every workload template’s roles trust ECS’s tasks, VPC Flow Logs or, the handler’s alone, Lambda, and nothing issues credentials outside AWS', () => {
+  it('T24 item 28 C11-D38: every workload template’s roles trust only their own service, ECS’s tasks the twelve, VPC Flow Logs the flow log’s and Lambda the handler’s, and nothing issues credentials outside AWS', () => {
     for (const { label, template } of workloadTemplates()) {
       expect(federatedTrustProblems(template), label).toEqual([])
     }
@@ -1488,7 +1780,7 @@ describe('T24 item 15 C11-D40: ECS Exec keeps nothing of a session', () => {
     expect(execLoggingProblems(tasks, false)).toEqual(['1 clusters'])
   })
 
-  it('T24 item 15: each stage’s Platform holds one cluster, with ECS Exec’s logging NONE, and no other workload template holds one, committed or with restoreActive set', () => {
+  it('T24 item 15: each stage’s Platform holds one cluster, with ECS Exec’s logging NONE, and no other workload template holds one, in any build', () => {
     for (const { label, name, template } of workloadTemplates()) {
       expect(execLoggingProblems(template, name.endsWith('-Platform')), label).toEqual([])
     }
@@ -1512,8 +1804,9 @@ const OPEN = ['0.0.0.0/0', '::/0']
 // services (a PrivateLink service of Hearth's own), Verified Access, carrier and local gateways and
 // Elastic IPs; and other services' ways into a VPC: VPC Lattice (a resource gateway is a point of
 // ingress into the VPC, by CloudFormation's own description), API Gateway's VPC links, CloudFront's
-// VPC origins, Global Accelerator and the classic load balancer. NoOtherWayIn names only EC2's four
-// products, so the rest are held here; an unclassified type also fails IAC-01 until policies.ts
+// VPC origins, Global Accelerator and the classic load balancer. NoOtherWayIn names EC2's four
+// products and VPC Lattice's resource gateway, target group and VPC association; the rest, and every
+// Lattice type, are held here, and an unclassified type also fails IAC-01 until policies.ts
 // classifies it.
 const OTHER_WAYS = [
   /^AWS::EC2::NatGateway$/,
@@ -1601,15 +1894,34 @@ function environmentText(value: unknown, template: Template): string | undefined
   const parts = join[1].map(part => environmentText(part, template))
   return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
 }
-// A URL's user information, the text between its `://` and the `@` before its host.
-const URL_USERINFO = /[a-z][a-z0-9+.-]*:\/\/([^/?#@]*)@/gi
-// Whether a value holds a URL whose user information has a password, or an unfixed part that could
-// carry one: the text CloudFormation resolves into a task definition's plain environment, which anyone
-// who can describe it reads.
-const holdsUrlPassword = (text: string) =>
-  [...text.matchAll(URL_USERINFO)].some(
-    ([, userinfo]) => userinfo !== undefined && (userinfo.includes(':') || userinfo.includes(UNFIXED)),
-  )
+// A URL in a value, from its scheme to the next space or the value's end: its authority (user
+// information, host and port), up to the first `/`, `?` or `#`, then the rest (its path, query and
+// fragment).
+const URL_PARTS = /[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/gi
+// A query or fragment key that names a credential, read percent-decoded as the server's clients read
+// it: pg and ioredis take a password from the query (`password`, any case, `pass%77ord` included) as
+// readily as from the user information, and the words are those the variable-name rule refuses
+// (SECRET_NAMES), so `sslpassword`, `pwd`, a token or a key are refused too.
+const CREDENTIAL_KEY = /pass|pwd|secret|token|key/i
+// Whether a value holds a URL with a password, or a part no template fixes where one could sit: a
+// password in its user information, a query or fragment key that names a credential, or an unfixed
+// part anywhere but its host (its user information, port, path, query or fragment). This is the text
+// CloudFormation resolves into a task definition's plain environment, which anyone who can describe
+// it reads. A query that names no credential (`sslmode=verify-full`) is not refused.
+function holdsUrlPassword(text: string): boolean {
+  return [...text.matchAll(URL_PARTS)].some(([, authority = '', rest = '']) => {
+    const at = authority.lastIndexOf('@')
+    const userinfo = at === -1 ? '' : authority.slice(0, at)
+    const port = authority.slice(at + 1).replace(/^(?:\[[^\]]*\]|[^:]*)/, '')
+    if (userinfo.includes(':') || [userinfo, port, rest].some(part => part.includes(UNFIXED))) return true
+    const hash = rest.indexOf('#')
+    const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
+    const question = beforeHash.indexOf('?')
+    const query = question === -1 ? '' : beforeHash.slice(question + 1)
+    const fragment = hash === -1 ? '' : rest.slice(hash + 1)
+    return [query, fragment].some(part => [...new URLSearchParams(part).keys()].some(key => CREDENTIAL_KEY.test(key)))
+  })
+}
 // A dynamic reference that resolves a secret into the template, and so into the plain environment.
 const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
 
@@ -1737,20 +2049,23 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
 // one, so no second load balancer of any type is another way in (C11-D31, C11-D45).
 const stageBalancers = (templates: ReadonlyArray<readonly [string, Template]>): string[] =>
   templates.flatMap(([part, template]) => ofType(template, 'AWS::ElasticLoadBalancingV2::LoadBalancer').map(() => part))
-// The security groups and rules a stack other than its stage's Platform holds, which must be none
-// (C11-D31): every group and rule is Platform's, so no later stack opens a way between the groups it
-// reads by name, which the ingress check above, reading one template, can't resolve. The exact rule
-// table is network.test.ts's.
-const SECURITY_GROUP_TYPES = [
+// The security groups, rules and VPC endpoints a stack other than its stage's Platform holds, which
+// must be none (C11-D30, C11-D31): every group and rule is Platform's, so no later stack opens a way
+// between the groups it reads by name, which the ingress check above, reading one template, can't
+// resolve; and every endpoint is, so IAC-12's exact set, read in each Platform, is the stage's whole
+// set, and no later stack adds an endpoint to another service, an AWS one or a PrivateLink service
+// outside AWS, in a group the tasks already reach. The exact rule table is network.test.ts's.
+const PLATFORM_ONLY_TYPES = [
   'AWS::EC2::SecurityGroup',
   'AWS::EC2::SecurityGroupIngress',
   'AWS::EC2::SecurityGroupEgress',
+  'AWS::EC2::VPCEndpoint',
 ]
-const groupsOutsidePlatform = (name: string, template: Template): string[] =>
+const outsidePlatform = (name: string, template: Template): string[] =>
   name.endsWith('-Platform')
     ? []
     : resources(template)
-        .filter(([, r]) => SECURITY_GROUP_TYPES.includes(r.Type))
+        .filter(([, r]) => PLATFORM_ONLY_TYPES.includes(r.Type))
         .map(([id, r]) => `${id}: ${r.Type}`)
 
 describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () => {
@@ -2007,6 +2322,42 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     expect(
       valued('DATABASE_URL', ['postgres://hearth_app:', 'planted', '@database.pending.invalid:5432/hearth'].join('')),
     ).toEqual([`${apiTask}: DATABASE_URL holds a URL with a password`])
+    // A password in the query, which pg and ioredis read as readily as from the user information:
+    // literal, in any case and percent-encoded, with a user or without, in a fragment, and from a part
+    // no template fixes, which is refused anywhere but the host (the port, the path, the query). A
+    // query that names no credential passes, and so does each real value.
+    const password = (Name: string) => [`${apiTask}: ${Name} holds a URL with a password`]
+    const database = ['postgres://hearth_app', 'database.pending.invalid:5432/hearth'].join('@')
+    for (const query of ['password=x', 'PASSWORD=x', 'pass%77ord=x', 'sslpassword=x', 'user=hearth_app&password=x']) {
+      expect(valued('DATABASE_URL', `${database}?${query}`), query).toEqual(password('DATABASE_URL'))
+    }
+    expect(
+      valued(
+        'DATABASE_URL',
+        ['postgres://database.pending.invalid:5432/hearth', 'user=hearth_app&password=x'].join('?'),
+      ),
+    ).toEqual(password('DATABASE_URL'))
+    expect(valued('DATABASE_URL', { 'Fn::Join': ['', [`${database}?password=`, host]] })).toEqual(
+      password('DATABASE_URL'),
+    )
+    expect(valued('DATABASE_URL', `${database}?sslmode=verify-full`)).toEqual([])
+    expect(valued('DATABASE_URL', database)).toEqual([])
+    const queried = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', host, ':6379', ...parts]] })
+    expect(valued('VALKEY_URL', ['rediss://valkey.pending.invalid:6379', 'password=x'].join('?'))).toEqual(
+      password('VALKEY_URL'),
+    )
+    for (const parts of [
+      ['?password=x'],
+      ['?username=hearth_api&password=', host],
+      ['?password=', host],
+      ['?', host],
+      ['#password=x'],
+      ['/', host],
+    ]) {
+      expect(valued('VALKEY_URL', queried(...parts)), JSON.stringify(parts)).toEqual(password('VALKEY_URL'))
+    }
+    expect(valued('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] })).toEqual(password('VALKEY_URL'))
+    expect(valued('VALKEY_URL', queried())).toEqual([])
     expect(
       valued('DATABASE_URL', {
         'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:planted}}', '@h']],
@@ -2025,24 +2376,41 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     ])
   })
 
-  it('IAC-03 C11-D31: no security group or rule outside a stage’s Platform, committed or with restoreActive set; one planted in each of copies of the real Services, Data and Tasks templates is found', () => {
-    const plant = (part: 'Services' | 'Data' | 'Tasks', type: string) =>
-      groupsOutsidePlatform(
+  it('IAC-03 IAC-12 C11-D30 C11-D31: no security group, rule or VPC endpoint outside a stage’s Platform, in any build; one planted in each of copies of the real Services, Data and Tasks templates is found, an endpoint to a PrivateLink service outside AWS among them', () => {
+    const plant = (part: 'Services' | 'Data' | 'Tasks', type: string, properties: Record<string, unknown> = {}) =>
+      outsidePlatform(
         `Hearth-nonprod-${part}`,
         plantedIn(workloadTemplate(workload, 'nonprod', part), resources => {
-          resources.Planted = { Type: type, Properties: {} }
+          resources.Planted = { Type: type, Properties: properties }
         }),
       )
     expect(plant('Services', 'AWS::EC2::SecurityGroupEgress')).toEqual(['Planted: AWS::EC2::SecurityGroupEgress'])
     expect(plant('Data', 'AWS::EC2::SecurityGroupIngress')).toEqual(['Planted: AWS::EC2::SecurityGroupIngress'])
     expect(plant('Tasks', 'AWS::EC2::SecurityGroup')).toEqual(['Planted: AWS::EC2::SecurityGroup'])
-    expect(
-      workloadTemplates()
-        .filter(({ name }) => name.endsWith('-Platform'))
-        .map(({ template }) => ofType(template, 'AWS::EC2::SecurityGroup').length > 0),
-    ).toEqual(builds().flatMap(() => ENVIRONMENTS.map(() => true)))
+    // Platform's own ecr.api endpoint, copied whole, and once as an endpoint to a partner's service.
+    const [, ecrApi] = ofType(workloadTemplate(workload, 'nonprod', 'Platform'), 'AWS::EC2::VPCEndpoint').find(
+      ([, r]) => r.Properties?.ServiceName === serviceName('ecr.api'),
+    ) as [string, Resource]
+    const partner = ['com', 'amazonaws', 'vpce', REGION, `vpce-svc-${'a'.repeat(17)}`].join('.')
+    expect(plant('Data', 'AWS::EC2::VPCEndpoint', { ...ecrApi.Properties, ServiceName: partner })).toEqual([
+      'Planted: AWS::EC2::VPCEndpoint',
+    ])
+    expect(plant('Services', 'AWS::EC2::VPCEndpoint', structuredClone(ecrApi.Properties))).toEqual([
+      'Planted: AWS::EC2::VPCEndpoint',
+    ])
+    expect(plant('Tasks', 'AWS::EC2::VPCEndpoint', structuredClone(ecrApi.Properties))).toEqual([
+      'Planted: AWS::EC2::VPCEndpoint',
+    ])
+    for (const type of ['AWS::EC2::SecurityGroup', 'AWS::EC2::VPCEndpoint']) {
+      expect(
+        workloadTemplates()
+          .filter(({ name }) => name.endsWith('-Platform'))
+          .map(({ template }) => ofType(template, type).length > 0),
+        type,
+      ).toEqual(builds().flatMap(([, , envs]) => envs.map(() => true)))
+    }
     for (const { label, name, template } of workloadTemplates()) {
-      expect(groupsOutsidePlatform(name, template), label).toEqual([])
+      expect(outsidePlatform(name, template), label).toEqual([])
     }
   })
 
@@ -2053,21 +2421,21 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
       resources.Second = { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Type: 'network' } }
     })
     expect(stage(workload, 'nonprod', second)).toEqual(['Platform', 'Services'])
-    for (const [build, synth] of builds()) {
-      for (const env of ENVIRONMENTS) {
+    for (const [build, synth, envs] of builds()) {
+      for (const env of envs) {
         expect(stage(synth, env), `${build} ${env}`).toEqual(env === 'restore' ? [] : ['Platform'])
       }
     }
   })
 
-  it('IAC-03 IAC-04 IAC-20 C11-D37: every workload template keeps them, committed and with restoreActive set', () => {
+  it('IAC-03 IAC-04 IAC-20 C11-D37: every workload template keeps them, in every build', () => {
     for (const { label, env, template } of workloadTemplates()) {
       expect(networkProblems(template, env), label).toEqual([])
     }
   })
 
   it('C11-D45 IAC-20: the restore stage holds no public subnet, internet gateway, route, load balancer, listener, target group, certificate or record, committed or with restoreActive set', () => {
-    for (const [build, synth] of builds()) {
+    for (const [build, synth] of buildsWith('restore')) {
       for (const part of PARTS) {
         const template = workloadTemplate(synth, 'restore', part)
         const found = resources(template)
