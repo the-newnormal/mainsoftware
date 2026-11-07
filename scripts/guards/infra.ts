@@ -2,14 +2,14 @@
 // proves each on planted text and then holds the repository to it. This file and infra.test.ts are on
 // the owner's-read list (C11-D74): they hold the rules every infra change is checked against.
 //
-// Cases so far (C0.11 PR 1): IG-01 to IG-08 and IG-11. IG-09 (the break-glass helper), IG-10 (the
-// model lists' one home) and IG-12 (no executable assets) join with C0.11 PR 2, which brings the code
-// they read.
+// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12.
 import { posix } from 'node:path'
 import ts from 'typescript'
+import { globsOverlap, MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
+import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { boundaryBreach, landsIn, type Workspace } from './boundaries'
 import { identifyingMatches } from './identifying'
-import { packageOf } from './imports'
+import { importsOf, packageOf } from './imports'
 
 // One finding: where, and the rule's reason. Never the value that matched.
 export type Finding = string
@@ -157,6 +157,11 @@ export const DESTROY_RULES: readonly CodeRule[] = [
     id: 'IG-04',
     pattern: /\bautoDeleteObjects\b/,
     why: 'auto-delete empties a bucket through a Lambda, outside the deletion code',
+  },
+  {
+    id: 'IG-04',
+    pattern: /\bautoDeleteImages\b/,
+    why: 'auto-delete empties a repository through a Lambda, outside the deletion code',
   },
   {
     id: 'IG-04',
@@ -361,8 +366,13 @@ export function ruleFindings(path: string, code: string, rules: readonly CodeRul
 
 // --- IG-03: cdk.json and the context file ---------------------------------------------------------
 
-// What's wrong with infra/cdk.json: the app must be the workload entry run by Node, and no plugin may
-// load code into the CLI, which runs it with the deploy job's credentials (C11-D48).
+// What's wrong with infra/cdk.json: the app must be the workload entry run by Node, no plugin may
+// load code into the CLI, which runs it with the deploy job's credentials (C11-D48), and no build
+// command may run before it, which the CLI does beside cdk.json with whoever's credentials run it,
+// even with --app naming an assembly (C0.11 review 5 DOCS-01). It holds only the keys it holds today,
+// so no other setting the CLI acts on arrives unread.
+const CDK_JSON_KEYS: ReadonlySet<string> = new Set(['app', 'context', 'versionReporting'])
+
 export function cdkJsonProblems(json: unknown): Finding[] {
   if (typeof json !== 'object' || json === null || Array.isArray(json)) {
     return ['infra/cdk.json: IG-03 is not a JSON object']
@@ -370,7 +380,13 @@ export function cdkJsonProblems(json: unknown): Finding[] {
   const found: Finding[] = []
   const config = json as Record<string, unknown>
   if (config.app !== 'node bin/workload.ts') found.push("infra/cdk.json: IG-03 app must be 'node bin/workload.ts'")
-  if ('plugin' in config) found.push('infra/cdk.json: IG-03 a plugin runs code inside the CLI')
+  for (const key of Object.keys(config)) {
+    if (key === 'plugin') found.push('infra/cdk.json: IG-03 a plugin runs code inside the CLI')
+    else if (key === 'build') found.push('infra/cdk.json: IG-03 a build command runs before the CLI reads any app')
+    else if (!CDK_JSON_KEYS.has(key)) {
+      found.push(`infra/cdk.json: IG-03 holds only app, context and versionReporting, not ${JSON.stringify(key)}`)
+    }
+  }
   return found
 }
 
@@ -781,6 +797,1666 @@ export function packageFindings(specifiers: ReadonlyMap<string, readonly string[
       const name = packageOf(spec)
       if (name !== undefined) found.push(`${path}: IG-08 loads ${name}, but runs without npm ci`)
     }
+  }
+  return found
+}
+
+// --- IG-09: the break-glass helper (infra/bin/break-glass.sh; C11-D11 to C11-D15) ---------------
+
+// The helper's commands as IG-09 reads them: whole-line comments dropped (the shebang kept), lines
+// continued by a trailing backslash joined, and a here-document's body joined to the command that
+// opens it (it is that command's input), each with the number of its first line. The helper runs top
+// to bottom with every function defined before its first use, so a line's place in this list is its
+// place in the run, which the order rules read.
+export interface ShellLine {
+  line: number
+  text: string
+}
+
+const HEREDOC = /(?<!<)<<(-?)\s*(['"]?)([A-Za-z_]\w*)\2/
+
+export function shellLines(text: string): ShellLine[] {
+  const raw = text.split('\n')
+  const lines: ShellLine[] = []
+  let current: ShellLine | undefined
+  for (let i = 0; i < raw.length; i++) {
+    const line = raw[i] ?? ''
+    if (current === undefined && /^\s*#/.test(line) && !(i === 0 && line.startsWith('#!'))) continue
+    if (current === undefined && line.trim() === '') continue
+    const part = (line.endsWith('\\') ? line.slice(0, -1) : line).trim()
+    current = current === undefined ? { line: i + 1, text: part } : { ...current, text: `${current.text} ${part}` }
+    if (line.endsWith('\\')) continue
+    const heredoc = HEREDOC.exec(current.text)
+    if (heredoc !== null) {
+      const strip = heredoc[1] === '-'
+      while (i + 1 < raw.length) {
+        i += 1
+        const body = raw[i] ?? ''
+        if ((strip ? body.replace(/^\t+/, '') : body) === heredoc[3]) break
+        current.text += `\n${body}`
+      }
+    }
+    lines.push(current)
+    current = undefined
+  }
+  if (current !== undefined) lines.push(current)
+  return lines
+}
+
+// Each function the helper defines, `name() {` to the next line that is `}` alone, in text order, as
+// the indices of its body's lines; a name defined twice is listed twice.
+export function shellFunctionRanges(lines: readonly ShellLine[]): Array<{ name: string; start: number; end: number }> {
+  const found: Array<{ name: string; start: number; end: number }> = []
+  for (let i = 0; i < lines.length; i++) {
+    const name = /^([A-Za-z_]\w*)\(\) \{$/.exec(lines[i]?.text ?? '')?.[1]
+    if (name === undefined) continue
+    const end = lines.findIndex((line, j) => j > i && line.text === '}')
+    if (end < 0) break
+    found.push({ name, start: i + 1, end })
+    i = end
+  }
+  return found
+}
+
+// The same by name, each name's last definition, the one bash runs.
+export const shellFunctions = (lines: readonly ShellLine[]): Map<string, { start: number; end: number }> =>
+  new Map(shellFunctionRanges(lines).map(({ name, start, end }) => [name, { start, end }]))
+
+// Every function definition in the helper's commands, in any form bash takes (`name() {`,
+// `name () {`, a one-line `name() { …; }`, `function name`, after ; or && and the like), outside
+// quotes and here-documents, by its line's index, and whether it is in the one form IG-09 reads:
+// `name() {` alone, in column 0. Bash runs a name's last definition, so a second one would let the
+// rules read one body while bash runs another (IG-09q).
+export interface ShellDefinition {
+  name: string
+  index: number
+  whole: boolean
+}
+
+const DEFINITION =
+  /(?:^|[;&|({]|(?:^|\s)(?:then|do|else|if|elif|while|until|!)(?=\s))\s*(?:function\s+([^\s;&|()<>'"`$\\]+)|([^\s;&|()<>'"`$\\=]+)\s*\(\s*\))/g
+
+export function shellDefinitions(text: string): ShellDefinition[] {
+  const raw = text.split('\n')
+  return shellLines(text).flatMap((line, index) => {
+    // A here-document's body, after the line's first newline, is the command's input, not code.
+    const command = line.text.split('\n')[0] ?? ''
+    return [...command.matchAll(DEFINITION)]
+      .filter(match => !quotedAt(command, match.index ?? 0))
+      .map(match => {
+        const name = match[1] ?? match[2] ?? ''
+        return { name, index, whole: line.text === `${name}() {` && raw[line.line - 1] === line.text }
+      })
+  })
+}
+
+// A function's text as the helper writes it, definition and all, for IG-09 to run on its own: the
+// one definition shellFunctions reads, the body bash runs. Undefined when the helper has no such
+// function, or defines it more than once or in another form, so a test running it fails loudly.
+export function shellFunction(text: string, name: string): string | undefined {
+  const definitions = shellDefinitions(text).filter(definition => definition.name === name)
+  if (definitions.length !== 1 || definitions[0]?.whole !== true) return undefined
+  const lines = shellLines(text)
+  const range = shellFunctions(lines).get(name)
+  const first = range === undefined ? undefined : lines[range.start - 1]
+  const last = range === undefined ? undefined : lines[range.end]
+  if (first === undefined || last === undefined) return undefined
+  return text
+    .split('\n')
+    .slice(first.line - 1, last.line)
+    .join('\n')
+}
+
+// What a function may never be named (IG-09q): a bash builtin or keyword, which it would replace for
+// the rest of the run (an exit() that returns would let every refusal go on), or a command the helper
+// runs. infra.test.ts holds the first two to what bash itself lists.
+export const RESERVED_FUNCTION_NAMES: readonly string[] = [
+  ...['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen'],
+  ...['complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec'],
+  ...['exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let'],
+  ...['local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly'],
+  ...['return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type'],
+  ...['typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait'],
+  ...['if', 'then', 'else', 'elif', 'fi', 'case', 'esac', 'for', 'select', 'while', 'until', 'do', 'done'],
+  ...['in', 'function', 'time', '{', '}', '!', '[[', ']]', 'coproc'],
+  ...['aws', 'jq', 'curl', 'date', 'find', 'id', 'rm', 'bash', 'sh', 'env', 'sudo', 'cat', 'tee', 'logger'],
+  ...['mktemp', 'printenv'],
+]
+
+// The helper's REASON_FORM_* assignments, which its reason check reads.
+export const reasonFormLines = (text: string): string[] =>
+  text.split('\n').filter(line => /^REASON_FORM_[A-Z]+='[^']*'$/.test(line))
+
+// An `aws` command word: aws then a space, not part of a longer word or path (aws-cli/2. is a version
+// string, and no message or here-document in the helper says "aws ").
+const AWS_WORD = /(?<![\w./-])aws\s/
+const CREDENTIAL_ENV = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'] as const
+const CREDENTIAL_NAMES =
+  /\b(?:AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AccessKeyId|SecretAccessKey|SessionToken)\b/
+// A command that writes: echo, printf, cat, tee or logger, or a redirect to a file. A redirect to
+// /dev/null, or from one descriptor to another, writes nowhere.
+const WRITER = /(?:^|[\s;&|(])(?:echo|printf|cat|tee|logger)(?=\s|$)/
+const REDIRECT = /&?>>?\s*(&?)([^\s;&|)<>]*)/g
+const writes = (text: string): boolean =>
+  WRITER.test(text) || [...text.matchAll(REDIRECT)].some(([, dup, target]) => dup !== '&' && target !== '/dev/null')
+// What the helper may never run: a trace, printenv, env given no command to run (printsEnvironment),
+// a command that lists variables (listsVariables, declare -p), a debug flag, eval, or a change to the
+// CLI's configuration. The shell's rc file, where any command would see the credentials, is matched
+// whole besides (IG-09 i). A trace is an x in any option word of a set, bash or sh command (set -e -x,
+// bash -ix), xtrace named anywhere (set -o, a joined -eo, shopt -o, SHELLOPTS), or BASH_XTRACEFD.
+const TRACE_NAMED = /\bxtrace\b|BASH_XTRACEFD/
+const TRACE_RUN = /(?:^|[\s;&|(!/"'])(?:set|bash|sh)(?=\s)/g
+const traces = (text: string): boolean =>
+  TRACE_NAMED.test(text) ||
+  [...text.matchAll(TRACE_RUN)].some(run =>
+    wordsAsWritten(text.slice((run.index ?? 0) + run[0].length)).some(word =>
+      /^-[A-Za-z]*x/.test(word.replace(/["']/g, '')),
+    ),
+  )
+// allexport: an a in any option word of a set command (set -a, set -ea), or allexport named anywhere
+// (set -o, shopt -o, SHELLOPTS), which hands every variable after it, the credentials read into plain
+// variables among them, to every command the helper runs.
+const SET_RUN = /(?:^|[\s;&|(!])set(?=\s)/g
+const SHOPT_RUN = /(?:^|[\s;&|(!{])shopt(?=\s)/g
+const exportsAll = (text: string): boolean =>
+  /\ballexport\b/.test(text) ||
+  [...text.matchAll(SET_RUN)].some(run =>
+    wordsAsWritten(text.slice((run.index ?? 0) + run[0].length)).some(word =>
+      /^-[A-Za-z]*a/.test(word.replace(/["']/g, '')),
+    ),
+  )
+const EXPOSING: ReadonlyArray<readonly [RegExp, string]> = [
+  [/(?:^|[\s;&|(])printenv\b/, 'printenv prints a variable'],
+  [/\b(?:declare|typeset|export|readonly)\s+-[A-Za-z]*p\b/, 'it prints variables'],
+  [/--debug\b/, '--debug prints requests, credentials among them'],
+  [/(?:^|[\s;&|(])eval(?:\s|$)/, 'eval runs text as code'],
+  [/\baws\s+configure\s+set\b/, 'aws configure set writes to the CLI configuration'],
+  [/\baws\s+(?:configure\s+export-credentials|sso\s+get-role-credentials)\b/, 'it prints credentials'],
+]
+
+// A command that prints variables when it names none: set prints every one, the unexported variables
+// the credentials are read into among them, and declare, typeset, local, export and readonly given
+// only options print theirs, so `set >file`, `set 2>/dev/null`, `{ set; }`, `$(declare)` and
+// `declare | cat` each print or write them. A descriptor written before a redirect (the 2 of 2>) is
+// the redirect's, not a name. Read one line of a command at a time, outside quotes.
+const LISTING_RUN = /(?:^|[\s;&|(!{])(set|declare|typeset|local|export|readonly)(?=\s|$|[;&|)<>])/g
+function listsVariables(text: string): boolean {
+  return [...text.matchAll(LISTING_RUN)].some(run => {
+    const command = run[1] ?? ''
+    const start = (run.index ?? 0) + run[0].length - command.length
+    if (quotedAt(text, start)) return false
+    const words = wordsAsWritten(text.slice(start + command.length).replace(/(^|\s)\d+(?=[<>])/g, '$1'))
+    return command === 'set' ? words.length === 0 : words.every(word => /^[-+]/.test(word))
+  })
+}
+
+// env given no command to run prints every variable it holds: env, /usr/bin/env or command env with
+// only options, an option's value (-u NAME, -C DIR) and NAME=value words after it, read as
+// listsVariables reads set, so `env >file`, `env 2>/dev/null >file`, `env -0 >file`, `env -u PS1`,
+// `{ env; }`, `$(env)` and a backquoted env each print or write them. In the shell's rc they would
+// print the role's credentials, which the shell holds in its environment. One line of a command at
+// a time, outside quotes; jq's env. is no command word.
+const ENV_COMMAND = /(?:^|[\s;&|(!{`])((?:[\w.-]*\/)*env)(?=\s|$|[;&|)<>`])/g
+const ENV_VALUE_OPTIONS = new Set(['--unset', '--chdir', '--split-string', '--argv0'])
+function printsEnvironment(text: string): boolean {
+  return [...text.matchAll(ENV_COMMAND)].some(run => {
+    const command = run[1] ?? ''
+    const start = (run.index ?? 0) + run[0].length - command.length
+    if (quotedAt(text, start)) return false
+    const rest = (text.slice(start + command.length).split('`')[0] ?? '').replace(/(^|\s)\d+(?=[<>])/g, '$1')
+    const words = wordsAsWritten(rest).map(word => word.replace(/["']/g, ''))
+    let i = 0
+    for (; i < words.length; i++) {
+      const word = words[i] ?? ''
+      if (word === '--') continue
+      if (ENV_VALUE_OPTIONS.has(word) || /^-[A-Za-z0-9]*[uCSPa]$/.test(word)) i += 1
+      else if (!/^-/.test(word) && !/^[A-Za-z_]\w*=/.test(word)) break
+    }
+    return i >= words.length
+  })
+}
+
+// How often a command names a variable other than to read it: its bare name outside quotes (an
+// assignment, or the name printf -v, read, declare, local, export, unset, for or arithmetic is given),
+// and ${name=…} or ${name:=…}, which assign it wherever they stand. A jq --arg or --argjson name is
+// jq's own, and a here-document's body is the command's input, so neither is read.
+const NAMING = new Map<string, readonly [RegExp, RegExp]>()
+function namings(text: string, name: string): number {
+  let patterns = NAMING.get(name)
+  if (patterns === undefined) {
+    patterns = [new RegExp(`(?<![\\w$-])(?<!\\$\\{[!#]?)${name}(?![\\w-])`, 'g'), new RegExp(`\\$\\{${name}:?=`, 'g')]
+    NAMING.set(name, patterns)
+  }
+  const [bare, assigns] = patterns
+  const command = (text.split('\n')[0] ?? '').replace(/--arg(?:json)?\s+\w+/g, '')
+  return (
+    [...command.matchAll(bare)].filter(match => !quotedAt(command, match.index ?? 0)).length +
+    (command.match(assigns)?.length ?? 0)
+  )
+}
+
+// The words of the command that starts a text, as written (quotes kept), up to the first operator
+// outside quotes (; & | ) < > or a newline). A command substitution outside quotes is part of its word.
+function wordsAsWritten(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote: string | undefined
+  let depth = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\' && i + 1 < text.length) {
+      word += c
+      i += 1
+      word += text[i]
+      continue
+    } else if (c === '"') {
+      quote = quote === '"' ? undefined : '"'
+    } else if (quote === undefined && c === "'") {
+      quote = "'"
+    } else if (quote === undefined && c === '(' && text[i - 1] === '$') {
+      depth += 1
+    } else if (quote === undefined && depth > 0 && c === ')') {
+      depth -= 1
+    } else if (quote === undefined && depth === 0 && (c === '\n' || ';&|()<>'.includes(c))) {
+      break
+    } else if (quote === undefined && depth === 0 && /\s/.test(c)) {
+      if (word !== '') words.push(word)
+      word = ''
+      continue
+    }
+    word += c
+  }
+  if (word !== '') words.push(word)
+  return words
+}
+
+// Each jq run's program as written: the first word after jq that is neither an option nor an
+// option's value. A program read from a file (-f) has none here.
+const JQ_RUN = /(?:^|[\s;&|(])jq(?=\s)/g
+const JQ_TWO_VALUES = new Set(['--arg', '--argjson', '--slurpfile', '--rawfile'])
+const JQ_ONE_VALUE = new Set(['--indent', '-L'])
+function jqPrograms(text: string): string[] {
+  const programs: string[] = []
+  for (const run of text.matchAll(JQ_RUN)) {
+    const words = wordsAsWritten(text.slice((run.index ?? 0) + run[0].length))
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i] ?? ''
+      if (JQ_TWO_VALUES.has(word)) i += 2
+      else if (JQ_ONE_VALUE.has(word)) i += 1
+      else if (word === '-f' || word === '--from-file') break
+      else if (!word.startsWith('-')) {
+        programs.push(word)
+        break
+      }
+    }
+  }
+  return programs
+}
+
+// Whether a word as written expands anything in the shell: a $ or a backquote outside single quotes,
+// not escaped.
+function expands(word: string): boolean {
+  let quote: string | undefined
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i]
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\') i += 1
+    else if (c === '$' || c === '`') return true
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === "'" && quote === undefined) quote = "'"
+  }
+  return false
+}
+
+// The variables the helper reads the role's credentials into: the first three a `read -r` on the
+// assume-role line fills, which its --query lists as the key id, the secret and the token.
+function credentialVariables(lines: readonly ShellLine[]): string[] {
+  const assume = lines.find(line => /\baws\s+sts\s+assume-role\b/.test(line.text))
+  const read = assume === undefined ? null : /\bread\s+-r\s+(\w+)\s+(\w+)\s+(\w+)/.exec(assume.text)
+  return read === null ? [] : [read[1] ?? '', read[2] ?? '', read[3] ?? '']
+}
+
+// Whether a place in a line sits inside quotes. A ( … ) outside quotes, and a command substitution,
+// $( … ), even inside double quotes, hold commands whose quotes start afresh; a backslash escapes the
+// next character outside single quotes.
+function quotedAt(text: string, offset: number): boolean {
+  const outer: Array<string | undefined> = []
+  let quote: string | undefined
+  for (let i = 0; i < offset; i++) {
+    const c = text[i]
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === '\\') i += 1
+    else if (quote === '"') {
+      if (c === '"') quote = undefined
+      else if (c === '$' && text[i + 1] === '(') {
+        outer.push(quote)
+        quote = undefined
+        i += 1
+      }
+    } else if (c === '"' || c === "'") quote = c
+    else if (c === '(') outer.push(undefined)
+    else if (c === ')' && outer.length > 0) quote = outer.pop()
+  }
+  return quote !== undefined
+}
+
+// A credential's prefix assignment as bash takes one, NAME="$var" outside quotes, before a simple
+// command's command word: at the start of the command (the line's start; after an unescaped ;, & or |
+// that isn't part of a redirect; after (, so $( and <( too; or after !, {, then, do, else, if, elif,
+// while or until), with nothing between but other assignments. Anywhere else the same text is an
+// argument: env's, sudo's, or the command's own.
+const ASSIGNMENT_WORD = `[A-Za-z_]\\w*=(?:"(?:[^"\\\\]|\\\\.)*"|'[^']*'|\\\\.|[^\\s"'\\\\;&|()<>])*`
+const COMMAND_START = `(?:^|(?<![\\\\<>])[;&|]|(?<!\\\\)\\(|(?:^|\\s)(?:!|\\{|then|do|else|if|elif|while|until)\\s)`
+function credentialPrefixes(credentials: readonly string[]): RegExp {
+  const name = CREDENTIAL_ENV.join('|')
+  const value = `"\\$\\{?(?:${credentials.join('|') || '(?!)'})\\}?"`
+  return new RegExp(`(?<=${COMMAND_START}\\s*(?:${ASSIGNMENT_WORD}\\s+)*)(?:${name})=${value}(?=\\s)`, 'g')
+}
+const withoutPrefixes = (text: string, prefixes: RegExp): string =>
+  text.replace(prefixes, (assignment: string, offset: number) => (quotedAt(text, offset) ? assignment : ''))
+// A run of env (or /usr/bin/env, command env) or sudo: any AWS_ word among its arguments is in its argv.
+const ENV_RUN = /(?:^|[\s;&|(!])(?:\/usr\/bin\/env|command\s+env|env|sudo)(?=\s)/g
+
+// What IG-09 (h) reads: a trap named anywhere in a command, quoted or not (no message the helper
+// prints says trap); exec or kill run as a command; an exit or return as a command word; an exit run
+// as one, or reached through a call; errexit turned on (an e in a set option word, or errexit named);
+// and the shell the role's credentials open, whose function alone may hand Ctrl-C to it.
+const TRAP_WORD = /(?<![\w-])trap(?![\w-])/
+const ENDS_RUN = /(?:^|[\s;&|(!{])(exec|kill)(?=\s|$|[;&|)<>])/g
+const EXITS = /(?:^|[\s;&|(!{])(?:exit|return)(?=\s|$|[;&|)])/
+const EXIT_RUN = /(?:^|[\s;&|(!{])exit(?=\s|$|[;&|)])/
+const ERREXIT_ON = /\berrexit\b|(?:^|[\s;&|(!{])set\s+(?:[^\s;&|]+\s+)*-[A-Za-z]*e/
+const SHELL_RUN = /\bbash\s+--rcfile\b/
+// The shell's rc file, written by its here-document, and the shell's start, each matched whole by
+// IG-09 (i): the rc runs inside the shell that holds the role's credentials in its environment, so
+// any line added to it could print or write them (env, /proc/self/environ, awk's ENVIRON), and the
+// two keep the shell's history off (unset HISTFILE, HISTFILE=/dev/null).
+const SHELL_RC = [
+  `cat >"$rc" <<'RC'`,
+  'unset HISTFILE',
+  'hearth_bg_prompt() {',
+  '  local left',
+  '  left=$(( (HEARTH_BREAK_GLASS_UNTIL - $(date -u +%s)) / 60 ))',
+  `  if [ "$left" -le 5 ] && [ "\${hearth_bg_warned:-}" != 5 ]; then`,
+  '    hearth_bg_warned=5',
+  `    printf 'break-glass: about %s minutes left: finish, then type exit so the close entry is written\\n' "$left"`,
+  `  elif [ "$left" -le 10 ] && [ -z "\${hearth_bg_warned:-}" ]; then`,
+  '    hearth_bg_warned=10',
+  `    printf 'break-glass: about %s minutes left\\n' "$left"`,
+  '  fi',
+  '  if [ "$left" -lt 0 ]; then left=0; fi',
+  `  PS1="[BREAK-GLASS $HEARTH_BREAK_GLASS \${left}m] "`,
+  '}',
+  'PROMPT_COMMAND=hearth_bg_prompt',
+].join('\n')
+const SHELL_START = [
+  'AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st"',
+  'HEARTH_BREAK_GLASS="$environment $reason" HEARTH_BREAK_GLASS_UNTIL="$expires_at" HISTFILE=/dev/null',
+  'bash --rcfile "$rc" -i || true',
+].join(' ')
+const RC_EXPANDED = /\$\{?rc\b/
+// The close entry's one jq run, its continuations joined, matched whole by IG-09 (k) (C0.11 review 12
+// CR-17): $session is bound once, by --arg to "$first_session", with no --argjson, --slurpfile or
+// --rawfile of the same name ahead of it, and the program builds the object and nothing more, so no
+// later filter (.session =, |=, setpath, del, with_entries, a second object) sets the field again.
+const CLOSE_ENTRY = [
+  `jq -n --arg schema "$SCHEMA" --arg environment "$environment" --arg session "$first_session"`,
+  `--arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson modes "$modes_json" --argjson ids "$ids_json"`,
+  `--arg outcome "$outcome"`,
+  `'{schema: $schema, entry: "close", environment: $environment, session: $session, at: $at, modes: $modes, ids: $ids, outcome: $outcome}'`,
+  `>|"$entry_file"`,
+].join(' ')
+// The console's one curl run, its continuation joined, matched whole by IG-09 (l): -q first (curl
+// ignores it anywhere else), so it reads no .curlrc, and no option, redirect or pipe beyond these, so
+// nothing traces or writes the exchange, the POST body holding the role's session or the answer
+// holding its sign-in token (--trace, --trace-ascii, --libcurl, -v, --stderr, -o, -D, a tee), reads
+// more options (-K) or turns the certificate check off (-k).
+const CONSOLE_CURL = [
+  `curl -q -fsS --proto '=https' --tlsv1.2 --data-urlencode 'Action=getSigninToken' --data-urlencode 'Session@-'`,
+  `https://signin.aws.amazon.com/federation 2>/dev/null | jq -r '.SigninToken // empty'); then`,
+].join(' ')
+// What IG-09 (e) has the helper unset besides every AWS_ variable: curl's config folders, a TLS key
+// log the CLI and curl both write, the CA overrides the CLI and curl honour, and Node's switch that
+// turns its certificate check off, its options whole (a TLS key log, the system's CAs or code loaded
+// first) and its switch to the system's CAs, for the CDK CLI. NODE_EXTRA_CA_CERTS stays: it gives the
+// Owner bootstrap script RDS's CA, and Node ignores it wherever a command is given CAs of its own.
+const INHERITED_TLS = [
+  'CURL_HOME',
+  'XDG_CONFIG_HOME',
+  'SSLKEYLOGFILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'NODE_OPTIONS',
+  'NODE_USE_SYSTEM_CA',
+] as const
+// And the loop that unsets every other AWS variable inherited, after its gate, matched whole: in
+// either case, since the CDK CLI reads a lower-case aws_ca_bundle before AWS_CA_BUNDLE.
+const INHERITED_AWS_LOOP = ['case "$inherited" in', 'AWS_* | aws_*) unset "$inherited" ;;', 'esac', 'done'] as const
+// A command that removes a file or a folder, as IG-09 (h) reads the lock's release, and a path in the
+// helper's folder: one of its variables, or HOME and ~, which name that folder once HOME moves there.
+const REMOVES = /(?:^|[\s;&|(!{])(?:rm|rmdir|mv)(?=\s)/
+const IN_FOLDER = /\$\{?(?:run_dir|entry_file|rc|BG_HOME|HOME)\b|(?:^|[\s=:])~(?=\/|\s|$)/
+
+// Each IG-09 rule the helper's text breaks, as "path: IG-09<x> why". The rules that run bash (b's
+// refuse_agents and require_terminal, d's reason check, q's usage and refuse, each extracted, and n's
+// parse and mode) are infra.test.ts's, which uses shellFunction and reasonFormLines.
+export function breakGlassFindings(path: string, text: string): Finding[] {
+  const found: Finding[] = []
+  const fail = (rule: string, why: string) => found.push(`${path}: IG-09${rule} ${why}`)
+  const lines = shellLines(text)
+  const raw = text.split('\n')
+  const functions = shellFunctions(lines)
+  const ranges = shellFunctionRanges(lines)
+  const inFunction = (index: number) => ranges.some(({ start, end }) => index >= start && index < end)
+  const functionEnds = new Set(ranges.map(({ end }) => end))
+  const bodyOf = (name: string): ShellLine[] => {
+    const range = functions.get(name)
+    return range === undefined ? [] : lines.slice(range.start, range.end)
+  }
+  const defined = new Set(functions.keys())
+  const isDefinition = (text: string) => /^[A-Za-z_]\w*\(\) \{$/.test(text)
+  // The helper's own top-level commands, by index, and the functions a line calls.
+  const main = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line, index }) => !inFunction(index) && !isDefinition(line.text) && line.text !== '}')
+  // Each name's pattern made once, and each line's answer kept, since the rules ask of every line.
+  const callPatterns = [...defined].map(name => [name, new RegExp(`(?<![\\w-])${name}(?![\\w-])`)] as const)
+  const called = new Map<string, string[]>()
+  const calls = (text: string): string[] => {
+    const known = called.get(text)
+    if (known !== undefined) return known
+    const names = callPatterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name)
+    called.set(text, names)
+    return names
+  }
+  // The commands bash always reaches in a run of lines (the helper's own top level, or a function's
+  // body): outside every if, case, for, while, { } and ( ) block, and not carrying on a line that
+  // ends in &&, || or |, which bash runs as one list with it (so `true ||` before a check would skip
+  // it). A gate is such a top-level line, matched whole, so a check whose answer is ignored, inverted
+  // or never reached isn't one (IG-09b, c, d, f, g).
+  const alwaysRun = (run: ReadonlyArray<{ line: ShellLine; index: number }>): Set<number> => {
+    const found = new Set<number>()
+    let depth = 0
+    let carried = false
+    for (const { line, index } of run) {
+      const command = line.text.split('\n')[0] ?? ''
+      const closes = /^(?:fi|done|esac|\}|\))(?:$|[\s;&|)<>])/.test(command)
+      const branch = /^(?:else|elif)(?:$|\s)/.test(command)
+      if (closes) depth -= 1
+      if (depth === 0 && !carried && !closes && !branch) found.add(index)
+      if (
+        !branch &&
+        (/(?:^|[\s;])(?:then|do)$/.test(command) || /^case\s.*\sin$/.test(command) || /[{(]$/.test(command))
+      ) {
+        depth += 1
+      }
+      carried = /(?:&&|\|)$/.test(command)
+    }
+    return found
+  }
+  const indexed = lines.map((line, index) => ({ line, index }))
+  const topLevel = alwaysRun(
+    indexed.filter(({ line, index }) => !inFunction(index) && !isDefinition(line.text) && !functionEnds.has(index)),
+  )
+  const within = (range: { start: number; end: number } | undefined, index: number) =>
+    range !== undefined && index >= range.start && index < range.end
+  const gate = (statement: string) =>
+    main.find(({ line, index }) => line.text === statement && topLevel.has(index))?.index ?? -1
+  // A variable a rule pins by its assignment, `name=…` as a gate, is set by that line alone and named
+  // by no other command, so no later line sets it again (printf -v, read, declare, ${name:=…}) and no
+  // local stands in for it (IG-09f, h, m): the gate's index, or -1.
+  const setOnce = (statement: string) => {
+    const at = gate(statement)
+    const name = /^(\w+)=/.exec(statement)?.[1] ?? ''
+    return at >= 0 && lines.every((line, index) => namings(line.text, name) === (index === at ? 1 : 0)) ? at : -1
+  }
+  // A refusal in fixed words, nothing expanded into them, and a gate that ends in one: the gate's
+  // line, then the refusal, then fi.
+  const REFUSAL = /^refuse (?:'[^']*'|"[^"$`\\]*")$/
+  const refusesAfter = (index: number) =>
+    index >= 0 && REFUSAL.test(lines[index + 1]?.text ?? '') && lines[index + 2]?.text === 'fi'
+  // Whether a line holds a pattern itself, or reaches it through the functions it calls.
+  const reaches = (text: string, pattern: RegExp, seen = new Set<string>()): boolean =>
+    pattern.test(text) ||
+    calls(text).some(name => {
+      if (seen.has(name)) return false
+      seen.add(name)
+      return bodyOf(name).some(line => reaches(line.text, pattern, seen))
+    })
+  const firstMain = (pattern: RegExp) => main.find(({ line }) => reaches(line.text, pattern))?.index ?? -1
+  const firstLine = (pattern: RegExp) => lines.findIndex(line => pattern.test(line.text))
+  const firstAws = firstLine(AWS_WORD)
+  const before = (index: number, limit: number) => index >= 0 && (limit < 0 || index < limit)
+
+  // The run's trap and its handler, which (a) and (h) read.
+  const trap = main.find(
+    ({ line, index }) => topLevel.has(index) && /^trap\s+'?\w+'?\s+EXIT\s+INT\s+TERM\s+HUP$/.test(line.text),
+  )
+  const handler = trap === undefined ? undefined : /^trap\s+'?(\w+)/.exec(trap.line.text)?.[1]
+  const handlerRange = handler === undefined ? undefined : functions.get(handler)
+
+  // a: strict from the first statement, and nothing traces.
+  const statements = lines.filter((line, index) => !(index === 0 && line.text.startsWith('#!')))
+  if (statements[0]?.text !== 'set -euo pipefail') fail('a', 'its first statement is set -euo pipefail')
+  if (lines.some(line => traces(line.text))) fail('a', 'nothing traces: a trace prints every credential it touches')
+  // And it stays strict: no set +… or shopt -u -o turns an option back off (errexit, nounset,
+  // pipefail, noglob) but the handler's own set +e. shopt's -u and -o may be joined or apart, in
+  // either order.
+  for (const [index, line] of lines.entries()) {
+    const command = line.text.split('\n')[0] ?? ''
+    const unsets =
+      [...command.matchAll(SET_RUN)].some(
+        run =>
+          !quotedAt(command, (run.index ?? 0) + run[0].length - 3) &&
+          wordsAsWritten(command.slice((run.index ?? 0) + run[0].length)).some(word => /^\+/.test(word)),
+      ) ||
+      [...command.matchAll(SHOPT_RUN)].some(run => {
+        if (quotedAt(command, (run.index ?? 0) + run[0].length - 5)) return false
+        const letters = wordsAsWritten(command.slice((run.index ?? 0) + run[0].length))
+          .map(word => word.replace(/["']/g, ''))
+          .filter(word => /^-[A-Za-z]+$/.test(word))
+          .join('')
+        return letters.includes('u') && letters.includes('o')
+      })
+    if (unsets && !(within(handlerRange, index) && command === 'set +e')) {
+      fail(
+        'a',
+        `line ${line.line}: nothing (set +… or shopt -u -o) turns an option of set -euo pipefail or set -f back off but the handler’s set +e`,
+      )
+    }
+  }
+
+  // And bash's own start-up state, which it takes before the helper's first line, never reaches the
+  // role (C0.11 review 5 HELPER-01): every function the person's shell exported is unset by its loop,
+  // matched whole as a gate before the first function is defined, so none stands in for aws or any
+  // other command; and refuse_inherited_shell, a gate before the first aws command, refuses an option
+  // beyond the helper's own and bash's defaults, POSIX mode, and an exported SHELLOPTS, BASHOPTS or
+  // BASH_ENV, and exits non-zero (infra.test.ts runs it, as a script, under each).
+  const firstDefinition = lines.findIndex(line => isDefinition(line.text))
+  const dropLoop = gate('for exported_function in $(compgen -A function); do')
+  if (
+    !before(dropLoop, firstDefinition) ||
+    lines[dropLoop + 1]?.text !== 'unset -f "$exported_function"' ||
+    lines[dropLoop + 2]?.text !== 'done'
+  ) {
+    fail('a', 'every function the person exported is unset by its loop, before the first function is defined')
+  }
+  const startUp = bodyOf('refuse_inherited_shell').map(line => line.text)
+  if (
+    !startUp.includes('SHELLOPTS | BASHOPTS | BASH_ENV) exported=yes ;;') ||
+    !startUp.includes('if [[ $- == *[!efhuBp]* ]] || [[ :$SHELLOPTS: == *:posix:* ]] || [ "$exported" = yes ]; then') ||
+    !startUp.some(line => /^exit [1-9]\d*$/.test(line)) ||
+    !before(gate('refuse_inherited_shell'), firstAws)
+  ) {
+    fail(
+      'a',
+      'refuse_inherited_shell refuses an inherited option, POSIX mode, and an exported SHELLOPTS, BASHOPTS or BASH_ENV, and exits non-zero, as a gate before the first aws command',
+    )
+  }
+
+  // b: a coding agent or CI refused before the first aws command, by exactly the markers the Owner
+  // bootstrap script refuses, set or empty.
+  const agents = bodyOf('refuse_agents').map(line => line.text)
+  const markers = agents
+    .map(line => /\bfor\s+\w+\s+in\s+([^;]+);\s*do\b/.exec(line)?.[1])
+    .find(list => list !== undefined)
+  if (
+    markers === undefined ||
+    JSON.stringify(markers.trim().split(/\s+/).sort()) !== JSON.stringify([...AGENT_MARKERS].sort()) ||
+    !agents.some(line => /\$\{!\w+\+x\}/.test(line)) ||
+    !agents.some(line => /\bexit\s+[1-9]/.test(line))
+  ) {
+    fail('b', `refuse_agents refuses each of ${AGENT_MARKERS.join(', ')}, set even empty, and exits non-zero`)
+  }
+  if (!before(gate('refuse_agents'), firstAws)) {
+    fail('b', 'refuse_agents runs, as a gate of its own, before the first aws command')
+  }
+  // A piped or scripted run is refused too: require_terminal tests both descriptors and exits
+  // non-zero (infra.test.ts runs it with neither a terminal), as a gate before the first aws command.
+  const terminal = bodyOf('require_terminal').map(line => line.text)
+  if (!terminal.includes('if ! [ -t 0 ] || ! [ -t 1 ]; then') || !terminal.some(line => /^exit [1-9]\d*$/.test(line))) {
+    fail('b', 'require_terminal refuses unless standard input and output are both a terminal, and exits non-zero')
+  }
+  if (!before(gate('require_terminal'), firstAws)) {
+    fail('b', 'require_terminal runs, as a gate of its own, before the first aws command')
+  }
+
+  // A variable a rule pins by its top-level export is set by that export alone and named by no
+  // other command, so no later line sets it again, unsets it or stands a prefix assignment of it
+  // before a command (IG-09c, e, g).
+  const exported = (assignment: string) =>
+    main.find(
+      ({ line, index }) =>
+        topLevel.has(index) && /^export\s/.test(line.text) && line.text.split(/\s+/).includes(assignment),
+    )?.index ?? -1
+  const exportedOnly = (rule: string, assignment: string) => {
+    const name = assignment.split('=')[0] ?? ''
+    const at = exported(assignment)
+    for (const [index, line] of lines.entries()) {
+      if (namings(line.text, name) > (index === at ? 1 : 0)) {
+        fail(rule, `line ${line.line}: ${name} is set by export ${assignment} alone, and no other command names it`)
+      }
+    }
+  }
+
+  // c: the C locale and the umask before the reason is checked.
+  const reasonCheck = gate('if ! valid_reason "$reason"; then usage; fi')
+  for (const [statement, why] of [
+    ['export LC_ALL=C', "export LC_ALL=C, so a character class never matches another locale's characters"],
+    ['umask 077', 'umask 077, so every file it writes is its own'],
+  ] as const) {
+    if (!before(gate(statement), reasonCheck)) fail('c', `${why}, before the reason is checked`)
+  }
+  exportedOnly('c', 'LC_ALL=C')
+
+  // d: the reason and its date checked by pure functions, before the first aws command.
+  for (const name of ['valid_reason', 'valid_date']) {
+    if (!functions.has(name)) fail('d', `${name} is defined`)
+    else if (bodyOf(name).some(line => /\baws\b/.test(line.text))) fail('d', `${name} runs no aws command`)
+  }
+  if (!before(reasonCheck, firstAws)) {
+    fail('d', 'if ! valid_reason "$reason"; then usage; fi checks the reason, as a gate, before the first aws command')
+  }
+  // The reason tagged is the reason checked: it is set once, reason="$2", as a gate before its check,
+  // and no other command names it but valid_reason's own local, so no later line rewrites it and no
+  // local in a caller of the assumption stands in for it.
+  const reasonSet = gate('reason="$2"')
+  const reasonLocal = lines.findIndex(
+    (line, index) =>
+      within(functions.get('valid_reason'), index) &&
+      /^local\s/.test(line.text) &&
+      line.text.split(/\s+/).includes('reason="$1"'),
+  )
+  if (
+    reasonSet < 0 ||
+    !before(reasonSet, reasonCheck) ||
+    lines.some((line, index) => {
+      const count = namings(line.text, 'reason')
+      return count > 0 && !((index === reasonSet || index === reasonLocal) && count === 1)
+    })
+  ) {
+    fail(
+      'd',
+      'the reason is set once, reason="$2", before its check, and no other command names it but valid_reason’s local',
+    )
+  }
+
+  // e: its own folder, config and region, and nothing inherited, before the first aws command.
+  for (const assignment of [
+    'AWS_STS_REGIONAL_ENDPOINTS=regional',
+    'AWS_REGION=ap-southeast-1',
+    'HOME="$BG_HOME"',
+    'AWS_CONFIG_FILE="$BG_HOME/.aws/config"',
+    'AWS_SHARED_CREDENTIALS_FILE=/dev/null',
+    'AWS_EC2_METADATA_DISABLED=true',
+  ]) {
+    if (!before(exported(assignment), firstAws)) fail('e', `export ${assignment} before the first aws command`)
+    exportedOnly('e', assignment)
+  }
+  // Every top-level unset before the first aws command counts, so the AWS one and the TLS one are
+  // each read.
+  const unsets = main.filter(
+    ({ line, index }) => topLevel.has(index) && /^unset\s/.test(line.text) && before(index, firstAws),
+  )
+  const unsetNames = unsets.flatMap(({ line }) => line.text.split(/\s+/))
+  if (!['AWS_PROFILE', 'AWS_DEFAULT_PROFILE', ...CREDENTIAL_ENV].every(name => unsetNames.includes(name))) {
+    fail('e', 'unset every inherited credential and profile variable before the first aws command')
+  }
+  const awsLoop = gate('for inherited in $(compgen -e); do')
+  if (!before(awsLoop, firstAws) || INHERITED_AWS_LOOP.some((text, at) => lines[awsLoop + 1 + at]?.text !== text)) {
+    fail('e', 'unset every other inherited AWS variable, in either case, by its loop before the first aws command')
+  }
+  // And nothing inherited that would write the session down or change whom it trusts: curl's config
+  // folders, a TLS key log, the CA overrides the AWS CLI and curl honour, and Node's settings that
+  // turn its certificate check off, add the system's CAs or load code (NODE_EXTRA_CA_CERTS is kept),
+  // each unset before the first aws command and named by no other command, so no later line sets one
+  // again.
+  if (!INHERITED_TLS.every(name => unsetNames.includes(name))) {
+    fail('e', `unset ${INHERITED_TLS.join(' ')} before the first aws command`)
+  }
+  for (const name of INHERITED_TLS) {
+    for (const [index, line] of lines.entries()) {
+      if (namings(line.text, name) > 0 && !unsets.some(unset => unset.index === index)) {
+        fail('e', `line ${line.line}: ${name} is unset before the first aws command, and no other command names it`)
+      }
+    }
+  }
+
+  // f: its folder is the caller's own, mode 700, before HOME moves there: the check whole, as a gate
+  // that ends in a refusal.
+  const modeCheck = gate(
+    'if [ -z "$(find "$BG_HOME" -maxdepth 0 -type d -user "$(id -u)" -perm 700 2>/dev/null)" ]; then',
+  )
+  if (!refusesAfter(modeCheck) || !before(modeCheck, exported('HOME="$BG_HOME"'))) {
+    fail('f', 'its folder is checked to be the caller’s own, mode 700, by a gate that refuses, before HOME is exported')
+  }
+  // The folder checked is the folder used: BG_HOME is set once, before its check, and named by no
+  // other command, so no later line moves HOME, the access portal's token cache or the lock elsewhere.
+  if (!before(setOnce(`BG_HOME="\${HEARTH_BREAK_GLASS_HOME:-$HOME/.hearth-break-glass}"`), modeCheck)) {
+    fail(
+      'f',
+      `BG_HOME="\${HEARTH_BREAK_GLASS_HOME:-$HOME/.hearth-break-glass}" sets the folder once, before its check, and no other command names BG_HOME`,
+    )
+  }
+
+  // g: no CLI history, in its folder's config or the entry profile's, by a gate that refuses before
+  // the first sign-in; no pager.
+  const history = gate('if [ "$(aws configure get cli_history 2>/dev/null || true)" = enabled ] ||')
+  if (
+    history < 0 ||
+    lines[history + 1]?.text !==
+      '[ "$(aws configure get cli_history --profile "$profile" 2>/dev/null || true)" = enabled ]; then' ||
+    !refusesAfter(history + 1) ||
+    !before(history, firstLine(/\baws\s+sso\s+login\b/))
+  ) {
+    fail('g', "the CLI's history is refused when enabled, by a gate that refuses before the first sign-in")
+  }
+  if (
+    !before(
+      main.find(({ line, index }) => topLevel.has(index) && /^export\s+AWS_PAGER=(?:''|"")?$/.test(line.text))?.index ??
+        -1,
+      firstAws,
+    )
+  ) {
+    fail('g', 'export AWS_PAGER= before the first aws command')
+  }
+  exportedOnly('g', 'AWS_PAGER=')
+
+  // h: a trap on every way out, set before the first sign-in, that signs out.
+  if (trap === undefined || !before(trap.index, firstLine(/\baws\s+sso\s+login\b/))) {
+    fail('h', "trap '<handler>' EXIT INT TERM HUP is set before the first aws sso login")
+  }
+  if (handler === undefined || !bodyOf(handler).some(line => /\baws\s+sso\s+logout\b/.test(line.text))) {
+    fail('h', 'the trap’s handler runs aws sso logout')
+  }
+  // Once the handler has begun, nothing stops the close or the sign-out part way: its first commands
+  // (after its locals) ignore INT, TERM and HUP (QUIT too, in the one such trap the list below takes),
+  // which the commands it runs inherit, drop the EXIT trap and turn errexit off, so a failed print
+  // can't end it early.
+  const handlerLines = handlerRange === undefined ? [] : indexed.slice(handlerRange.start, handlerRange.end)
+  const handlerBody = handlerLines.map(({ line }) => line.text)
+  const opening = handlerBody.filter(line => !/^local\s/.test(line)).slice(0, 3)
+  const ignored = opening.some(line => {
+    const signals = /^trap\s+(?:''|"")\s+(.+)$/.exec(line)?.[1]?.split(/\s+/) ?? []
+    return ['INT', 'TERM', 'HUP'].every(signal => signals.includes(signal))
+  })
+  if (!ignored || !opening.includes('trap - EXIT') || !opening.includes('set +e')) {
+    fail('h', "the trap's handler first ignores INT, TERM and HUP, drops the EXIT trap and turns errexit off")
+  }
+  // And the handler stays in force: no trap but the run's, the handler's two and the shell
+  // function's pair (Ctrl-C left to the shell while it runs, then the handler's again), each matched
+  // whole and set once, so nothing drops or replaces the handler or gives a signal its default action
+  // back, however the signal is named (INT, SIGINT, 2) or the trap is spelt (trap INT, trap --).
+  const shellRange = [...functions.values()].find(range =>
+    lines.slice(range.start, range.end).some(line => SHELL_RUN.test(line.text)),
+  )
+  const shellAt = indexed.find(({ line, index }) => within(shellRange, index) && SHELL_RUN.test(line.text))?.index ?? -1
+  const allowedTraps = new Map<string, (index: number) => boolean>([
+    ["trap '' INT TERM HUP QUIT", index => within(handlerRange, index)],
+    ['trap - EXIT', index => within(handlerRange, index)],
+    ["trap ':' INT", index => within(shellRange, index) && index < shellAt],
+    [`trap '${handler}' INT`, index => within(shellRange, index) && index > shellAt],
+  ])
+  const trapsSet = new Set<string>()
+  for (const { line, index } of indexed) {
+    const command = line.text.split('\n')[0] ?? ''
+    if (TRAP_WORD.test(command) && index !== trap?.index) {
+      if (allowedTraps.get(line.text)?.(index) !== true || trapsSet.has(line.text)) {
+        fail(
+          'h',
+          `line ${line.line}: no trap but the run’s, the handler’s two and the shell’s pair, each once, so nothing drops or replaces the handler or gives a signal its default action back`,
+        )
+      }
+      trapsSet.add(line.text)
+    }
+    // Nothing ends the run around its handler: exec replaces the helper, and kill can stop it with a
+    // signal no trap catches.
+    if (
+      [...command.matchAll(ENDS_RUN)].some(
+        run => !quotedAt(command, (run.index ?? 0) + run[0].length - (run[1]?.length ?? 0)),
+      )
+    ) {
+      fail('h', `line ${line.line}: no exec or kill, which end the run without its handler`)
+    }
+  }
+  // And the handler runs to its sign-out: at its own top level, the close under its condition (the
+  // session opened and no close written), then aws sso logout; before the sign-out nothing exits,
+  // returns or turns errexit back on, itself or through what it calls, since its EXIT trap is gone;
+  // and it ends in exit "$status", which is its only exit or return.
+  const handlerTop = alwaysRun(handlerLines)
+  const atTop = (text: string) =>
+    handlerLines.find(({ line, index }) => line.text === text && handlerTop.has(index))?.index ?? -1
+  const closeIf = atTop('if [ "$opened" = yes ] && [ "$closed" = no ]; then')
+  const closeCall = lines[closeIf + 1]?.text ?? ''
+  const logout = atTop('aws sso logout >/dev/null 2>&1 || true')
+  const last = handlerLines.at(-1)
+  if (
+    closeIf < 0 ||
+    !/^[A-Za-z_]\w* unprompted(?:\s+\|\|\s+(?:(?!&\s*$).)*)?$/.test(closeCall) ||
+    !reaches(closeCall, /\bentry:\s*"close"/) ||
+    lines[closeIf + 2]?.text !== 'fi' ||
+    logout < closeIf ||
+    last?.line.text !== 'exit "$status"' ||
+    handlerLines.some(({ line, index }) => index !== last?.index && EXITS.test(line.text.split('\n')[0] ?? '')) ||
+    handlerLines.some(
+      ({ line, index }) => index < logout && (reaches(line.text, EXIT_RUN) || reaches(line.text, ERREXIT_ON)),
+    )
+  ) {
+    fail(
+      'h',
+      'the trap’s handler runs, at its own top level, the close when the session opened and none was written, then aws sso logout, with nothing before it that exits, returns or turns errexit on, and ends in exit "$status"',
+    )
+  }
+  // One run at a time in a folder, whose sign-out ends every access-portal token cached there: the
+  // run's own folder in the helper's, run_dir, is its lock, which hold_folder takes by mkdir, refusing
+  // in fixed words when another run holds it, as the top-level line straight before the run's trap,
+  // so a refusal leaves the other run's lock and sign-in alone; run_dir itself, the entry and the
+  // shell's rc file are each set once, at the top, the two files inside it, so no later line makes the
+  // lock a run's own (run_dir="$run_dir.$$"); and nothing removes or moves the folder or a file in it
+  // (through HOME or ~ too) but the handler after its sign-out, so no second run signs in there before
+  // this run's sign-out.
+  const runDir = setOnce('run_dir="$BG_HOME/run.lock"')
+  const hold = gate('hold_folder')
+  const holdBody = bodyOf('hold_folder').map(line => line.text)
+  const inRun = (name: string) =>
+    main.find(({ line, index }) => topLevel.has(index) && new RegExp(`^${name}="\\$run_dir/[\\w.-]+"$`).test(line.text))
+      ?.index ?? -1
+  const runFiles = ['entry_file', 'rc'].map(name => ({ name, at: inRun(name) }))
+  if (
+    !before(runDir, hold) ||
+    holdBody[0] !== 'if ! mkdir "$run_dir" 2>/dev/null; then' ||
+    !REFUSAL.test(holdBody[1] ?? '') ||
+    holdBody[2] !== 'fi' ||
+    trap === undefined ||
+    hold + 1 !== trap.index ||
+    runFiles.some(
+      ({ name, at }) =>
+        !before(runDir, at) || lines.some((line, index) => index !== at && namings(line.text, name) > 0),
+    ) ||
+    lines.some((line, index) => {
+      const command = line.text.split('\n')[0] ?? ''
+      return (
+        REMOVES.test(command) &&
+        IN_FOLDER.test(command) &&
+        !(within(handlerRange, index) && logout >= 0 && index > logout)
+      )
+    })
+  ) {
+    fail(
+      'h',
+      'one run at a time in a folder: run_dir="$BG_HOME/run.lock" is set once, hold_folder takes the lock (mkdir "$run_dir", refusing when held) straight before the trap, the entry and rc files are set once inside it, and only the handler, after its sign-out, removes it',
+    )
+  }
+
+  // The console function: the one that runs curl, whose exchange is the one place a credential may
+  // reach anything but aws and the shell: a jq that reads the session from its environment, its
+  // answer piped straight into the curl to the sign-in endpoint on the next line (i, l, o).
+  // A run of curl, not the check that it is installed.
+  const curls = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /(?:^|[\s;&|(])curl\s/.test(line.text.replace(/\bcommand\s+-v\s+curl\b/g, '')))
+  const consoleFns = [...functions].filter(([, { start, end }]) =>
+    curls.some(({ index }) => index >= start && index < end),
+  )
+  const consoleFn = consoleFns[0]?.[0]
+  const consoleRange = consoleFn === undefined ? undefined : functions.get(consoleFn)
+  const consoleExchange = (index: number) =>
+    consoleRange !== undefined &&
+    index >= consoleRange.start &&
+    index < consoleRange.end &&
+    /(?<!\|)\|$/.test(lines[index]?.text ?? '') &&
+    /^curl\s.*\shttps:\/\/signin\.aws\.amazon\.com\/federation(?:\s|$)/.test(lines[index + 1]?.text ?? '')
+
+  // i: no credential written or printed, and nothing that would print one. A line that writes is
+  // read on its own; a credential can't reach a writer through a function, since (o) lets one reach
+  // only aws, the shell and the console's exchange, and (i) refuses the aws commands that print one.
+  const credentials = credentialVariables(lines)
+  const credentialExpansion = new RegExp(`\\$\\{?(?:${[...CREDENTIAL_ENV, ...credentials].join('|')})\\b`)
+  for (const [index, line] of lines.entries()) {
+    if (writes(line.text) && (CREDENTIAL_NAMES.test(line.text) || credentialExpansion.test(line.text))) {
+      fail('i', `line ${line.line} writes or prints a credential`)
+    }
+    if (jqPrograms(line.text).some(program => CREDENTIAL_NAMES.test(program)) && !consoleExchange(index)) {
+      fail('i', `line ${line.line}: a jq program reads a credential, which only the console's exchange may, into curl`)
+    }
+    for (const [pattern, why] of EXPOSING) if (pattern.test(line.text)) fail('i', `line ${line.line}: ${why}`)
+    if (line.text.split('\n').some(printsEnvironment)) {
+      fail('i', `line ${line.line}: env given no command to run prints every variable it holds`)
+    }
+    if (line.text.split('\n').some(listsVariables)) {
+      fail(
+        'i',
+        `line ${line.line}: set, or declare, typeset, local, export or readonly naming nothing, prints variables`,
+      )
+    }
+    if (exportsAll(line.text)) fail('i', `line ${line.line}: allexport exports every variable, credentials among them`)
+    const exports = /\b(?:export|declare\s+-[A-Za-z]*x|typeset\s+-[A-Za-z]*x)\s+(.*)$/.exec(line.text)?.[1] ?? ''
+    if (exports.split(/\s+/).some(word => [...CREDENTIAL_ENV, ...credentials].includes(word.split('=')[0] ?? ''))) {
+      fail('i', `line ${line.line} exports a credential, which every command would then hold`)
+    }
+  }
+  // And the shell that holds the credentials in its environment runs nothing but what is pinned here:
+  // its rc file is the one here-document, matched whole, written in the shell's function before the
+  // shell starts; the shell starts by the one line, matched whole, with its history off; and $rc is
+  // expanded only there and by the handler's clean-up (whose timing (h) holds), and its path named by
+  // no line but an assignment of rc (which (h) holds to one), so no other line adds to it.
+  const rcWrites = indexed.filter(({ line }) => (line.text.split('\n')[0] ?? '') === SHELL_RC.split('\n')[0])
+  const shellStarts = lines.filter(line => SHELL_RUN.test(line.text))
+  const rcAt = runFiles.find(({ name }) => name === 'rc')?.at ?? -1
+  const rcName = /^rc="\$run_dir\/([\w.-]+)"$/.exec(lines[rcAt]?.text ?? '')?.[1]
+  if (
+    rcWrites.length !== 1 ||
+    rcWrites[0]?.line.text !== SHELL_RC ||
+    !within(shellRange, rcWrites[0]?.index ?? -1) ||
+    (rcWrites[0]?.index ?? -1) > shellAt ||
+    shellStarts.length !== 1 ||
+    shellStarts[0]?.text !== SHELL_START ||
+    indexed.some(
+      ({ line, index }) =>
+        RC_EXPANDED.test(line.text) &&
+        index !== rcWrites[0]?.index &&
+        index !== shellAt &&
+        !(within(handlerRange, index) && REMOVES.test(line.text)),
+    ) ||
+    (rcName !== undefined && lines.some(line => namings(line.text, 'rc') === 0 && line.text.includes(`/${rcName}`)))
+  ) {
+    fail(
+      'i',
+      'the shell’s rc file is the one here-document, matched whole, the shell starts by the one line, matched whole, with HISTFILE=/dev/null, and $rc is expanded only there and by the handler’s clean-up',
+    )
+  }
+
+  // j: one assumption of the role, an hour at most, with the person's source identity and the reason,
+  // its answer read straight into read -r (whose variables i and o hold), never written or piped.
+  const assumes = lines.filter(line => /\baws\s+sts\s+assume-role\b/.test(line.text))
+  const assume = assumes[0]?.text ?? ''
+  const duration = /--duration-seconds\s+["']?(\d+)/.exec(assume)?.[1]
+  if (
+    !/\bread\s+-r\s+\w+\s+\w+\s+\w+(?:\s+\w+)*\s+<\s+<\(aws\s+sts\s+assume-role\s/.test(assume) ||
+    writes(assume) ||
+    /(?<!\|)\|(?!\|)/.test(assume)
+  ) {
+    fail('j', "the assume-role's answer is read straight into read -r, never written or piped")
+  }
+  if (
+    assumes.length !== 1 ||
+    !/--source-identity\s/.test(assume) ||
+    !/\s--tags\s+"Key=hearth-reason,Value=\$reason"(?:\s|$)/.test(assume) ||
+    !/--role-session-name\s/.test(assume) ||
+    duration === undefined ||
+    Number(duration) > 3600
+  ) {
+    fail(
+      'j',
+      'exactly one aws sts assume-role, with --source-identity, --tags "Key=hearth-reason,Value=$reason" whole, --role-session-name and --duration-seconds of at most 3600',
+    )
+  }
+
+  // k: entries built by jq from arguments, never as JSON text; never over another; the open entry
+  // before the shell, the close after it.
+  if (lines.some(line => /\\?"[\w-]+\\?"\s*:/.test(line.text))) {
+    fail('k', 'an entry is built by jq -n --arg, never by writing fields into JSON text')
+  }
+  if (lines.some(line => jqPrograms(line.text).some(expands))) {
+    fail('k', 'a jq program is written whole in single quotes, its fields given by --arg, never expanded into it')
+  }
+  if (!lines.some(line => /\bjq\s+-[a-z]*n[a-z]*\s.*--arg\s/.test(line.text))) {
+    fail('k', 'entries are built by jq -n --arg')
+  }
+  if (
+    lines.some(
+      line =>
+        /\bput-object\b/.test(line.text) &&
+        !(/--if-none-match\s/.test(line.text) && /--checksum-algorithm\s/.test(line.text)),
+    )
+  ) {
+    fail('k', 'each put-object carries --if-none-match and --checksum-algorithm')
+  }
+  // A put that fails stops what it gates: put_entry is the one put-object and nothing after it, so
+  // its status is the put's; every call of it ends `|| refuse '…'`, `|| return N` or `|| exit N`
+  // (N not 0), with no || or && before; the open and close entries' puts come straight after their
+  // jq and are what set opened=yes and closed=yes, which nothing else sets; and the run calls what
+  // writes an entry plainly, since bash stops errexit inside a function called under ||, && or if.
+  const put = bodyOf('put_entry')
+  if (
+    put.length !== 1 ||
+    !/\baws\s+s3api\s+put-object\s/.test(put[0]?.text ?? '') ||
+    /[;&|]/.test((put[0]?.text ?? '').replace(/\d?>&\d/g, ''))
+  ) {
+    fail('k', 'put_entry runs the one put-object and nothing after it, so its status is the put’s')
+  }
+  // And what it puts is the entry the run just wrote, `--body "$entry_file"` exactly and once, so no
+  // other file, spelling or second --body stands in for it (CodeRabbit after C0.11 PR 2's round 16).
+  const putText = put[0]?.text ?? ''
+  if ((putText.match(/--body\b/g) ?? []).length !== 1 || !/\s--body "\$entry_file"\s/.test(putText)) {
+    fail('k', 'put_entry puts the entry file and nothing else: --body "$entry_file", once')
+  }
+  const failedPut =
+    /^put_entry\s(?:(?!\|\||&&|;).)*\s\|\|\s(?:refuse (?:'[^']*'|"[^"$`\\]*")|(?:return|exit) [1-9]\d*)$/
+  for (const line of lines) {
+    if (!isDefinition(line.text) && calls(line.text).includes('put_entry') && !failedPut.test(line.text)) {
+      fail(
+        'k',
+        `line ${line.line}: a failed put stops the run or returns non-zero (put_entry … || refuse, return or exit)`,
+      )
+    }
+  }
+  // Each flag is otherwise named only where it starts, `<flag>=no` at the top before the trap (whose
+  // handler reads it under set -u), so no other spelling (printf -v, declare, read, ${…:=…}, quotes)
+  // sets it either.
+  for (const [entry, name] of [
+    ['open', 'opened'],
+    ['close', 'closed'],
+  ] as const) {
+    const at = lines.findIndex(line => new RegExp(`\\bentry:\\s*"${entry}"`).test(line.text))
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === `${name}=no`)
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, name)
+      return count === 0 ? [] : [{ index, count }]
+    })
+    if (
+      at < 0 ||
+      !calls(lines[at + 1]?.text ?? '').includes('put_entry') ||
+      lines[at + 2]?.text !== `${name}=yes` ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || (index !== at + 2 && index !== starts[0]?.index))
+    ) {
+      fail(
+        'k',
+        `the ${entry} entry is put straight after its jq, and only that put sets ${name}=yes; ${name}=no starts it, at the top before the trap, and nothing else names it`,
+      )
+    }
+  }
+  // The close is the first session's, whichever session writes it (C0.11 review 11 CR-15): the line
+  // before its one jq is `key="$(entry_key "$first_session" close)"`, the jq is CLOSE_ENTRY whole, so
+  // its session field is "$first_session" and nothing sets it again (C0.11 review 12 CR-17), and the
+  // put after it sends "$key". So a late close, written by a later session, still names the first
+  // session and lands in its folder; the later session's own entry is its continuation.
+  {
+    const closes = lines.flatMap((line, index) => (/\bentry:\s*"close"/.test(line.text) ? [index] : []))
+    const at = closes[0] ?? -1
+    const put = wordsAsWritten(lines[at + 1]?.text ?? '')
+    if (
+      closes.length !== 1 ||
+      lines[at - 1]?.text !== 'key="$(entry_key "$first_session" close)"' ||
+      lines[at]?.text !== CLOSE_ENTRY ||
+      put.length !== 2 ||
+      put[0] !== 'put_entry' ||
+      put[1] !== '"$key"'
+    ) {
+      fail(
+        'k',
+        `the close is the first session’s: key="$(entry_key "$first_session" close)" straight before its one jq, which is \`${CLOSE_ENTRY}\` whole, then put_entry "$key"`,
+      )
+    }
+  }
+  // The role is taken for a late close only on a sign-in this run has checked (C0.11 review 4 HELPER-02): sign_in
+  // starts `sign_in=checked` at the top before the trap; the second sign-in's function sets
+  // `sign_in=unchecked` before its `aws sso login` and `sign_in=checked` as its last line; nothing
+  // else names the flag; and the close's one assumption comes straight after
+  // `[ "$sign_in" = checked ] || return 1`, on a line not carried on from the one before it. So a
+  // refused or unchecked second sign-in is final, and the handler's unprompted close takes no role on
+  // the sign-in it left cached.
+  {
+    const again = bodyOf('sign_in_again')
+    const login = again.findIndex(line => /\baws\s+sso\s+login\b/.test(line.text))
+    const unchecked = again.findIndex(line => line.text === 'sign_in=unchecked')
+    const close = bodyOf('close_session')
+    const assumes = close.flatMap((line, index) => (calls(line.text).includes('assume_role') ? [index] : []))
+    const checkAt = (assumes[0] ?? 0) - 1
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === 'sign_in=checked')
+    const allowed = new Set([
+      starts[0]?.index,
+      ...[unchecked, again.length - 1].map(at => (functions.get('sign_in_again')?.start ?? -1) + at),
+    ])
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, 'sign_in')
+      return count === 0 ? [] : [{ index, count }]
+    })
+    if (
+      again.length === 0 ||
+      login < 0 ||
+      unchecked < 0 ||
+      unchecked > login ||
+      again[again.length - 1]?.text !== 'sign_in=checked' ||
+      assumes.length !== 1 ||
+      close[checkAt]?.text !== '[ "$sign_in" = checked ] || return 1' ||
+      /(?:&&|\|)$/.test(close[checkAt - 1]?.text.split('\n')[0] ?? '') ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || !allowed.has(index))
+    ) {
+      fail(
+        'k',
+        'a late close takes the role only on a checked sign-in: sign_in=checked at the top before the trap, sign_in_again setting sign_in=unchecked before its aws sso login and sign_in=checked last, nothing else naming it, and the close’s one assume_role straight after [ "$sign_in" = checked ] || return 1',
+      )
+    }
+  }
+  // Every entry is written with >|, so noclobber, however it came on, never leaves an earlier entry's
+  // body under a later key (C0.11 review 5 HELPER-01): any other redirection into the entry file is
+  // refused, > and its numbered and &> forms, and >> and &>>, whose append would put the earlier
+  // body and the new one in one invalid entry, and >& (C0.11 review 7 CR-05).
+  for (const line of lines) {
+    if (/>(?!\|)[>&]?\s*"?\$\{?entry_file\b/.test(line.text.split('\n')[0] ?? '')) {
+      fail(
+        'k',
+        `line ${line.line}: an entry is written with >| alone, so noclobber never leaves an earlier body under its key and no append joins two`,
+      )
+    }
+  }
+  // And a later session's continuation is written whenever the session in hand has none, not only
+  // straight after the role is taken, so the handler's retry of a close whose continuation failed
+  // writes it first (C0.11 review 5 HELPER-02): the one continuation jq is the first line of
+  // `if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then` at close_session's
+  // own top level, before the close's jq, with its put straight after, then `continued="$session"`
+  // and fi; `continued=''` starts it, at the top before the trap, and nothing else names it.
+  {
+    const closeRange = functions.get('close_session')
+    const closeLines = closeRange === undefined ? [] : indexed.slice(closeRange.start, closeRange.end)
+    const closeTop = alwaysRun(closeLines)
+    const guardAt =
+      closeLines.find(
+        ({ line, index }) =>
+          closeTop.has(index) &&
+          line.text === 'if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then',
+      )?.index ?? -1
+    const continuations = indexed.filter(({ line }) => /\bentry:\s*"continuation"/.test(line.text))
+    const closeJq = lines.findIndex(line => /\bentry:\s*"close"/.test(line.text))
+    const starts = main.filter(({ line, index }) => topLevel.has(index) && line.text === "continued=''")
+    const named = lines.flatMap((line, index) => {
+      const count = namings(line.text, 'continued')
+      return count === 0 ? [] : [{ index, count }]
+    })
+    if (
+      guardAt < 0 ||
+      continuations.length !== 1 ||
+      continuations[0]?.index !== guardAt + 1 ||
+      lines[guardAt + 2]?.text !== 'put_entry "$(entry_key "$session" continuation)" || return 1' ||
+      lines[guardAt + 3]?.text !== 'continued="$session"' ||
+      lines[guardAt + 4]?.text !== 'fi' ||
+      !before(guardAt, closeJq) ||
+      starts.length !== 1 ||
+      !before(starts[0]?.index ?? -1, trap?.index ?? -1) ||
+      named.some(({ index, count }) => count !== 1 || (index !== guardAt + 3 && index !== starts[0]?.index))
+    ) {
+      fail(
+        'k',
+        'a later session’s continuation is written by close_session, at its own top level, whenever the session in hand has none ([ "$session" != "$continued" ]), before the close, and only that write sets continued',
+      )
+    }
+  }
+  for (const { line, index } of main) {
+    if (
+      reaches(line.text, /\bput-object\b/) &&
+      index !== trap?.index &&
+      !/^[A-Za-z_]\w*(?: [a-z]+)*$/.test(line.text)
+    ) {
+      fail('k', `line ${line.line}: the run calls what writes an entry plainly, never under ||, && or if`)
+    }
+  }
+  const shell = firstMain(/\bbash\s+--rcfile\b/)
+  const open = firstMain(/\bentry:\s*"open"/)
+  const closes = main.filter(({ line }) => reaches(line.text, /\bentry:\s*"close"/)).map(({ index }) => index)
+  if (shell < 0 || !before(open, shell) || !closes.some(index => index > shell)) {
+    fail('k', 'the open entry is written before the shell opens, and the close entry after it ends')
+  }
+
+  // l: curl only in the console function, only to the sign-in endpoint, each run exactly the pinned
+  // line, its link printed only when --console asks.
+  if (
+    curls.length > 0 &&
+    (consoleFns.length !== 1 ||
+      curls.some(({ index }) => !consoleFns.some(([, r]) => index >= r.start && index < r.end)))
+  ) {
+    fail('l', 'curl runs only in the console function')
+  }
+  for (const { line } of curls) {
+    const urls = line.text.match(/https?:\/\/[^\s'")]+/g) ?? []
+    if (urls.length === 0 || urls.some(url => url !== 'https://signin.aws.amazon.com/federation')) {
+      fail('l', `line ${line.line}: curl goes only to https://signin.aws.amazon.com/federation`)
+    }
+    // And each run is the pinned line whole (CONSOLE_CURL), so neither a .curlrc nor an option of its
+    // own traces or writes the exchange, the session in its POST body (C0.11 review 6 HELPER-02).
+    if (line.text !== CONSOLE_CURL) {
+      fail(
+        'l',
+        `line ${line.line}: curl runs only as \`${CONSOLE_CURL}\`: -q first, so it reads no .curlrc, and no other option, redirect or pipe, so nothing traces or writes the session`,
+      )
+    }
+  }
+  // The console function runs only from a main-flow line that asks for --console, written
+  // `if [ "$console" = yes ]; then <function>; fi`, and no other function calls it, since the run calls
+  // those whatever --console says.
+  const signIn = lines.map((line, index) => ({ line, index })).filter(({ line }) => /\bAction=login\b/.test(line.text))
+  const consoleCall = (text: string) => consoleFn !== undefined && calls(text).includes(consoleFn)
+  if (
+    signIn.some(({ index }) => consoleRange === undefined || index < consoleRange.start || index >= consoleRange.end) ||
+    main.some(({ line }) => consoleCall(line.text) && line.text !== `if [ "$console" = yes ]; then ${consoleFn}; fi`) ||
+    [...functions].some(
+      ([name, { start, end }]) => name !== consoleFn && lines.slice(start, end).some(line => consoleCall(line.text)),
+    )
+  ) {
+    fail('l', 'the sign-in link is made and printed only when --console asks')
+  }
+
+  // m: the environment is one of three, and log-archive takes only an incident or a drill.
+  const flat = lines
+    .map(line => line.text)
+    .join('\n')
+    .replace(/\s+/g, ' ')
+  // Each check whole, from case to esac, so no other arm takes anything more.
+  if (!flat.includes('case "$environment" in nonprod | prod | log-archive) ;; *) usage ;; esac')) {
+    fail('m', 'the environment is checked against exactly nonprod, prod and log-archive')
+  }
+  if (
+    !flat.includes(
+      'if [ "$environment" = log-archive ]; then case "$reason" in incident:* | drill:*) ;; *) usage ;; esac fi',
+    )
+  ) {
+    fail('m', 'in log-archive only an incident: or drill: reason is taken')
+  }
+  // And the environment checked is the environment used: environment="$1" sets it once, before its
+  // check, and profile="hearth-$environment-entry" sets the entry profile once from it, each named by
+  // no other command, so no later line changes the environment after its checks or signs in with
+  // another profile.
+  if (
+    !before(setOnce('environment="$1"'), gate('case "$environment" in')) ||
+    setOnce('profile="hearth-$environment-entry"') < 0
+  ) {
+    fail(
+      'm',
+      'environment="$1" is set once, before its check, and profile="hearth-$environment-entry" once, and no other command names either',
+    )
+  }
+
+  // o: a credential reaches a command only as a bash prefix assignment, never as an argument, through
+  // env or sudo, or to curl at all; and the command it stands before is aws, the shell (bash
+  // --rcfile) or the console's exchange, so no other program (jq, awk, python) is handed one to print
+  // or pass on. No variable is read through another's name (${!name}, a nameref) but refuse_agents'
+  // ${!name+x}, which only says whether one is set.
+  const prefixes = credentialPrefixes(credentials)
+  const assignment = new RegExp(`^${ASSIGNMENT_WORD}$`)
+  for (const [index, line] of lines.entries()) {
+    if (credentialExpansion.test(withoutPrefixes(line.text, prefixes))) {
+      fail('o', `line ${line.line}: a credential reaches a command other than by a prefix assignment`)
+    }
+    for (const prefix of line.text.matchAll(prefixes)) {
+      if (quotedAt(line.text, prefix.index ?? 0)) continue
+      const words = wordsAsWritten(line.text.slice((prefix.index ?? 0) + prefix[0].length))
+      const at = words.findIndex(word => !assignment.test(word))
+      const [command, next] = at < 0 ? [] : [words[at], words[at + 1]]
+      if (
+        !(
+          command === 'aws' ||
+          (command === 'bash' && next === '--rcfile') ||
+          (command === 'jq' && consoleExchange(index))
+        )
+      ) {
+        fail(
+          'o',
+          `line ${line.line}: a credential is handed to a command other than aws, the shell or the console's exchange`,
+        )
+      }
+    }
+    if ([...line.text.matchAll(/\$\{!/g)].some(m => !/^\$\{![A-Za-z_]\w*\+x\}/.test(line.text.slice(m.index ?? 0)))) {
+      fail('o', `line ${line.line}: an indirect expansion other than \${!name+x} can read a credential by another name`)
+    }
+    if (/(?:^|[\s;&|(])(?:declare|local|typeset)\s+(?:-[A-Za-z]*\s+)*-[A-Za-z]*n/.test(line.text)) {
+      fail('o', `line ${line.line}: a nameref can read a credential by another name`)
+    }
+    if (
+      [...line.text.matchAll(ENV_RUN)].some(run =>
+        wordsAsWritten(line.text.slice((run.index ?? 0) + run[0].length)).some(word => word.includes('AWS_')),
+      )
+    ) {
+      fail('o', `line ${line.line}: an AWS_ variable is passed through env or sudo, which puts it in an argument`)
+    }
+  }
+  for (const { line } of curls) {
+    if (credentialExpansion.test(line.text) || /Session=/.test(line.text) || !/Session@/.test(line.text)) {
+      fail(
+        'o',
+        `line ${line.line}: curl reads the session only from a file (Session@…), never from a variable or an argument`,
+      )
+    }
+  }
+
+  // p: --amend writes its one entry and signs out: no shell, no console, no open or close entry, and
+  // never beside --console. Both the function that writes the amend entry and the run's own --amend
+  // branch are read: the branch, from `if [ -n "$amend" ]; then` to its fi, reaches none of them,
+  // calls the amend and exits straight after it, so an amend run ends in the amend's sign-out and
+  // never goes on into a session.
+  const notInAmend = /\bbash\s+--rcfile\b|(?:^|[\s;&|(])curl\s|\bentry:\s*"(?:open|close)"/
+  const amend = [...functions.keys()].find(name => bodyOf(name).some(line => /\bentry:\s*"amend"/.test(line.text)))
+  const amendBody = amend === undefined ? [] : bodyOf(amend)
+  if (
+    amend === undefined ||
+    amendBody.some(line => reaches(line.text, notInAmend)) ||
+    !/^aws\s+sso\s+logout\b/.test(amendBody.at(-1)?.text ?? '')
+  ) {
+    fail(
+      'p',
+      'the amend writes its one entry and ends in aws sso logout, reaching no shell, no console and no open or close entry',
+    )
+  }
+  const branchStart = main.find(({ line }) => line.text === 'if [ -n "$amend" ]; then')?.index ?? -1
+  let branchEnd = -1
+  for (let i = branchStart + 1, depth = 1; branchStart >= 0 && i < lines.length; i++) {
+    const text = lines[i]?.text ?? ''
+    if (/^if\s.*;\s*then$/.test(text)) depth += 1
+    else if (text === 'fi') depth -= 1
+    if (depth === 0) {
+      branchEnd = i
+      break
+    }
+  }
+  const branch = branchEnd < 0 ? [] : lines.slice(branchStart + 1, branchEnd)
+  if (
+    amend === undefined ||
+    branch.length < 2 ||
+    branch.some(line => reaches(line.text, notInAmend)) ||
+    !/^exit(?:\s+\d+)?$/.test(branch.at(-1)?.text ?? '') ||
+    !calls(branch.at(-2)?.text ?? '').includes(amend)
+  ) {
+    fail(
+      'p',
+      'the run’s --amend branch reaches no shell, no console and no open or close entry, and exits straight after the amend',
+    )
+  }
+  if (
+    !lines.some(
+      line =>
+        /\$amend\b/.test(line.text) && /\$console\b/.test(line.text) && /\b(?:refuse|usage|exit)\b/.test(line.text),
+    )
+  ) {
+    fail('p', '--console beside --amend is refused')
+  }
+
+  // q: the functions are what the rules read and the tests run. Each is defined once, as `name() {`
+  // alone in column 0 up to a `}` alone in column 0, since bash runs a name's last definition and the
+  // rules would read another; none is named for a bash builtin or keyword or a command the helper
+  // runs, which it would replace; no alias stands in for a call; and usage and refuse, which every
+  // refusal calls, end in exit with a non-zero status and never return.
+  const definitions = shellDefinitions(text)
+  for (const name of new Set(definitions.map(({ name }) => name))) {
+    const count = definitions.filter(definition => definition.name === name).length
+    if (count > 1) fail('q', `${name} is defined ${count} times: bash runs the last, the rules read one`)
+  }
+  for (const { name, index, whole } of definitions) {
+    const at = lines[index]?.line
+    if (!whole) fail('q', `line ${at}: ${name} is defined as \`${name}() {\` alone, in column 0`)
+    else if (!functions.has(name)) fail('q', `line ${at}: ${name}'s body ends at a } alone, outside any other function`)
+    if (RESERVED_FUNCTION_NAMES.includes(name)) {
+      fail('q', `line ${at}: a function named ${name} would replace a builtin, keyword or command`)
+    }
+  }
+  for (const { name, end } of ranges) {
+    if (raw[(lines[end]?.line ?? 0) - 1] !== '}') fail('q', `${name}'s body ends at a } alone, in column 0`)
+  }
+  if (lines.some(line => /\bexpand_aliases\b/.test(line.text))) fail('q', 'no alias stands in for a call')
+  for (const name of ['usage', 'refuse']) {
+    const body = bodyOf(name)
+    if (
+      !/^exit [1-9]\d*$/.test(body.at(-1)?.text ?? '') ||
+      body.some(line => /(?:^|[\s;&|])return(?:\s|;|$)/.test(line.text.split('\n')[0] ?? ''))
+    ) {
+      fail('q', `${name} ends in exit with a non-zero status, and never returns, since every refusal calls it`)
+    }
+  }
+  return found
+}
+
+// --- IG-10: the model lists' one home (C11-D06) -------------------------------------------------
+
+// The files whose model strings are held elsewhere: models.ts, the lists themselves, and the
+// generated bootstrap template, which IAC-24 holds byte for byte to what the generator renders from
+// them.
+export const MODEL_STRINGS_EXEMPT = ['infra/src/config/models.ts', 'infra/bootstrap/hearth-bootstrap.yaml'] as const
+
+// A service:action token, as an IAM action pattern is written.
+const MODEL_TOKEN = /(?<![\w-])([a-z][a-z0-9-]*):([A-Za-z0-9*?]+)/gi
+
+// Whether a token names a model service or action: its service is a model prefix, whatever its
+// action, or its action isn't exactly `*` and can match a model action.
+export function namesModel(service: string, action: string): boolean {
+  const lower = `${service}:${action}`.toLowerCase()
+  if (MODEL_SERVICE_PREFIXES.some(prefix => prefix === service.toLowerCase())) return true
+  return action !== '*' && MODEL_ACTIONS.some(model => globsOverlap(lower, model.toLowerCase()))
+}
+
+// The text IG-10 reads of a file: a script's string literals and template text, so a comment or an
+// object key is no finding; any other file whole.
+function modelTexts(path: string, text: string): Array<{ line: number; text: string }> {
+  if (!/\.[cm]?[jt]sx?$/.test(path)) return text.split('\n').map((line, index) => ({ line: index + 1, text: line }))
+  const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true)
+  const found: Array<{ line: number; text: string }> = []
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isStringLiteralLike(node) ||
+      ts.isTemplateHead(node) ||
+      ts.isTemplateMiddle(node) ||
+      ts.isTemplateTail(node)
+    ) {
+      found.push({ line: file.getLineAndCharacterOfPosition(node.getStart()).line + 1, text: node.text })
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return found
+}
+
+// Each place a file under infra/ names a model service or action, as "path:line: IG-10 why". The
+// deny renders modelDenyActions(), and a test builds what it plants from the lists.
+export function modelStringFindings(path: string, text: string): Finding[] {
+  if (!path.startsWith('infra/') || (MODEL_STRINGS_EXEMPT as readonly string[]).includes(path)) return []
+  const found = new Set<string>()
+  for (const { line, text: value } of modelTexts(path, text)) {
+    for (const [, service = '', action = ''] of value.matchAll(MODEL_TOKEN)) {
+      if (namesModel(service, action)) {
+        found.add(
+          `${path}:${line}: IG-10 names a model service or action; the lists live in infra/src/config/models.ts alone`,
+        )
+      }
+    }
+  }
+  return [...found]
+}
+
+// The aws-cdk-lib modules of the model services, which infra never imports: each prefix with its
+// hyphens dropped, and AWS DevOps Agent's, whose IAM prefix is aidevops.
+export const MODEL_MODULES: readonly string[] = [
+  ...new Set([...MODEL_SERVICE_PREFIXES.map(prefix => prefix.replace(/-/g, '')), 'devopsagent']),
+]
+
+// Each model service module a script imports, re-exports or reaches through aws-cdk-lib's root.
+export function modelModuleFindings(path: string, source: string, code: string): Finding[] {
+  const found: Finding[] = []
+  for (const spec of importsOf(source, path)) {
+    const module = /^aws-cdk-lib\/aws-([a-z0-9]+)$/.exec(spec)?.[1]
+    if (module !== undefined && MODEL_MODULES.includes(module)) {
+      found.push(`${path}: IG-10 imports aws-cdk-lib's ${module} module, a model service's`)
+    }
+  }
+  for (const [, module = ''] of code.matchAll(/\baws_([a-z0-9]+)\b/g)) {
+    if (MODEL_MODULES.includes(module))
+      found.push(`${path}: IG-10 uses aws-cdk-lib's ${module} module, a model service's`)
+  }
+  return found
+}
+
+// --- IG-12: no executable assets (C11-D76) ------------------------------------------------------
+
+// An asset the CDK CLI would build or run where deploy credentials exist: a file source's executable,
+// a Docker image's build folder, the synthesizer's image asset, bundling, and an image built at synth.
+// The assertion tests name the first two, to look for them in an asset manifest (IAC-22).
+export const ASSET_RULES: readonly CodeRule[] = [
+  {
+    id: 'IG-12',
+    pattern: /\bexecutable\b/,
+    why: "an asset source's executable makes the CDK CLI run a command where deploy credentials exist",
+    assertionsMayName: true,
+  },
+  {
+    id: 'IG-12',
+    pattern: /\bdirectoryName\b/,
+    why: "a Docker image asset's build folder makes the CLI run docker build",
+    assertionsMayName: true,
+  },
+  { id: 'IG-12', pattern: /\baddDockerImageAsset\s*\(/, why: 'an image asset makes the CLI build one' },
+  { id: 'IG-12', pattern: /\bbundling\s*:/, why: 'bundling runs code or Docker at synth' },
+  { id: 'IG-12', pattern: /\bDockerImage\s*\.\s*fromBuild\s*\(/, why: 'an image built at synth runs Docker' },
+]
+
+// --- C11-D62: the landing-zone synth runs credential-free and offline ---------------------------
+
+// A command line's words as written, quotes kept, split at whitespace outside quotes.
+function rawWords(command: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let quote: string | undefined
+  for (const c of command) {
+    if (quote !== undefined) {
+      word += c
+      if (c === quote) quote = undefined
+    } else if (c === "'" || c === '"') {
+      quote = c
+      word += c
+    } else if (/\s/.test(c)) {
+      if (word !== '') words.push(word)
+      word = ''
+    } else {
+      word += c
+    }
+  }
+  if (word !== '') words.push(word)
+  return words
+}
+
+// The environment synth:lz runs in: every inherited variable dropped (env -i) but PATH, a HOME made
+// for the run (so the CLI reads no ~/.cdk.json and loads no plugin), both AWS files pointed at
+// /dev/null, the metadata service, telemetry and the version check off, and the fixture.
+export const SYNTH_LZ_ENVIRONMENT = [
+  'PATH="$PATH"',
+  'HOME="$(mktemp -d)"',
+  'AWS_CONFIG_FILE=/dev/null',
+  'AWS_SHARED_CREDENTIALS_FILE=/dev/null',
+  'AWS_EC2_METADATA_DISABLED=true',
+  'CDK_DISABLE_CLI_TELEMETRY=true',
+  'CDK_DISABLE_VERSION_CHECK=true',
+  'HEARTH_FIXTURE=1',
+] as const
+
+// The script itself, whole: one command, so nothing runs before, beside or after it outside env -i
+// (npm runs a script through sh with the caller's environment, AWS keys and all), and no option but
+// these, so no plugin, profile, role or instance credentials either. npm also runs a script's pre and
+// post hooks, and hands every script to a root .npmrc's script-shell, each with the caller's
+// environment, so synthHookProblems and npmrcProblems refuse those.
+export const SYNTH_LZ_SCRIPT = `env -i ${SYNTH_LZ_ENVIRONMENT.join(' ')} cdk synth --app 'node bin/landing-zone.ts' --no-lookups --no-notices --quiet`
+
+// What's wrong with infra's synth:lz script: it must run the CLI in exactly that environment, as
+// synth of the landing-zone entry with no lookups, notices or output, and with no profile, role or
+// instance credentials, and be exactly SYNTH_LZ_SCRIPT; the parts are named first, to say what moved.
+export function synthScriptProblems(command: string): Finding[] {
+  const found: Finding[] = []
+  const at = 'infra/package.json synth:lz'
+  const words = rawWords(command)
+  if (words[0] !== 'env' || words[1] !== '-i')
+    found.push(`${at}: C11-D62 starts with env -i, dropping every inherited variable`)
+  const cdk = words.indexOf('cdk')
+  const assignments = words.slice(2, cdk < 0 ? undefined : cdk)
+  if (JSON.stringify([...assignments].sort()) !== JSON.stringify([...SYNTH_LZ_ENVIRONMENT].sort())) {
+    found.push(`${at}: C11-D62 sets exactly ${SYNTH_LZ_ENVIRONMENT.join(' ')}`)
+  }
+  const cli = cdk < 0 ? [] : words.slice(cdk)
+  if (cli.slice(0, 4).join(' ') !== "cdk synth --app 'node bin/landing-zone.ts'") {
+    found.push(`${at}: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'`)
+  }
+  for (const flag of ['--no-lookups', '--no-notices', '--quiet']) {
+    if (!cli.includes(flag)) found.push(`${at}: C11-D62 passes ${flag}`)
+  }
+  for (const flag of ['--profile', '--role-arn', '--ec2creds']) {
+    if (cli.some(word => word === flag || word.startsWith(`${flag}=`))) found.push(`${at}: C11-D62 passes no ${flag}`)
+  }
+  if (found.length === 0 && command !== SYNTH_LZ_SCRIPT) {
+    found.push(`${at}: C11-D62 is exactly ${SYNTH_LZ_SCRIPT}, one command, so nothing runs outside env -i`)
+  }
+  return found
+}
+
+// The hooks npm runs around `npm run synth:lz` by themselves, each in its own shell with the caller's
+// environment, outside the script's env -i: a `cdk ls` there would reach STS with the caller's keys.
+// npm runs no root manifest's hook for `-w @hearth/infra`, so only infra's manifest is read.
+export const SYNTH_LZ_HOOKS = ['presynth:lz', 'postsynth:lz'] as const
+
+// What's wrong with infra's manifest around synth:lz: a pre or post hook of it (C11-D62). The parsed
+// keys are read, so a key spelled with a JSON escape is found as npm finds it.
+export function synthHookProblems(manifest: unknown): Finding[] {
+  const scripts = (manifest as { scripts?: Record<string, unknown> } | null)?.scripts ?? {}
+  return SYNTH_LZ_HOOKS.filter(hook => Object.hasOwn(scripts, hook)).map(
+    hook =>
+      `infra/package.json ${hook}: C11-D62 no ${hook} script: npm runs it with the caller's environment, outside env -i`,
+  )
+}
+
+// What's wrong with a tracked root .npmrc (C11-D62): a script-shell, which names the program npm hands
+// every script to, synth:lz included, with the caller's environment before env -i runs. npm reads
+// the key with or without quotes, and reads no workspace's own .npmrc. Its other case and underscore
+// spellings are refused too, though npm 11 ignores them, so a later npm that reads one changes nothing.
+export function npmrcProblems(text: string): Finding[] {
+  const sets = text.split(/\r?\n/).some(line => {
+    const key = (line.split('=')[0] ?? '').trim().replace(/^(["'])(.*)\1$/, '$2')
+    return /^script[-_]shell$/i.test(key)
+  })
+  return sets
+    ? [".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i"]
+    : []
+}
+
+// What's wrong with ci.yml for the landing zone's synth (C11-D62): the check job runs synth:lz
+// straight after npm test, each step its run line alone (so neither is skipped by an if: or let fail
+// by continue-on-error), and the workflow can hold no AWS credential: no id-token permission, only
+// contents: read at the top, no credentials action and no AWS_ variable. The id-token clause reads
+// every line, comments included, for id-token and write-all (which grants it), so a job's own
+// permissions can't ask for one in a block, a flow mapping or a quoted key, a uses: job included;
+// and refuses a double-quoted key, or a key's double-quoted value, holding a backslash, since an
+// escape (id\x2Dtoken) could spell either unseen. DPW-02 (C0.11 PR 4) takes the id-token clause over
+// for every workflow.
+export function ciSynthProblems(text: string, steps: readonly string[]): Finding[] {
+  const found: Finding[] = []
+  const test = steps.indexOf('run: npm test')
+  if (test < 0 || steps[test + 1] !== 'run: npm run synth:lz -w @hearth/infra') {
+    found.push(
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test, each step its run line alone',
+    )
+  }
+  if (/id-token|write-all/i.test(text)) {
+    found.push('.github/workflows/ci.yml: C11-D62 no job may ask for an id-token')
+  }
+  const quoted = String.raw`"(?:[^"\\\n]|\\.)*`
+  if (
+    new RegExp(String.raw`${quoted}\\(?:[^"\\\n]|\\.)*"\s*:(?:\s|$)`, 'm').test(text) ||
+    new RegExp(String.raw`^\s*(?:-\s+)?(?:[\w-]+|${quoted}")\s*:\s+${quoted}\\`, 'm').test(text)
+  ) {
+    found.push(
+      '.github/workflows/ci.yml: C11-D62 no key or value is spelled with an escape, which could name id-token or write-all unseen',
+    )
+  }
+  if (!/^permissions:\n {2}contents: read\n(?! )/m.test(text)) {
+    found.push('.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone')
+  }
+  if (/aws-actions\/configure-aws-credentials/.test(text)) {
+    found.push('.github/workflows/ci.yml: C11-D62 no step takes AWS credentials')
+  }
+  if (text.split('\n').some(line => !/^\s*#/.test(line) && /(?:^|[\s'"])AWS_[A-Z0-9_]*\s*[:=]/.test(line))) {
+    found.push('.github/workflows/ci.yml: C11-D62 no line sets an AWS_ variable')
   }
   return found
 }

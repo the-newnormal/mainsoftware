@@ -145,7 +145,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
         /\b(?:otpForTests|passkeysForTests)\b/.test(withoutComments(path, readRepoFile(path))),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('D46: assigns PASSKEYS_ON only in auth/policy.ts', () => {
     // This file names the shapes it looks for in its own strings.
@@ -154,7 +154,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
     )
     expect(found).toEqual([])
     expect(ASSIGNED.test(withoutComments(POLICY, readRepoFile(POLICY)))).toBe(true)
-  })
+  }, 30_000)
 
   it('main.ts names no override', () => {
     expect(OVERRIDE.test(readRepoFile(MAIN))).toBe(false)
@@ -175,7 +175,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
     expect(withoutComments(REALTIME, readRepoFile(REALTIME))).toMatch(/deps\.admissionForTests \?\? NOTICE_ADMISSION/)
     expect(ADMISSION.test('registerRealtime(app, { ...deps, admissionForTests: "none" })')).toBe(true)
     expect(ADMISSION.test('const admissionForTestsish = 1')).toBe(false)
-  })
+  }, 30_000)
 
   it('C0.9 PD-62 B-14: only the publish route (compliance/notice.ts) calls publish_notice(), outside testing/, tests and CI’s checks', () => {
     const found = scripts.filter(
@@ -201,7 +201,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
         "'publish_notice(integer, text, text, text[], integer[], uuid[], integer, text, uuid, inet)'",
       ),
     ).toBe(false)
-  })
+  }, 30_000)
 
   // The files outside the guard's exceptions that mention the pattern, comments stripped.
   const callersOf = (pattern: RegExp, allowed: string) =>
@@ -231,7 +231,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
       expect(SET_DPO_CONTACT.test(caller), caller).toBe(true)
     }
     expect(SET_DPO_CONTACT.test("'set_dpo_contact(integer, text, text, text, text, text, uuid, inet)'")).toBe(false)
-  })
+  }, 30_000)
 
   it('C0.9 PD-65 OD-19: only the record route (compliance/notice.ts) calls record_notice_acknowledgement(), after aiCopyIn() on the note, outside testing/, tests and CI’s checks', () => {
     expect(callersOf(RECORD_ACKNOWLEDGEMENT, PUBLISHER)).toEqual([])
@@ -250,7 +250,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
     expect(
       RECORD_ACKNOWLEDGEMENT.test("'record_notice_acknowledgement(uuid, uuid, date, text, text, uuid, inet)'"),
     ).toBe(false)
-  })
+  }, 30_000)
 
   it('C0.9 PD-15 T22 item 8: sets Api.transfers only in api.ts, testing/ and tests, and main.ts never names it', () => {
     const found = scripts
@@ -262,7 +262,7 @@ describe('T20 D46 the api test overrides never reach production', () => {
     const api = readRepoFile(API)
     expect(transfersSet(API, api)).toEqual([expect.stringMatching(/keys transfers in an Api-shaped object$/)])
     expect(withoutComments(API, api)).toMatch(/\.\.\.deps,[^}]*\btransfers: DB_TRANSFERS,?\s*\}/)
-  })
+  }, 30_000)
 
   it('C0.9 PD-15: the transfers check catches what it guards against, and passes the registers’ answer', () => {
     const caught = [

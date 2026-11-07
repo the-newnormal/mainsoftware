@@ -1,0 +1,495 @@
+// The assured alarms (C11-D16), in Hearth-Foundation: metric filters on the organisation trail's
+// CloudWatch copy (org-trail.ts) and one alarm each, emailing management's hearth-ops-alerts topic.
+// They see every account's calls, a member account's fast rule or not, so for A1, A8 and A15 they
+// are the path that holds when a fast rule's delivery fails. They aren't for the rest: A7 here sees
+// only CloudFormation's writes in prod, so nothing here sees what prod's three fast A7 rules match
+// (ECS changes made outside CloudFormation, a RunTask overriding a command or an environment), nor
+// A14's failed deployments (TECH-SPEC T24 item 5). An alarm emails as it enters ALARM and again as
+// it returns to OK, never per call: a matching call while it is already in ALARM (a prod release's
+// later stacks, a Baseline deploy's other writes, the Owner's own triage session) emails nobody, so
+// triage reads every call from the episode's first breaching period until the OK email (the
+// security-alerts runbook). Each treats missing data as no alarm, so a copy that stopped receiving
+// the trail would leave them all OK whatever happened: the copy's intake alarm,
+// hearth-sec-copy-intake, reads AWS's own count of the events the copy received, which nobody's
+// datapoints can reach, and alarms once twelve five-minute periods in a row, about an hour, held
+// none (CopyIntake, below). They can't report tampering with themselves from inside management,
+// which no guardrail binds: a HearthOrgAdmin session or management's root can turn off or mute the
+// alarms' actions, delete them, or unsubscribe or delete the topic before the copy receives those
+// calls, minutes after they are made, so A6, and A3 for the session itself, may then email nobody.
+// The trail's files in log-archive, under Object Lock, still record those calls for the quarterly
+// review. Datapoints a caller puts into an alarm's metric would leave no such record, since
+// CloudTrail records PutMetricData only as a data event, which the trail doesn't select, so each
+// alarm reads a statistic they can't lower (alarmStatistic, below). They can still raise one, and an
+// alarm held in ALARM that way emails nobody about the calls that follow, so triage treats a
+// breaching period with no matching call, or an alarm still in ALARM long after its last one, as an
+// A6 raised in management, and the read-backs read each alarm's state (the security-alerts and
+// review runbooks).
+// The alarms:
+// - A1 break-glass assumed, refused attempts included (C11-D11);
+// - A2 a root sign-in or action, or a centralised root session;
+// - A3 an administrator session: HearthOrgAdmin, the first deploys' HearthSetUp, or
+//   OrganizationAccountAccessRole;
+// - A4 Identity Center changed: permission sets, assignments, the attribute for access control, the
+//   instance and its sign-in settings, the identity source and its MFA rule, trusts and trusted token
+//   issuers, applications, profiles, Regions, tags, the identity store or the directory;
+// - A5 any write to Organizations;
+// - A6 tampering: the audit services' writes; long-lived credentials, a new or changed identity
+//   provider or Cognito identity pool, STS's Regional endpoint status, a deleted flow log; the fast alarms' rules, topics and log
+//   groups; the log-archive keys' administration; the log buckets' configuration and their objects'
+//   deletes and lock changes, allowed or denied; the alarms themselves (a mute rule included), but a
+//   PutMetricAlarm CloudFormation makes; and IAM writes to the break-glass and GitHub roles, the
+//   boundary and GitHub's provider;
+// - A7 a CloudFormation change in prod, whatever the stack; A8 a session into prod's tasks;
+// - A11 five failed sign-ins in fifteen minutes; A15 a hearthbase role assumed (C11-D26);
+// and the copy's intake, beside them, which no filter feeds.
+// A9, A10 and A14 are fast rules in log-archive and the Baselines; A12 is the budgets (budgets.ts).
+// The accounts the patterns name are configuration, written into the template at synth. A pattern
+// holds at most 1,024 characters, so an alarm may have several filters publishing one metric, and each
+// is proved against recorded events by a person with `aws logs test-metric-filter` (the set-up
+// runbook). This file decides what wakes someone, so it is on the owner's-read list (C11-D74).
+import * as cdk from 'aws-cdk-lib'
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch'
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions'
+import * as logs from 'aws-cdk-lib/aws-logs'
+import { Construct } from 'constructs'
+import type { OpsAlerts } from '../baseline/ops-alerts.ts'
+import type { LandingZoneConfig } from '../config/env.ts'
+import {
+  BOUNDARY,
+  GITHUB_OIDC_HOST,
+  LOG_BUCKET_PREFIX,
+  OPS_TOPIC,
+  PERMISSION_SET,
+  QUALIFIER,
+  ROLE,
+  SEC_RULE_PREFIX,
+  SECURITY_LOG_GROUP_PREFIX,
+} from '../config/names.ts'
+
+// The namespace every filter publishes to.
+export const SECURITY_NAMESPACE = 'Hearth/Security'
+
+// CloudWatch Logs' limit on one filter pattern, in characters.
+const PATTERN_LIMIT = 1_024
+
+// The copy's intake alarm: twelve empty five-minute periods in a row, about an hour (CopyIntake).
+const INTAKE_PERIOD_MINUTES = 5
+const INTAKE_PERIODS = 12
+
+export interface AssuredAlarm {
+  // The construct id and the metric's name.
+  metric: string
+  // The alarm's name after hearth-sec-.
+  name: string
+  // One filter per pattern, each publishing 1 to the metric.
+  patterns: readonly string[]
+  // The alarm's period in minutes and its threshold, in matched events: 5 and 1 unless said.
+  periodMinutes?: number
+  threshold?: number
+}
+
+// The statistic an alarm reads, chosen so that nobody's own datapoints can hold it down. Anyone in
+// management who may call PutMetricData can put datapoints into Hearth/Security's metrics (values down
+// to -2^360, timestamped up to two weeks back and two hours ahead), and the trail records none of it
+// (above), so under Sum a negative value would cancel a filter's 1. An alarm on one match reads
+// Maximum, which a filter's 1 always reaches and a datapoint can only raise. An alarm on several (A11)
+// reads SampleCount, one sample per matched event, which a datapoint can only add to, so long as
+// CloudWatch refuses a negative sample count: that, and a filter's one sample per match, are proved at
+// set-up (the set-up runbook). Filter and alarm both name the unit Count, so a datapoint put under
+// another unit is left out rather than leaving the alarm's evaluation undefined. No statistic stops a
+// datapoint holding an alarm up: one at the threshold, put in every few minutes, keeps the alarm in
+// ALARM, where it emails nobody about a real match (above). Triage and the read-backs are what find
+// that; a deny of PutMetricData into Hearth/Security on HearthOrgAdmin would refuse it to that set's
+// sessions, but not to management's root or a role a session makes, and the owner declined it on
+// 5 Nov 2026 (PR 2 question 35), asking instead for the hold-up to be closed here in code by a later
+// owner's-read PR (question 36, TECH-SPEC T24).
+const alarmStatistic = (threshold: number) =>
+  threshold === 1 ? cloudwatch.Stats.MAXIMUM : cloudwatch.Stats.SAMPLE_COUNT
+
+// `a || b || …` and `a && b && …`, each part in brackets.
+const any = (...parts: string[]) => parts.map(part => `(${part})`).join(' || ')
+const all = (...parts: string[]) => parts.map(part => `(${part})`).join(' && ')
+// A field equal to a value (`*` matches any run of characters).
+const is = (field: string, value: string) => `$.${field} = "${value}"`
+// A field equal to one of the values.
+const oneOf = (field: string, values: readonly string[]) => any(...values.map(value => is(field, value)))
+const WRITE = '$.readOnly IS FALSE'
+
+// S3's object deletes and lock changes, written from parts: LCG-02 reads their names in any string as
+// S3 calls, and these are event names a filter matches, never calls (C11-D08).
+const OBJECT = 'Object'
+const S3_OBJECT_CHANGES = [
+  ['Delete', OBJECT].join(''),
+  ['Delete', OBJECT, 's'].join(''),
+  'DeleteObjectVersion',
+  ['Put', OBJECT, 'Retention'].join(''),
+  ['Put', OBJECT, 'LegalHold'].join(''),
+]
+
+// The log-archive buckets, by name pattern (their names end in log-archive's account id).
+const LOG_BUCKETS = Object.values(LOG_BUCKET_PREFIX).map(prefix => `${prefix}*`)
+
+// The Identity Center writes A4 watches, by the event name CloudTrail records (CloudWatch Logs'
+// wildcards): every write, permissions change and tag IAM names for sso, under either casing of the
+// instance's settings (UpdateSSOConfiguration, UpdateSsoConfiguration), but never a call the access
+// portal or its device sign-in makes (Authenticate, Federate, Logout, CreateToken, RegisterClient,
+// StartDeviceAuthorization), which every `aws sso login` and logout would otherwise raise. Hence a
+// name list rather than every sso write; the test holds it to IAM's list. Which event a hand change of
+// the MFA rule or the portal's session records is proved at set-up (the set-up runbook).
+const IDENTITY_CENTER_WRITES = [
+  '*PermissionSet*',
+  '*AccountAssignment*',
+  '*AccessControlAttribute*',
+  // the instance, and applications' instances
+  '*Instance',
+  // the instance's settings, and applications'
+  '*Configuration',
+  // the identity source, and the directory's MFA device management
+  '*Directory*',
+  // trusts and trusted token issuers
+  '*Trust*',
+  // applications, their assignments, grants, scopes and authentication methods
+  '*Application*',
+  '*Profile*',
+  // the instance's Regions (AddRegion, RemoveRegion)
+  '*Region',
+  // the older console's permissions policy
+  '*PermissionsPolicy',
+  'TagResource',
+  'UntagResource',
+  'StartSSO',
+]
+
+// The key administration A6 watches in the log-archive account (C11-D05, C11-D17).
+const KEY_ADMINISTRATION = [
+  'PutKeyPolicy',
+  'ScheduleKeyDeletion',
+  'CancelKeyDeletion',
+  'DisableKey',
+  'EnableKey',
+  'DisableKeyRotation',
+  'CreateGrant',
+  'TagResource',
+  'UntagResource',
+  'CreateAlias',
+  'UpdateAlias',
+  'DeleteAlias',
+]
+
+// The assured alarms and their patterns (C11-D16; TECH-SPEC T24 item 5).
+export function assuredAlarms(config: LandingZoneConfig): AssuredAlarm[] {
+  const { prod, logArchive } = config.accounts
+  const assumeRole = (role: string) =>
+    `{ ${all(is('eventSource', 'sts.amazonaws.com'), is('eventName', 'AssumeRole'), is('requestParameters.roleArn', `*:role/${role}`))} }`
+  return [
+    { metric: 'A01BreakGlass', name: 'a01-break-glass', patterns: [assumeRole(ROLE.breakGlass)] },
+    {
+      metric: 'A02Root',
+      name: 'a02-root',
+      patterns: [
+        `{ ${all(is('userIdentity.type', 'Root'), '$.userIdentity.invokedBy NOT EXISTS', '$.eventType != "AwsServiceEvent"')} }`,
+        `{ ${is('eventName', 'AssumeRoot')} }`,
+      ],
+    },
+    {
+      metric: 'A03Admin',
+      name: 'a03-admin',
+      patterns: [
+        `{ ${any(
+          all(
+            is('eventName', 'AssumeRoleWithSAML'),
+            oneOf('requestParameters.roleArn', [
+              `*AWSReservedSSO_${PERMISSION_SET.orgAdmin}_*`,
+              `*AWSReservedSSO_${PERMISSION_SET.setUp}_*`,
+            ]),
+          ),
+          all(is('eventName', 'AssumeRole'), is('requestParameters.roleArn', `*:role/${ROLE.oaar}`)),
+        )} }`,
+      ],
+    },
+    {
+      metric: 'A04Identity',
+      name: 'a04-identity',
+      patterns: [
+        `{ ${all(is('eventSource', 'sso.amazonaws.com'), WRITE, oneOf('eventName', IDENTITY_CENTER_WRITES))} }`,
+        `{ ${all(is('eventSource', 'identitystore.amazonaws.com'), WRITE)} }`,
+        `{ ${all(is('eventSource', 'sso-directory.amazonaws.com'), WRITE)} }`,
+      ],
+    },
+    {
+      metric: 'A05Organizations',
+      name: 'a05-organizations',
+      patterns: [`{ ${all(is('eventSource', 'organizations.amazonaws.com'), WRITE)} }`],
+    },
+    {
+      metric: 'A06Tampering',
+      name: 'a06-tampering',
+      patterns: [
+        // (a) the audit services' writes
+        `{ ${all(
+          oneOf('eventSource', [
+            'cloudtrail.amazonaws.com',
+            'guardduty.amazonaws.com',
+            'access-analyzer.amazonaws.com',
+          ]),
+          WRITE,
+        )} }`,
+        // (b) long-lived credentials, identity providers and Cognito identity pools, STS's Regional
+        // endpoint status (deactivating it in ap-southeast-1 refuses every break-glass session in the
+        // account; hearth-baseline-2's SetUpOnly refuses it to all but OAAR, so a denied attempt shows
+        // here: C0.11 review 6 IAM-01; whether CloudTrail records the change, and under which source and
+        // name, is unproved until one is recorded, since the set-up makes none: TECH-SPEC T24's A6 row
+        // and the set-up runbook; hence the wildcard), the services that hand a role's credentials to a
+        // certificate or a code (IAM Roles Anywhere, SSM's hybrid activations and the role an activated
+        // machine takes, IoT's role aliases), flow logs
+        `{ ${any(
+          all(
+            is('eventSource', 'iam.amazonaws.com'),
+            oneOf('eventName', [
+              'CreateUser',
+              'CreateAccessKey',
+              'CreateLoginProfile',
+              'CreateServiceSpecificCredential',
+            ]),
+          ),
+          all(
+            is('eventSource', 'iam.amazonaws.com'),
+            WRITE,
+            oneOf('eventName', ['*OpenIDConnectProvider*', '*SAMLProvider*', '*STSRegionalEndpoint*']),
+          ),
+          all(is('eventSource', 'cognito-identity.amazonaws.com'), WRITE),
+          all(is('eventSource', 'rolesanywhere.amazonaws.com'), WRITE),
+          all(
+            is('eventSource', 'ssm.amazonaws.com'),
+            oneOf('eventName', ['CreateActivation', 'UpdateManagedInstanceRole']),
+          ),
+          all(is('eventSource', 'iot.amazonaws.com'), oneOf('eventName', ['CreateRoleAlias', 'UpdateRoleAlias'])),
+          all(is('eventSource', 'ec2.amazonaws.com'), is('eventName', 'DeleteFlowLogs')),
+        )} }`,
+        // (c) the fast alarms' rules
+        `{ ${all(
+          is('eventSource', 'events.amazonaws.com'),
+          WRITE,
+          any(is('requestParameters.name', `${SEC_RULE_PREFIX}*`), is('requestParameters.rule', `${SEC_RULE_PREFIX}*`)),
+        )} }`,
+        // (d) the alarm topics and their subscriptions, by whichever field the call names one in:
+        // topicArn, subscriptionArn (a subscription's filter policy among its attributes), name (a
+        // create), or resourceArn (the topic's data protection policy, tags)
+        `{ ${all(
+          is('eventSource', 'sns.amazonaws.com'),
+          WRITE,
+          any(
+            is('requestParameters.topicArn', `*:${OPS_TOPIC}`),
+            is('requestParameters.subscriptionArn', `*:${OPS_TOPIC}:*`),
+            is('requestParameters.name', OPS_TOPIC),
+            is('requestParameters.resourceArn', `*:${OPS_TOPIC}`),
+          ),
+        )} }`,
+        // (e) the security log groups, by whichever field the call names one in: logGroupName (a
+        // delete, a filter, retention), logGroupIdentifier, a name or an ARN (deletion protection, the
+        // data-protection, transformer and index policies), resourceIdentifier (a key by ARN) or
+        // resourceArn (tags)
+        `{ ${all(
+          is('eventSource', 'logs.amazonaws.com'),
+          WRITE,
+          '$.eventName != "CreateLogStream"',
+          any(
+            is('requestParameters.logGroupName', `${SECURITY_LOG_GROUP_PREFIX}*`),
+            is('requestParameters.logGroupIdentifier', `${SECURITY_LOG_GROUP_PREFIX}*`),
+            ...['logGroupIdentifier', 'resourceIdentifier', 'resourceArn'].map(field =>
+              is(`requestParameters.${field}`, `*:log-group:${SECURITY_LOG_GROUP_PREFIX}*`),
+            ),
+          ),
+        )} }`,
+        // (f) the log-archive keys' administration
+        `{ ${all(
+          is('eventSource', 'kms.amazonaws.com'),
+          is('recipientAccountId', logArchive),
+          oneOf('eventName', KEY_ADMINISTRATION),
+        )} }`,
+        // (g) the log buckets' configuration
+        `{ ${all(
+          is('eventSource', 's3.amazonaws.com'),
+          is('eventCategory', 'Management'),
+          WRITE,
+          oneOf('requestParameters.bucketName', LOG_BUCKETS),
+        )} }`,
+        // (h) the alarms themselves: any delete (CloudFormation's too, when a reviewed change renames
+        // or removes an alarm), actions turned off, or muted by a mute rule (anyone's, CloudFormation's
+        // too: Hearth makes none, and a muted alarm keeps its actions on and its action lists whole,
+        // so the read-backs can't see one), a state set, and a PutMetricAlarm by anyone but
+        // CloudFormation (whichever stack it deploys), so another service's call is seen. `!=` never
+        // matches an absent field, hence both terms.
+        `{ ${all(
+          is('eventSource', 'monitoring.amazonaws.com'),
+          any(
+            is('eventName', 'DeleteAlarms'),
+            is('eventName', 'DisableAlarmActions'),
+            is('eventName', 'PutAlarmMuteRule'),
+            is('eventName', 'SetAlarmState'),
+            all(
+              is('eventName', 'PutMetricAlarm'),
+              any('$.userIdentity.invokedBy NOT EXISTS', '$.userIdentity.invokedBy != "cloudformation.amazonaws.com"'),
+            ),
+          ),
+        )} }`,
+        // (i) the landing zone's roles, its boundary and GitHub's provider
+        `{ ${all(
+          is('eventSource', 'iam.amazonaws.com'),
+          WRITE,
+          any(
+            is('requestParameters.roleName', `${ROLE.breakGlass}*`),
+            is('requestParameters.roleName', 'hearth-gh-*'),
+            is('requestParameters.policyArn', `*:policy/${BOUNDARY}`),
+            is('requestParameters.openIDConnectProviderArn', `*${GITHUB_OIDC_HOST}`),
+          ),
+        )} }`,
+        // (j) the log buckets' objects deleted or their locks changed, allowed or denied
+        `{ ${all(
+          is('eventSource', 's3.amazonaws.com'),
+          is('eventCategory', 'Data'),
+          oneOf('eventName', S3_OBJECT_CHANGES),
+          oneOf('requestParameters.bucketName', LOG_BUCKETS),
+        )} }`,
+      ],
+    },
+    {
+      metric: 'A07ProdChange',
+      name: 'a07-prod-change',
+      patterns: [
+        `{ ${all(
+          is('recipientAccountId', prod),
+          is('eventSource', 'cloudformation.amazonaws.com'),
+          oneOf('eventName', ['CreateChangeSet', 'ExecuteChangeSet', 'CreateStack', 'UpdateStack', 'DeleteStack']),
+        )} }`,
+      ],
+    },
+    {
+      metric: 'A08ProdSession',
+      name: 'a08-prod-session',
+      patterns: [
+        `{ ${all(
+          is('recipientAccountId', prod),
+          any(
+            all(is('eventSource', 'ecs.amazonaws.com'), is('eventName', 'ExecuteCommand')),
+            all(is('eventSource', 'ssm.amazonaws.com'), is('eventName', 'StartSession')),
+          ),
+        )} }`,
+      ],
+    },
+    // A13 (the master secret's and the bootstrap input's reads) joins with C0.12.
+    {
+      metric: 'A11SignInFailures',
+      name: 'a11-sign-in-failures',
+      patterns: [
+        `{ ${any(
+          all(is('eventName', 'ConsoleLogin'), is('errorMessage', 'Failed authentication')),
+          all(is('eventSource', 'signin.amazonaws.com'), is('serviceEventDetails.CredentialVerification', 'Failure')),
+          all(is('eventSource', 'signin.amazonaws.com'), is('serviceEventDetails.CredentialChallenge', 'Failure')),
+        )} }`,
+      ],
+      periodMinutes: 15,
+      threshold: 5,
+    },
+    {
+      metric: 'A15Hearthbase',
+      name: 'a15-hearthbase',
+      patterns: [assumeRole(`cdk-${QUALIFIER.base}-*`)],
+    },
+  ]
+}
+
+export interface SentinelProps {
+  config: LandingZoneConfig
+  // The trail's copy the filters read.
+  logGroup: logs.ILogGroup
+  // Management's topic, built beside this (foundation.ts), which every alarm emails.
+  alerts: OpsAlerts
+}
+
+export class Sentinel extends Construct {
+  readonly alarms: readonly cloudwatch.Alarm[]
+  readonly intake: cloudwatch.Alarm
+
+  constructor(scope: Construct, id: string, props: SentinelProps) {
+    super(scope, id)
+    this.alarms = assuredAlarms(props.config).map(spec => {
+      const group = new Construct(this, spec.metric)
+      const alarmName = `${SEC_RULE_PREFIX}${spec.name}`
+      spec.patterns.forEach((pattern, index) => {
+        if (pattern.length > PATTERN_LIMIT) {
+          throw new Error(
+            `${alarmName}'s pattern ${index + 1} holds ${pattern.length} characters, over ${PATTERN_LIMIT}`,
+          )
+        }
+        // One filter is the alarm's name; several are lettered a, b, c….
+        const letter = spec.patterns.length === 1 ? '' : String.fromCharCode(97 + index)
+        new logs.MetricFilter(group, `Filter${letter.toUpperCase()}`, {
+          logGroup: props.logGroup,
+          filterName: letter === '' ? alarmName : `${alarmName}-${letter}`,
+          filterPattern: logs.FilterPattern.literal(pattern),
+          metricNamespace: SECURITY_NAMESPACE,
+          metricName: spec.metric,
+          metricValue: '1',
+          unit: cloudwatch.Unit.COUNT,
+        })
+      })
+      const threshold = spec.threshold ?? 1
+      const alarm = new cloudwatch.Alarm(group, 'Alarm', {
+        alarmName,
+        metric: new cloudwatch.Metric({
+          namespace: SECURITY_NAMESPACE,
+          metricName: spec.metric,
+          statistic: alarmStatistic(threshold),
+          unit: cloudwatch.Unit.COUNT,
+          period: cdk.Duration.minutes(spec.periodMinutes ?? 5),
+        }),
+        evaluationPeriods: 1,
+        threshold,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      })
+      // Into ALARM and back to OK, so each episode's span reaches the mailbox (above).
+      const action = new cwActions.SnsAction(props.alerts.topic)
+      alarm.addAlarmAction(action)
+      alarm.addOkAction(action)
+      alarm.node.addDependency(props.alerts.policyDependable)
+      return alarm
+    })
+    // The copy's intake: about an hour in which the copy received no event is an alarm (an
+    // organisation trail delivers every few minutes), read from AWS's own IncomingLogEvents, in a
+    // namespace no PutMetricData may write to. That count has a datapoint only for a period in which
+    // events arrived, and CloudWatch judges an alarm on the latest real datapoints in a range it reads
+    // further back than its periods, ignoring how missing data is treated while it finds enough, so a
+    // plain alarm on it would stay OK for as long as an earlier period with events stayed in range.
+    // FILL makes each empty five-minute period a real 0 instead, and the alarm needs twelve of twelve
+    // below 1, so it alarms about an hour after the copy's last event, and one late period can't trip
+    // it. A range FILL returns nothing for is missing data, treated as breaching. Its ALARM and OK
+    // reach the same topic as the assured alarms'.
+    const intake = new cloudwatch.Alarm(this, 'CopyIntake', {
+      alarmName: `${SEC_RULE_PREFIX}copy-intake`,
+      metric: new cloudwatch.MathExpression({
+        expression: 'FILL(m1, 0)',
+        usingMetrics: {
+          m1: new cloudwatch.Metric({
+            namespace: 'AWS/Logs',
+            metricName: 'IncomingLogEvents',
+            dimensionsMap: { LogGroupName: props.logGroup.logGroupName },
+            statistic: cloudwatch.Stats.SUM,
+          }),
+        },
+        period: cdk.Duration.minutes(INTAKE_PERIOD_MINUTES),
+      }),
+      evaluationPeriods: INTAKE_PERIODS,
+      datapointsToAlarm: INTAKE_PERIODS,
+      threshold: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    })
+    const intakeAction = new cwActions.SnsAction(props.alerts.topic)
+    intake.addAlarmAction(intakeAction)
+    intake.addOkAction(intakeAction)
+    intake.node.addDependency(props.alerts.policyDependable)
+    this.intake = intake
+  }
+}

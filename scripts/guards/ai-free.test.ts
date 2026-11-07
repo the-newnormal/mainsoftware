@@ -340,13 +340,26 @@ describe('D41 AI-free guard: the repo', () => {
     expect(found).toEqual([])
   }, 30_000)
 
+  // The next two read every script and page with comments stripped, about 3.5 s alone, which went
+  // past Vitest's 5 s default under a full `npm run check` on a 4-core machine. They share one
+  // stripped copy per file, so only the first pays for it, and each has the import scan's limit.
+  const stripped = new Map<string, string>()
+  const strippedCode = (path: string) => {
+    let code = stripped.get(path)
+    if (code === undefined) {
+      code = codeOf(path, readRepoFile(path))
+      stripped.set(path, code)
+    }
+    return code
+  }
+
   it("no script or page uses the browser's speech recognition or built-in AI", () => {
-    expect(textChecked.filter(path => BROWSER_AI.test(codeOf(path, readRepoFile(path))))).toEqual([])
-  })
+    expect(textChecked.filter(path => BROWSER_AI.test(strippedCode(path)))).toEqual([])
+  }, 30_000)
 
   it('no script or page asks the browser for voice isolation', () => {
-    expect(textChecked.filter(path => BANNED_CONSTRAINT.test(codeOf(path, readRepoFile(path))))).toEqual([])
-  })
+    expect(textChecked.filter(path => BANNED_CONSTRAINT.test(strippedCode(path)))).toEqual([])
+  }, 30_000)
 
   it('no script or page loads code from a public CDN', () => {
     const found = textChecked.flatMap(path => cdnUrls(readRepoFile(path)).map(url => `${path}: ${url}`))

@@ -1255,7 +1255,7 @@ describe('BSG-02 (PD-116, R7): the script takes its inputs only from its two opt
       `${TARGET}: loads a module chosen at run time`,
     ])
     finds(TARGET, [[checkout, `await fetch('https://example.org')\n${checkout}`]], 'fetch', 'names fetch')
-  })
+  }, 30_000)
 
   it('finds an app that loads the script or names its path, and lets the harness spawn it', () => {
     const sources = new Map([
@@ -1290,7 +1290,7 @@ describe('BSG-02 (PD-116, R7): the script takes its inputs only from its two opt
     )
     expect(loadedFromApps(sources)).toEqual([])
     expect(harnessNamesScript(sources.get(HARNESS) ?? '')).toBe(true)
-  })
+  }, 30_000)
 })
 
 // --- BSG-03: one printer --------------------------------------------------------------------------
@@ -1820,7 +1820,7 @@ describe('BSG-04 (R4, PD-125): only steps.ts names the seam, and only recover() 
     const sources = realSources()
     expect(seamOutside(sources)).toEqual([])
     expect(seamInSteps(scriptFile(parsedScript(sources), STEPS))).toEqual([])
-  })
+  }, 30_000)
 })
 
 // --- BSG-05: constant SQL -------------------------------------------------------------------------
@@ -1910,7 +1910,7 @@ describe('BSG-05 (R1, PD-119): every statement is a constant, every value a boun
     expect(check(valued)).toEqual([
       `${STEPS}:${lineIn(valued, STEPS, 'db.query(text)')}: query() given text that isn't a constant`,
     ])
-  })
+  }, 30_000)
 
   it('the real steps.ts sends only constants', () => {
     expect(sqlProblems(scriptFile(parsedScript(realSources()), STEPS))).toEqual([])

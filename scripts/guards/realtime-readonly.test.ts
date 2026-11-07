@@ -150,7 +150,7 @@ describe('realtime read-only guard: the realtime role writes nothing to Postgres
       expect.arrayContaining(['apps/server/src/realtime/admission.ts', ...SHARED_READS]),
     )
     for (const { path, source } of sources) expect(writeProblems(source, path), path).toEqual([])
-  })
+  }, 30_000)
 
   it('the checks read in a read-only withOrg() (the only transaction realtime opens beside the pre-org lookup)', () => {
     const checks = sources.find(({ path }) => path === 'apps/server/src/realtime/checks.ts')

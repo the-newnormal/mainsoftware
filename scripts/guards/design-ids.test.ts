@@ -313,9 +313,10 @@ function c11IdsIn(text: string): Set<string> {
 }
 
 // Where code cites C0.11's ids: code, SQL and shell in apps/, packages/, scripts/, db/ and infra/,
-// infra/'s JSON and .env.example, and .github/'s workflows and environments.
+// infra/'s JSON and YAML (the generated bootstrap template, whose variant cites C11-D75) and
+// .env.example, and .github/'s workflows and environments.
 const C11_CODE =
-  /^(?:(?:apps|packages|scripts|db|infra)\/.+\.(?:[cm]?[jt]sx?|sh|sql)|infra\/.+\.json|infra\/\.env\.example|\.github\/.+\.(?:ya?ml|json))$/
+  /^(?:(?:apps|packages|scripts|db|infra)\/.+\.(?:[cm]?[jt]sx?|sh|sql)|infra\/.+\.(?:json|ya?ml)|infra\/\.env\.example|\.github\/.+\.(?:ya?ml|json))$/
 
 // Each cited C11 id T24 doesn't record, as "path: id".
 function danglingC11(files: ReadonlyMap<string, string>, recorded: ReadonlySet<string>): string[] {
@@ -364,10 +365,13 @@ describe('C0.11 T24: the C11 ids code cites are recorded in TECH-SPEC T24, with 
       ['infra/src/config/env.ts', '// C11-D01, C11-D02 and C11-Q01'],
       ['infra/.env.example', '# C11-Q02'],
       ['.github/workflows/deploy.yml', '# C11-D03'],
+      ['infra/bootstrap/hearth-bootstrap.yaml', '# C11-D80'],
+      ['infra/bootstrap/other.yml', '# C11-D02'],
     ])
-    expect(danglingC11(files, recorded)).toEqual([
+    expect(danglingC11(new Map([...files].filter(([path]) => C11_CODE.test(path))), recorded)).toEqual([
       'infra/.env.example: C11-Q02',
       '.github/workflows/deploy.yml: C11-D03',
+      'infra/bootstrap/hearth-bootstrap.yaml: C11-D80',
     ])
     expect(
       lastC11Named('| T23 | C11-D01 to C11-D99 |\n| T24 | x (C11-D01 to C11-D79; C11-Q01 to C11-Q11) |', 'D'),
@@ -384,6 +388,8 @@ describe('C0.11 T24: the C11 ids code cites are recorded in TECH-SPEC T24, with 
     expect(C11_CODE.test('infra/src/config/env.ts')).toBe(true)
     expect(C11_CODE.test('infra/cdk.json')).toBe(true)
     expect(C11_CODE.test('infra/.env.example')).toBe(true)
+    expect(C11_CODE.test('infra/bootstrap/hearth-bootstrap.yaml')).toBe(true)
+    expect(C11_CODE.test('infra/bin/break-glass.sh')).toBe(true)
     expect(C11_CODE.test('.github/environments/prod.json')).toBe(true)
     expect(C11_CODE.test('docs/TECH-SPEC.md')).toBe(false)
   })

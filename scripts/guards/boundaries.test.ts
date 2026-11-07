@@ -130,7 +130,7 @@ describe('INF-ARCHLINT import boundaries: the repo', () => {
       .filter(entry => entry.startsWith('120000 '))
       .map(entry => entry.slice(entry.indexOf('\t') + 1))
     expect(links).toEqual([])
-  })
+  }, 30_000)
 
   // It parses every script in the repo, about 3.5 s alone and over 5 s when the guard suites share
   // the machine, so Vitest's 5 s default is too close, as for ai-free.test.ts's scan.

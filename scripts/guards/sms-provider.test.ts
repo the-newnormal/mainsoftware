@@ -32,20 +32,20 @@ describe('T20 SMS providers are built only where they may run', () => {
       path => !path.endsWith('.md') && path !== TWILIO && readRepoFile(path).includes(HOST),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('calls the guarded factories only from main.ts and their own tests', () => {
     expect(
       where(/\bcreate(?:Twilio|Fake)Verify\s*\(/, path => [MAIN, TWILIO, FAKE].includes(path) || isTest(path)),
     ).toEqual([])
-  })
+  }, 30_000)
 
   it('constructs TwilioVerify only in twilio.ts and tests, and FakeVerify only in fake.ts, testing/ and tests', () => {
     expect(where(/\bnew\s+TwilioVerify\s*\(/, path => path === TWILIO || isTest(path))).toEqual([])
     expect(where(/\bnew\s+FakeVerify\s*\(/, path => path === FAKE || path.startsWith(TESTING) || isTest(path))).toEqual(
       [],
     )
-  })
+  }, 30_000)
 
   it('loads the loopback Twilio fake only from testing/ and tests', () => {
     const found = scripts.filter(
@@ -55,7 +55,7 @@ describe('T20 SMS providers are built only where they may run', () => {
         moduleImports(readRepoFile(path), path).some(i => i.specifier !== undefined && /fake-twilio/.test(i.specifier)),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('the patterns catch what they guard against', () => {
     const code = (text: string) => withoutComments('x.ts', text)

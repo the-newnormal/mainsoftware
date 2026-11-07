@@ -4,9 +4,11 @@
 // profiles (profiles.ts), so the pipeline never needs any of it (C11-D24, IG-08).
 //
 // A person keeps the values in infra/.env.local (git-ignored, as every .env* but .env.example) and
-// synthesises in a shell with no AWS credentials, then deploys only the synthesised assembly
-// (`cdk deploy --app cdk.out`) from the credentialed shell, so no repository code runs where
-// HearthOrgAdmin, OrganizationAccountAccessRole or break-glass credentials exist (C11-D23).
+// synthesises in a shell with no AWS credentials, then deploys only the synthesised assembly from
+// the credentialed shell, from a folder with no cdk.json (beside one, the CLI first runs any `build`
+// command it names, with those credentials) and with the checkout's own CLI
+// (`cdk deploy --app <checkout>/infra/cdk.out`), so no repository code runs where HearthOrgAdmin,
+// OrganizationAccountAccessRole or break-glass credentials exist (C11-D23).
 // infra/.env.example documents every variable, each with a comment and an empty value. From C0.11
 // PR 2, CI's synth:lz uses the fixture (src/testing/fixture.ts) under HEARTH_FIXTURE=1, whose account
 // ids are made at run time.
@@ -34,8 +36,8 @@ export interface LandingZoneConfig {
     ous: { security: string; workloads: string; recovery: string }
   }
   accounts: { management: string; logArchive: string; nonprod: string; prod: string }
-  // The organisation instance in ap-southeast-1 (C11-D09). Its ARN is formed at synth from the id
-  // (Stack.formatArn), so no ARN is written anywhere.
+  // The organisation instance in ap-southeast-1 (C11-D09). Its ARN is formed at synth by arnPattern()
+  // (src/config/arns.ts) from the id, so no ARN is written anywhere.
   identityCenter: {
     instanceId: string
     identityStoreId: string
@@ -89,6 +91,9 @@ export const CONTROL_VARIABLES = ['HEARTH_TARGET', 'HEARTH_FIXTURE'] as const
 const SUBJECT_PLACEHOLDERS = ['owner', 'name', 'repository', 'ownerId', 'repositoryId', 'environment'] as const
 // What every rendered subject must name: the deploy workflow on main (C11-D55's job_workflow_ref).
 export const DEPLOY_WORKFLOW_REF = '.github/workflows/deploy.yml@refs/heads/main'
+// The one subject shape subjectRepositoryProblem takes (below), as the set-up runbook's step E and
+// .env.example write it.
+export const SUBJECT_SHAPE = `repo:{repository}:environment:{environment}:job_workflow_ref:{repository}/${DEPLOY_WORKFLOW_REF}`
 
 // A refused configuration: every problem found, each naming its variable and never its value.
 export class LandingZoneConfigError extends Error {
@@ -165,9 +170,11 @@ export function subjectFormatProblem(format: string): string | undefined {
   return undefined
 }
 
-// The ways a subject may name the repository: owner/name, or GitHub's immutable form for
-// repositories created after 15 July 2026, owner@ownerId/name@repositoryId (C11-D55: how the
-// customised claim keys compose with it is read back before PR 2's trusts deploy, so either is taken).
+// The ways a subject may name the repository: owner/name, or GitHub's immutable form,
+// owner@ownerId/name@repositoryId, the default since mid-2026 for a repository created, renamed or
+// transferred after GitHub's cut-off (its changelog of 23 Apr 2026 and its docs give different dates)
+// and a switch for an older one (C11-D55: how the customised claim keys compose with it is read back
+// before PR 2's trusts deploy, so either is taken).
 function repositoryForms(github: LandingZoneConfig['github']): string[] {
   const [owner = '', name = ''] = github.repository.split('/')
   return [github.repository, `${owner}@${github.ownerId}/${name}@${github.repositoryId}`]
@@ -181,6 +188,12 @@ const ENVIRONMENTS: readonly GithubEnvironment[] = ['nonprod', 'prod-plan', 'pro
 // job_workflow_ref claim, each ending at a colon or the subject's end. Otherwise a format naming
 // another repository, one that anyone could register under a near-identical owner, would pass, and
 // that repository's own main and environments, with no reviewers, could assume the deploy roles.
+// And it must be exactly the subject GitHub sends for the claim keys repo, context and
+// job_workflow_ref, in that order (the set-up runbook's step E): each value after its key but
+// context's, which for a deploy job is environment: and its name, so a format with a context: label,
+// a ref: claim or no environment: word, which no job would ever present, is refused at synth rather
+// than at the first run (C0.11 review 6 DOCS-04). GitHub doesn't say whether the immutable form
+// reaches job_workflow_ref (C11-D55), so either form is taken in either place.
 export function subjectRepositoryProblem(github: LandingZoneConfig['github']): string | undefined {
   const forms = repositoryForms(github)
   for (const environment of ENVIRONMENTS) {
@@ -195,6 +208,14 @@ export function subjectRepositoryProblem(github: LandingZoneConfig['github']): s
     })
     if (!workflow) {
       return `must name, as job_workflow_ref, the deploy workflow on main of the repository HEARTH_GITHUB_REPOSITORY names (${DEPLOY_WORKFLOW_REF})`
+    }
+    const exact = forms.some(repo =>
+      forms.some(
+        ref => subject === `repo:${repo}:environment:${environment}:job_workflow_ref:${ref}/${DEPLOY_WORKFLOW_REF}`,
+      ),
+    )
+    if (!exact) {
+      return `must be exactly ${SUBJECT_SHAPE}, either {repository} as owner/name or owner@id/name@id: the subject GitHub sends for the claim keys repo, context and job_workflow_ref`
     }
   }
   return undefined

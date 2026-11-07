@@ -80,5 +80,5 @@ describe('SRC-01 (C0.9 PD-113, DB-04): no raw bidirectional control character in
     expect(files).toContain('scripts/guards/source-text.test.ts')
     expect(files.some(path => path.startsWith('db/migrations/'))).toBe(true)
     expect(files.flatMap(path => bidiControls(path, readFileSync(join(root, path))))).toEqual([])
-  })
+  }, 30_000)
 })

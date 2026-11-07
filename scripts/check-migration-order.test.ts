@@ -56,7 +56,7 @@ describe('C0.3 scripts/check-migration-order.sh (T3, CLAUDE.md Database)', () =>
     const first = repo([])
     commit(first, m => writeFileSync(join(m, '0001_a.sql'), 'select 1;\n'))
     expect(check(first)).toMatchObject({ status: 0 })
-  })
+  }, 30_000)
 
   it('refuses a new migration numbered at or below the highest on main', () => {
     const dir = repo(['0001_a.sql', '0003_c.sql'])
@@ -79,7 +79,7 @@ describe('C0.3 scripts/check-migration-order.sh (T3, CLAUDE.md Database)', () =>
     const { status, output } = check(dir)
     expect(status).toBe(1)
     expect(output).toContain('0002_mine.sql is numbered 0002')
-  })
+  }, 30_000)
 
   it('refuses changing, renaming or deleting a migration main has', () => {
     for (const change of [
@@ -96,5 +96,5 @@ describe('C0.3 scripts/check-migration-order.sh (T3, CLAUDE.md Database)', () =>
       expect(status).toBe(1)
       expect(output).toContain('0001_a.sql is on main')
     }
-  })
+  }, 30_000)
 })

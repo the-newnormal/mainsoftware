@@ -22,20 +22,34 @@
 // action pattern matches at least one action it publishes. A second read of the same scan's hits that
 // day added B2B Data Interchange's, End User Messaging's and Customer Profiles' model features below. The design's `qconnect` is no prefix
 // (Amazon Q in Connect's actions are `wisdom:`), nor is `bedrock-data-automation` (its actions are
-// `bedrock:`, denied whole). Read and left:
+// `bedrock:`, denied whole). On 5 Nov 2026 the owner answered PR 2 question 1 (TECH-SPEC T24 item 2):
+// IAM's GetHumanReadableSummary, Glue's GetGeneratedCode and Support Console's GetIssueTextSummary and
+// GetIssueClassificationPredictions joined MODEL_ACTIONS, each found by that exact name in the
+// reference's own file for its prefix (`iam`, `glue`, `support-console`) on 6 Nov 2026. IAM's and
+// Glue's have no operational need and may each be a model call; Support Console's two may be too,
+// though they sit in the flow of opening a support case, which an incident may need, and the owner
+// accepted that. Read and left, as the owner confirmed on 5 Nov 2026:
 // - machine learning on AWS's own telemetry, never content (the D41 note: GuardDuty; CloudWatch Logs'
 //   and Cost Explorer's anomaly detection; IoT Device Defender's behaviour models), and the rule-based
 //   recommenders (Compute Optimizer, Trusted Advisor, Cost Optimization Hub and the like);
-// - Support Console's GetIssueTextSummary and GetIssueClassificationPredictions, which may be model
-//   calls but sit in the flow of opening a support case, which an incident may need;
-// - IAM's GetHumanReadableSummary, Glue's GetGeneratedCode and WorkSpaces' troubleshooting
-//   recommendations, whose names alone don't show a model call (the machine-readable reference
-//   describes no action);
+// - WorkSpaces' troubleshooting recommendations (GetTroubleshootingRecommendation,
+//   ListTroubleshootingRecommendations, InvokeTroubleshootingInvestigation), whose names alone don't
+//   show a model call (the machine-readable reference describes no action), kept with the recommenders;
 // - Macie (sensitive-data discovery) and Entity Resolution (record matching), whose machine learning
 //   sits inside a data service rather than being a model offered to callers, for C0.13's general
 //   statement on AWS's own machine learning (the D41 note) to settle;
 // - chatbot, whose actions only configure chat channels (asking Amazon Q there needs `q:`).
-// The owner decides these with PR 2 (TECH-SPEC T24, C11-D06).
+//
+// Each entry added here costs about 200 characters of the bootstrap template's request body, since
+// the deny repeats on its five roles. IAC-24 (k) holds that body to 51,200 characters less 1,024
+// kept spare: 48,092 since the owner's four of 5 Nov 2026, about 10 entries away; past that, collapse
+// entries into wildcard patterns or move the deny into one managed policy the five roles attach. Every
+// policy with the deny grows by the entry's length plus 3. The tightest is now prod's
+// `hearth-break-glass` inline policy, 10,076 of IAM's 10,240 (about seven entries); past that, its
+// denies move into `hearth-break-glass-denies` (TECH-SPEC T24 item 4). `hearth-boundary`, within a
+// managed policy's 6,144 (IAC-10), is 5,721 since IAC-10's drop order took out its SMS statements for
+// those four. After any change to these lists, run `node infra/scripts/bootstrap-template.ts` and
+// commit the template it writes (IAC-24).
 // This file is on the owner's-read list (C11-D74).
 
 // Whole services whose purpose is a model, an AI agent or machine learning: every action under each
@@ -134,7 +148,10 @@ export const MODEL_SERVICE_PREFIXES = [
 //   (Amazon Polly's, denied whole above; the SDK names Polly for SendVoiceMessage, and
 //   SendNotifyVoiceMessage takes a voice id for its template's text);
 // - Customer Profiles' recommenders, machine-learning models trained on profiles (retrained on new
-//   data, with training metrics, from Personalize-style recipes), and the recommendations they make.
+//   data, with training metrics, from Personalize-style recipes), and the recommendations they make;
+// - IAM's human-readable summary of a delegation request, Glue's generated code, and Support Console's
+//   summary of a case's text and its predicted classification, which may each be a model call (the
+//   owner's answer of 5 Nov 2026; Support Console's two sit in the flow of opening a support case).
 export const MODEL_ACTIONS = [
   'cloudwatch:GenerateQuery',
   'cloudwatch:GenerateQueryResultsSummary',
@@ -174,6 +191,10 @@ export const MODEL_ACTIONS = [
   'sms-voice:Send*VoiceMessage',
   'profile:*Recommender*',
   'profile:GetProfileRecommendations',
+  'iam:GetHumanReadableSummary',
+  'glue:GetGeneratedCode',
+  'support-console:GetIssueTextSummary',
+  'support-console:GetIssueClassificationPredictions',
 ] as const
 
 export type ModelServicePrefix = (typeof MODEL_SERVICE_PREFIXES)[number]

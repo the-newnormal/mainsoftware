@@ -2,7 +2,7 @@
 
 ## What these are
 
-The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71), and C0.10 added how records are kept and deleted (TECH-SPEC T23). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
+The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71), C0.10 added how records are kept and deleted (TECH-SPEC T23), and C0.11 the AWS set-up, break-glass, alerts and the quarterly review (TECH-SPEC T24). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
 
 Every runbook but this one has the same sections, in this order: *Use this when*, *Who does what*, *Before you start*, *Steps*, *Check it worked*, *Afterwards* and *Code paths*. *Don't* may sit between them where a mistake would make things worse, and other sections, such as *Prevention*, may too. *Code paths* lists the code each one relies on, so a change to that code shows here (`scripts/guards/runbooks.test.ts`).
 
@@ -11,7 +11,7 @@ Every runbook but this one has the same sections, in this order: *Use this when*
 - This repository is public, so the runbooks name roles only: the DPO, an Owner, an Admin, the person on call for production (who holds C0.11's logged break-glass role) and the second reviewer. Never a person's name, a phone number, an email address, a postal address, an account or a Console user.
 - Nothing here holds anyone's data. Facts are read at run time, from Secrets Manager or from the DPO's own records.
 - Any output that holds people's data goes only under `local-data/` at the repository root, which git ignores, and is never committed.
-- Production steps need C0.11's logged break-glass role, and each use is reviewed by a second person every quarter (C0.19); the one exception is the DPO's own writing and checking of the bootstrap secret, through C0.12's access to that one secret alone ([Setting up the organisation and its first Owner](first-owner-set-up.md)). No production step is ever a coding agent's: coding agents never connect to production.
+- Production steps need the break-glass role, reached only through `infra/bin/break-glass.sh` ([Reaching production: the break-glass role](break-glass.md)). Each use alarms, and writes an open and a close entry in the break-glass log (references and ids only, kept 731 days under a lock nobody can lift), and a second person reviews every use each quarter ([The quarterly review of break-glass uses](break-glass-review.md)). Tier 2 (an account moved into the `Recovery` OU) and landing-zone administration under an `lz:` reason are alarmed administration, in the same review. The one exception is the DPO's own writing and checking of the bootstrap secret, through C0.12's access to that one secret alone (disclosed in the notice from C0.12, C11-Q06; [Setting up the organisation and its first Owner](first-owner-set-up.md)). No production step is ever a coding agent's: coding agents never connect to production.
 - Nothing calls Twilio from CI. Tests use the fake provider, with fictional numbers only.
 
 ## Before C0.16's console: what exists
@@ -39,6 +39,10 @@ Hearth has no screen yet for signing out someone else's devices, resetting a PIN
 | [A request to correct someone's personal data](correction-request.md) | Someone asks for an error or omission to be corrected | The DPO |
 | [A withdrawal of consent, or an objection, carried out by hand](withdrawal-by-hand.md) | Someone withdraws deemed consent or objects; and before recording deemed consent by conduct for any purpose | The DPO |
 | [A question or complaint about how personal data is handled](complaints.md) | Someone asks or complains about how their personal data is handled | The DPO |
+| [Setting up the AWS organisation and its accounts](aws-account-set-up.md) | Building the landing zone, a tier-2 change, or the quarterly read-backs | The owner; a repo admin for GitHub's setting |
+| [Reaching production: the break-glass role](break-glass.md) | Anyone needs production or the log-archive account | The person on call |
+| [A security alert](security-alerts.md) | An alert email from any account | The person on call; the DPO if personal data may be affected |
+| [The quarterly review of break-glass uses](break-glass-review.md) | Each quarter, and after any unexpected use | The second reviewer |
 
 ## Reply targets
 

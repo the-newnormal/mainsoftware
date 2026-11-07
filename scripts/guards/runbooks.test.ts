@@ -30,7 +30,26 @@
 //   as the picker shows it (CASE_COPY.people.leftOn). While the dialog says to log someone it can't
 //   tell apart from another person as someone without a Hearth account (CASE_COPY.people.same),
 //   access-request.md and the README say that a request is never linked after it is logged (0012's
-//   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11).
+//   cases_fixed()), and that a legal hold on their person stands in for the link (T23 item 11);
+// - RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08): the landing zone's runbooks keep the two
+//   steps no code can hold: security-alerts.md's containment (removing someone from a group stops
+//   only new sessions, so an SCP keyed on aws:TokenIssueTime ends the live ones, OAAR's among them;
+//   an account in Recovery, where OAAR isn't fenced, moves back into its OU first; step 4 sees, before
+//   the cut-off, a call from a session issued before it refused by the SCP, and moves the cut-off
+//   later if none is (review 14 CR-24, review 15 G15-01, G15-02); management's paragraph, ahead of
+//   the revoke, does the same for its inline deny with a session issued after the provisioning
+//   (review 14 I14-01, review 15 CR-26, CR-27, CodeRabbit after round 16); each probe signs out in a
+//   named folder (review 16b G2) and signs in again there before it probes (CodeRabbit after round
+//   16); and after its cut-off, management reads the groups, the set's assignments in every account
+//   and the user again, redoing step 1 and the list if a live session undid it (review 16b G3,
+//   O16b-01, O16b-05, X-02)), and the set-up's step N
+//   confirming each alert subscription with authentication and reading it back
+//   (--authenticate-on-unsubscribe true, ConfirmationWasAuthenticated), since CloudFormation can't;
+// - RB-08 (C0.11 review 12 CR-19, P2-04, review 13 T13-04): every table row has as many cells as its
+//   header, counted as GFM counts them, and no unescaped | inside backticks, where GFM splits the row
+//   too, so a | in a command is written \| (the page shows a plain |); a delimiter row has its
+//   header's cells too, since GFM renders no table otherwise, and no table sits in a quote, which RB-08
+//   doesn't read.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -49,6 +68,8 @@ const DIR = 'docs/runbooks/'
 const README = `${DIR}README.md`
 const ACCESS_REQUEST = `${DIR}access-request.md`
 const WITHDRAWAL = `${DIR}withdrawal-by-hand.md`
+const SECURITY_ALERTS = `${DIR}security-alerts.md`
+const AWS_SET_UP = `${DIR}aws-account-set-up.md`
 
 // The runbook folder's own Markdown files, README included.
 const isRunbook = (path: string) =>
@@ -488,7 +509,7 @@ describe('RB-04 (C0.9 PD-81): every code path a runbook names exists now', () =>
     const runbooks = repoFiles().filter(path => isRunbook(path) && path !== README)
     expect(runbooks.every(path => codePathsOf(readRepoFile(path)).length > 0)).toBe(true)
     expect(runbooks.flatMap(path => missingCodePaths(path, readRepoFile(path), world))).toEqual([])
-  })
+  }, 30_000)
 })
 
 // --- RB-05: a stop by hand for every purpose CONDUCT_WITHDRAWABLE lists ---------------------------
@@ -653,5 +674,433 @@ describe('RB-06 (C0.10 review PRIVACY-02, LH-61): the runbooks say how a request
     expect(CASE_COPY.people.same).toMatch(/\bas someone without a Hearth account\b/)
     expect(linkProblems(readRepoFile(ACCESS_REQUEST), CASE_COPY.people)).toEqual([])
     expect(linkProblems(readRepoFile(README), { same: CASE_COPY.people.same })).toEqual([])
+  })
+})
+
+// --- RB-07: the landing zone's containment and authenticated subscriptions --------------------------
+
+// Whether a probe, after it signs out in its folder, signs in again in that folder before its first
+// call: a probe made before the new sign-in reuses the session the sign-out ended, or no session at
+// all, so its refusal shows nothing (CodeRabbit after C0.11 PR 2's round 16).
+const PROBE_SIGN_OUT = '`HOME=<the folder> aws sso logout`'
+const PROBE_SIGN_IN = '`HOME=<the folder> aws sso login --profile '
+const PROBE_CALL = '`HOME=<the folder> aws iam get-account-summary --profile '
+function signsInAgainBeforeProbe(text: string): boolean {
+  const signOut = text.indexOf(PROBE_SIGN_OUT)
+  const signIn = signOut < 0 ? -1 : text.indexOf(PROBE_SIGN_IN, signOut)
+  const probe = text.indexOf(PROBE_CALL)
+  return signIn >= 0 && probe > signIn
+}
+
+// What security-alerts.md and the set-up runbook leave out of the two steps no code can hold
+// (C0.11 review 1 DETECTION-05, DETECTION-08; TECH-SPEC T24 items 4 and 5).
+function landingZoneProblems(alerts: string, setUp: string): string[] {
+  const found: string[] = []
+  const containment = alerts.split(/^### Containing an unexpected session$/m)[1]?.split(/^##+ /m)[0]
+  if (containment === undefined) found.push('security-alerts.md: no "### Containing an unexpected session"')
+  else {
+    if (!/\bstops only new sessions\b/.test(containment)) found.push('security-alerts.md: no "stops only new sessions"')
+    if (!containment.includes('aws:TokenIssueTime')) found.push('security-alerts.md: no aws:TokenIssueTime')
+    // OAAR's sessions are ended by the SCP too, and an account in Recovery, where NoOaar doesn't bind,
+    // goes back into its OU (C0.11 review 2 FIXES-01).
+    if (!containment.includes('*:role/OrganizationAccountAccessRole')) {
+      found.push('security-alerts.md: the SCP names no *:role/OrganizationAccountAccessRole')
+    }
+    if (!/\bmoves it back into its own OU\b/.test(containment)) {
+      found.push('security-alerts.md: no "moves it back into its own OU"')
+    }
+    // Organizations applies the SCP only after a delay, and a session it hasn't bound by the cut-off can
+    // take a role issued after it, so step 4 has a call from a session issued before the cut-off seen
+    // refused by it before the cut-off, and moves the cut-off later if none is (C0.11 review 14 CR-24).
+    // Both are read in step 4 alone, so a check made after the cut-off, or words moved to another step,
+    // fail (C0.11 review 15 G15-01, G15-02).
+    const step4 = containment.match(/^4\. [\s\S]*?(?=^5\. )/m)?.[0] ?? ''
+    if (
+      !/\bchecks? before the cut-off that it binds: [^.]*\bissued before the cut-off\b[^.]*`with an explicit deny in a service control policy`/.test(
+        step4,
+      )
+    ) {
+      found.push('security-alerts.md: step 4 has no check that the SCP binds before its cut-off')
+    }
+    if (!/\bIf none is refused by the cut-off, move the cut-off\b/.test(step4)) {
+      found.push("security-alerts.md: step 4 doesn't move the cut-off later when the SCP hasn't bound by it")
+    }
+    // Each probe signs out in the folder that holds its profile: a sign-out elsewhere leaves the role
+    // credentials the CLI cached for an older session, which an earlier cut-off refuses in the same
+    // words (C0.11 review 16b G2).
+    if (!step4.includes('`HOME=<the folder> aws sso logout`')) {
+      found.push("security-alerts.md: step 4's probe doesn't sign out in a named folder")
+    } else if (!signsInAgainBeforeProbe(step4)) {
+      found.push("security-alerts.md: step 4's probe doesn't sign in again in its folder before it probes")
+    }
+    // So does a permission set's inline deny in management, and until it binds the set's old sessions
+    // can still take roles, so management's paragraph, ahead of the revoke, has a call seen refused by
+    // it before its cut-off, from a session issued after the provisioning, so the refusal is the new
+    // statement's, and moves the cut-off later if none is (C0.11 review 14 I14-01, review 15 CR-26,
+    // CR-27; CodeRabbit after round 16). Both are read from "No SCP binds management." up to the
+    // revoke, so a check made after the revoke fails.
+    const management = containment.split(/^No SCP binds management\./m)[1]?.split('*Revoke active sessions*')[0] ?? ''
+    if (
+      !/\bfirst sees, before the cut-off, a call\b[^.]*\bissued after the provisioning\b[^.]*`with an explicit deny in an identity-based policy`/.test(
+        management,
+      )
+    ) {
+      found.push(
+        'security-alerts.md: management has no check, before the revoke, that its inline deny binds by its cut-off',
+      )
+    }
+    if (!/\bIf none is refused by the cut-off, the Owner moves the cut-off\b/.test(management)) {
+      found.push(
+        "security-alerts.md: management doesn't move the cut-off later when its inline deny hasn't bound by it",
+      )
+    }
+    if (!management.includes('`HOME=<the folder> aws sso logout`')) {
+      found.push("security-alerts.md: management's probe doesn't sign out in a named folder")
+    } else if (!signsInAgainBeforeProbe(management)) {
+      found.push("security-alerts.md: management's probe doesn't sign in again in its folder before it probes")
+    }
+    // Until the inline deny binds, a live session can put its person back in the group or the
+    // assignment, in any account, or enable the user again, and sign in after the cut-off. So after the
+    // cut-off, ahead of the revoke, one bullet reads them again and, if it or the search finds step 1
+    // undone, redoes step 1 with a later cut-off, provisioned and checked, and goes through the list
+    // again, since a session issued after the first cut-off can undo the redo too (C0.11 review 16b G3,
+    // O16b-01, O16b-02, O16b-05, X-02).
+    const afterCutOff = management.split(/\bsigned in again after the cut-off:/)[1] ?? ''
+    if (
+      !/^- Reads again each group's members and the set's assignments in every account\b[^\n]*\bstill disabled\b[^\n]*\bor the search below\b[^\n]*\bthe Owner redoes step 1\b[^\n]*, then moves the cut-off later, provisions the set again and checks again\b[^\n]*\bgoes through this list again from its first bullet\b/m.test(
+        afterCutOff,
+      )
+    ) {
+      found.push("security-alerts.md: management doesn't read the group and the assignments again after its cut-off")
+    }
+  }
+  const stepN = setUp.split(/^### N\. .*$/m)[1]?.split(/^##+ /m)[0]
+  if (stepN === undefined) found.push('aws-account-set-up.md: no step N')
+  else {
+    if (!stepN.includes('--authenticate-on-unsubscribe true')) {
+      found.push('aws-account-set-up.md: step N has no --authenticate-on-unsubscribe true')
+    }
+    if (!stepN.includes('ConfirmationWasAuthenticated')) {
+      found.push('aws-account-set-up.md: step N reads no ConfirmationWasAuthenticated')
+    }
+  }
+  return found
+}
+
+describe('RB-07 (C0.11 review 1 DETECTION-05, DETECTION-08, review 2 FIXES-01, review 14 CR-24, I14-01, review 15 G15-01, G15-02, CR-26, CR-27, review 16b G2, G3, O16b-01, O16b-05, X-02): the landing zone’s runbooks keep containment, OAAR’s, the checks that each deny binds by its cut-off and management’s read after it included, and authenticated subscriptions', () => {
+  // Step 4's check and its fallback, and management's, each a sentence of its own.
+  const scpCheck =
+    'So the person on call checks before the cut-off that it binds: a call from their own session, issued before the cut-off, is refused `with an explicit deny in a service control policy`.'
+  const scpLater = 'If none is refused by the cut-off, move the cut-off a few minutes later and check again.'
+  const inlineCheck =
+    'The Owner first sees, before the cut-off, a call from their own session issued after the provisioning, refused `with an explicit deny in an identity-based policy`.'
+  const inlineLater = 'If none is refused by the cut-off, the Owner moves the cut-off later and checks again.'
+  const revoke = '- Uses IAM’s *Revoke active sessions* on each role.'
+  // Each probe's sign-out in its folder, its sign-in there again and its call, and management's read
+  // after its cut-off.
+  const scpSignIn = '`HOME=<the folder> aws sso login --profile hearth-<env>-entry`'
+  const scpSignOut = `Sign out in the helper's folder and in again: \`HOME=<the folder> aws sso logout\`, then ${scpSignIn}.`
+  const scpProbe =
+    'Call `HOME=<the folder> aws iam get-account-summary --profile hearth-<env>-entry` until it is refused.'
+  const inlineSignIn = '`HOME=<the folder> aws sso login --profile <that profile>`'
+  const inlineSignOut = `They sign out and in again in the set's folder: \`HOME=<the folder> aws sso logout\`, then ${inlineSignIn}.`
+  const inlineProbe =
+    'Then they call `HOME=<the folder> aws iam get-account-summary --profile <that profile>` until it is refused.'
+  const reread =
+    "- Reads again each group's members and the set's assignments in every account, and whether the user is still disabled. If it, or the search below, shows step 1 undone, the Owner redoes step 1, then moves the cut-off later, provisions the set again and checks again, and goes through this list again from its first bullet."
+  const step4Missing = 'security-alerts.md: step 4 has no check that the SCP binds before its cut-off'
+  const step4NotLater = "security-alerts.md: step 4 doesn't move the cut-off later when the SCP hasn't bound by it"
+  const inlineMissing =
+    'security-alerts.md: management has no check, before the revoke, that its inline deny binds by its cut-off'
+  const inlineNotLater =
+    "security-alerts.md: management doesn't move the cut-off later when its inline deny hasn't bound by it"
+  const step4NoFolder = "security-alerts.md: step 4's probe doesn't sign out in a named folder"
+  const inlineNoFolder = "security-alerts.md: management's probe doesn't sign out in a named folder"
+  const step4NoSignIn = "security-alerts.md: step 4's probe doesn't sign in again in its folder before it probes"
+  const inlineNoSignIn = "security-alerts.md: management's probe doesn't sign in again in its folder before it probes"
+  const noReread = "security-alerts.md: management doesn't read the group and the assignments again after its cut-off"
+
+  it('finds each gap on planted text, and passes the right words', () => {
+    const alerts = [
+      '## Steps',
+      '',
+      '### Containing an unexpected session',
+      '',
+      'Removing someone from a group stops only new sessions.',
+      '',
+      '3. If the account sits in `Recovery`, moves it back into its own OU.',
+      `4. An SCP denies where \`aws:TokenIssueTime\` is before the cut-off and \`aws:PrincipalArn\` is like \`*:role/OrganizationAccountAccessRole\`. ${scpCheck}`,
+      `   - ${scpSignOut}`,
+      `   - ${scpProbe}`,
+      `   - ${scpLater}`,
+      '5. Looks in the trail.',
+      '',
+      `No SCP binds management. ${inlineCheck} ${inlineSignOut} ${inlineProbe} ${inlineLater} Then, signed in again after the cut-off:`,
+      '',
+      reread,
+      revoke,
+      '',
+      '## Check it worked',
+      '',
+    ].join('\n')
+    const setUp =
+      '### N. Confirm each email subscription\n\n`aws sns confirm-subscription --authenticate-on-unsubscribe true`, then `ConfirmationWasAuthenticated` prints `true`.\n\n### O. Next\n'
+    expect(landingZoneProblems(alerts, setUp)).toEqual([])
+    expect(landingZoneProblems(alerts.replace('stops only new sessions', 'ends every session'), setUp)).toEqual([
+      'security-alerts.md: no "stops only new sessions"',
+    ])
+    expect(landingZoneProblems(alerts.replace('aws:TokenIssueTime', 'aws:CurrentTime'), setUp)).toEqual([
+      'security-alerts.md: no aws:TokenIssueTime',
+    ])
+    expect(
+      landingZoneProblems(
+        alerts.replace('`*:role/OrganizationAccountAccessRole`', '`*:role/hearth-break-glass`'),
+        setUp,
+      ),
+    ).toEqual(['security-alerts.md: the SCP names no *:role/OrganizationAccountAccessRole'])
+    expect(landingZoneProblems(alerts.replace('moves it back into its own OU', 'stays where it is'), setUp)).toEqual([
+      'security-alerts.md: no "moves it back into its own OU"',
+    ])
+    // Step 4's check: the refusal's words, made before the cut-off, from a session issued before it, in
+    // step 4 itself, and the cut-off moved later when none comes.
+    expect(landingZoneProblems(alerts.replace('explicit deny in a service control policy', 'error'), setUp)).toEqual([
+      step4Missing,
+    ])
+    expect(
+      landingZoneProblems(
+        alerts.replace('checks before the cut-off that it binds', 'checks once the cut-off has passed that it binds'),
+        setUp,
+      ),
+    ).toEqual([step4Missing])
+    expect(landingZoneProblems(alerts.replace('issued before the cut-off', 'issued at any time'), setUp)).toEqual([
+      step4Missing,
+    ])
+    expect(
+      landingZoneProblems(
+        alerts.replace(` ${scpCheck}`, '').replace('5. Looks in the trail.', `5. Looks in the trail. ${scpCheck}`),
+        setUp,
+      ),
+    ).toEqual([step4Missing])
+    expect(landingZoneProblems(alerts.replace(scpLater, 'If none is refused, wait.'), setUp)).toEqual([step4NotLater])
+    expect(landingZoneProblems(alerts.replace('5. Looks in the trail.', 'Looks in the trail.'), setUp)).toEqual([
+      step4Missing,
+      step4NotLater,
+      step4NoFolder,
+    ])
+    // Each probe signs out in its folder: the sign-out round 15 left in management, in no folder, fails
+    // (C0.11 review 16b G2).
+    expect(landingZoneProblems(alerts.replace(scpSignOut, 'Sign out: `aws sso logout`.'), setUp)).toEqual([
+      step4NoFolder,
+    ])
+    expect(
+      landingZoneProblems(alerts.replace(inlineSignOut, 'They sign out with `aws sso logout` and in again.'), setUp),
+    ).toEqual([inlineNoFolder])
+    // And signs in again in that folder before it probes: no sign-in, one in another folder, or the
+    // probe ahead of the sign-in, fails (CodeRabbit after round 16).
+    expect(landingZoneProblems(alerts.replace(`, then ${scpSignIn}`, ''), setUp)).toEqual([step4NoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(scpSignIn, '`aws sso login --profile hearth-<env>-entry`'), setUp),
+    ).toEqual([step4NoSignIn])
+    expect(
+      landingZoneProblems(
+        alerts.replace(`   - ${scpSignOut}\n   - ${scpProbe}`, `   - ${scpProbe}\n   - ${scpSignOut}`),
+        setUp,
+      ),
+    ).toEqual([step4NoSignIn])
+    expect(landingZoneProblems(alerts.replace(`, then ${inlineSignIn}`, ''), setUp)).toEqual([inlineNoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(inlineSignIn, '`aws sso login --profile <that profile>`'), setUp),
+    ).toEqual([inlineNoSignIn])
+    expect(
+      landingZoneProblems(alerts.replace(`${inlineSignOut} ${inlineProbe}`, `${inlineProbe} ${inlineSignOut}`), setUp),
+    ).toEqual([inlineNoSignIn])
+    // Management's check: the refusal's words, before the cut-off, in its own paragraph ahead of the
+    // revoke, and the cut-off moved later when none comes.
+    expect(landingZoneProblems(alerts.replace('explicit deny in an identity-based policy', 'error'), setUp)).toEqual([
+      inlineMissing,
+    ])
+    expect(
+      landingZoneProblems(alerts.replace('first sees, before the cut-off, a call', 'first sees a call'), setUp),
+    ).toEqual([inlineMissing])
+    // From a session issued after the provisioning, so the refusal is the new statement's (CodeRabbit
+    // after round 16).
+    expect(
+      landingZoneProblems(alerts.replace('issued after the provisioning', 'issued before the provisioning'), setUp),
+    ).toEqual([inlineMissing])
+    expect(landingZoneProblems(alerts.replace(' issued after the provisioning,', ''), setUp)).toEqual([inlineMissing])
+    expect(
+      landingZoneProblems(alerts.replace(` ${inlineCheck}`, '').replace(revoke, `${revoke}\n- ${inlineCheck}`), setUp),
+    ).toEqual([inlineMissing])
+    expect(
+      landingZoneProblems(
+        alerts
+          .replace(` ${inlineCheck}`, '')
+          .replace('5. Looks in the trail.', `5. Looks in the trail. ${inlineCheck}`),
+        setUp,
+      ),
+    ).toEqual([inlineMissing])
+    expect(landingZoneProblems(alerts.replace(inlineLater, 'If none is refused, the Owner waits.'), setUp)).toEqual([
+      inlineNotLater,
+    ])
+    expect(landingZoneProblems(alerts.replace('No SCP binds management.', 'In management:'), setUp)).toEqual([
+      inlineMissing,
+      inlineNotLater,
+      inlineNoFolder,
+      noReread,
+    ])
+    // Management's read after its cut-off: missing, made before the cut-off or after the revoke, without
+    // the user's state, or with no redo, fails (C0.11 review 16b G3).
+    expect(landingZoneProblems(alerts.replace(`${reread}\n`, ''), setUp)).toEqual([noReread])
+    expect(
+      landingZoneProblems(
+        alerts
+          .replace(`${reread}\n`, '')
+          .replace(' Then, signed in again', ` ${reread.slice(2)} Then, signed in again`),
+        setUp,
+      ),
+    ).toEqual([noReread])
+    expect(
+      landingZoneProblems(alerts.replace(`${reread}\n`, '').replace(revoke, `${revoke}\n${reread}`), setUp),
+    ).toEqual([noReread])
+    expect(landingZoneProblems(alerts.replace(', and whether the user is still disabled', ''), setUp)).toEqual([
+      noReread,
+    ])
+    expect(
+      landingZoneProblems(alerts.replace(' the Owner redoes step 1, then moves the cut-off later', ' note it'), setUp),
+    ).toEqual([noReread])
+    // The read covers every account, the search's finding redoes step 1 too, and the redo is provisioned,
+    // checked and followed by the list again (C0.11 review 16b O16b-01, O16b-05, X-02).
+    expect(landingZoneProblems(alerts.replace('in every account', 'in management'), setUp)).toEqual([noReread])
+    expect(landingZoneProblems(alerts.replace(', or the search below,', ''), setUp)).toEqual([noReread])
+    expect(landingZoneProblems(alerts.replace(', provisions the set again and checks again', ''), setUp)).toEqual([
+      noReread,
+    ])
+    expect(
+      landingZoneProblems(alerts.replace(', and goes through this list again from its first bullet', ''), setUp),
+    ).toEqual([noReread])
+    expect(landingZoneProblems('## Steps\n', setUp)).toEqual([
+      'security-alerts.md: no "### Containing an unexpected session"',
+    ])
+    // Only step N counts: the same words in another step don't.
+    const moved =
+      '### N. Confirm each email subscription\n\nOpen the link.\n\n### O. Next\n\n`--authenticate-on-unsubscribe true` and `ConfirmationWasAuthenticated`\n'
+    expect(landingZoneProblems(alerts, moved)).toEqual([
+      'aws-account-set-up.md: step N has no --authenticate-on-unsubscribe true',
+      'aws-account-set-up.md: step N reads no ConfirmationWasAuthenticated',
+    ])
+    expect(landingZoneProblems(alerts, '## Steps\n')).toEqual(['aws-account-set-up.md: no step N'])
+  })
+
+  it('security-alerts.md and the set-up runbook hold both', () => {
+    expect(landingZoneProblems(readRepoFile(SECURITY_ALERTS), readRepoFile(AWS_SET_UP))).toEqual([])
+  })
+})
+
+// --- RB-08: every table row has its header's cells -------------------------------------------------
+
+// Each table row, outside fenced code, whose cells differ in number from its header's, as "line: its
+// cells, its header's", and each with an unescaped | inside backticks, as "line: a | in code". GFM
+// splits a row on every pipe no backslash escapes, inside a code span too, and drops the cells past the
+// header's, so an unescaped | in a command loses the rest of its row, or splits the command where a row
+// is a cell short. A delimiter row whose cells differ from its header's makes no table at all, as
+// "line: delimiter n, its header m", and a table in a quote, which the rest doesn't read, is reported
+// as "line: a table in a quote"; a delimiter row needs a pipe, so a setext --- under a line with a |
+// makes a heading, not a table. A table ends at a blank line or the start of another block (a heading,
+// a list item, a quote, a fence).
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/
+const TABLE_ENDS = /^\s*$|^\s*(?:#|>|[-*+]\s|\d+[.)]\s|```|~~~)/
+const QUOTED = /^(?:\s*>)+\s?/
+const cellCount = (row: string) =>
+  row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+    .split(/(?<!\\)\|/).length
+// A code span is a run of backticks up to the next run of the same length.
+const pipeInCode = (row: string) =>
+  [...row.matchAll(/(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g)].some(span => /(?<!\\)\|/.test(span[2] ?? ''))
+
+function rowsOffHeader(text: string): string[] {
+  const lines = text
+    .replace(/^[ \t]*(```|~~~)[^\n]*\n[\s\S]*?^[ \t]*\1[^\n]*$/gm, block => block.replace(/[^\n]/g, ' '))
+    .split('\n')
+  const found: string[] = []
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const header = lines[i] ?? ''
+    const delimiter = lines[i + 1] ?? ''
+    if (!header.includes('|') || !delimiter.includes('|')) continue
+    if (QUOTED.test(header) && QUOTED.test(delimiter) && TABLE_DELIMITER.test(delimiter.replace(QUOTED, ''))) {
+      found.push(`${i + 1}: a table in a quote`)
+      continue
+    }
+    if (!TABLE_DELIMITER.test(delimiter)) continue
+    const width = cellCount(header)
+    if (cellCount(delimiter) !== width) {
+      found.push(`${i + 2}: delimiter ${cellCount(delimiter)}, its header ${width}`)
+      continue
+    }
+    for (i += 2; i < lines.length && !TABLE_ENDS.test(lines[i] ?? ''); i++) {
+      const cells = cellCount(lines[i] ?? '')
+      if (cells !== width) found.push(`${i + 1}: ${cells}, its header ${width}`)
+      if (pipeInCode(lines[i] ?? '')) found.push(`${i + 1}: a | in code`)
+    }
+  }
+  return found
+}
+
+describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cells, a | in a command escaped', () => {
+  it('finds a row an unescaped | splits, one short of cells, one with an unescaped | in code of any backtick run, a delimiter short of its header, or a table in a quote (C0.11 review 12 P2-04, review 13 T13-04, T13-05), on planted text, and passes the rest', () => {
+    const text = [
+      '| Alert | First check |',
+      '|---|---|',
+      "| A1 | `jq '.a \\| .b'` |",
+      "| A2 | `jq '.a | .b'` |",
+      '| A3 |',
+      '',
+      '```sh',
+      '| x | y |',
+      '|---|---|',
+      '| a | b | c |',
+      '```',
+      '',
+      '  | Indented | Too |',
+      '  |---|---|',
+      '  | a | b | c |',
+      '- a list item | not a row',
+      '',
+      '| Alert | First check | Note |',
+      '|---|---|---|',
+      "| A10 | `jq '.a | .b'` |",
+      '| A11 | `a` | `b` |',
+      '| A12 | ``echo `x` | y`` |',
+      '| A13 | ``a ` b`` | `c` |',
+      '',
+      '| One | Two | Three |',
+      '|---|---|',
+      '| a | b | c |',
+      '',
+      '> | Quoted | Table |',
+      '> |---|---|',
+      '> | x | `a | b` |',
+      '',
+      'Not | a table',
+      '---',
+    ].join('\n')
+    expect(rowsOffHeader(text)).toEqual([
+      '4: 3, its header 2',
+      '4: a | in code',
+      '5: 1, its header 2',
+      '15: 3, its header 2',
+      '20: a | in code',
+      '22: a | in code',
+      '26: delimiter 2, its header 3',
+      '29: a table in a quote',
+    ])
+  })
+
+  it('every table in the runbooks', () => {
+    const runbooks = repoFiles().filter(isRunbook).sort()
+    expect(runbooks.length).toBeGreaterThan(1)
+    expect(runbooks.flatMap(path => rowsOffHeader(readRepoFile(path)).map(row => `${path}:${row}`))).toEqual([])
   })
 })

@@ -1,18 +1,26 @@
 // The infra source guard (IG, C0.11; TECH-SPEC T24 item 28): what the CDK app's source must and
 // mustn't hold, before any template is synthesised. Each case is first proved on planted text, then
 // held over the repository. The templates themselves are the assertion tests' (IAC, infra/**/*.test.ts).
-// Cases so far: IG-01 to IG-08 and IG-11; IG-09, IG-10 and IG-12 join with C0.11 PR 2. This file and
-// infra.ts are on the owner's-read list (C11-D74).
-import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script, with no hook
+// around it and no script-shell in a root .npmrc, and its ci.yml step.
+// This file and infra.ts are on the owner's-read list (C11-D74).
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
+import { CASE_REFERENCE_PATTERN, type CaseReference, formatCaseReference } from '../../packages/shared/src/cases.ts'
+import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import type { Workspace } from './boundaries'
 import { ACCOUNT_ID, PHONE_NUMBER } from './identifying'
 import { importsOf, withoutComments } from './imports'
 import {
   ALLOWED_CUSTOM_RESOURCE,
+  ASSET_RULES,
+  breakGlassFindings,
   cdkJsonProblems,
+  ciSynthProblems,
   DESTROY_RULES,
   GROUP_ID,
   IDENTITY_CENTER_ID,
@@ -22,16 +30,26 @@ import {
   infraImportProblem,
   LAMBDA_RULES,
   LOOKUP_RULES,
+  MODEL_MODULES,
+  modelModuleFindings,
+  modelStringFindings,
+  npmrcProblems,
   ORGANIZATIONS_ID,
   packageFindings,
+  RESERVED_FUNCTION_NAMES,
   readsForIdentifying,
+  reasonFormLines,
   regionFindings,
   ruleFindings,
   scriptFindings,
+  shellFunction,
+  synthHookProblems,
+  synthScriptProblems,
   testImportFindings,
   workloadGraphFindings,
 } from './infra'
 import { isScript, readRepoFile, repoFiles, root } from './repo-files'
+import { workflowJobs } from './workflow'
 
 const files = repoFiles()
 const infraScripts = files.filter(path => path.startsWith('infra/') && isScript(path))
@@ -44,7 +62,7 @@ const workspaces: Workspace[] = files
   })
 
 describe('IG: the guard reads the infra workspace', () => {
-  it('finds both entries, the configuration and its tests, so no rule passes by reading nothing', () => {
+  it('finds both entries, the configuration and its tests, the landing zone, the helper and the bootstrap template, so no rule passes by reading nothing', () => {
     expect(infraScripts).toEqual(
       expect.arrayContaining([
         'infra/bin/workload.ts',
@@ -53,8 +71,14 @@ describe('IG: the guard reads the infra workspace', () => {
         'infra/src/config/models.ts',
         'infra/src/config/profiles.ts',
         'infra/src/testing/fixture.ts',
+        'infra/scripts/bootstrap-template.ts',
+        'infra/src/foundation/guardrails.ts',
+        'infra/src/foundation/log-archive.ts',
+        'infra/src/baseline/break-glass.ts',
+        'infra/src/aspects/nag.ts',
       ]),
     )
+    expect(files).toEqual(expect.arrayContaining(['infra/bin/break-glass.sh', 'infra/bootstrap/hearth-bootstrap.yaml']))
   })
 })
 
@@ -155,17 +179,27 @@ describe('IG-02 (C11-D24): no lookup', () => {
 
   it('no infra script makes one', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), LOOKUP_RULES))).toEqual([])
-  })
+  }, 30_000)
 })
 
-describe('IG-03 (C11-D24, C11-D48): no context file, cdk.out ignored, cdk.json runs the workload entry with no plugin', () => {
-  it('refuses another app or a plugin, on planted JSON', () => {
+describe('IG-03 (C11-D24, C11-D48): no context file, cdk.out ignored, cdk.json runs the workload entry with no plugin or build command', () => {
+  it('refuses another app, a plugin, a build command or any other key, on planted JSON', () => {
     expect(cdkJsonProblems({ app: 'node bin/workload.ts', context: {} })).toEqual([])
     expect(cdkJsonProblems({ app: 'npx tsx bin/workload.ts' })).toEqual([
       "infra/cdk.json: IG-03 app must be 'node bin/workload.ts'",
     ])
     expect(cdkJsonProblems({ app: 'node bin/workload.ts', plugin: ['x'] })).toEqual([
       'infra/cdk.json: IG-03 a plugin runs code inside the CLI',
+    ])
+    // A build command runs beside cdk.json before the CLI reads any app, an assembly named by --app
+    // included, with whoever's credentials run it (C0.11 review 5 DOCS-01).
+    const today = JSON.parse(readRepoFile('infra/cdk.json')) as Record<string, unknown>
+    expect(cdkJsonProblems({ ...today, build: 'npm run prepare' })).toEqual([
+      'infra/cdk.json: IG-03 a build command runs before the CLI reads any app',
+    ])
+    expect(cdkJsonProblems({ ...today, watch: { include: ['**'] }, requireApproval: 'never' })).toEqual([
+      'infra/cdk.json: IG-03 holds only app, context and versionReporting, not "watch"',
+      'infra/cdk.json: IG-03 holds only app, context and versionReporting, not "requireApproval"',
     ])
     expect(cdkJsonProblems([])).toEqual(['infra/cdk.json: IG-03 is not a JSON object'])
     expect(cdkJsonProblems(null)).toEqual(['infra/cdk.json: IG-03 is not a JSON object'])
@@ -188,7 +222,7 @@ describe('IG-03 (C11-D24, C11-D48): no context file, cdk.out ignored, cdk.json r
     }
     expect(ignored('infra/cdk.context.json')).toBe(true)
     expect(ignored('infra/cdk.out/manifest.json')).toBe(true)
-  })
+  }, 30_000)
 })
 
 describe('IG-04: nothing stateful or log-holding given away or made deletable', () => {
@@ -214,9 +248,12 @@ describe('IG-04: nothing stateful or log-holding given away or made deletable', 
       "new ecr.Repository(this, 'r', { emptyOnDelete: true })",
       'bucket.grants.read(role)',
       'bucket.grantRead(role)',
+      // ECR's auto-delete, which empties a repository through a Lambda (C11-D44).
+      "new ecr.Repository(this, 'r', { autoDeleteImages: true })",
+      "new ecr.Repository(this, 'r', { imageScanOnPush: true })",
     ]
     expect(planted.map(line => ruleFindings('x.ts', line, DESTROY_RULES).length)).toEqual([
-      1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+      1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0,
     ])
   })
 
@@ -244,7 +281,7 @@ describe('IG-04: nothing stateful or log-holding given away or made deletable', 
 
   it('no infra script does', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), DESTROY_RULES))).toEqual([])
-  })
+  }, 30_000)
 })
 
 describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Edge alone in us-east-1', () => {
@@ -338,7 +375,7 @@ describe('IG-05 (D37, B.6): every stack in ap-southeast-1, C0.12’s Hearth-*-Ed
 
   it('every env in infra/ names ap-southeast-1', () => {
     expect(infraScripts.flatMap(path => regionFindings(path, readRepoFile(path)))).toEqual([])
-  })
+  }, 30_000)
 })
 
 describe('IG-06 (C11-D44, C11-D76): the server image only by digest, never built or published by the CLI', () => {
@@ -361,7 +398,7 @@ describe('IG-06 (C11-D44, C11-D76): the server image only by digest, never built
 
   it('no infra script uses one', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), IMAGE_RULES))).toEqual([])
-  })
+  }, 30_000)
 })
 
 describe('IG-07 (C11-D70): no package script that deploys, bootstraps or destroys', () => {
@@ -570,7 +607,7 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
       }),
     )
     expect(found).toEqual([])
-  })
+  }, 30_000)
 
   it('the workload entry’s graph never reaches the landing zone', () => {
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
@@ -719,5 +756,1606 @@ describe('IG-11 (C11-D29): no Lambda and no custom resource of infra’s own', (
   it('no infra script makes one, and none but a test imports a test', () => {
     expect(infraScripts.flatMap(path => ruleFindings(path, code(path), LAMBDA_RULES))).toEqual([])
     expect(infraScripts.flatMap(path => testImportFindings(path, importsOf(readRepoFile(path), path)))).toEqual([])
+  }, 30_000)
+})
+
+describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, isolates itself, and never exposes a credential', () => {
+  const HELPER = 'infra/bin/break-glass.sh'
+  const helper = readRepoFile(HELPER)
+  const rules = (text: string) =>
+    [...new Set(breakGlassFindings(HELPER, text).map(f => /IG-09[a-q]/.exec(f)?.[0]))].sort()
+  // A planted copy: the helper with one text changed, which must be there exactly once.
+  const plant = (from: string, to: string, base = helper) => {
+    expect(base.split(from).length - 1, from).toBe(1)
+    return base.replace(from, () => to)
+  }
+  // The helper's functions run on their own, as bash runs them, with nothing inherited but PATH and
+  // what the case sets: CI sets CI and GITHUB_ACTIONS, and a Claude Code shell its own markers, so an
+  // inherited environment would refuse the case with none.
+  const run = (script: string, args: readonly string[] = [], env: Record<string, string> = {}) =>
+    spawnSync(
+      'env',
+      [
+        '-i',
+        `PATH=${process.env.PATH ?? ''}`,
+        ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+        'bash',
+        '-c',
+        script,
+        '_',
+        ...args,
+      ],
+      { encoding: 'utf8' },
+    ).status
+
+  it('the helper passes every rule', () => {
+    expect(breakGlassFindings(HELPER, helper)).toEqual([])
+  })
+
+  it('finds each breakage planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const cases: Array<[string, string, string[]]> = [
+      ['a: another first statement', plant('set -euo pipefail\n', 'set -eu\n'), ['IG-09a']],
+      ['a: a trace', plant('set -f\n', 'set -f\nset -x\n'), ['IG-09a']],
+      ['a: a trace descriptor', plant('set -f\n', 'set -f\nexport BASH_XTRACEFD=7\n'), ['IG-09a']],
+      ['a: a trace after another option', plant('set -f\n', 'set -f\nset -e -x\n'), ['IG-09a']],
+      ['a: xtrace after another -o', plant('set -f\n', 'set -f\nset -o errexit -o xtrace\n'), ['IG-09a']],
+      ['a: xtrace taken by a joined -o', plant('set -f\n', 'set -f\nset -eo xtrace\n'), ['IG-09a']],
+      ['a: xtrace through shopt', plant('set -f\n', 'set -f\nshopt -s -o xtrace\n'), ['IG-09a']],
+      [
+        'a: a traced shell',
+        plant('bash --rcfile "$rc" -i || true', 'bash --rcfile "$rc" -ix || true'),
+        ['IG-09a', 'IG-09i'],
+      ],
+      ['b: a marker missing', plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), ['IG-09b']],
+      ['b: empty passes', plant(`[ -n "\${!name+x}" ]`, `[ -n "\${!name:-}" ]`), ['IG-09b', 'IG-09o']],
+      [
+        'b: refused after the first aws command',
+        plant(
+          'aws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\nrefuse_agents\n',
+          plant('\nrefuse_agents\nrequire_terminal\n', '\nrequire_terminal\n'),
+        ),
+        ['IG-09b'],
+      ],
+      [
+        'b: the agents check inside a block that never runs',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nif false; then\n  refuse_agents\nfi\nrequire_terminal\n'),
+        ['IG-09b'],
+      ],
+      ['b: no terminal check', plant('\nrefuse_agents\nrequire_terminal\n', '\nrefuse_agents\n'), ['IG-09b']],
+      [
+        'b: the terminal check skipped by the line before',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nrefuse_agents\ntrue ||\n  require_terminal\n'),
+        ['IG-09b'],
+      ],
+      [
+        'b: the terminal check inverted',
+        plant('if ! [ -t 0 ] || ! [ -t 1 ]; then', 'if [ -t 0 ] && [ -t 1 ]; then'),
+        ['IG-09b'],
+      ],
+      [
+        'b: the terminal check only warns',
+        plant("output both a terminal\\n' >&2\n    exit 3\n", "output both a terminal\\n' >&2\n"),
+        ['IG-09b'],
+      ],
+      ['c: no C locale', plant('export LC_ALL=C\n', ''), ['IG-09c']],
+      ['c: no umask', plant('umask 077\n', ''), ['IG-09c']],
+      [
+        'd: a check that names aws',
+        plant('local reason="$1" form matches=0 rest', 'local reason="$1" form matches=0 rest cli=aws'),
+        ['IG-09d'],
+      ],
+      ['d: no date check', plant('valid_date() {', 'check_date() {'), ['IG-09d']],
+      [
+        'd: the reason checked after the first aws command',
+        plant(
+          "command -v jq >/dev/null 2>&1 || refuse 'refused: it needs jq'\n",
+          'command -v jq >/dev/null 2>&1 || refuse \'refused: it needs jq\'\nif ! valid_reason "$reason"; then usage; fi\n',
+          plant('if ! valid_reason "$reason"; then usage; fi\n', ''),
+        ),
+        ['IG-09d'],
+      ],
+      [
+        'd: the reason check’s answer ignored',
+        plant('if ! valid_reason "$reason"; then usage; fi\n', 'valid_reason "$reason" || true\n'),
+        ['IG-09d'],
+      ],
+      [
+        'd: the reason check only warns',
+        plant(
+          'if ! valid_reason "$reason"; then usage; fi\n',
+          'if ! valid_reason "$reason"; then printf \'break-glass: odd reason\\n\'; fi\n',
+        ),
+        ['IG-09d'],
+      ],
+      ['e: no regional STS', plant('export AWS_STS_REGIONAL_ENDPOINTS=regional\n', ''), ['IG-09e']],
+      ['e: the caller’s HOME', plant('export HOME="$BG_HOME"\n', ''), ['IG-09e']],
+      [
+        'e: a profile inherited',
+        plant('unset AWS_PROFILE AWS_DEFAULT_PROFILE ', 'unset AWS_DEFAULT_PROFILE '),
+        ['IG-09e'],
+      ],
+      [
+        'f: no mode check',
+        plant(
+          'if [ -z "$(find "$BG_HOME" -maxdepth 0 -type d -user "$(id -u)" -perm 700 2>/dev/null)" ]; then',
+          'if [ ! -d "$BG_HOME" ]; then',
+        ),
+        ['IG-09f'],
+      ],
+      [
+        'f: the mode check’s refusal made inert',
+        plant("  refuse 'refused: make its folder first", "  : 'refused: make its folder first"),
+        ['IG-09f'],
+      ],
+      ['f: the mode check inverted', plant('if [ -z "$(find "$BG_HOME"', 'if ! [ -z "$(find "$BG_HOME"'), ['IG-09f']],
+      ['g: a pager', plant('export AWS_PAGER=\n', ''), ['IG-09g']],
+      ['g: history unchecked', helper.replaceAll('get cli_history', 'get cli_pager'), ['IG-09g']],
+      [
+        'g: the history check’s refusal made inert',
+        plant('  refuse "refused: the AWS CLI\'s history', '  : "refused: the AWS CLI\'s history'),
+        ['IG-09g'],
+      ],
+      [
+        'g: the entry profile’s history unchecked',
+        plant(
+          ' ||\n  [ "$(aws configure get cli_history --profile "$profile"',
+          ' &&\n  [ "$(aws configure get cli_history --profile "$profile"',
+        ),
+        ['IG-09g'],
+      ],
+      [
+        'h: the trap after the sign-in',
+        plant(
+          'trap \'on_exit\' EXIT INT TERM HUP\naws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\ntrap \'on_exit\' EXIT INT TERM HUP\n',
+        ),
+        ['IG-09h'],
+      ],
+      [
+        'h: no sign-out',
+        plant(
+          '  aws sso logout >/dev/null 2>&1 || true\n  read -r holder 2>/dev/null <"$run_dir/pid"',
+          '  read -r holder 2>/dev/null <"$run_dir/pid"',
+        ),
+        ['IG-09h'],
+      ],
+      [
+        'h: the handler gives the signals their default action back',
+        plant("  trap '' INT TERM HUP QUIT\n  trap - EXIT\n", '  trap - EXIT INT TERM HUP\n'),
+        ['IG-09h'],
+      ],
+      ['h: errexit left on in the handler', plant('  trap - EXIT\n  set +e\n', '  trap - EXIT\n'), ['IG-09h']],
+      ['h: a hang-up not ignored', plant("  trap '' INT TERM HUP QUIT\n", "  trap '' INT TERM QUIT\n"), ['IG-09h']],
+      [
+        'h: the signals ignored only after the close',
+        plant(
+          "  trap '' INT TERM HUP QUIT\n  trap - EXIT\n  set +e\n",
+          "  trap - EXIT\n  set +e\n  close_session unprompted || true\n  trap '' INT TERM HUP QUIT\n",
+        ),
+        ['IG-09h'],
+      ],
+      ['i: a credential printed', afterAssume('echo "$AWS_SESSION_TOKEN"'), ['IG-09i', 'IG-09o']],
+      ['i: a credential exported', afterAssume('export AWS_SESSION_TOKEN'), ['IG-09i']],
+      ['i: a credential written', afterAssume('printf \'%s\' "$sk" >|"$entry_file"'), ['IG-09i', 'IG-09o']],
+      ['i: eval', afterAssume('eval "$reason"'), ['IG-09i']],
+      ['i: env alone', afterAssume('env'), ['IG-09i']],
+      ['i: declare -p', afterAssume('declare -p'), ['IG-09i']],
+      ['i: allexport', plant('set -f\n', 'set -f\nset -a\n'), ['IG-09i']],
+      ['i: allexport joined', plant('set -f\n', 'set -f\nset -ea\n'), ['IG-09i']],
+      ['i: allexport by name', plant('set -f\n', 'set -f\nset -o allexport\n'), ['IG-09i']],
+      [
+        'i: --debug',
+        plant('aws sso login --profile "$profile"\n', 'aws sso login --profile "$profile" --debug\n'),
+        ['IG-09i'],
+      ],
+      ['i: a config write', afterAssume('aws configure set region ap-southeast-1'), ['IG-09i']],
+      [
+        'i: the credentials exported by the CLI',
+        afterAssume(
+          'AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" aws configure export-credentials',
+        ),
+        ['IG-09i'],
+      ],
+      [
+        'i: jq prints a credential from its environment',
+        afterAssume(`AWS_SESSION_TOKEN="$st" jq -rn 'env.AWS_SESSION_TOKEN'`),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: jq prints a credential through $ENV',
+        afterAssume(`AWS_SESSION_TOKEN="$st" jq -rn '$ENV.AWS_SESSION_TOKEN'`),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: a credential written through a function',
+        plant(
+          'assume_role || exit 1\nopen_session\n',
+          'assume_role || exit 1\nsecret_json >"$BG_HOME/k.json"\nopen_session\n',
+          plant(
+            '# The open entry, written before',
+            `secret_json() {\n  AWS_SECRET_ACCESS_KEY="$sk" jq -n '{k: env.AWS_SECRET_ACCESS_KEY}'\n}\n\n# The open entry, written before`,
+          ),
+        ),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'i: the console’s session printed, not sent',
+        plant("sessionToken: env.AWS_SESSION_TOKEN}' |\n", "sessionToken: env.AWS_SESSION_TOKEN}' >&2\n"),
+        ['IG-09i', 'IG-09o'],
+      ],
+      [
+        'j: no reason tag',
+        plant('--source-identity "$user" --tags "Key=hearth-reason,Value=$reason" \\', '--source-identity "$user" \\'),
+        ['IG-09j'],
+      ],
+      ['j: two hours', plant('--duration-seconds 3600 --query', '--duration-seconds 7200 --query'), ['IG-09j']],
+      [
+        'j: the role’s answer kept in a file',
+        plant('--output text 2>/dev/null); then', '--output text 2>/dev/null | tee "$BG_HOME/role"); then'),
+        ['IG-09i', 'IG-09j'],
+      ],
+      [
+        'j: the role’s answer written to a file, with no query naming the credentials',
+        plant(
+          "--query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken,Expiration]' \\\n    --output text 2>/dev/null); then",
+          '--output json >"$BG_HOME/role" 2>/dev/null); then',
+        ),
+        ['IG-09j'],
+      ],
+      [
+        'j: a second assumption',
+        afterAssume('aws sts assume-role --role-arn "$role" --role-session-name x >/dev/null'),
+        ['IG-09j'],
+      ],
+      [
+        'k: an entry as JSON text',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  printf \'%s\' "{\\"reason\\":\\"$reason\\"}" >"$entry_file"\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: an entry’s fields written into a jq program',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  jq -n "{schema: \\"x\\", reason: \\"$reason\\"}" >"$entry_file"\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a field spliced into a jq program',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          `  jq -n --arg schema "$SCHEMA" '{schema: $schema, reason: "'"$reason"'"}' >"$entry_file"\n  put_entry "$key" || refuse "the open entry`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: an entry that may overwrite',
+        plant("--checksum-algorithm SHA256 --if-none-match '*' >/dev/null", '--checksum-algorithm SHA256 >/dev/null'),
+        ['IG-09k'],
+      ],
+      [
+        'k: a failed open entry ignored',
+        plant(
+          `put_entry "$key" || refuse "the open entry wasn't written, so nothing was done; see docs/runbooks/break-glass.md"`,
+          'put_entry "$key" || true',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a failed open entry only warned of',
+        plant(
+          `put_entry "$key" || refuse "the open entry wasn't written, so nothing was done; see docs/runbooks/break-glass.md"`,
+          `put_entry "$key" || printf 'break-glass: the open entry failed\\n' >&2`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close entry never put',
+        plant('  put_entry "$key" || return 1\n  closed=yes\n', '  closed=yes\n'),
+        ['IG-09k'],
+      ],
+      [
+        'k: opened=yes before the put',
+        plant(
+          '  put_entry "$key" || refuse "the open entry',
+          '  opened=yes\n  put_entry "$key" || refuse "the open entry',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: a failed put ignored inside put_entry',
+        plant("--if-none-match '*' >/dev/null 2>&1\n}", "--if-none-match '*' >/dev/null 2>&1 || true\n}"),
+        ['IG-09k'],
+      ],
+      [
+        'k: put_entry succeeds whatever the put',
+        plant("--if-none-match '*' >/dev/null 2>&1\n}", "--if-none-match '*' >/dev/null 2>&1\n  return 0\n}"),
+        ['IG-09k'],
+      ],
+      [
+        'k: put_entry puts another file',
+        plant('--key "$1" --body "$entry_file" --content-type', '--key "$1" --body "$HOME/entry.json" --content-type'),
+        ['IG-09k'],
+      ],
+      [
+        'k: put_entry puts the entry file and then another',
+        plant(
+          '--key "$1" --body "$entry_file" --content-type',
+          '--key "$1" --body "$entry_file" --body=/tmp/other.json --content-type',
+        ),
+        ['IG-09k'],
+      ],
+      ['k: the open entry called under ||', plant('\nopen_session\n', '\nopen_session || true\n'), ['IG-09k']],
+      [
+        'k: the open entry after the shell',
+        plant(
+          'open_session\nif [ "$console" = yes ]; then open_console; fi\nrun_shell\n',
+          'run_shell\nopen_session\nif [ "$console" = yes ]; then open_console; fi\n',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close entry before the shell',
+        plant('run_shell\nclose_session prompted\n', 'close_session prompted\nrun_shell\n'),
+        ['IG-09k'],
+      ],
+      [
+        'l: curl outside the console',
+        afterAssume("curl -fsS --data-urlencode 'Session@-' https://signin.aws.amazon.com/federation"),
+        ['IG-09l'],
+      ],
+      [
+        'l: curl elsewhere',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://sign-in.example.org/federation 2>/dev/null',
+        ),
+        // The console's exchange is the one into the sign-in endpoint, so its jq and prefixes are found too.
+        ['IG-09i', 'IG-09l', 'IG-09o'],
+      ],
+      [
+        'l: the link printed always',
+        plant('if [ "$console" = yes ]; then open_console; fi\n', 'open_console\n'),
+        ['IG-09l'],
+      ],
+      [
+        'l: a call that only mentions --console',
+        plant(
+          'if [ "$console" = yes ]; then open_console; fi\n',
+          'if [ "$console" = yes ]; then :; fi; open_console\n',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: the link printed from the shell’s function',
+        plant("  trap ':' INT\n", "  open_console\n  trap ':' INT\n"),
+        ['IG-09l'],
+      ],
+      [
+        'l: the link printed from the open entry’s function',
+        plant(
+          '  printf \'break-glass: open entry written for %s\\n\' "$session"\n',
+          '  printf \'break-glass: open entry written for %s\\n\' "$session"\n  open_console\n',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'm: another environment',
+        plant('nonprod | prod | log-archive) ;;', 'nonprod | prod | log-archive | dev) ;;'),
+        ['IG-09m'],
+      ],
+      [
+        'm: another arm takes more environments',
+        plant('  nonprod | prod | log-archive) ;;\n', '  nonprod | prod | log-archive) ;;\n  *prod*) ;;\n'),
+        ['IG-09m'],
+      ],
+      ['m: any environment taken', plant('  *) usage ;;\nesac\n', '  *) ;;\nesac\n'), ['IG-09m']],
+      [
+        'm: log-archive takes any reason',
+        plant('incident:* | drill:*) ;;', 'incident:* | drill:* | lz:*) ;;'),
+        ['IG-09m'],
+      ],
+      [
+        'm: log-archive refuses no reason',
+        plant('    *) usage ;;\n  esac\nfi\n', '    *) ;;\n  esac\nfi\n'),
+        ['IG-09m'],
+      ],
+      [
+        'o: a credential through env',
+        afterAssume('env AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential through env after another assignment',
+        afterAssume('env -i PATH="$PATH" AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential through env after an option’s value',
+        afterAssume('env -u HISTFILE AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential through sudo',
+        afterAssume('sudo AWS_SESSION_TOKEN="$st" aws sts get-caller-identity'),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential as a later argument in assignment form',
+        afterAssume('aws sts get-caller-identity AWS_SESSION_TOKEN="$st" --output text'),
+        ['IG-09o'],
+      ],
+      ['o: an assignment form inside quotes', afterAssume('aws s3 ls "x; AWS_SESSION_TOKEN="$st" y"'), ['IG-09o']],
+      [
+        'o: an assignment form after an escaped separator',
+        afterAssume('aws s3 ls x\\; AWS_SESSION_TOKEN="$st" y'),
+        ['IG-09o'],
+      ],
+      ['o: a credential as an argument', afterAssume('aws s3 ls --secret "$sk"'), ['IG-09o']],
+      ['o: a credential read by another name', afterAssume(`n=sk\naws s3 ls --x "\${!n}"`), ['IG-09o']],
+      ['o: a nameref to a credential', afterAssume('declare -n r=sk\naws s3 ls --x "$r"'), ['IG-09o']],
+      [
+        'o: a credential handed to awk',
+        afterAssume(`AWS_SESSION_TOKEN="$st" awk 'BEGIN { print ENVIRON["AWS_SESSION_TOKEN"] }'`),
+        ['IG-09o'],
+      ],
+      [
+        'o: a credential handed to python',
+        afterAssume(`AWS_SESSION_TOKEN="$st" python3 -c 'import os; print(os.environ["AWS_SESSION_TOKEN"])'`),
+        ['IG-09o'],
+      ],
+      [
+        'o: a prefix after another assignment passes',
+        afterAssume('HISTFILE=/dev/null AWS_SESSION_TOKEN="$st" aws sts get-caller-identity >/dev/null'),
+        [],
+      ],
+      [
+        'o: a prefix in a command substitution passes',
+        afterAssume(
+          'caller="$(AWS_ACCESS_KEY_ID="$ak" AWS_SECRET_ACCESS_KEY="$sk" AWS_SESSION_TOKEN="$st" aws sts get-caller-identity)"',
+        ),
+        [],
+      ],
+      [
+        'o: a prefix after if ! passes',
+        afterAssume('if ! AWS_SESSION_TOKEN="$st" aws sts get-caller-identity >/dev/null; then exit 1; fi'),
+        [],
+      ],
+      [
+        'o: the session in curl’s arguments',
+        plant("--data-urlencode 'Session@-'", '--data-urlencode "Session=$st"'),
+        // The curl run is pinned whole too (l).
+        ['IG-09l', 'IG-09o'],
+      ],
+      [
+        'p: the amend starts the shell',
+        plant(
+          "  printf 'break-glass: amend entry written\\n'\n",
+          "  printf 'break-glass: amend entry written\\n'\n  run_shell\n",
+        ),
+        ['IG-09k', 'IG-09p'],
+      ],
+      [
+        'p: the amend opens the console',
+        plant(
+          "  printf 'break-glass: amend entry written\\n'\n",
+          "  printf 'break-glass: amend entry written\\n'\n  open_console\n",
+        ),
+        ['IG-09l', 'IG-09p'],
+      ],
+      [
+        'p: the amend stays signed in',
+        plant("  st=''\n  aws sso logout >/dev/null 2>&1 || true\n}\n\n# A console", "  st=''\n}\n\n# A console"),
+        ['IG-09p'],
+      ],
+      [
+        'p: an open entry written in the --amend branch',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n  open_session\n  exit 0\n'),
+        ['IG-09p'],
+      ],
+      [
+        'p: the --amend branch starts the shell',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n  run_shell\n  exit 0\n'),
+        ['IG-09k', 'IG-09p'],
+      ],
+      [
+        'p: the --amend branch goes on into the session',
+        plant('  amend_session\n  exit 0\n', '  amend_session\n'),
+        ['IG-09p'],
+      ],
+      ['p: no --amend branch', plant('if [ -n "$amend" ]; then\n  amend_session\n  exit 0\nfi\n', ''), ['IG-09p']],
+      [
+        'p: --console beside --amend',
+        plant(
+          'if [ -n "$amend" ] && [ "$console" = yes ]; then refuse \'refused: --amend opens no console\'; fi\n',
+          '',
+        ),
+        ['IG-09p'],
+      ],
+      [
+        'q: refuse_agents defined again, inert, before its call',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          `\nrefuse_agents() {\n  local name\n  for name in ${AGENT_MARKERS.join(' ')}; do\n    if [ -n "\${!name+x}" ] && false; then\n      exit 3\n    fi\n  done\n}\n\nrefuse_agents\nrequire_terminal\n`,
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: valid_reason defined again on one line',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          '\nvalid_reason() { return 0; }\nrefuse_agents\nrequire_terminal\n',
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: refuse_agents defined again with the function keyword',
+        plant(
+          '\nrefuse_agents\nrequire_terminal\n',
+          '\nfunction refuse_agents {\n  :\n}\nrefuse_agents\nrequire_terminal\n',
+        ),
+        ['IG-09q'],
+      ],
+      [
+        'q: valid_date defined twice',
+        plant('\nvalid_reason() {\n', '\nvalid_date() {\n  return 0\n}\n\nvalid_reason() {\n'),
+        ['IG-09q'],
+      ],
+      ['q: a definition in another form', plant('refuse_agents() {', 'refuse_agents () {'), ['IG-09b', 'IG-09q']],
+      [
+        'q: a builtin replaced',
+        plant('\nrefuse_agents\nrequire_terminal\n', '\nexit() {\n  :\n}\n\nrefuse_agents\nrequire_terminal\n'),
+        ['IG-09q'],
+      ],
+      ['q: aliases on', plant('set -f\n', 'set -f\nshopt -s expand_aliases\n'), ['IG-09q']],
+      [
+        'q: refuse returns',
+        plant(
+          `printf 'break-glass: %s\\n' "$1" >&2\n  exit 2\n}`,
+          `printf 'break-glass: %s\\n' "$1" >&2\n  return 0\n}`,
+        ),
+        ['IG-09q'],
+      ],
+      ['q: usage carries on', plant('USAGE\n  exit 2\n}', 'USAGE\n  return 0\n}'), ['IG-09q']],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  // What a later line can do to a checked value or to the clean-up, each planted in a copy: the
+  // trap dropped, replaced or a signal reset however it is spelt, the run ended around the handler,
+  // the handler leaving before its sign-out, the reason or a flag set again in another spelling, a
+  // pinned variable set again, and a command that prints every variable.
+  it('finds each later line that undoes a checked value or the clean-up, planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const inHandler = (line: string) => plant('  trap - EXIT\n  set +e\n', `  trap - EXIT\n  set +e\n${line}\n`)
+    const afterOpenPrint = (line: string) =>
+      plant(
+        '  printf \'break-glass: open entry written for %s\\n\' "$session"\n',
+        `  printf 'break-glass: open entry written for %s\\n' "$session"\n${line}\n`,
+      )
+    const holder = '  read -r holder 2>/dev/null <"$run_dir/pid"'
+    const signOut = `  aws sso logout >/dev/null 2>&1 || true\n${holder}`
+    const cases: Array<[string, string, string[]]> = [
+      ['a: errexit off before the role', afterAssume('set +e'), ['IG-09a']],
+      ['a: pipefail off', afterAssume('set +o pipefail'), ['IG-09a']],
+      ['a: globbing back on', afterAssume('set +f'), ['IG-09a']],
+      [
+        'a: nounset off in a function',
+        plant('close_session() {\n  local key\n', 'close_session() {\n  local key\n  set +u\n'),
+        ['IG-09a'],
+      ],
+      ['h: a signal reset by its SIG name', inHandler('  trap - SIGINT SIGTERM SIGHUP'), ['IG-09h']],
+      ['h: a signal reset by a lone sigspec', inHandler('  trap INT'), ['IG-09h']],
+      ['h: signals reset by number', inHandler('  trap - 1 2 15'), ['IG-09h']],
+      ['h: a signal reset after --', inHandler('  trap -- - INT'), ['IG-09h']],
+      [
+        'h: signals reset in a function the handler calls',
+        plant('close_session() {\n  local key\n', 'close_session() {\n  local key\n  trap - INT TERM HUP\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the trap dropped after the open entry',
+        plant('\nopen_session\n', '\nopen_session\ntrap - EXIT INT TERM HUP\n'),
+        ['IG-09h'],
+      ],
+      ['h: EXIT ignored after the open entry', plant('\nopen_session\n', "\nopen_session\ntrap '' EXIT\n"), ['IG-09h']],
+      [
+        'h: the handler replaced before the role',
+        plant('\nassume_role || exit 1\n', "\ntrap ':' EXIT INT TERM HUP\nassume_role || exit 1\n"),
+        ['IG-09h'],
+      ],
+      [
+        'h: the trap dropped in the shell’s function',
+        plant("  trap ':' INT\n", "  trap ':' INT\n  trap - EXIT\n"),
+        ['IG-09h'],
+      ],
+      [
+        'h: a clean-up trap in another function',
+        plant('  local all=', `  trap 'rm -f "$BG_HOME/x"' EXIT\n  local all=`),
+        ['IG-09h'],
+      ],
+      [
+        'h: the shell’s pair the wrong way round',
+        plant(
+          "  trap ':' INT\n  AWS_ACCESS_KEY_ID=",
+          "  trap 'on_exit' INT\n  AWS_ACCESS_KEY_ID=",
+          plant("-i || true\n  trap 'on_exit' INT\n", "-i || true\n  trap ':' INT\n"),
+        ),
+        ['IG-09h'],
+      ],
+      [
+        'h: killed after the shell',
+        plant('\nrun_shell\nclose_session', '\nrun_shell\nkill -KILL "$$"\nclose_session'),
+        ['IG-09h'],
+      ],
+      [
+        'h: replaced after the shell',
+        plant('\nrun_shell\nclose_session', '\nrun_shell\nexec bash -i\nclose_session'),
+        ['IG-09h'],
+      ],
+      ['h: the handler leaves before the close', inHandler('  exit "$status"'), ['IG-09h']],
+      ['h: the handler returns before the close', inHandler('  return 0'), ['IG-09h']],
+      [
+        'h: the handler leaves when nothing opened',
+        inHandler('  if [ "$opened" = no ]; then exit "$status"; fi'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the sign-out under if false',
+        plant(signOut, `  if false; then\n    aws sso logout >/dev/null 2>&1 || true\n  fi\n${holder}`),
+        ['IG-09h'],
+      ],
+      [
+        'h: the sign-out only when a session opened',
+        plant(signOut, `  if [ "$opened" = yes ]; then\n    aws sso logout >/dev/null 2>&1 || true\n  fi\n${holder}`),
+        ['IG-09h'],
+      ],
+      [
+        'h: errexit back on before the sign-out',
+        plant(`  st=''\n${signOut}`, `  st=''\n  set -e\n${signOut}`),
+        ['IG-09h'],
+      ],
+      [
+        'h: the close refuses, which exits before the sign-out',
+        plant(
+          '  put_entry "$key" || return 1\n  closed=yes\n',
+          '  put_entry "$key" || refuse \'no close\'\n  closed=yes\n',
+        ),
+        ['IG-09h'],
+      ],
+      [
+        'h: the close never run',
+        plant('  if [ "$opened" = yes ] && [ "$closed" = no ]; then\n', '  if false; then\n'),
+        ['IG-09h'],
+      ],
+      ['j: the tag takes another value', plant('Value=$reason"', `Value=\${HEARTH_REASON:-$reason}"`), ['IG-09j']],
+      ['j: the tag takes the argument', plant('Value=$reason"', 'Value=$2"'), ['IG-09j']],
+      [
+        'd: the reason set again after its check',
+        plant(
+          'if ! valid_reason "$reason"; then usage; fi\n',
+          `if ! valid_reason "$reason"; then usage; fi\nreason="\${HEARTH_REASON:-$reason}"\n`,
+        ),
+        ['IG-09d'],
+      ],
+      [
+        'd: the reason read again',
+        plant(
+          'if ! valid_reason "$reason"; then usage; fi\n',
+          'if ! valid_reason "$reason"; then usage; fi\nread -r reason <"$HOME/.reason" || true\n',
+        ),
+        ['IG-09d'],
+      ],
+      ['d: the reason set by printf -v', afterAssume("printf -v reason '%s' x"), ['IG-09d']],
+      [
+        'd: a local reason in a caller of the assumption',
+        plant('close_session() {\n  local key\n', `close_session() {\n  local key reason="\${HEARTH_REASON:-x}"\n`),
+        ['IG-09d'],
+      ],
+      [
+        'k: closed set, quoted, inline',
+        plant(
+          '  if [ "$1" = prompted ]; then collect_close; fi\n',
+          '  if [ "$1" = prompted ]; then closed=\'yes\'; return 0; fi\n',
+        ),
+        ['IG-09k'],
+      ],
+      ['k: closed set by printf -v', afterOpenPrint("  printf -v closed '%s' yes"), ['IG-09k']],
+      ['k: closed set by declare -g', afterOpenPrint('  declare -g closed=yes'), ['IG-09k']],
+      ['k: closed set by an expansion', afterAssume(`: "\${closed:=yes}"`), ['IG-09k']],
+      ['k: closed set inside an if', afterAssume('if true; then closed=yes; fi'), ['IG-09k']],
+      ['k: closed never started', plant('\nclosed=no\n', '\n'), ['IG-09k']],
+      // C0.11 review 4 HELPER-02: the role is taken for a late close only on a sign-in this run has checked.
+      ['k: the close’s sign-in check dropped', plant('    [ "$sign_in" = checked ] || return 1\n', ''), ['IG-09k']],
+      [
+        'k: the close’s sign-in check carried on from a line before',
+        plant('    [ "$sign_in" = checked ] || return 1\n', '    true ||\n    [ "$sign_in" = checked ] || return 1\n'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close’s sign-in check after the assumption',
+        plant(
+          '    [ "$sign_in" = checked ] || return 1\n    assume_role || return 1\n',
+          '    assume_role || return 1\n    [ "$sign_in" = checked ] || return 1\n',
+        ),
+        ['IG-09k'],
+      ],
+      ['k: the second sign-in never marked unchecked', plant('  sign_in=unchecked\n', ''), ['IG-09k']],
+      [
+        'k: the second sign-in marked unchecked after its login',
+        plant(
+          '  sign_in=unchecked\n  aws sso login --profile "$profile" || return 1\n',
+          '  aws sso login --profile "$profile" || return 1\n  sign_in=unchecked\n',
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the second sign-in marked checked before its check',
+        plant(
+          '  sign_in=checked\n}\n',
+          '}\n',
+          plant('  sign_in=unchecked\n', '  sign_in=unchecked\n  sign_in=checked\n'),
+        ),
+        ['IG-09k'],
+      ],
+      ['k: the sign-in flag set again', afterAssume('sign_in=checked'), ['IG-09k']],
+      ['k: the sign-in flag set by printf -v', afterAssume("printf -v sign_in '%s' checked"), ['IG-09k']],
+      ['k: the sign-in flag never started', plant('\nsign_in=checked\n', '\n'), ['IG-09k']],
+      [
+        'e: the credentials file set again',
+        plant(
+          'export CDK_HOME="$BG_HOME/.cdk"\n',
+          `export CDK_HOME="$BG_HOME/.cdk"\nexport AWS_SHARED_CREDENTIALS_FILE="\${HEARTH_CREDS:-/dev/null}"\n`,
+        ),
+        ['IG-09e'],
+      ],
+      [
+        'e: another config as a prefix',
+        afterAssume('AWS_CONFIG_FILE="$HOME/.aws/config" aws sts get-caller-identity >/dev/null'),
+        ['IG-09e'],
+      ],
+      ['e: HOME unset', afterAssume('unset HOME'), ['IG-09e']],
+      ['c: the locale set back', afterAssume('LC_ALL=en_US.UTF-8'), ['IG-09c']],
+      ['g: a pager set again', afterAssume('export AWS_PAGER=less'), ['IG-09g']],
+      ['i: set into a file', afterAssume('set >"$BG_HOME/state"'), ['IG-09i']],
+      ['i: set with its errors silenced', afterAssume('set 2>/dev/null'), ['IG-09i']],
+      ['i: set in braces', afterAssume('{ set; }'), ['IG-09i']],
+      ['i: set in a subshell', afterAssume('( set )'), ['IG-09i']],
+      ['i: set in a substitution', afterAssume('x=$(set)'), ['IG-09i']],
+      ['i: declare alone', afterAssume('declare'), ['IG-09i']],
+      ['i: typeset alone', afterAssume('typeset'), ['IG-09i']],
+      ['i: declare into a file', afterAssume('declare >"$BG_HOME/x"'), ['IG-09i']],
+      ['i: declare piped', afterAssume('declare | cat'), ['IG-09i']],
+      [
+        'i: local alone in the console’s function',
+        plant('  token="$(token="$token" jq', '  local\n  token="$(token="$token" jq'),
+        ['IG-09i'],
+      ],
+      ['i: export given only an option', afterAssume('export -n'), ['IG-09i']],
+      ['i: set given options passes', afterAssume('set -euo pipefail'), []],
+      ['i: declare naming a variable passes', afterAssume('declare n=1'), []],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  it('finds a curl run other than the pinned line (without -q first, or with a trace, output or certificate option), an inherited TLS setting, and a folder lock moved or released early, planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const tls =
+      'unset CURL_HOME XDG_CONFIG_HOME SSLKEYLOGFILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR\n'
+    const node = 'unset NODE_TLS_REJECT_UNAUTHORIZED NODE_OPTIONS NODE_USE_SYSTEM_CA\n'
+    const loop =
+      'for inherited in $(compgen -e); do\n  case "$inherited" in\n    AWS_* | aws_*) unset "$inherited" ;;\n  esac\ndone\n'
+    const release =
+      '  read -r holder 2>/dev/null <"$run_dir/pid"\n  if [ "$holder" = "$$" ]; then rm -f "$entry_file" "$rc" "$run_dir/pid" && rmdir "$run_dir"; fi\n'
+    const signOut = '  aws sso logout >/dev/null 2>&1 || true\n'
+    const cases: Array<[string, string, string[]]> = [
+      ['l: curl without -q, so it reads a .curlrc', plant('curl -q -fsS', 'curl -fsS'), ['IG-09l']],
+      ['l: -q after another option, where curl ignores it', plant('curl -q -fsS', 'curl -fsS -q'), ['IG-09l']],
+      // Each of curl's own options that writes the exchange (the POST body holding the role's session,
+      // or the answer holding its sign-in token) to a file or the terminal, reads more options, or
+      // stops checking the certificate (C0.11 review 6 HELPER-02): the run is pinned whole, so none is
+      // let in.
+      ...[
+        '--trace "$BG_HOME/curl.trace"',
+        '--trace-ascii "$BG_HOME/curl.trace"',
+        '--libcurl "$BG_HOME/curl.c"',
+        '-v',
+        '--stderr "$BG_HOME/curl.err"',
+        '-o "$BG_HOME/token.json"',
+        '--output "$BG_HOME/token.json"',
+        '-D "$BG_HOME/headers"',
+        '-K "$BG_HOME/curl.cfg"',
+        '--config "$BG_HOME/curl.cfg"',
+        '-k',
+        '--insecure',
+      ].map((option): [string, string, string[]] => [
+        `l: curl given ${option.split(' ')[0]}`,
+        plant('curl -q -fsS', `curl -q ${option} -fsS`),
+        ['IG-09l'],
+      ]),
+      [
+        'l: a trace option after the endpoint',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://signin.aws.amazon.com/federation --trace-ascii "$BG_HOME/curl.trace" 2>/dev/null',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: curl’s errors written to a file',
+        plant(
+          'https://signin.aws.amazon.com/federation 2>/dev/null',
+          'https://signin.aws.amazon.com/federation 2>"$BG_HOME/curl.err"',
+        ),
+        ['IG-09l'],
+      ],
+      [
+        'l: the sign-in answer kept in a file',
+        plant(" 2>/dev/null | jq -r '.SigninToken", ' 2>/dev/null | tee "$BG_HOME/token.json" | jq -r \'.SigninToken'),
+        ['IG-09l'],
+      ],
+      ['e: curl’s config, a key log and the CA overrides inherited', plant(tls, ''), ['IG-09e']],
+      [
+        'e: the TLS settings unset only after the first aws command',
+        plant(
+          "command -v jq >/dev/null 2>&1 || refuse 'refused: it needs jq'\n",
+          `command -v jq >/dev/null 2>&1 || refuse 'refused: it needs jq'\n${tls}`,
+          plant(`still checked.\n${tls}`, 'still checked.\n'),
+        ),
+        ['IG-09e'],
+      ],
+      ['e: one of them left out', plant(tls, tls.replace(' SSLKEYLOGFILE', '')), ['IG-09e']],
+      ['e: Node’s certificate check, options and system CAs inherited', plant(node, ''), ['IG-09e']],
+      ['e: Node’s options left in', plant(node, node.replace(' NODE_OPTIONS', '')), ['IG-09e']],
+      [
+        'e: Node’s certificate check turned off again',
+        afterAssume('export NODE_TLS_REJECT_UNAUTHORIZED=0'),
+        ['IG-09e'],
+      ],
+      ['e: a lower-case aws_ca_bundle inherited', plant('AWS_* | aws_*) unset', 'AWS_*) unset'), ['IG-09e']],
+      ['e: the inherited AWS variables’ loop gone', plant(loop, ''), ['IG-09e']],
+      ['e: a key log set again', afterAssume('export SSLKEYLOGFILE="$BG_HOME/keys"'), ['IG-09e']],
+      [
+        'e: a CA override as a prefix',
+        afterAssume('REQUESTS_CA_BUNDLE=/tmp/ca aws sts get-caller-identity >/dev/null'),
+        ['IG-09e'],
+      ],
+      ['h: the lock released before the sign-out', plant(`${signOut}${release}`, `${release}${signOut}`), ['IG-09h']],
+      [
+        'h: the entry outside the run’s folder',
+        plant('entry_file="$run_dir/entry.json"', 'entry_file="$BG_HOME/entry.json"'),
+        ['IG-09h'],
+      ],
+      ['h: the rc file set again', afterAssume('rc="$BG_HOME/shell.rc"'), ['IG-09h']],
+      [
+        'h: the lock taken after the trap',
+        plant("hold_folder\ntrap 'on_exit' EXIT INT TERM HUP\n", "trap 'on_exit' EXIT INT TERM HUP\nhold_folder\n"),
+        ['IG-09h'],
+      ],
+      ['h: the lock never taken', plant("hold_folder\ntrap 'on_exit'", "trap 'on_exit'"), ['IG-09h']],
+      [
+        'h: a held lock not refused',
+        plant('  if ! mkdir "$run_dir" 2>/dev/null; then\n', '  if ! mkdir -p "$run_dir" 2>/dev/null; then\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the folder removed in the close',
+        plant('close_session() {\n  local key\n', 'close_session() {\n  local key\n  rm -rf "$run_dir"\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the folder moved aside after the shell',
+        plant('\nrun_shell\nclose_session', '\nrun_shell\nmv "$run_dir" "$BG_HOME/old"\nclose_session'),
+        ['IG-09h'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  // The shell's rc file runs inside the shell that holds the role's credentials in its environment: a
+  // line added to it, or a change to how the shell starts; and env given no command to run, shopt
+  // turning an option of set back off, and a pinned folder, lock or name set again after its check,
+  // each planted in a copy.
+  it('finds a line added to the shell’s rc or start, env printing, shopt turning an option off, and a pinned name set again, planted in a copy, by its rule', () => {
+    const afterAssume = (line: string) =>
+      plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
+    const inRc = (line: string) =>
+      plant('unset HISTFILE\nhearth_bg_prompt', `unset HISTFILE\n${line}\nhearth_bg_prompt`)
+    const afterModeCheck = (line: string) =>
+      plant("(docs/runbooks/break-glass.md)'\nfi\n", `(docs/runbooks/break-glass.md)'\nfi\n${line}\n`)
+    const profile = 'profile="hearth-$environment-entry"\n'
+    const cases: Array<[string, string, string[]]> = [
+      ['i: env into a file in the shell’s rc', inRc('env >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env, its errors silenced, into a file in the rc', inRc('env 2>/dev/null >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env -0 into a file in the rc', inRc('env -0 >"$HOME/session.env"'), ['IG-09i']],
+      ['i: env -u into a file in the rc', inRc('env -u PS1 >"$HOME/session.env"'), ['IG-09i']],
+      ['i: the environment read from /proc in the rc', inRc('cat /proc/self/environ >"$HOME/session.env"'), ['IG-09i']],
+      [
+        'i: awk printing its environment in the rc',
+        inRc(`awk 'BEGIN { for (k in ENVIRON) print k, ENVIRON[k] }' >"$HOME/session.env"`),
+        ['IG-09i'],
+      ],
+      ['i: the rc keeps history', plant('unset HISTFILE\nhearth_bg_prompt', 'hearth_bg_prompt'), ['IG-09i']],
+      ['i: the shell keeps history', plant(' HISTFILE=/dev/null \\\n', ' \\\n'), ['IG-09i']],
+      [
+        'i: a line appended to the rc after it is written',
+        plant("RC\n  printf 'break-glass: the role", "RC\n  echo 'PS0=x' >>\"$rc\"\n  printf 'break-glass: the role"),
+        ['IG-09i'],
+      ],
+      [
+        'i: a line appended to the rc by its path',
+        plant(
+          "RC\n  printf 'break-glass: the role",
+          "RC\n  echo 'PS0=x' >>\"$run_dir/shell.rc\"\n  printf 'break-glass: the role",
+        ),
+        ['IG-09i'],
+      ],
+      ['i: env into a file', afterAssume('env >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env by its path into a file', afterAssume('/usr/bin/env >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env given an assignment, into a file', afterAssume('env TZ=UTC >"$BG_HOME/session.env"'), ['IG-09i']],
+      ['i: env in backquotes', afterAssume('saved=`env`'), ['IG-09i']],
+      ['i: env running a command passes', afterAssume('env -u PS1 TZ=UTC date -u'), []],
+      ['a: errexit off through shopt', plant('set -f\n', 'set -f\nshopt -uo errexit\n'), ['IG-09a']],
+      ['a: errexit off through shopt -ou', plant('set -f\n', 'set -f\nshopt -ou errexit\n'), ['IG-09a']],
+      ['a: nounset off through shopt -u -o', plant('set -f\n', 'set -f\nshopt -u -o nounset\n'), ['IG-09a']],
+      ['a: pipefail off through shopt', afterAssume('shopt -uo pipefail'), ['IG-09a']],
+      ['a: globbing back on through shopt', afterAssume('shopt -uo noglob'), ['IG-09a']],
+      [
+        'a: nounset off through shopt in a function',
+        plant('close_session() {\n  local key\n', 'close_session() {\n  local key\n  shopt -uo nounset\n'),
+        ['IG-09a'],
+      ],
+      ['a: a shopt option of its own passes', afterAssume('shopt -s checkwinsize'), []],
+      [
+        'h: the lock made per run',
+        plant('run_dir="$BG_HOME/run.lock"\n', 'run_dir="$BG_HOME/run.lock"\nrun_dir="$run_dir.$$"\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock made per run by printf -v',
+        plant('rc="$run_dir/shell.rc"\n', `rc="$run_dir/shell.rc"\nprintf -v run_dir '%s.%s' "$run_dir" "$$"\n`),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock removed through HOME',
+        plant('aws sso login --profile "$profile"\n', 'aws sso login --profile "$profile"\nrm -rf "$HOME/run.lock"\n'),
+        ['IG-09h'],
+      ],
+      [
+        'h: the lock removed through ~',
+        plant(
+          'aws sso login --profile "$profile"\n',
+          'aws sso login --profile "$profile"\nrm -rf ~/.hearth-break-glass/run.lock\n',
+        ),
+        ['IG-09h'],
+      ],
+      ['f: the folder set again after its check', afterModeCheck(`BG_HOME="\${HEARTH_BG_ALT:-$BG_HOME}"`), ['IG-09f']],
+      [
+        'm: the environment set again after its checks',
+        plant(profile, `environment="\${HEARTH_BG_ENV:-$environment}"\n${profile}`),
+        ['IG-09m'],
+      ],
+      [
+        'm: the profile taken from outside',
+        plant(profile, `profile="\${HEARTH_BG_PROFILE:-hearth-$environment-entry}"\n`),
+        ['IG-09m'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  it('b: refuse_agents names exactly the Owner bootstrap script’s agent markers, refuses each set alone, even empty, and passes with none', () => {
+    const fn = shellFunction(helper, 'refuse_agents') ?? ''
+    expect(fn).toContain('refuse_agents() {')
+    expect(run(`${fn}\nrefuse_agents`)).toBe(0)
+    for (const marker of AGENT_MARKERS) {
+      expect(run(`${fn}\nrefuse_agents`, [], { [marker]: '' }), marker).not.toBe(0)
+      expect(run(`${fn}\nrefuse_agents`, [], { [marker]: '1' }), marker).not.toBe(0)
+    }
+    // A planted copy missing a marker lets it through, which the case above would catch.
+    const missing = shellFunction(plant('AI_AGENT CI GITHUB_ACTIONS; do', 'AI_AGENT CI; do'), 'refuse_agents') ?? ''
+    expect(run(`${missing}\nrefuse_agents`, [], { GITHUB_ACTIONS: 'true' })).toBe(0)
+  }, 30_000)
+
+  it('b: require_terminal, run on its own with standard input and output piped, refuses', () => {
+    const fn = shellFunction(helper, 'require_terminal') ?? ''
+    expect(fn).toContain('require_terminal() {')
+    expect(run(`${fn}\nrequire_terminal`)).toBe(3)
+    // An inverted copy lets a piped run through, which the case above would catch.
+    const inverted = plant('if ! [ -t 0 ] || ! [ -t 1 ]; then', 'if [ -t 0 ] && [ -t 1 ]; then')
+    expect(run(`${shellFunction(inverted, 'require_terminal') ?? ''}\nrequire_terminal`)).toBe(0)
+  }, 30_000)
+
+  it('q: usage and refuse, run on their own, exit non-zero, so every refusal ends the run', () => {
+    const usage = shellFunction(helper, 'usage') ?? ''
+    const refuse = shellFunction(helper, 'refuse') ?? ''
+    expect(usage).toContain('usage() {')
+    expect(refuse).toContain('refuse() {')
+    expect(run(`${usage}\nusage\nexit 0`)).toBe(2)
+    expect(run(`${refuse}\nrefuse 'refused'\nexit 0`)).toBe(2)
+    const returns = plant(
+      `printf 'break-glass: %s\\n' "$1" >&2\n  exit 2\n}`,
+      `printf 'break-glass: %s\\n' "$1" >&2\n}`,
+    )
+    expect(run(`${shellFunction(returns, 'refuse') ?? ''}\nrefuse 'refused'\nexit 0`)).toBe(0)
+  }, 30_000)
+
+  it('q: a function defined twice is not extracted, so no test runs a body bash wouldn’t', () => {
+    const twice = plant(
+      '\nrefuse_agents\nrequire_terminal\n',
+      '\nrefuse_agents() {\n  :\n}\n\nrefuse_agents\nrequire_terminal\n',
+    )
+    expect(shellFunction(twice, 'refuse_agents')).toBeUndefined()
+    expect(shellFunction(plant('refuse_agents() {', 'function refuse_agents {'), 'refuse_agents')).toBeUndefined()
+    expect(shellFunction(helper, 'valid_reason')).toContain('valid_reason() {')
+  })
+
+  it('q: no function may take the name of a builtin or keyword bash lists', () => {
+    const listed = spawnSync('bash', ['-c', 'compgen -b; compgen -k'], { encoding: 'utf8' }).stdout.split('\n')
+    const names = listed.map(name => name.trim()).filter(name => name !== '')
+    expect(names.length).toBeGreaterThan(50)
+    expect(names.filter(name => !RESERVED_FUNCTION_NAMES.includes(name))).toEqual([])
+  }, 30_000)
+
+  it('d: valid_reason, run on its own, takes each reason form, refuses every near miss, an impossible date and a future one', () => {
+    const check = [
+      ...reasonFormLines(helper),
+      shellFunction(helper, 'valid_date'),
+      shellFunction(helper, 'valid_reason'),
+      'valid_reason "$1"',
+    ].join('\n')
+    expect(reasonFormLines(helper)).toHaveLength(6)
+    // The reasons infra/src/baseline/break-glass.test.ts plants (a test imports no test, so they are
+    // written again here), with the dates only valid_date can refuse. Its references are made the same
+    // way, from CASE_REFERENCE_PATTERN's own alphabet, each letter it allows first.
+    const [letters = '', symbols = ''] = [...CASE_REFERENCE_PATTERN.source.matchAll(/\[([^\]]+)\]/g)].map(([, body]) =>
+      (body ?? '').replace(/(.)-(.)/g, (_, a: string, b: string) =>
+        Array.from({ length: b.charCodeAt(0) - a.charCodeAt(0) + 1 }, (_, i) =>
+          String.fromCharCode(a.charCodeAt(0) + i),
+        ).join(''),
+      ),
+    )
+    const references = [...letters].map((first, i) => {
+      const pick = (k: number) => symbols[(i * 7 + k) % symbols.length] ?? ''
+      const reference = `${first}${pick(1)}${pick(2)}${pick(3)}${letters[(i + 3) % letters.length]}${pick(4)}${pick(5)}${pick(6)}`
+      expect(CASE_REFERENCE_PATTERN.test(reference), reference).toBe(true)
+      return `case:${formatCaseReference(reference as CaseReference)}`
+    })
+    const future = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10)
+    const good = [
+      ...references,
+      'incident:2026-10-31-01',
+      'bootstrap:set-up',
+      'bootstrap:correct-number',
+      'recover:twilio',
+      'drill:2026-10-31',
+      'drill:2024-02-29',
+      'lz:pr-1',
+      'lz:pr-42',
+      'lz:pr-123',
+      'lz:pr-1234',
+      'lz:pr-99999',
+    ]
+    const bad = [
+      'Jane Tan',
+      'case:BACD-FGHJ',
+      'case:BYCD-FGHJ',
+      'case:B0CD-FGHJ',
+      'case:B1CD-FGHJ',
+      'case:BLCD-FGHJ',
+      'case:b2cd-fghj',
+      'case:2BCD-FGHJ',
+      'case:Jane-Tans',
+      'incident:2026-1-31-01',
+      'incident:2026-02-30-01',
+      'drill:2025-02-29',
+      'drill:2026-13-01',
+      `drill:${future}`,
+      `incident:${future}-01`,
+      'lz:pr-0',
+      'lz:pr-123456',
+      'bootstrap:other',
+      'recover:aws',
+      'recover:twilio ',
+      'lz:pr-42 ',
+      'lz:pr-1\nlz:pr-2',
+      'case:B2CD-FGHJ\nx',
+      'incident:٢٠٢٦-10-31-01',
+      'drill:２０２６-10-31',
+      '',
+    ]
+    for (const reason of good) expect(run(check, [reason]), reason).toBe(0)
+    for (const reason of bad) expect(run(check, [reason]), JSON.stringify(reason)).not.toBe(0)
+  }, 30_000)
+
+  it('d: a reason’s date is never after today in Singapore, so in the evening, UTC, Singapore’s next day is taken and the day after refused', () => {
+    const check = [shellFunction(helper, 'valid_date'), 'valid_date "$1"'].join('\n')
+    // A date shim first on PATH that runs the real date at 18:00 UTC on 31 Oct 2026, 02:00 on
+    // 1 Nov in Singapore, honouring TZ and -u as the real one does (GNU's -d @, else BSD's -r).
+    const real = execFileSync('bash', ['-c', 'command -v date'], { encoding: 'utf8' }).trim()
+    const epoch = Date.UTC(2026, 9, 31, 18) / 1000
+    const shims = mkdtempSync(join(tmpdir(), 'ig09-date-'))
+    try {
+      writeFileSync(
+        join(shims, 'date'),
+        [
+          '#!/bin/bash',
+          `if '${real}' -d @0 +%s >/dev/null 2>&1; then exec '${real}' -d @${epoch} "$@"; fi`,
+          `exec '${real}' -r ${epoch} "$@"`,
+          '',
+        ].join('\n'),
+      )
+      chmodSync(join(shims, 'date'), 0o755)
+      const pinned = { PATH: `${shims}:${process.env.PATH ?? ''}` }
+      expect(execFileSync(join(shims, 'date'), ['-u', '+%Y-%m-%d'], { encoding: 'utf8' }).trim()).toBe('2026-10-31')
+      for (const date of ['2026-10-31', '2026-11-01']) expect(run(check, [date], pinned), date).toBe(0)
+      for (const date of ['2026-11-02', '2027-01-01']) expect(run(check, [date], pinned), date).not.toBe(0)
+      // A copy that counts the day in UTC refuses Singapore's day, so this case would catch it.
+      const utc = check.replace('TZ=SGT-8 date +%Y-%m-%d', 'date -u +%Y-%m-%d')
+      expect(utc).not.toBe(check)
+      expect(run(utc, ['2026-11-01'], pinned)).not.toBe(0)
+    } finally {
+      rmSync(shims, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  // C0.11 review 5 HELPER-01 and HELPER-02.
+  it('a, k: the start-up gate, the dropped functions, the >| writes and the pending continuation are each pinned', () => {
+    const loop = 'for exported_function in $(compgen -A function); do\n  unset -f "$exported_function"\ndone\n'
+    const cases: Array<[string, string, string[]]> = [
+      [
+        'a: the start-up gate never called',
+        plant('require_terminal\nrefuse_inherited_shell\n', 'require_terminal\n'),
+        ['IG-09a'],
+      ],
+      [
+        'a: the start-up gate after the first aws command',
+        plant('require_terminal\nrefuse_inherited_shell\n', 'require_terminal\n').replace(
+          '\nassume_role || exit 1\n',
+          '\nrefuse_inherited_shell\nassume_role || exit 1\n',
+        ),
+        ['IG-09a'],
+      ],
+      ['a: POSIX mode let through', plant(' || [[ :$SHELLOPTS: == *:posix:* ]]', ''), ['IG-09a']],
+      [
+        'a: BASH_ENV let through',
+        plant('SHELLOPTS | BASHOPTS | BASH_ENV) exported=yes', 'SHELLOPTS | BASHOPTS) exported=yes'),
+        ['IG-09a'],
+      ],
+      [
+        'a: the gate returns',
+        plant('break-glass.md)\\n" >&2\n    exit 3\n', 'break-glass.md)\\n" >&2\n    return 0\n'),
+        ['IG-09a'],
+      ],
+      ['a: exported functions kept', plant(loop, ''), ['IG-09a']],
+      [
+        'a: exported functions dropped after the helper defines its own',
+        plant(loop, '').replace('\nrefuse_agents\nrequire_terminal\n', `\n${loop}refuse_agents\nrequire_terminal\n`),
+        ['IG-09a'],
+      ],
+      [
+        'k: the close written with >',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    >"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the open entry written with >',
+        plant(
+          `expires: $expires}' \\\n    >|"$entry_file"\n  put_entry "$key" || refuse`,
+          `expires: $expires}' \\\n    >"$entry_file"\n  put_entry "$key" || refuse`,
+        ),
+        ['IG-09k'],
+      ],
+      // C0.11 review 7 CR-05: an append keeps the earlier body and adds the new one, an invalid entry.
+      [
+        'k: the close appended with >>',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    >>"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the open entry appended with >>',
+        plant(
+          `expires: $expires}' \\\n    >|"$entry_file"\n  put_entry "$key" || refuse`,
+          `expires: $expires}' \\\n    >> "$entry_file"\n  put_entry "$key" || refuse`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the amend appended with &>>',
+        plant(`ids: $ids}' \\\n    >|"$entry_file"`, `ids: $ids}' \\\n    &>>"$entry_file"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the continuation written with >&',
+        plant(
+          `expires: $expires}' \\\n      >|"$entry_file"\n    put_entry "$(entry_key "$session" continuation)"`,
+          `expires: $expires}' \\\n      >&"$entry_file"\n    put_entry "$(entry_key "$session" continuation)"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close written with 1>',
+        plant(`outcome: $outcome}' \\\n    >|"$entry_file"`, `outcome: $outcome}' \\\n    1>"\${entry_file}"`),
+        ['IG-09k'],
+      ],
+      [
+        'k: the continuation only straight after the role is taken',
+        plant(
+          '    assume_role || return 1\n  fi\n  if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then\n',
+          '    assume_role || return 1\n  if [ "$session" != "$first_session" ] && [ "$session" != "$continued" ]; then\n',
+        ).replace('    continued="$session"\n  fi\n', '    continued="$session"\n  fi\n  fi\n'),
+        ['IG-09k'],
+      ],
+      ['k: the continuation never recorded', plant('    continued="$session"\n', ''), ['IG-09k']],
+      [
+        'k: continued set by printf -v',
+        plant('    continued="$session"\n', `    continued="$session"\n    printf -v continued '%s' x\n`),
+        ['IG-09k'],
+      ],
+      ['k: continued never started', plant("\ncontinued=''\n", '\n'), ['IG-09k']],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  }, 30_000)
+
+  // C0.11 review 11 CR-15: a late close is written by a later session, and must still name the first
+  // and land in its folder.
+  it('k: the close names the first session, in its payload, its key and its put', () => {
+    const cases: Array<[string, string, string[]]> = [
+      [
+        'k: the close names the later session',
+        plant('--arg session "$first_session"', '--arg session "$session"'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close keyed by the later session',
+        plant('key="$(entry_key "$first_session" close)"', 'key="$(entry_key "$session" close)"'),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close put under the later session’s key',
+        plant(
+          '  put_entry "$key" || return 1\n  closed=yes\n',
+          '  put_entry "$(entry_key "$session" close)" || return 1\n  closed=yes\n',
+        ),
+        ['IG-09k'],
+      ],
+      // C0.11 review 12 CR-17: the session field set as the object is built, then changed by what
+      // follows it in the program, or $session bound to something else first.
+      [
+        'k: the close’s session overwritten after it is built (C0.11 review 12 CR-17)',
+        plant(
+          `outcome: $outcome}' \\\n    >|"$entry_file"`,
+          `outcome: $outcome} | .session = $at' \\\n    >|"$entry_file"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: the close’s session set again by setpath (C0.11 review 12 CR-17)',
+        plant(
+          `outcome: $outcome}' \\\n    >|"$entry_file"`,
+          `outcome: $outcome} | setpath(["session"]; $at)' \\\n    >|"$entry_file"`,
+        ),
+        ['IG-09k'],
+      ],
+      [
+        'k: $session bound by --argjson before the close’s --arg (C0.11 review 12 CR-17)',
+        plant(
+          '--arg environment "$environment" --arg session "$first_session"',
+          `--arg environment "$environment" --argjson session '"x"' --arg session "$first_session"`,
+        ),
+        ['IG-09k'],
+      ],
+    ]
+    for (const [name, planted, expected] of cases) expect(rules(planted), name).toEqual(expected)
+  })
+
+  it('a: refuse_inherited_shell, run as a script, refuses each start-up state bash inherits and passes with none', () => {
+    const fn = shellFunction(helper, 'refuse_inherited_shell') ?? ''
+    expect(fn).toContain('refuse_inherited_shell() {')
+    const dir = mkdtempSync(join(tmpdir(), 'ig09-start-'))
+    try {
+      // As the helper runs it: after its own set -euo pipefail and set -f, from a file, since bash -c
+      // adds c to $-.
+      const gate = (body: string) => {
+        const path = join(dir, `gate-${Math.random().toString(36).slice(2)}.sh`)
+        writeFileSync(path, ['set -euo pipefail', 'set -f', body, 'refuse_inherited_shell', ''].join('\n'))
+        return path
+      }
+      const start = (path: string, shell: string, env: Record<string, string> = {}) =>
+        spawnSync(
+          'env',
+          [
+            '-i',
+            `PATH=${process.env.PATH ?? ''}`,
+            ...Object.entries(env).map(([k, v]) => `${k}=${v}`),
+            'bash',
+            '-c',
+            `${shell} "$0"`,
+            path,
+          ],
+          { encoding: 'utf8' },
+        ).status
+      const script = gate(fn)
+      for (const shell of ['bash', 'bash -p', 'f() { :; }; export -f f; bash'])
+        expect(start(script, shell), shell).toBe(0)
+      const refused: Array<[string, string, Record<string, string>?]> = [
+        ['a trace', 'bash -x'],
+        ['verbose', 'bash -v'],
+        ['noclobber', 'bash -C'],
+        ['every variable exported', 'bash -a'],
+        ['keyword mode', 'bash -k'],
+        ['POSIX mode', 'bash --posix'],
+        ['POSIXLY_CORRECT', 'bash', { POSIXLY_CORRECT: '1' }],
+        ['SHELLOPTS exported, noclobber in it', 'set -o noclobber; export SHELLOPTS; bash'],
+        ['SHELLOPTS exported, defaults only', 'export SHELLOPTS; bash'],
+        ['BASHOPTS exported', 'shopt -s nocasematch; export BASHOPTS; bash'],
+        ['BASH_ENV', 'bash', { BASH_ENV: '/dev/null' }],
+        ['BASH_ENV empty', 'bash', { BASH_ENV: '' }],
+      ]
+      for (const [name, shell, env] of refused) expect(start(script, shell, env), name).toBe(3)
+      // A copy without the POSIX check lets POSIX mode through, which the case above would catch.
+      const lax = gate(fn.replace(' || [[ :$SHELLOPTS: == *:posix:* ]]', ''))
+      expect(start(lax, 'bash --posix')).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30_000)
+
+  it('n: bash parses it, a planted syntax error fails, and its mode is executable', () => {
+    expect(spawnSync('bash', ['-n', join(root, HELPER)]).status).toBe(0)
+    expect(spawnSync('bash', ['-n', '-c', plant('\nrun_shell\n', '\nif run_shell\n')]).status).not.toBe(0)
+    const staged = execFileSync('git', ['ls-files', '-s', HELPER], { cwd: root, encoding: 'utf8' })
+    if (staged === '') expect(statSync(join(root, HELPER)).mode & 0o111).toBe(0o111)
+    else expect(staged.startsWith('100755 ')).toBe(true)
+  }, 30_000)
+})
+
+describe('IG-10 (C11-D06): the model lists live in infra/src/config/models.ts alone', () => {
+  const [prefix = ''] = MODEL_SERVICE_PREFIXES
+  const [action = ''] = MODEL_ACTIONS
+  const moduleName = prefix.replace(/-/g, '')
+  // A pattern that overlaps the first model action without naming it whole: its service and the start
+  // of its action, then a wildcard.
+  const overlapping = `${action.slice(0, action.indexOf(':') + 4)}*`
+
+  it('finds a model string in TypeScript, shell and YAML, built from the lists, and lets the rest through', () => {
+    const typescript = [
+      `const a = '${prefix}:Invoke'`,
+      `const b = \`${action}\``,
+      "const c = 'sts:AssumeRole'",
+      "const d = 'sms-voice:*'",
+      "const e = 'cloudwatch:*'",
+      `// ${action}, named in a comment`,
+      // A template whose service is a hole names no service, which keeps models.test.ts legal.
+      `const f = \`\${p}:*\``,
+      `const g = '${overlapping}'`,
+    ].join('\n')
+    const found = modelStringFindings('infra/src/x.ts', typescript).map(f => /:(\d+):/.exec(f)?.[1])
+    expect(found).toEqual(['1', '2', '8'])
+    expect(modelStringFindings('infra/bin/x.sh', `# ${action}\nX='${prefix}:*'\n`)).toHaveLength(2)
+    expect(modelStringFindings('infra/bootstrap/x.yaml', `Action: ${prefix}:*\n`)).toHaveLength(1)
+    expect(modelStringFindings('infra/src/config/models.ts', `const a = '${prefix}:*'`)).toEqual([])
+    expect(modelStringFindings('infra/bootstrap/hearth-bootstrap.yaml', `"${prefix}:*"`)).toEqual([])
+    expect(modelStringFindings('apps/server/src/x.ts', `const a = '${prefix}:*'`)).toEqual([])
+  })
+
+  it('finds a model service’s aws-cdk-lib module, imported or reached through the root', () => {
+    const planted = [
+      `import * as m from 'aws-cdk-lib/aws-${moduleName}'`,
+      `export { CfnX } from 'aws-cdk-lib/aws-${moduleName}'`,
+      `new cdk.aws_${moduleName}.CfnX(this, 'x', {})`,
+      "import * as s3 from 'aws-cdk-lib/aws-s3'",
+      "import * as chime from 'aws-cdk-lib/aws-chime'",
+      `// aws_${moduleName} in a comment`,
+    ]
+    expect(
+      planted.map(line => modelModuleFindings('infra/src/x.ts', line, withoutComments('infra/src/x.ts', line)).length),
+    ).toEqual([1, 1, 1, 0, 0, 0])
+  })
+
+  it('refuses real aws-cdk-lib modules, so the derivation isn’t vacuous, and leaves services with only some model actions', () => {
+    const exported = Object.keys(JSON.parse(readRepoFile('node_modules/aws-cdk-lib/package.json')).exports)
+      .filter(key => key.startsWith('./aws-'))
+      .map(key => key.slice('./aws-'.length))
+    const refused = exported.filter(name => MODEL_MODULES.includes(name))
+    for (const name of [
+      'bedrock',
+      'bedrockagentcore',
+      'bedrockmantle',
+      'sagemaker',
+      'qbusiness',
+      'quicksight',
+      'transcribe',
+      'wisdom',
+      'devopsagent',
+    ]) {
+      expect(refused, name).toContain(name)
+    }
+    for (const name of ['chime', 'connect', 'glue', 'datazone', 'neptune', 'cloudwatch', 'iotsitewise']) {
+      expect(exported, name).toContain(name)
+      expect(refused, name).not.toContain(name)
+    }
+  })
+
+  it('no file under infra/ but models.ts and the generated template names one, and no infra script imports one', () => {
+    const read = files.filter(path => path.startsWith('infra/'))
+    expect(read).toEqual(
+      expect.arrayContaining(['infra/bin/break-glass.sh', 'infra/cdk.json', 'infra/src/config/models.test.ts']),
+    )
+    expect(read.flatMap(path => modelStringFindings(path, readRepoFile(path)))).toEqual([])
+    expect(infraScripts.flatMap(path => modelModuleFindings(path, readRepoFile(path), code(path)))).toEqual([])
+  }, 30_000)
+})
+
+describe('IG-12 (C11-D76): no asset the CLI would run or build', () => {
+  it('finds each on planted code, and lets the rest through', () => {
+    const planted = [
+      "stack.synthesizer.addFileAsset({ sourceHash: h, executable: ['sh', '-c', 'x'] })",
+      "stack.synthesizer.addDockerImageAsset({ sourceHash: h, directoryName: '.' })",
+      'const source = { executable }',
+      "source['executable'] = []",
+      "new NodejsFunction(this, 'f', { bundling: { minify: true } })",
+      "const image = cdk.DockerImage.fromBuild('.')",
+      "stack.synthesizer.addFileAsset({ sourceHash: h, fileName: 'a.template.json' })",
+      '// an executable is never set',
+      'const runnable = isExecutable(source)',
+    ]
+    expect(
+      planted.map(line => ruleFindings('infra/src/x.ts', withoutComments('infra/src/x.ts', line), ASSET_RULES).length),
+    ).toEqual([1, 2, 1, 1, 1, 1, 0, 0, 0])
+    // An assertion test names what IAC-22 looks for in an asset manifest; it may not make one.
+    const test = 'infra/bin/entries.test.ts'
+    expect(ruleFindings(test, 'expect(source.executable).toBeUndefined()', ASSET_RULES)).toEqual([])
+    expect(ruleFindings(test, 'stack.synthesizer.addDockerImageAsset({ sourceHash: h })', ASSET_RULES)).toHaveLength(1)
+  })
+
+  it('no infra script but a test names one', () => {
+    expect(infraScripts.flatMap(path => ruleFindings(path, code(path), ASSET_RULES))).toEqual([])
+  }, 30_000)
+})
+
+describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it after the tests with no AWS credential', () => {
+  const synth: string = JSON.parse(readRepoFile('infra/package.json')).scripts['synth:lz']
+
+  it('the script drops the environment, makes a HOME, and synthesises the landing-zone entry with no lookups', () => {
+    expect(synthScriptProblems(synth)).toEqual([])
+    expect(scriptFindings('infra/package.json', { scripts: { 'synth:lz': synth } })).toEqual([])
+  })
+
+  it('finds each change planted in a copy', () => {
+    const changed = (from: string, to: string) => {
+      expect(synth).toContain(from)
+      return synthScriptProblems(synth.replace(from, () => to))
+    }
+    const env = expect.stringMatching(/C11-D62 sets exactly /)
+    expect(changed('HEARTH_FIXTURE=1', 'AWS_PROFILE=x HEARTH_FIXTURE=1')).toEqual([env])
+    expect(changed('HOME="$(mktemp -d)"', 'HOME="$HOME"')).toEqual([env])
+    expect(changed(' --no-lookups', '')).toEqual(['infra/package.json synth:lz: C11-D62 passes --no-lookups'])
+    expect(changed(' --quiet', ' --quiet --profile x')).toEqual([
+      'infra/package.json synth:lz: C11-D62 passes no --profile',
+    ])
+    expect(changed('env -i ', '')).toEqual([
+      'infra/package.json synth:lz: C11-D62 starts with env -i, dropping every inherited variable',
+      env,
+    ])
+    expect(changed("--app 'node bin/landing-zone.ts'", "--app 'node bin/workload.ts'")).toEqual([
+      "infra/package.json synth:lz: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'",
+    ])
+    // Anything run beside the synth runs in npm's shell with the caller's environment, AWS keys and
+    // all; and an option the parts don't name (a plugin) is one more than the script's.
+    const whole = [
+      expect.stringMatching(/C11-D62 is exactly env -i .* --quiet, one command, so nothing runs outside env -i$/),
+    ]
+    for (const after of [
+      ' && aws sts get-caller-identity',
+      "; cdk synth --app 'node bin/landing-zone.ts' --no-lookups --no-notices --quiet",
+      ' && cdk ls',
+      ' && node -e "1"',
+      ' | tee x',
+      ' > out',
+      ' --plugin ./x.js',
+      ' -p ./x.js',
+    ]) {
+      expect(changed(' --quiet', ` --quiet${after}`), after).toEqual(whole)
+    }
+    // A line break where a space was: sh runs env -i alone, then the synth with every variable.
+    expect(changed('env -i ', 'env -i\n')).toEqual(whole)
+  })
+
+  // npm runs a pre or post hook, and a root .npmrc's script-shell, with the caller's environment,
+  // outside env -i; IG-07 lets `cdk ls` stand in any script, so these two pins are what find one.
+  it('npm runs no hook around it, and no tracked root .npmrc names a script shell', () => {
+    const manifest = JSON.parse(readRepoFile('infra/package.json'))
+    expect(synthHookProblems(manifest)).toEqual([])
+    const tracked = execFileSync('git', ['ls-files', '--cached', '--', '.npmrc'], { cwd: root, encoding: 'utf8' })
+    expect(tracked.trim() === '' ? [] : npmrcProblems(readRepoFile('.npmrc'))).toEqual([])
+
+    const hooked = (text: string) => synthHookProblems(JSON.parse(text))
+    const manifestText = readRepoFile('infra/package.json')
+    const scriptsKey = '"scripts": {\n'
+    expect(manifestText).toContain(scriptsKey)
+    const plant = (hooks: string) => manifestText.replace(scriptsKey, () => `${scriptsKey}${hooks}`)
+    const pre =
+      "infra/package.json presynth:lz: C11-D62 no presynth:lz script: npm runs it with the caller's environment, outside env -i"
+    const post =
+      "infra/package.json postsynth:lz: C11-D62 no postsynth:lz script: npm runs it with the caller's environment, outside env -i"
+    expect(hooked(plant('    "presynth:lz": "cdk ls",\n'))).toEqual([pre])
+    expect(hooked(plant(`    "postsynth:lz": "cdk ls --app 'node bin/landing-zone.ts'",\n`))).toEqual([post])
+    expect(hooked(plant('    "presynth:lz": "cdk ls",\n    "postsynth:lz": "cdk ls",\n'))).toEqual([pre, post])
+    // A key spelled with a JSON escape is the same key to npm.
+    expect(hooked(plant('    "pre\\u0073ynth:lz": "cdk ls",\n'))).toEqual([pre])
+    // IG-07 passes each of them, which is why this pin exists.
+    expect(scriptFindings('infra/package.json', JSON.parse(plant('    "presynth:lz": "cdk ls",\n')))).toEqual([])
+    // Hooks of other scripts, and a script whose name only starts like one, are not synth:lz's.
+    expect(hooked(plant('    "pretypecheck": "true",\n    "presynth:lzx": "true",\n'))).toEqual([])
+
+    const shell = [
+      ".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i",
+    ]
+    expect(npmrcProblems('script-shell=./scripts/sh.sh\n')).toEqual(shell)
+    expect(npmrcProblems('engine-strict=true\n"script-shell" = /bin/bash\n')).toEqual(shell)
+    expect(npmrcProblems("  'script-shell'=bash\r\n")).toEqual(shell)
+    expect(npmrcProblems('SCRIPT_SHELL=bash\n')).toEqual(shell)
+    expect(npmrcProblems('engine-strict=true\nsave-exact=true\n; script-shell=bash\n# script-shell=bash\n')).toEqual([])
+  }, 30_000)
+
+  it('ci.yml runs it straight after npm test, and holds no id-token, credentials action or AWS_ variable', () => {
+    const ci = readRepoFile('.github/workflows/ci.yml')
+    const stepsOf = (text: string) => workflowJobs(text).find(job => job.id === 'check')?.steps ?? []
+    expect(stepsOf(ci).length).toBeGreaterThan(10)
+    expect(ciSynthProblems(ci, stepsOf(ci))).toEqual([])
+    const planted = (from: string, to: string) => {
+      expect(ci).toContain(from)
+      const text = ci.replace(from, () => to)
+      return ciSynthProblems(text, stepsOf(text))
+    }
+    // The step gone, or either step skipped or let fail, so a synth the CLI can't run would merge green.
+    const step = [
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test, each step its run line alone',
+    ]
+    const synthStep = '      - run: npm run synth:lz -w @hearth/infra\n'
+    expect(planted(synthStep, '')).toEqual(step)
+    expect(planted(synthStep, '      - if: false\n        run: npm run synth:lz -w @hearth/infra\n')).toEqual(step)
+    expect(planted(synthStep, `${synthStep}        continue-on-error: true\n`)).toEqual(step)
+    expect(planted('      - run: npm test\n', '      - if: false\n        run: npm test\n')).toEqual(step)
+    expect(planted('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')).toEqual(step)
+    expect(planted('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n')).toEqual([
+      '.github/workflows/ci.yml: C11-D62 no job may ask for an id-token',
+      '.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone',
+    ])
+    // A job's own permissions, in every spelling that grants an id-token, a uses: job's included.
+    const idToken = ['.github/workflows/ci.yml: C11-D62 no job may ask for an id-token']
+    const check = '  check:\n    needs: [secrets, audit]\n'
+    expect(planted(check, `${check}    permissions: write-all\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual(idToken)
+    expect(planted(check, `${check}    permissions:\n      "id-token": write\n`)).toEqual(idToken)
+    expect(
+      planted(
+        '  secrets:\n    uses: ./.github/workflows/secrets.yml\n',
+        '  secrets:\n    permissions:\n      id-token: write\n    uses: ./.github/workflows/secrets.yml\n',
+      ),
+    ).toEqual(idToken)
+    // An escape spells either word unseen, in a key or a value.
+    const escaped = [
+      '.github/workflows/ci.yml: C11-D62 no key or value is spelled with an escape, which could name id-token or write-all unseen',
+    ]
+    expect(planted(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual(escaped)
+    expect(planted(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual(escaped)
+    expect(planted(check, `${check}    permissions: "write\\x2Dall"\n`)).toEqual(escaped)
+    expect(
+      planted('      - run: npm ci\n', '      - uses: aws-actions/configure-aws-credentials@v4\n      - run: npm ci\n'),
+    ).toEqual(['.github/workflows/ci.yml: C11-D62 no step takes AWS credentials'])
+    expect(
+      planted('      - run: npm ci\n', '      - run: npm ci\n        env:\n          AWS_REGION: ap-southeast-1\n'),
+    ).toEqual(['.github/workflows/ci.yml: C11-D62 no line sets an AWS_ variable'])
   })
 })

@@ -26,7 +26,7 @@ Anyone suspects that personal data in or around Hearth was lost, disclosed, chan
 ## Steps
 
 1. The person on call contains it:
-   - ends the sessions affected, as the README's [Before C0.16's console](README.md#before-c016s-console-what-exists) says (Sign out in the avatar menu for the current device; the devices and admin routes, which have no screen, for the rest), and deactivates an account where needed, through an Owner or Admin;
+   - ends the sessions affected, as the README's [Before C0.16's console](README.md#before-c016s-console-what-exists) says (Sign out in the avatar menu for the current device; the devices and admin routes, which have no screen, for the rest), and deactivates an account where needed, through an Owner or Admin. Those are Hearth's sessions; an AWS session is ended as [A security alert](security-alerts.md#containing-an-unexpected-session) says, since removing someone from a group doesn't end one;
    - if a provider must receive nothing more, asks the DPO to withdraw its clearance on Transfers (read [Twilio withdrawn, and no DPO signed in](twilio-withdrawn.md) before withdrawing Twilio Verify);
    - rotates a leaked secret in Secrets Manager;
    - preserves the logs.
