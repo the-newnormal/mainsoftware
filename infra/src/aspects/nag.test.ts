@@ -16,7 +16,8 @@
 //   so it is fixed rather than kept. The workload keeps none: Validate runs over its stacks (proved on
 //   a planted finding, which a warning reports without failing the synth) and finds nothing.
 // - acknowledgeValidate() applies an acknowledgement only in a run that builds its stack, since a
-//   person's run builds one target, and refuses one naming no landing-zone stack in any run.
+//   person's run builds one target, and refuses one whose path names neither a landing-zone stack nor
+//   a workload stage's stack in any run.
 // - No acknowledgement escapes the list: in infra/, only nag.ts and the bootstrap template's generator
 //   acknowledge a Validate finding.
 // Each rule is proved on planted lists first. This file holds the rules every exception is held to, so
@@ -327,7 +328,7 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
 
 // --- IAC-16 ---------------------------------------------------------------------------------------
 
-describe('IAC-16 C11-D70: every exception the landing zone keeps', () => {
+describe('IAC-16 C11-D70: every exception the landing zone and the workload keep', () => {
   it('IAC-16 finds a bad rule, a short reason, a reason citing nothing, an unknown path, a stack, a construct that is no resource, a duplicate and an unused allowance, on planted lists', () => {
     const reason = 'A planted allowance for the test, which cites C11-D70'
     const planted: NagAllowance[] = [

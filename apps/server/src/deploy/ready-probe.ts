@@ -21,8 +21,9 @@
 // It prints one line per target at the end, `<role> <index> <status> <failing>`: the HTTP status or
 // no-answer, and the failing checks' names, each a code identifier or `?`, or `-` for none. It never
 // prints an address, a port, a URL, a body, an error message or a stack, so its log in
-// /hearth/<env>/probe holds nothing a task was given or answered. Exit 0 when every gated target
-// answered 200, 1 when one didn't by the deadline, 2 on bad input, naming PROBE_TARGETS or --gate.
+// /hearth/<env>/probe holds no address, body or error, only each target's role, index, status and
+// check names. Exit 0 when every gated target answered 200, 1 when one didn't by the deadline, 2 on
+// bad input, naming PROBE_TARGETS or --gate.
 import { isIPv4 } from 'node:net'
 import { CHECK_TIMEOUT_MS } from '#src/ready.ts'
 

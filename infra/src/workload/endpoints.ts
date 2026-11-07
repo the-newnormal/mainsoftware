@@ -1,11 +1,12 @@
 // A workload environment's VPC endpoints (C11-D30), the tasks' only way to AWS: the S3 gateway, and
 // the five interface endpoints a Fargate task and the bastion need (ECR's two, Logs, Secrets
-// Manager, and ssmmessages for ECS Exec), with private DNS. Fargate needs no ssm or ecs endpoint;
-// C0.12 adds kms or sts if its code calls them. The interface endpoints sit in the profile's
-// endpointAzs of the isolated subnets (one in non-prod and restore, for cost; two in prod), and the
-// restore stage has them only while restoreActive is set, since between drills they would cost
-// several times prod's budget headroom (C11-D45, C11-Q09). The S3 gateway costs nothing and is
-// always there.
+// Manager, and ssmmessages for ECS Exec), with private DNS. That Fargate needs no ssm or ecs
+// endpoint is proved when non-prod's first task starts, and an endpoint is added by PR otherwise
+// (TECH-SPEC T24 item 13); C0.12 adds kms or sts if its code calls them. The interface endpoints sit
+// in the profile's endpointAzs of the isolated subnets (one in non-prod and restore, for cost; two in
+// prod), and the restore stage has them only while restoreActive is set, since between drills they
+// would cost several times prod's budget headroom (C11-D45, C11-Q09). The S3 gateway costs nothing
+// and is always there.
 //
 // Each policy is Allow-based and names only its own service's actions, as AWS's data-perimeter
 // endpoint templates are, with the organisation's id read from the parameter each workload Baseline

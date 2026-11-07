@@ -30,6 +30,8 @@
 // - IAC-22's workload half: the templates and each Platform's one handler zip, which runs nothing;
 // - no trust a machine outside AWS could use (federated, Roles Anywhere, Systems Manager's hybrid
 //   activations, IoT's credentials provider; T24 item 28);
+// - one cluster per stage, whose ECS Exec logging is NONE, so a break-glass session into the network
+//   leaves nothing behind but CloudTrail's record of it (C11-D40, T24 item 15);
 // - the network's invariants (C11-D29 to C11-D31, C11-D37, C11-D45), which no SCP backs and none can
 //   target the restore stage with: no egress to the internet from any group and EC2's placeholder as
 //   every group's one inline egress, no route but a public table's default to its own internet
@@ -785,8 +787,18 @@ const renderedRole = (role: Resource, template: Template) => renderedIn(role.Pro
 
 // Every Allow in the workload, by template, which may not grant what IAC-10 keeps for break-glass and
 // the pipeline: a database login, a session into a task, a role passed on, an S3 delete, or anything
-// on `*`.
+// on `*`; nor may any Allow be written with NotAction, which grants everything it doesn't name.
 const KEPT_ACTIONS = ['rds-db:connect', 'ecs:executecommand', 'ssm:startsession', 'iam:passrole', 's3:delete*']
+function keptGrants(template: Template): string[] {
+  return policyStatements(template)
+    .filter(s => s.effect === 'Allow')
+    .flatMap(s => [
+      ...s.actions
+        .filter(action => action === '*' || KEPT_ACTIONS.some(kept => globsOverlap(lower(action), kept)))
+        .map(action => `${s.logicalId} ${s.sid}: ${action}`),
+      ...(s.notActions.length > 0 ? [`${s.logicalId} ${s.sid}: NotAction`] : []),
+    ])
+}
 
 describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () => {
   it('IAC-10 C11-D26: every role in every workload template carries hearth-boundary at creation', () => {
@@ -860,18 +872,49 @@ describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () =>
     }
   }, 60_000)
 
+  it('IAC-10 C11-D12 finds an Allow of each kept action, of `*` and with NotAction, and no Deny, planted in a copy of a real workload template', () => {
+    const platform = workloadTemplate(workload, 'nonprod', 'Platform')
+    expect(keptGrants(platform)).toEqual([])
+    const [roleId] = ofType(platform, 'AWS::IAM::Role').find(
+      ([, r]) => r.Properties?.RoleName === 'hearth-nonprod-api-task',
+    ) as [string, Resource]
+    const s3Delete = ['s3', ['Delete', 'Bucket'].join('')].join(':')
+    const planted = plantedIn(platform, resources => {
+      resources.PlantedPolicy = {
+        Type: 'AWS::IAM::Policy',
+        Properties: {
+          PolicyName: 'planted',
+          Roles: [{ Ref: roleId }],
+          PolicyDocument: {
+            Version: '2012-10-17',
+            Statement: [
+              { Sid: 'Login', Effect: 'Allow', Action: 'rds-db:connect', Resource: '*' },
+              { Sid: 'Exec', Effect: 'Allow', Action: 'ecs:ExecuteCommand', Resource: '*' },
+              { Sid: 'Session', Effect: 'Allow', Action: 'ssm:StartSession', Resource: '*' },
+              { Sid: 'Pass', Effect: 'Allow', Action: 'iam:PassRole', Resource: '*' },
+              { Sid: 'Delete', Effect: 'Allow', Action: s3Delete, Resource: '*' },
+              { Sid: 'Everything', Effect: 'Allow', Action: '*', Resource: '*' },
+              { Sid: 'AllBut', Effect: 'Allow', NotAction: 'logs:PutLogEvents', Resource: '*' },
+              { Sid: 'Refused', Effect: 'Deny', Action: ['ecs:ExecuteCommand', '*'], Resource: '*' },
+            ],
+          },
+        },
+      }
+    })
+    expect(unreadablePolicies(planted)).toEqual([])
+    expect(keptGrants(planted)).toEqual([
+      'PlantedPolicy Login: rds-db:connect',
+      'PlantedPolicy Exec: ecs:ExecuteCommand',
+      'PlantedPolicy Session: ssm:StartSession',
+      'PlantedPolicy Pass: iam:PassRole',
+      `PlantedPolicy Delete: ${s3Delete}`,
+      'PlantedPolicy Everything: *',
+      'PlantedPolicy AllBut: NotAction',
+    ])
+  })
+
   it('IAC-10 C11-D12: no Allow in any workload template grants a database login, a session into a task, a role passed on, an S3 delete, or anything on `*`, and none has NotAction', () => {
-    for (const { label, template } of workloadTemplates()) {
-      const found = policyStatements(template)
-        .filter(s => s.effect === 'Allow')
-        .flatMap(s => [
-          ...s.actions
-            .filter(action => action === '*' || KEPT_ACTIONS.some(kept => globsOverlap(lower(action), kept)))
-            .map(action => `${s.logicalId} ${s.sid}: ${action}`),
-          ...(s.notActions.length > 0 ? [`${s.logicalId} ${s.sid}: NotAction`] : []),
-        ])
-      expect(found, label).toEqual([])
-    }
+    for (const { label, template } of workloadTemplates()) expect(keptGrants(template), label).toEqual([])
   })
 
   it('IAC-10 C11-D11: no workload role’s session lasts more than an hour, and every role’s inline policies and trust fit IAM’s limits', () => {
@@ -1283,6 +1326,63 @@ describe('T24 item 28: no workload role trusts a machine outside AWS', () => {
   it('T24 item 28: every workload template’s roles trust ECS’s tasks, VPC Flow Logs or, the handler’s alone, Lambda, and nothing issues credentials outside AWS', () => {
     for (const { label, template } of workloadTemplates()) {
       expect(federatedTrustProblems(template), label).toEqual([])
+    }
+  })
+})
+
+// --- What a break-glass session into the network leaves behind (C11-D40; T24 item 15) -------------
+
+// Each stage's one cluster keeps nothing of an ECS Exec session: its execute-command logging is NONE,
+// with no log configuration or key, since the bastion's one sanctioned use is a port forward whose
+// bytes are TLS to Postgres, and DEFAULT, which ECS also applies when the configuration is left out,
+// would copy any interactive shell's output into the bastion's log group. CloudTrail still records
+// RunTask, ExecuteCommand and StartSession. The owner and the DPO read a change to it (C11-D74).
+const NO_EXEC_LOGGING = { ExecuteCommandConfiguration: { Logging: 'NONE' } }
+function execLoggingProblems(template: Template, platform: boolean): string[] {
+  const clusters = ofType(template, 'AWS::ECS::Cluster')
+  return [
+    ...(clusters.length === (platform ? 1 : 0) ? [] : [`${clusters.length} clusters`]),
+    ...clusters
+      .filter(([, cluster]) => !isDeepStrictEqual(cluster.Properties?.Configuration, NO_EXEC_LOGGING))
+      .map(([id, cluster]) => `${id}: ${JSON.stringify(cluster.Properties?.Configuration ?? null)}`),
+  ]
+}
+
+describe('T24 item 15 C11-D40: ECS Exec keeps nothing of a session', () => {
+  it('T24 item 15 finds logging DEFAULT, a log configuration, the configuration left out and a second cluster, planted in copies of a real Platform template', () => {
+    const platform = workloadTemplate(workload, 'nonprod', 'Platform')
+    expect(execLoggingProblems(platform, true)).toEqual([])
+    const [clusterId, cluster] = ofType(platform, 'AWS::ECS::Cluster')[0] as [string, Resource]
+    const withConfiguration = (configuration: unknown) =>
+      plantedIn(platform, resources => {
+        const properties = resources[clusterId]?.Properties ?? {}
+        if (configuration === undefined) delete properties.Configuration
+        else properties.Configuration = configuration
+      })
+    expect(
+      execLoggingProblems(withConfiguration({ ExecuteCommandConfiguration: { Logging: 'DEFAULT' } }), true),
+    ).toEqual([`${clusterId}: {"ExecuteCommandConfiguration":{"Logging":"DEFAULT"}}`])
+    const logged = {
+      ExecuteCommandConfiguration: {
+        Logging: 'NONE',
+        LogConfiguration: { CloudWatchLogGroupName: 'hearth/nonprod/bastion' },
+      },
+    }
+    expect(execLoggingProblems(withConfiguration(logged), true)).toEqual([`${clusterId}: ${JSON.stringify(logged)}`])
+    expect(execLoggingProblems(withConfiguration(undefined), true)).toEqual([`${clusterId}: null`])
+    const second = plantedIn(platform, resources => {
+      resources.PlantedCluster = structuredClone(cluster)
+    })
+    expect(execLoggingProblems(second, true)).toEqual(['2 clusters'])
+    const tasks = plantedIn(workloadTemplate(workload, 'nonprod', 'Tasks'), resources => {
+      resources.PlantedCluster = structuredClone(cluster)
+    })
+    expect(execLoggingProblems(tasks, false)).toEqual(['1 clusters'])
+  })
+
+  it('T24 item 15: each stage’s Platform holds one cluster, with ECS Exec’s logging NONE, and no other workload template holds one, committed or with restoreActive set', () => {
+    for (const { label, name, template } of workloadTemplates()) {
+      expect(execLoggingProblems(template, name.endsWith('-Platform')), label).toEqual([])
     }
   })
 })

@@ -292,6 +292,12 @@ function rangeOf(text: string): [number, number] {
   const first = match.slice(1, 5).reduce((total, octet) => total * 256 + Number(octet), 0)
   return [first, first + 2 ** (32 - Number(match[5])) - 1]
 }
+// Whether two CIDRs share an address.
+function overlap(a: string, b: string): boolean {
+  const [aFirst, aLast] = rangeOf(a)
+  const [bFirst, bLast] = rangeOf(b)
+  return aFirst <= bLast && bFirst <= aLast
+}
 const vpcCidr = (template: Template) => String(propertiesOf(ofType(template, 'AWS::EC2::VPC')[0]?.[1]).CidrBlock)
 const restoreServices = (synth: WorkloadSynth) => ofType(templateOf(synth, 'restore', 'Services'), 'AWS::ECS::Service')
 // A service role's environment in the restore stage, by name.
@@ -310,21 +316,15 @@ const interfaceEndpoints = (template: Template) =>
 
 describe('IAC-20 C11-D45: the restore stage, exactly', () => {
   it('IAC-20 finds two ranges that overlap, on planted CIDRs', () => {
-    const overlap = (a: string, b: string) => {
-      const [aFirst, aLast] = rangeOf(a)
-      const [bFirst, bLast] = rangeOf(b)
-      return aFirst <= bLast && bFirst <= aLast
-    }
     expect(overlap('10.40.0.0/16', '10.40.128.0/17')).toBe(true)
     expect(overlap('10.40.0.0/16', '10.41.0.0/16')).toBe(false)
     expect(overlap('10.0.0.0/8', '10.40.0.0/16')).toBe(true)
   })
 
   it('IAC-20: the restore stage’s VPC shares no address with non-prod’s or prod’s, and its subnets are exactly 10.40.0.0/20 and 10.40.16.0/20', () => {
-    const [first, last] = rangeOf(vpcCidr(templateOf(committed, 'restore', 'Platform')))
+    const restore = vpcCidr(templateOf(committed, 'restore', 'Platform'))
     for (const env of ['nonprod', 'prod'] as const) {
-      const [otherFirst, otherLast] = rangeOf(vpcCidr(templateOf(committed, env, 'Platform')))
-      expect(first > otherLast || otherFirst > last, env).toBe(true)
+      expect(overlap(restore, vpcCidr(templateOf(committed, env, 'Platform'))), env).toBe(false)
     }
     for (const synth of [committed, active]) {
       const subnets = ofType(templateOf(synth, 'restore', 'Platform'), 'AWS::EC2::Subnet')

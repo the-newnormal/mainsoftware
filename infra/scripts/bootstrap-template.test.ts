@@ -29,6 +29,7 @@ import {
   type ModelCheckAllowance,
   managedPolicyAttachments,
   modelCheck,
+  type PolicyStatementAt,
   policyStatements,
 } from '../src/testing/policies.ts'
 import { synthWorkload } from '../src/testing/workload.ts'
@@ -630,10 +631,27 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(bodyLength(generated), spare(generated)).toBeLessThanOrEqual(ceiling)
   })
 
-  it('(l) the deploy role reads the parameters under /hearth/ in its own account and Region, which CloudFormation resolves the workload stacks’ SSM-typed parameters through as the caller, and no other statement of any role but the stock ReadVersion names an ssm:Get action', () => {
-    const reads = policyStatements(committed).filter(
-      s => s.type === 'AWS::IAM::Role' && s.actions.some(action => globsOverlap(action.toLowerCase(), 'ssm:get*')),
-    )
+  it('(l) the deploy role reads the parameters under /hearth/ in its own account and Region, which CloudFormation resolves the workload stacks’ SSM-typed parameters through as the caller, and no other statement of any role or policy but the stock ReadVersion names an ssm:Get action, proved on a planted template first', () => {
+    // Every statement of a role or a policy, the conditional permissions boundary's ExplicitAllowAll
+    // aside: it allows `*` only as the ceiling a boundary sets, and grants nothing.
+    const boundaryAllowAll = (s: PolicyStatementAt) =>
+      s.type === 'AWS::IAM::ManagedPolicy' && s.sid === 'ExplicitAllowAll' && s.conditional
+    const ssmReads = (template: CfnTemplate) =>
+      policyStatements(template).filter(
+        s => !boundaryAllowAll(s) && s.actions.some(action => globsOverlap(action.toLowerCase(), 'ssm:get*')),
+      )
+    // A read planted on a publishing role's own policy, an AWS::IAM::Policy, is found.
+    const planted = structuredClone(committed)
+    const publishing = propertiesOf(planted, 'FilePublishingRoleDefaultPolicy').PolicyDocument as {
+      Statement: unknown[]
+    }
+    publishing.Statement.push({ Effect: 'Allow', Action: 'ssm:GetParameters', Resource: '*' })
+    expect(ssmReads(planted).map(s => `${s.logicalId} ${s.sid ?? '(no Sid)'}`)).toEqual([
+      'FilePublishingRoleDefaultPolicy (no Sid)',
+      'DeploymentActionRole ReadVersion',
+      'DeploymentActionRole HearthReadParameters',
+    ])
+    const reads = ssmReads(committed)
     expect(reads.map(s => `${s.logicalId} ${s.effect} ${s.sid ?? '(no Sid)'}`)).toEqual([
       'DeploymentActionRole Allow ReadVersion',
       'DeploymentActionRole Allow HearthReadParameters',
@@ -644,9 +662,7 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(read?.conditional).toBe(false)
     expect(read?.condition).toBeUndefined()
     // ReadVersion stays the stock template's: the bootstrap version's own parameter.
-    const stockReads = policyStatements(stock).filter(
-      s => s.type === 'AWS::IAM::Role' && s.actions.some(action => globsOverlap(action.toLowerCase(), 'ssm:get*')),
-    )
+    const stockReads = ssmReads(stock)
     expect(stockReads.map(s => `${s.logicalId} ${s.sid ?? '(no Sid)'}`)).toEqual(['DeploymentActionRole ReadVersion'])
     expect(readVersion?.resources).toEqual(stockReads[0]?.resources)
     // Every workload stack reads its SSM-typed parameters under /hearth/, or the bootstrap version's.

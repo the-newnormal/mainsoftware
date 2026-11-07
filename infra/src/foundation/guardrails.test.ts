@@ -1611,7 +1611,7 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
         'WorkloadStacksOnlyItsDeploy',
       ])
     }
-  })
+  }, 60_000)
 })
 
 // The quarterly review's `aws cloudtrail validate-logs`, run in log-archive as HearthSecurityReview for

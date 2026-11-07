@@ -11,8 +11,8 @@
 //   an SMS provider is refused;
 // - IAC-21: each service role's environment, its references resolved to fictional values, passes the
 //   server's own configuration check, which reads back the role, environment, origin, port and host;
-// - C11-D39: each ECS service, property by property, with the grace period exactly where it has a load
-//   balancer, and no autoscaling anywhere;
+// - C11-D39: each stage's cluster, and each ECS service, property by property, with the grace period
+//   exactly where it has a load balancer, and no autoscaling anywhere;
 // - C11-D52's seams: the Tasks stack's outputs and the Services stack's Release.
 // Expected values are literals, or joined from their parts here (IG-01): a reference to an SSM
 // parameter renders as `{ssm:<name>}`, and the account as a made-up one. This file stays off the
@@ -661,6 +661,26 @@ const COUNTS: Readonly<Record<EnvironmentName, Readonly<Record<(typeof ROLES)[nu
 }
 
 describe('C11-D39: the ECS services', () => {
+  it.each(ENVIRONMENTS)(
+    'C11-D39 T24 item 15 %s: the cluster exactly, in Platform: named hearth-<env>, Container Insights off, and ECS Exec’s logging NONE, committed and with restoreActive set',
+    env => {
+      for (const synth of [committed, active]) {
+        expect(
+          ofType(templateOf(synth, env, 'Platform'), 'AWS::ECS::Cluster').map(([id, r]) => [id, propertiesOf(r)]),
+        ).toEqual([
+          [
+            'Cluster',
+            {
+              ClusterName: `hearth-${env}`,
+              ClusterSettings: [{ Name: 'containerInsights', Value: 'disabled' }],
+              Configuration: { ExecuteCommandConfiguration: { Logging: 'NONE' } },
+            },
+          ],
+        ])
+      }
+    },
+  )
+
   for (const [label, synth, restoreLive] of [
     ['committed', () => committed, false],
     ['restore-active', () => active, true],
