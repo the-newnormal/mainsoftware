@@ -6,7 +6,10 @@
 //   (cdk-nag is a devDependency no entry loads), and expects nothing left once NAG_ALLOWANCES has
 //   removed the findings it keeps, each matched by its rule (the finding's name before any bracket)
 //   and its violating resource's construct path, one resource at a time, since one finding can list
-//   several.
+//   several. cdk-nag reads each resource's properties, not its template, so no build holds an override
+//   that could make the template hold what it doesn't read: only an SCP's Content written as its own
+//   document, an IAM role's permissions boundary (aws-cdk-lib's aspect) and an IAM role's managed
+//   policies taken away (the default group's handler).
 // - IAC-16 holds each allowance, and each CloudFormation Validate acknowledgement acknowledgeValidate()
 //   applies, to the same rules: a rule or id of the right shape; a reason of at least 20 characters
 //   citing the C11 decision that keeps it; a path that is exactly one resource, never a stack or the
@@ -20,15 +23,22 @@
 //   person's run builds one target, and refuses one whose path names neither a landing-zone stack nor
 //   a workload stage's stack in any run.
 // - No acknowledgement escapes the list: in infra/, only nag.ts and the bootstrap template's generator
-//   acknowledge a Validate finding.
+//   acknowledge a Validate finding, only this file names the metadata key acknowledgements are kept
+//   under, and no construct of any build acknowledges an AwsSolutions rule there, which cdk-nag would
+//   leave out (on the resource or any construct above it).
 // Each rule is proved on planted lists first. This file holds the rules every exception is held to, so
 // it is on the owner's-read list (C11-D74).
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
 import * as cdk from 'aws-cdk-lib'
+import * as elasticache from 'aws-cdk-lib/aws-elasticache'
+import * as iam from 'aws-cdk-lib/aws-iam'
+import * as organizations from 'aws-cdk-lib/aws-organizations'
 import { AwsSolutionsChecks } from 'cdk-nag'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { REGION } from '../config/profiles.ts'
 import { addLandingZone } from '../foundation/landing-zone.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
@@ -182,6 +192,70 @@ function acknowledgementProblems(
   })
 }
 
+// What a resource's template holds beyond the properties cdk-nag reads: its overrides, which a
+// CfnResource keeps apart from its properties and merges in only when it writes the template, so an
+// override can hold what no finding sees (TransitEncryptionEnabled false over a property left true).
+// aws-cdk-lib 2.274.0 keeps them in a private field, read here; a resource whose field can't be read
+// counts against its build, so a renamed field fails rather than passes.
+function overridesOf(resource: cdk.CfnResource): Record<string, unknown> | undefined {
+  const raw = (resource as unknown as { rawOverrides?: unknown }).rawOverrides
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined
+}
+
+// Each override in an app that could leave its template holding what cdk-nag doesn't read, as
+// problems. Three kinds pass, each leaving the template holding no more than cdk-nag reads: an SCP's
+// Content, which guardrails.ts writes as the same document as its property, as JSON text; on an IAM
+// role, the permissions boundary aws-cdk-lib's PermissionsBoundary aspect writes (boundary.ts), which
+// no AwsSolutions rule reads; and on an IAM role, its managed policies taken away (network.ts, the
+// default group's handler), so the template holds less than cdk-nag reads. Any other override, of a
+// property or of anything beside the properties, is found.
+function overrideProblems(app: cdk.App): string[] {
+  return app.node
+    .findAll()
+    .filter(cdk.CfnResource.isCfnResource)
+    .flatMap(resource => {
+      const path = resource.node.path
+      const overrides = overridesOf(resource)
+      if (overrides === undefined) return [`${path}: its overrides can't be read`]
+      const { Properties: properties = {}, ...beside } = overrides
+      if (typeof properties !== 'object' || properties === null || Array.isArray(properties)) {
+        return [`${path}: overrides its Properties whole`]
+      }
+      return [
+        ...Object.keys(beside).map(key => `${path}: overrides ${key}`),
+        ...Object.entries(properties).flatMap(([key, value]) => {
+          if (
+            resource instanceof organizations.CfnPolicy &&
+            key === 'Content' &&
+            typeof value === 'string' &&
+            isDeepStrictEqual(JSON.parse(value), resource.stack.resolve(resource.content))
+          ) {
+            return []
+          }
+          const role = resource.cfnResourceType === 'AWS::IAM::Role'
+          if (role && key === 'PermissionsBoundary') return []
+          if (role && key === 'ManagedPolicyArns' && value === undefined) return []
+          return [`${path}: overrides Properties.${key}`]
+        }),
+      ]
+    })
+}
+
+// Every AwsSolutions rule a construct of an app acknowledges under Validations' acknowledged-rules
+// metadata key, which cdk-nag 3.0.2 reads on a resource and on every construct above it, the app
+// included, with or without an `annotation::` prefix, and so leaves the finding out: as `<rule>
+// <path>`. No exception may be kept that way; each is NAG_ALLOWANCES', which the test applies.
+function nagAcknowledgements(app: cdk.App): string[] {
+  return app.node.findAll().flatMap(construct =>
+    construct.node.metadata
+      .filter(entry => entry.type === cdk.Validations.ACKNOWLEDGED_RULES_METADATA_KEY)
+      .flatMap(entry => Object.keys(typeof entry.data === 'object' && entry.data !== null ? entry.data : {}))
+      .map(id => id.replace(/^annotation::/i, ''))
+      .filter(id => /^awssolutions-/i.test(id))
+      .map(id => `${id} ${construct.node.path || '(the app)'}`),
+  )
+}
+
 // --- IAC-15 ---------------------------------------------------------------------------------------
 
 describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone and the workload', () => {
@@ -222,6 +296,72 @@ describe('IAC-15 C11-D70: cdk-nag’s AwsSolutions pack over the landing zone an
       const left = nagFindings(app).filter(finding => !allowed(finding, NAG_ALLOWANCES))
       expect(left.map(finding => `${finding.rule} ${finding.path}`)).toEqual([])
     }
+  })
+
+  it('IAC-15: cdk-nag reads what every template holds: no build holds an override but an SCP’s Content written as its own document, an IAM role’s permissions boundary and an IAM role’s managed policies taken away; each other, planted on fresh apps after cdk-nag is seen to miss it, is found', () => {
+    // A replication group whose properties hold transit encryption on, and a role and an SCP.
+    const planted = (
+      edit: (made: { group: elasticache.CfnReplicationGroup; role: iam.CfnRole; scp: organizations.CfnPolicy }) => void,
+    ) => {
+      const app = testApp()
+      const stack = new cdk.Stack(app, 'Planted', { env: { region: REGION } })
+      const group = new elasticache.CfnReplicationGroup(stack, 'Group', {
+        replicationGroupDescription: 'planted',
+        engine: 'valkey',
+        atRestEncryptionEnabled: true,
+        transitEncryptionEnabled: true,
+      })
+      const role = new iam.CfnRole(stack, 'Role', {
+        assumeRolePolicyDocument: { Version: '2012-10-17', Statement: [] },
+        managedPolicyArns: ['planted'],
+      })
+      const document = { Version: '2012-10-17', Statement: [{ Effect: 'Deny', Action: 'planted:*', Resource: '*' }] }
+      const scp = new organizations.CfnPolicy(stack, 'Scp', {
+        name: 'planted',
+        type: 'SERVICE_CONTROL_POLICY',
+        content: document,
+      })
+      scp.addPropertyOverride('Content', JSON.stringify(document))
+      role.addPropertyOverride('PermissionsBoundary', ['arn', 'aws', 'iam', '', 'aws', 'policy/planted'].join(':'))
+      role.addPropertyDeletionOverride('ManagedPolicyArns')
+      edit({ group, role, scp })
+      return app
+    }
+    expect(overrideProblems(planted(() => {}))).toEqual([])
+    // The finding's own route: transit encryption off in the template alone, which cdk-nag doesn't see.
+    const off = planted(({ group }) => group.addPropertyOverride('TransitEncryptionEnabled', false))
+    expect(nagFindings(off).filter(finding => finding.rule === 'AwsSolutions-AEC3')).toEqual([])
+    expect(synthesise(off).stacks[0]?.template).toMatchObject({
+      Resources: { Group: { Properties: { TransitEncryptionEnabled: false } } },
+    })
+    expect(overrideProblems(off)).toEqual(['Planted/Group: overrides Properties.TransitEncryptionEnabled'])
+    // A property taken away (ElastiCache's default is no encryption), an SCP's Content that isn't its
+    // own document, managed policies set rather than taken away, an override beside the properties,
+    // the properties whole, and a field that can't be read.
+    for (const [edit, problem] of [
+      [
+        ({ group }) => group.addPropertyDeletionOverride('AtRestEncryptionEnabled'),
+        'Planted/Group: overrides Properties.AtRestEncryptionEnabled',
+      ],
+      [
+        ({ scp }) => scp.addPropertyOverride('Content', '{"Version":"2012-10-17","Statement":[]}'),
+        'Planted/Scp: overrides Properties.Content',
+      ],
+      [
+        ({ role }) => role.addPropertyOverride('ManagedPolicyArns', ['planted']),
+        'Planted/Role: overrides Properties.ManagedPolicyArns',
+      ],
+      [({ group }) => group.addOverride('Condition', 'Planted'), 'Planted/Group: overrides Condition'],
+      [
+        ({ group }) => group.addOverride('Properties', { Engine: 'valkey' }),
+        'Planted/Group: overrides Properties.Engine',
+      ],
+      [({ group }) => group.addOverride('Properties', 'planted'), 'Planted/Group: overrides its Properties whole'],
+      [({ group }) => Reflect.deleteProperty(group, 'rawOverrides'), "Planted/Group: its overrides can't be read"],
+    ] as const satisfies ReadonlyArray<readonly [Parameters<typeof planted>[0], string]>) {
+      expect(overrideProblems(planted(edit)), problem).toEqual([problem])
+    }
+    for (const app of apps()) expect(overrideProblems(app)).toEqual([])
   })
 
   it('IAC-15 C11-D27: each stack’s top-level construct ids, which every allowance’s and acknowledgement’s path starts from', () => {
@@ -510,6 +650,10 @@ const INFRA = fileURLToPath(new URL('../..', import.meta.url))
 const ACKNOWLEDGERS = ['src/aspects/nag.ts', 'scripts/bootstrap-template.ts']
 // A Validate acknowledgement, however spelt across a line break.
 const ACKNOWLEDGES = [/\bValidations\s*\.\s*of\s*\(/, /\.\s*acknowledge\s*\(/]
+// The metadata key an acknowledgement is stored under, by its constant's name or its value, which a
+// construct's own metadata could write past acknowledge() (cdk-nag reads it too): only this file names
+// it, to find every such entry in every build (above).
+const NAMES_THE_KEY = [/ACKNOWLEDGED_RULES_METADATA_KEY/, /acknowledged-rules/]
 
 // Every TypeScript file under infra/, as a path relative to it, but its dependencies and assemblies.
 function infraScripts(folder = ''): string[] {
@@ -521,11 +665,45 @@ function infraScripts(folder = ''): string[] {
 }
 
 describe('IAC-16 C11-D70: no acknowledgement escapes the list', () => {
+  it('IAC-16: no construct of any build acknowledges an AwsSolutions rule, which cdk-nag would then leave out; one planted on a fresh app, on the resource with a prefix and on its stack without, is seen to hide its finding and is found', () => {
+    const planted = (acknowledge?: (stack: cdk.Stack, group: elasticache.CfnReplicationGroup) => void) => {
+      const app = testApp()
+      const stack = new cdk.Stack(app, 'Planted', { env: { region: REGION } })
+      const group = new elasticache.CfnReplicationGroup(stack, 'Group', {
+        replicationGroupDescription: 'planted',
+        engine: 'valkey',
+        atRestEncryptionEnabled: false,
+        transitEncryptionEnabled: true,
+      })
+      acknowledge?.(stack, group)
+      return app
+    }
+    const aec3 = (app: cdk.App) => nagFindings(app).filter(finding => finding.rule === 'AwsSolutions-AEC3')
+    const key = cdk.Validations.ACKNOWLEDGED_RULES_METADATA_KEY
+    expect(aec3(planted())).toEqual([{ rule: 'AwsSolutions-AEC3', path: 'Planted/Group' }])
+    expect(nagAcknowledgements(planted())).toEqual([])
+    const onGroup = planted((_, group) => group.node.addMetadata(key, { 'Annotation::AwsSolutions-AEC3': 'planted' }))
+    expect(aec3(onGroup)).toEqual([])
+    expect(nagAcknowledgements(onGroup)).toEqual(['AwsSolutions-AEC3 Planted/Group'])
+    const onStack = planted(stack => stack.node.addMetadata(key, { 'AwsSolutions-AEC3': 'planted' }))
+    expect(aec3(onStack)).toEqual([])
+    expect(nagAcknowledgements(onStack)).toEqual(['AwsSolutions-AEC3 Planted'])
+    for (const app of apps()) expect(nagAcknowledgements(app)).toEqual([])
+  })
+
   it('IAC-16: only nag.ts and the bootstrap template’s generator acknowledge a Validate finding in infra/', () => {
     const acknowledging = infraScripts().filter(path => {
       const text = readFileSync(join(INFRA, path), 'utf8')
       return ACKNOWLEDGES.some(pattern => pattern.test(text))
     })
     expect(acknowledging.sort()).toEqual([...ACKNOWLEDGERS].sort())
+  })
+
+  it('IAC-16: only this file names the acknowledged-rules metadata key in infra/', () => {
+    const naming = infraScripts().filter(path => {
+      const text = readFileSync(join(INFRA, path), 'utf8')
+      return NAMES_THE_KEY.some(pattern => pattern.test(text))
+    })
+    expect(naming).toEqual(['src/aspects/nag.test.ts'])
   })
 })

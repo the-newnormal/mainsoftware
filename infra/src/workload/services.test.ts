@@ -7,10 +7,13 @@
 //   image by the release's digest, the node user, the read-only root but the bastion's, the open-file
 //   limit, the logs, each kind's command and each service role's environment exactly, the AUTH_SECRET
 //   by reference to the api alone, the hearth-role tag on the one-offs, no variable C0.12 or a
-//   person sets, and no value, flattened, that holds a password anywhere in a URL (in its user
-//   information, or a query or fragment key that names one) or a Ref anywhere in a URL but its host,
-//   resolves a secret, or is anything but text or a join of text and Refs; a profile that gates the
-//   probe changes only its command, and one with a database or an SMS provider is refused;
+//   person sets, and no value, flattened, that holds a password in any URL in it (every scheme starts
+//   one; in its user information, or a query or fragment key that names one), a Ref anywhere but a
+//   URL's host (a secret's ValueFrom, an ARN read by reference, aside) or any dynamic reference, or is
+//   anything but text or a join of text and Refs; the services' definitions kept when a release
+//   replaces them, so break-glass can go back to an earlier revision, and the one-offs' not, in every
+//   build, the drill's included; a profile that gates the probe changes only its command, and one with
+//   a database or an SMS provider is refused;
 // - IAC-21: each service role's environment, its references resolved to fictional values, passes the
 //   server's own configuration check, which reads back the role, environment, origin, port and host;
 // - C11-D39: each stage's cluster, and each ECS service, property by property, with the grace period
@@ -461,25 +464,41 @@ function flattened(value: unknown): string | undefined {
   const parts = join[1].map(part => flattened(part))
   return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
 }
-// A URL in a flattened value, from its scheme to the next space or the value's end: its authority
-// (user information, host and port), up to the first `/`, `?` or `#`, then the rest (its path, query
-// and fragment).
-const URL_PARTS = /[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/gi
+// Where each URL in a flattened value starts: at every scheme, so a URL joined to another by a comma
+// or a semicolon, or written as a query value, is read as a URL of its own.
+const SCHEME = /[a-z][a-z0-9+.-]*:\/\//gi
+// A URL from its scheme to the next space or the value's end: its authority (user information, host
+// and port), up to the first `/`, `?` or `#`, then the rest: its path, query and fragment, and all that
+// follows them, so text shaped like a scheme inside its query never cuts a key off it.
+const URL_AT = /^[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/i
+interface UrlParts {
+  userinfo: string
+  // Where its host sits in the value, from its first character to the one after its last.
+  host: readonly [number, number]
+  rest: string
+}
+function urlsIn(text: string): UrlParts[] {
+  return [...text.matchAll(SCHEME)].flatMap(({ index }) => {
+    const match = URL_AT.exec(text.slice(index))
+    if (match === null) return []
+    const [whole, authority = '', rest = ''] = match
+    const at = authority.lastIndexOf('@')
+    const hostStart = index + whole.indexOf('://') + 3 + at + 1
+    const hostLength = /^(?:\[[^\]]*\]|[^:]*)/.exec(authority.slice(at + 1))?.[0].length ?? 0
+    return [{ userinfo: at === -1 ? '' : authority.slice(0, at), host: [hostStart, hostStart + hostLength], rest }]
+  })
+}
 // A query or fragment key that names a credential, read percent-decoded, as the server's clients read
 // it: pg and ioredis both take a password from the query (`password`, in any case, `pass%77ord`
 // included) as readily as from the user information, and `sslpassword`, `pwd`, a token or a key are
 // refused too, as aspects/templates.test.ts's copy of this rule refuses them.
 const CREDENTIAL_KEY = /pass|pwd|secret|token|key/i
-// Whether a value holds a URL with a password anywhere in it, or a Ref that could carry one: a
-// password in its user information, a query or fragment key that names a credential, or a Ref
-// anywhere but its host (its user information, port, path, query or fragment). A query that names no
-// credential (`sslmode=verify-full`) is not refused.
+// Whether a value holds a URL with a password: in the user information of any URL in it, or as a
+// query or fragment key that names a credential. A query that names no credential
+// (`sslmode=verify-full`) is not refused.
 function holdsUrlPassword(text: string): boolean {
-  return [...text.matchAll(URL_PARTS)].some(([, authority = '', rest = '']) => {
-    const at = authority.lastIndexOf('@')
-    const userinfo = at === -1 ? '' : authority.slice(0, at)
-    const port = authority.slice(at + 1).replace(/^(?:\[[^\]]*\]|[^:]*)/, '')
-    if (userinfo.includes(':') || [userinfo, port, rest].some(part => part.includes(REF))) return true
+  return urlsIn(text).some(({ userinfo, rest }) => {
+    if (userinfo.includes(':')) return true
     const hash = rest.indexOf('#')
     const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
     const question = beforeHash.indexOf('?')
@@ -488,8 +507,19 @@ function holdsUrlPassword(text: string): boolean {
     return [query, fragment].some(part => [...new URLSearchParams(part).keys()].some(key => CREDENTIAL_KEY.test(key)))
   })
 }
-// A dynamic reference that resolves a secret into the template, and so into the plain environment.
-const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
+// Whether a value holds a Ref anywhere but a URL's host: in a URL's user information, port, path,
+// query or fragment, in its scheme, or outside any URL (a value that is an SSM parameter's whole
+// value), where the template can't see whether it carries a password.
+function holdsRefOutsideHost(text: string): boolean {
+  let outside = text
+  for (const { host } of urlsIn(text)) {
+    outside = `${outside.slice(0, host[0])}${' '.repeat(host[1] - host[0])}${outside.slice(host[1])}`
+  }
+  return outside.includes(REF)
+}
+// A dynamic reference of any kind, which CloudFormation resolves into the template, and so into the
+// plain environment, at deploy: a secret's, or a plain SSM parameter's.
+const DYNAMIC_REFERENCE = /\{\{resolve:/
 
 describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
   it('IAC-09: each stage holds six definitions, the three services’ in Services and the three one-offs’ in Tasks, and no other', () => {
@@ -518,6 +548,28 @@ describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
       },
     )
   }
+
+  it('IAC-09 C11-D12 C11-D58: the services’ definitions are kept when a release replaces them, so a service can go back to an earlier revision, and the one-offs’ take the default removal, in every build the pipeline deploys', () => {
+    const drill = synthWorkload({ run: { drill: true } })
+    for (const [label, synth, environments] of [
+      ['committed', committed, ENVIRONMENTS],
+      ['restore-active', active, ENVIRONMENTS],
+      ['drill', drill, ['nonprod']],
+    ] as const) {
+      const policies = Object.values(synth.templates)
+        .flatMap(template => ofType(template, 'AWS::ECS::TaskDefinition'))
+        .map(([, r]) => `${String(propertiesOf(r).Family)} ${r.DeletionPolicy ?? '-'} ${r.UpdateReplacePolicy ?? '-'}`)
+        .sort()
+      expect(policies, label).toEqual(
+        environments
+          .flatMap(env => [
+            ...ROLES.map(role => `hearth-${env}-${role} RetainExceptOnCreate Retain`),
+            ...ONE_OFFS.map(kind => `hearth-${env}-${kind} - -`),
+          ])
+          .sort(),
+      )
+    }
+  }, 60_000)
 
   it('IAC-09 C11-D53: the probe’s command is exactly its script with --gate=none, and it carries no environment', () => {
     for (const env of ENVIRONMENTS) {
@@ -550,82 +602,136 @@ describe('IAC-09 C11-D36 to C11-D40: the task definitions', () => {
     }
   })
 
-  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a password anywhere in a URL or a Ref anywhere in one but its host, resolves a secret or is anything but text or a join of text and Refs', () => {
+  it('IAC-09: no container carries SMS_PROVIDER, a TWILIO_, TRUST_PROXY, OWNER_BOOTSTRAP_ or MIGRATION_ variable or the local store’s, and no value holds a password in any URL in it, a Ref anywhere but a URL’s host or any dynamic reference, or is anything but text or a join of text and Refs', () => {
+    type Variable = { Name: string; Value: unknown }
     const planted = (Name: string, Value: unknown) => [{ Name, Value }]
-    const problems = (environment: Array<{ Name: string; Value: unknown }>) => [
-      ...environment.filter(e => FORBIDDEN_NAMES.some(name => name.test(e.Name))).map(e => e.Name),
-      ...environment.flatMap(e => {
-        const text = flattened(e.Value)
-        if (text === undefined) return [`${e.Name} is not text or a join of text and Refs`]
-        if (SECRET_REFERENCE.test(text)) return [`${e.Name} resolves a secret`]
-        return holdsUrlPassword(text) ? [`${e.Name} holds a URL with a password`] : []
-      }),
+    // The first rule a value breaks: its shape, a dynamic reference, a URL's password, and, for a plain
+    // environment value but not a secret's ValueFrom (an ARN read by reference), a Ref outside a host.
+    const valueProblems = ({ Name, Value }: Variable, plain: boolean): string[] => {
+      const text = flattened(Value)
+      if (text === undefined) return [`${Name} is not text or a join of text and Refs`]
+      if (DYNAMIC_REFERENCE.test(text)) return [`${Name} resolves a dynamic reference`]
+      if (holdsUrlPassword(text)) return [`${Name} holds a URL with a password`]
+      return plain && holdsRefOutsideHost(text) ? [`${Name} holds a Ref outside a URL’s host`] : []
+    }
+    const problems = (environment: Variable[], secrets: Variable[] = []) => [
+      ...[...environment, ...secrets].filter(e => FORBIDDEN_NAMES.some(name => name.test(e.Name))).map(e => e.Name),
+      ...environment.flatMap(e => valueProblems(e, true)),
+      ...secrets.flatMap(e => valueProblems(e, false)),
     ]
+    const password = (Name: string) => [`${Name} holds a URL with a password`]
+    const outsideHost = (Name: string) => [`${Name} holds a Ref outside a URL’s host`]
     expect(problems(planted('TWILIO_API_KEY_SID', 'x'))).toEqual(['TWILIO_API_KEY_SID'])
     expect(problems(planted('SMS_PROVIDER', 'twilio'))).toEqual(['SMS_PROVIDER'])
-    expect(problems(planted('DATABASE_URL', ['postgres://hearth_app:', 'x', '@h:5432/hearth'].join('')))).toEqual([
-      'DATABASE_URL holds a URL with a password',
-    ])
+    expect(problems(planted('DATABASE_URL', ['postgres://hearth_app:', 'x', '@h:5432/hearth'].join('')))).toEqual(
+      password('DATABASE_URL'),
+    )
     // VALKEY_URL is always a Fn::Join over the endpoint's SSM parameter, so the plants are built from
-    // the api's own: the password beside a user, or a Ref, in the user information is refused, and a
-    // user alone, or the host the template writes, is not.
+    // the api's own: the password beside a user in the user information is refused, and so is a Ref
+    // there, and a user alone, or the host the template writes, is not.
     const [api] = containersOf(definitionsOf(committed).get('hearth-nonprod-api') as Definition)
     const valkey = api?.Environment?.find(e => e.Name === 'VALKEY_URL')?.Value as { 'Fn::Join': [string, unknown[]] }
     const host = valkey['Fn::Join'][1].find(part => refOf(part) !== undefined)
     expect(host).toBeDefined()
     expect(flattened(valkey)).toBe(`rediss://${REF}:6379`)
     const joined = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', ...parts, '@', host, ':6379']] })
-    expect(problems(planted('VALKEY_URL', joined('hearth_api:', host)))).toEqual([
-      'VALKEY_URL holds a URL with a password',
-    ])
-    expect(problems(planted('VALKEY_URL', joined(host)))).toEqual(['VALKEY_URL holds a URL with a password'])
+    expect(problems(planted('VALKEY_URL', joined('hearth_api:', host)))).toEqual(password('VALKEY_URL'))
+    expect(problems(planted('VALKEY_URL', joined(host)))).toEqual(outsideHost('VALKEY_URL'))
     expect(problems(planted('VALKEY_URL', joined('hearth_api')))).toEqual([])
     expect(problems(planted('VALKEY_URL', valkey))).toEqual([])
+    // Every URL in a value, not the first alone: a second joined by a comma (after a URL with no path,
+    // or with one) or a semicolon, one written as a query value, a writer and a reader, and a key naming
+    // a credential after text shaped like a scheme inside a query, which never cuts the first URL's
+    // query short. Two URLs with no password pass, each host fixed or not.
+    const pair = ['hearth_api', 'planted'].join(':')
+    for (const value of [
+      `rediss://valkey-a:6379,rediss://${pair}@valkey-b:6379`,
+      `https://a.example/x,postgres://${pair}@db:5432/hearth`,
+      `https://otel.example:4318;postgres://${pair}@db/hearth`,
+      `https://a.example/cb?next=postgres://${pair}@db:5432/hearth`,
+      { 'Fn::Join': [',', ['postgres://hearth_app@writer/hearth', `postgres://${pair}@reader/hearth`]] },
+      'postgres://hearth_app@db/hearth?x=y://&password=x',
+    ]) {
+      expect(problems(planted('DATABASE_URL', value)), JSON.stringify(value)).toEqual(password('DATABASE_URL'))
+    }
+    expect(problems(planted('VALKEY_URL', 'rediss://valkey-a:6379,rediss://valkey-b:6379'))).toEqual([])
+    expect(problems(planted('VALKEY_URL', { 'Fn::Join': [',', [valkey, valkey]] }))).toEqual([])
+    // A Ref outside a URL's host, where it could carry a password the template doesn't show: a value
+    // that is an SSM parameter's whole value, a scheme read from one before a literal password, part
+    // of a scheme, and user information.
+    expect(problems(planted('DATABASE_URL', host))).toEqual(outsideHost('DATABASE_URL'))
+    for (const parts of [
+      [host, `://${pair}@db.internal:5432/hearth`],
+      ['postgres', host, ['://hearth_app', 'db.internal:5432/hearth'].join('@')],
+      ['postgres://', host, '@db.internal:5432/hearth'],
+    ]) {
+      expect(problems(planted('DATABASE_URL', { 'Fn::Join': ['', parts] })), JSON.stringify(parts)).toEqual(
+        outsideHost('DATABASE_URL'),
+      )
+    }
     // pg and ioredis read a password from the query as readily as from the user information, so a key
     // that names a credential is refused there too, in any case and percent-encoded, with a user or
-    // without, and so is a Ref anywhere in a URL but its host (its port, path, query or fragment),
-    // where the template can't see what it holds; a query that names no credential is not.
+    // without, and a Ref anywhere in a URL but its host (its port, path, query or fragment) is refused
+    // whatever key it follows; a query that names no credential is not.
     const database = (query: string) => planted('DATABASE_URL', `${pendingUrl('hearth_app')}?${query}`)
     for (const query of ['password=x', 'PASSWORD=x', 'pass%77ord=x', 'sslpassword=x', 'access_token=x']) {
-      expect(problems(database(query)), query).toEqual(['DATABASE_URL holds a URL with a password'])
+      expect(problems(database(query)), query).toEqual(password('DATABASE_URL'))
     }
     expect(
       problems(planted('DATABASE_URL', 'postgres://database.pending.invalid:5432/hearth?user=hearth_app&password=x')),
-    ).toEqual(['DATABASE_URL holds a URL with a password'])
+    ).toEqual(password('DATABASE_URL'))
     expect(problems(database('sslmode=verify-full'))).toEqual([])
     const queried = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', host, ':6379', ...parts]] })
     for (const parts of [
       ['?username=hearth_api&password=', host],
       ['?password=', host],
       ['?password=x'],
-      ['?x=', host],
       ['#password=x'],
+    ]) {
+      expect(problems(planted('VALKEY_URL', queried(...parts))), JSON.stringify(parts)).toEqual(password('VALKEY_URL'))
+    }
+    for (const parts of [
+      ['?x=', host],
       ['/', host],
     ]) {
-      expect(problems(planted('VALKEY_URL', queried(...parts))), JSON.stringify(parts)).toEqual([
-        'VALKEY_URL holds a URL with a password',
+      expect(problems(planted('VALKEY_URL', queried(...parts))), JSON.stringify(parts)).toEqual(
+        outsideHost('VALKEY_URL'),
+      )
+    }
+    expect(problems(planted('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] }))).toEqual(
+      outsideHost('VALKEY_URL'),
+    )
+    // A dynamic reference of any kind, a secret's or a plain SSM parameter's, whole or as a later URL's
+    // password.
+    for (const value of [
+      { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:x}}', '@h']] },
+      ['{{resolve:ssm-secure:', 'x}}'].join(''),
+      `{{resolve:ssm:${['', 'hearth', 'nonprod', 'database', 'url'].join('/')}}}`,
+      `${pendingUrl('hearth_app')},postgres://hearth_ro:{{resolve:ssm:${['', 'hearth', 'nonprod', 'x'].join('/')}}}@reader/hearth`,
+    ]) {
+      expect(problems(planted('DATABASE_URL', value)), JSON.stringify(value)).toEqual([
+        'DATABASE_URL resolves a dynamic reference',
       ])
     }
-    expect(problems(planted('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] }))).toEqual([
-      'VALKEY_URL holds a URL with a password',
-    ])
-    expect(
-      problems(
-        planted('DATABASE_URL', { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:x}}', '@h']] }),
-      ),
-    ).toEqual(['DATABASE_URL resolves a secret'])
-    expect(problems(planted('VALKEY_URL', ['{{resolve:ssm-secure:', 'x}}'].join('')))).toEqual([
-      'VALKEY_URL resolves a secret',
-    ])
     expect(problems(planted('VALKEY_URL', { 'Fn::If': ['Planted', valkey, 'rediss://h:6379'] }))).toEqual([
       'VALKEY_URL is not text or a join of text and Refs',
+    ])
+    // A secret's ValueFrom is an ARN read by reference, so a Ref passes there, and a forbidden name or a
+    // dynamic reference doesn't.
+    expect(problems([], planted('AUTH_SECRET', host))).toEqual([])
+    expect(problems([], planted('TWILIO_AUTH_TOKEN', host))).toEqual(['TWILIO_AUTH_TOKEN'])
+    expect(problems([], planted('AUTH_SECRET', '{{resolve:secretsmanager:x}}'))).toEqual([
+      'AUTH_SECRET resolves a dynamic reference',
     ])
     for (const synth of [committed, active]) {
       for (const definition of definitionsOf(synth).values()) {
         for (const container of containersOf(definition)) {
           const secrets = (container.Secrets ?? []) as Array<{ Name: string; ValueFrom: unknown }>
           expect(
-            problems([...(container.Environment ?? []), ...secrets.map(s => ({ Name: s.Name, Value: s.ValueFrom }))]),
+            problems(
+              container.Environment ?? [],
+              secrets.map(s => ({ Name: s.Name, Value: s.ValueFrom })),
+            ),
             String(definition.properties.Family),
           ).toEqual([])
         }

@@ -9,6 +9,14 @@
 // container alone gets the AUTH_SECRET, by reference to the secret's full ARN, which the Data stack
 // writes to SSM (C11-D35).
 //
+// Each definition is kept when a release replaces it (C11-D12, C11-D58). A definition can't change in
+// place, so every release replaces all three, and CloudFormation's default would deregister the ones
+// it replaced; ECS refuses to point a service at a deregistered (INACTIVE) revision, so break-glass's
+// incident rollback to an earlier revision while GitHub is down, which can neither register a
+// revision nor pass these roles, would have nothing to go back to. A revision costs nothing, and a
+// first create that rolls back still removes its own (RetainExceptOnCreate). Such a rollback skips the
+// pipeline's floors check (C11-D58), and the next pipeline deploy reconciles it.
+//
 // The services are L1s, so the template holds exactly what is written here: Fargate on the latest
 // platform, in the cluster by name, in the isolated subnets with the role's own security group and no
 // public address; rolling deploys at 100 % minimum and 200 % maximum with the circuit breaker rolling a
@@ -76,6 +84,8 @@ export class ServicesStack extends cdk.Stack {
           mutable: false,
         }),
       })
+      // Kept when replaced or removed, so an earlier release's revision stays ACTIVE (the header).
+      definition.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN_ON_UPDATE_OR_DELETE)
       serverContainer(definition, {
         env: environment,
         kind: role,

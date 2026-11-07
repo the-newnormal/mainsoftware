@@ -2,12 +2,18 @@
 // and the security groups with every rule between them. The Platform stack makes it as `Network`.
 //
 // Subnets (C11-D29): two AZs by Fn::GetAZs (no lookup, C11-D24), no NAT. `public` (/24 an AZ) holds
-// the load balancer alone, and no address is given on launch, so a task put there by mistake gets
-// none; `isolated` (/20 an AZ) holds the tasks, the endpoints and Valkey, with no route but the VPC's
-// own and the S3 gateway endpoint. The restore stage has no public group, so no internet gateway or
-// public route can exist there (C11-D45). CDK allocates each group's CIDRs in the order the groups
-// are listed, so C0.12 appends its `egress` group last, never before an existing one, or every
-// subnet after it would move and be replaced.
+// the load balancer alone. Its subnets give an instance no public address on launch, a setting that
+// doesn't cover a Fargate task: a task gets one only if its own assignPublicIp asks for one. The
+// services set DISABLED (aspects/templates.test.ts holds it). A one-off task takes its subnets and
+// assignPublicIp from its run-task call alone, and RunTask has no IAM condition key for either, so
+// break-glass.md's bastion run passes DISABLED and the isolated subnets, as the pipeline's migrate
+// and probe runs must (C0.11 PR 4): a run that asked for an address in a public subnet would get one
+// (VPC Block Public Access waits for C0.19). `isolated` (/20 an AZ) holds the tasks, the endpoints
+// and Valkey, with no route but the VPC's own and the S3 gateway endpoint, which only the isolated
+// route tables carry. The restore stage has no public group, so no internet gateway or public route
+// can exist there (C11-D45). CDK allocates each group's CIDRs in the order the groups are listed, so
+// C0.12 appends its `egress` group last, never before an existing one, or every subnet after it
+// would move and be replaced.
 //
 // The flow log (C11-D32) sends all of the VPC's traffic to /hearth/<env>/vpc-flow, kept for the
 // network_logs class's days, through an unnamed role only VPC Flow Logs may assume, for this

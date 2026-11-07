@@ -14,14 +14,19 @@
 //   any task included, so PR 4's DPW case pins the override to PROBE_TARGETS alone, from the new
 //   deployment's tasks (TECH-SPEC T24 items 5 and 15).
 // - hearth-<env>-bastion: the server image running a timer that exits after an hour, so it runs no
-//   server code; no environment, no secret, no port. Only hearth-break-glass may run it (C11-D11), with
-//   ECS Exec for its one sanctioned use, a port forward. ECS Exec needs to write, so its root is
+//   server code; no environment, no secret, no port. Only hearth-break-glass may run it (C11-D11), and
+//   the bastion's one ECS Exec use is a port forward. ECS Exec needs to write, so its root is
 //   writable, and its init process is on, as AWS recommends for ECS Exec; whether the forward works
 //   with the node user, and with a read-only root and writable volumes instead, is tried on non-prod
 //   before either is relied on (TECH-SPEC T24 item 15).
 // Each definition is tagged hearth-role with its kind (TECH-SPEC T24 item 11), which hearth-gh-deploy's
 // StopOneOffs and break-glass's exec statement match once RunTask propagates it to the task. The roles
-// are Platform's, by name and immutable, so ECS adds no grant (C11-D38).
+// are Platform's, by name and immutable, so ECS adds no grant (C11-D38). Unlike the services'
+// definitions, which are kept for break-glass's rollback (services.ts), the one-offs take
+// CloudFormation's default removal, so a release deregisters the revisions it replaces: nothing runs
+// an earlier one (the pipeline runs the ARNs these outputs name, and its rollback registers the old
+// release's afresh), and keeping them would leave older images runnable under the families' `:*`
+// grants.
 //
 // The outputs carry no export (C11-D24), and are what hearth-gh-deploy's DescribeStacks on
 // Hearth-<env>-* reads: the cluster, the isolated subnets (comma-joined), the migrate and probe security

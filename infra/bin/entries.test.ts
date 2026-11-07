@@ -1,8 +1,12 @@
 // Both entries load and run under plain Node 24, as cdk.json and a person run them, by type stripping
 // (C11-D23): Vitest compiles TypeScript itself, so only a real `node` proves Node can strip every
 // file they load and resolve aws-cdk-lib's CommonJS. Each run gets cdk.json's context, read here
-// rather than through a test helper, as the CLI passes it (CDK_CONTEXT_JSON), so it builds what the
-// CLI builds, CloudFormation Validate included, and writes its assembly to a temporary folder.
+// rather than through a test helper, as the CLI passes it (CDK_CONTEXT_JSON), so it builds the CLI's
+// stacks and templates, CloudFormation Validate included, and writes its assembly to a temporary
+// folder. The CLI adds settings of its own to that context, and of those only its path and asset
+// metadata change what it writes: aws:cdk:path in each resource's Metadata, and aws:asset:path and
+// aws:asset:property in the VPC handler's, which deploy nothing and which no assertion reads, and so
+// each template's hash where the manifests name it.
 // - The workload entry builds its twelve stacks from CI's fake release (HEARTH_FAKE_RELEASE=1, as
 //   synth:ci runs it; C11-D62) and prints nothing; its assembly, nested stages included, publishes
 //   templates and the VPC's one handler zip alone (IAC-22) and holds no run of 12 digits outside a
@@ -14,30 +18,44 @@
 //   and the two run variants they read, restoreActive and the drill. That is every template, every
 //   stack's artifact facts in the manifest (its place in the assembly, account, Region, termination
 //   protection, deploy role and bootstrap version and parameter: termination protection is in no
-//   template), and every asset manifest. So neither that helper nor src/testing/synth.ts, which are
-//   off the owner's-read list, can hand those assertions a profile, a run, a context or a stack's
-//   facts the entry doesn't build without failing this owner's-read file. A profile variant a test
-//   asks for by name is the test's own, in its own file.
+//   template), every asset manifest, and every other file of the assembly, its validation report and
+//   construct tree (tree.json) included, both as the helper wrote them and as the app it hands back
+//   writes them when synthesised again here. The construct tree records every construct's path and
+//   type and each resource's own properties before any override, which is what cdk-nag reads
+//   (IAC-15), so an app the helper changed after synthesis, or one it didn't synthesise, fails here
+//   (an override written in the source the entry builds is the entry's own, outside this binding);
+//   and the stages it hands beside that app must be the app's own. Only the stack traces CDK records,
+//   which name the code that made a construct or an acknowledgement (the entry or the helper), are
+//   left out. So neither that helper nor src/testing/synth.ts, which are off the owner's-read list,
+//   can hand those assertions a profile, a run, a context, a construct tree or a stack's facts the
+//   entry doesn't build without failing this owner's-read file. A profile variant a test asks for by
+//   name is the test's own, in its own file.
 // - The landing-zone entry builds its four over the fixture, which is also what CI's synth:lz
-//   builds, and its templates, stack facts and asset manifests equal the committed build the
-//   landing-zone assertions read (synthLandingZone() with no options), for the same reason. A
-//   person's run builds one target (checkRun), and the entry refuses every real one while the
-//   committed domains are placeholders (C11-Q08), so each target is also built alone in-process, from
-//   the fixture's values read as a person's configuration, and must synthesise, CloudFormation
-//   Validate included, what the four-target build holds.
+//   builds, and its assembly equals the committed build the landing-zone assertions read
+//   (synthLandingZone() with no options) in the same ways, the templates it hands them by stack and
+//   the app and stacks cdk-nag reads included, for the same reason. A person's run builds one target
+//   (checkRun), and the entry refuses every real one while the committed domains are placeholders
+//   (C11-Q08), so each target is also built alone in-process, from the fixture's values read as a
+//   person's configuration, and must synthesise, CloudFormation Validate included, what the
+//   four-target build holds.
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
+import * as cdk from 'aws-cdk-lib'
+import * as sns from 'aws-cdk-lib/aws-sns'
+import { ConstructOrder } from 'constructs'
 import { describe, expect, it } from 'vitest'
 import { checkRun, LANDING_ZONE_TARGETS, type LandingZoneTarget, parseLandingZoneEnv } from '../src/config/env.ts'
-import { addLandingZone } from '../src/foundation/landing-zone.ts'
+import { REGION } from '../src/config/profiles.ts'
+import { addLandingZone, type LandingZoneStacks } from '../src/foundation/landing-zone.ts'
 import { configEnvironment, fixtureConfig } from '../src/testing/fixture.ts'
-import { synthLandingZone } from '../src/testing/landing-zone.ts'
+import { type LandingZoneSynth, synthLandingZone } from '../src/testing/landing-zone.ts'
 import { type Synthesised, synthesise, templateOf, testApp } from '../src/testing/synth.ts'
 import { synthWorkload, type WorkloadSynthOptions } from '../src/testing/workload.ts'
+import type { WorkloadStage } from '../src/workload/stage.ts'
 
 const INFRA = fileURLToPath(new URL('..', import.meta.url))
 
@@ -228,6 +246,126 @@ function filesIn(root: string, folder = ''): string[] {
     const path = folder === '' ? entry.name : `${folder}/${entry.name}`
     return entry.isDirectory() ? filesIn(root, path) : [path]
   })
+}
+
+// The keys whose values are stack traces, which name the code that made a construct, a metadata entry
+// or an acknowledgement (the entry, or the helper that called the same code), so they differ between
+// the two by design: a metadata entry's `trace`, and the validation report's `stackTraces` and
+// `acknowledgedStackTrace`.
+const STACK_TRACE_KEYS = new Set(['trace', 'stackTraces', 'acknowledgedStackTrace'])
+
+// A JSON value with every stack trace left out, at any depth.
+function withoutStackTraces(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutStackTraces)
+  if (typeof value !== 'object' || value === null) return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !STACK_TRACE_KEYS.has(key))
+      .map(([key, inner]) => [key, withoutStackTraces(inner)]),
+  )
+}
+
+// One file of an assembly as this file compares it: a JSON file parsed, any other as its bytes. A
+// stack's metadata file (`*.metadata.json`, each construct's entries) without its stack traces, its
+// `aws:cdk:creationStack` entries included, and each distinct entry once, since synthesising again
+// adds a stack's `aws:cdk:templateFile` entry again; the validation report without its stack traces.
+function comparableFile(path: string, bytes: Buffer): unknown {
+  if (!path.endsWith('.json')) return bytes.toString('base64')
+  const json = JSON.parse(bytes.toString('utf8')) as unknown
+  if (path.endsWith('.metadata.json')) {
+    return Object.fromEntries(
+      Object.entries(json as Record<string, unknown[]>).map(([construct, entries]) => {
+        const kept = entries
+          .filter(entry => (entry as { type?: unknown }).type !== 'aws:cdk:creationStack')
+          .map(withoutStackTraces)
+        return [
+          construct,
+          kept.filter((entry, index) => kept.findIndex(other => isDeepStrictEqual(entry, other)) === index),
+        ]
+      }),
+    )
+  }
+  return path.endsWith('validation-report.json') ? withoutStackTraces(json) : json
+}
+
+// Every file of an assembly, nested stages' included, by its path relative to it, as compared.
+function assemblyIn(outdir: string): Map<string, unknown> {
+  return new Map(
+    filesIn(outdir)
+      .sort()
+      .map(path => [path, comparableFile(path, readFileSync(join(outdir, path)))]),
+  )
+}
+
+// Where two assemblies differ, file by file: each path whose content isn't the same, or `missing` for
+// one only one side holds, and nothing when they agree.
+function fileDifferences(read: ReadonlyMap<string, unknown>, other: ReadonlyMap<string, unknown>): string[] {
+  return [...new Set([...read.keys(), ...other.keys()])].sort().flatMap(path => {
+    if (!read.has(path) || !other.has(path)) return [`${path}: missing`]
+    return isDeepStrictEqual(read.get(path), other.get(path)) ? [] : [`${path}: differs`]
+  })
+}
+
+// Synthesises an app again as it stands now, into the folder it synthesised to before, and returns that
+// folder: every nested stage first, innermost first and forced, since an app's synthesis reuses a
+// stage's earlier assembly, then the app itself, whose tree.json records every construct, each
+// resource's own properties included.
+function synthesisedAgain(app: cdk.App): string {
+  for (const construct of app.node.findAll(ConstructOrder.POSTORDER)) {
+    if (construct !== app && cdk.Stage.isStage(construct)) construct.synth({ force: true })
+  }
+  return app.synth({ force: true }).directory
+}
+
+// The environments whose stages a run builds, from its stacks' names (Hearth-<env>-<Part>).
+const environmentsOf = (stackNames: readonly string[]) => [...new Set(stackNames.map(name => name.split('-')[1]))]
+
+// Where the stages a workload helper hands beside its app aren't that app's own: a set of environments
+// other than the run's, a stage the app doesn't hold under its environment's name, or one of a stage's
+// four stacks the stage doesn't hold under its id.
+function stageProblems(
+  app: cdk.App,
+  stages: Readonly<Partial<Record<string, WorkloadStage>>>,
+  environments: readonly (string | undefined)[],
+): string[] {
+  const found: string[] = []
+  const handed = Object.keys(stages).sort()
+  if (!isDeepStrictEqual(handed, [...environments].sort())) found.push(`stages: ${handed.join(', ')}`)
+  for (const [environment, stage] of Object.entries(stages)) {
+    if (stage === undefined || app.node.tryFindChild(environment) !== stage) {
+      found.push(`${environment}: not the app's`)
+      continue
+    }
+    const stacks = { Platform: stage.platform, Data: stage.data, Tasks: stage.tasks, Services: stage.services }
+    for (const [id, stack] of Object.entries(stacks)) {
+      if (stage.node.tryFindChild(id) !== stack) found.push(`${environment}/${id}: not the stage's`)
+    }
+  }
+  return found
+}
+
+// The landing-zone helper's names for its four stacks, in its templates and its stacks, and each
+// one's CloudFormation name.
+const LANDING_ZONE_STACK_NAMES: Record<keyof LandingZoneSynth['templates'] & keyof LandingZoneStacks, string> = {
+  foundation: 'Hearth-Foundation',
+  logArchive: 'Hearth-LogArchive',
+  nonprodBaseline: 'Hearth-nonprod-Baseline',
+  prodBaseline: 'Hearth-prod-Baseline',
+}
+
+// Where the stacks the landing-zone helper hands beside its app aren't that app's own: a set of names
+// other than the four, or a stack that isn't the app's child of that CloudFormation name.
+function landingZoneStackProblems(app: cdk.App, stacks: LandingZoneStacks): string[] {
+  const found: string[] = []
+  const handed = Object.keys(stacks).sort()
+  if (!isDeepStrictEqual(handed, Object.keys(LANDING_ZONE_STACK_NAMES).sort()))
+    found.push(`stacks: ${handed.join(', ')}`)
+  for (const [key, name] of Object.entries(LANDING_ZONE_STACK_NAMES)) {
+    const stack = stacks[key as keyof LandingZoneStacks]
+    if (stack === undefined || stack.node.scope !== app || stack.stackName !== name)
+      found.push(`${key}: not the app's ${name}`)
+  }
+  return found
 }
 
 // The one packaged asset the workload may publish (TECH-SPEC T24 item 28): the VPC's
@@ -507,8 +645,64 @@ describe('C11-D23: the entries run under plain Node', () => {
     ).toEqual(['a.assets.json: files', 'b.assets.json: missing'])
   })
 
+  it('the binding finds an app changed after synthesis, in a nested stage or at its top, by a template, the construct tree or a stack’s metadata, a property set back under an override that keeps the template included, and leaves out only the stack traces and the repeated template-file entry of synthesising again, on planted apps (C11-D70, C11-D74)', () => {
+    // A fresh app each time, synthesised once, with a topic in a stage's stack and one in a stack of its
+    // own, and the differences once a change is made and the app is synthesised again (a nested stack's
+    // file named without the hash CDK adds to it). Synthesising again keeps a template's earlier
+    // asset entry beside the new one, so each change is made to an app of its own.
+    const plantedChange = (change: (topics: { nested: sns.CfnTopic; top: sns.CfnTopic }) => void): string[] => {
+      const app = testApp()
+      const topic = (stack: cdk.Stack, name: string) => new sns.CfnTopic(stack, 'Topic', { topicName: name })
+      const stage = new cdk.Stage(app, 'x', { env: { region: REGION } })
+      const nested = topic(new cdk.Stack(stage, 'Part', { stackName: 'Hearth-x-Part', env: { region: REGION } }), 'a')
+      const top = topic(new cdk.Stack(app, 'Top', { stackName: 'Hearth-Top', env: { region: REGION } }), 'b')
+      app.synth()
+      const written = assemblyIn(app.outdir)
+      change({ nested, top })
+      return fileDifferences(written, assemblyIn(synthesisedAgain(app))).map(found =>
+        found.replace(/[0-9A-F]{8}\./, '.'),
+      )
+    }
+    expect(plantedChange(() => {})).toEqual([])
+    // A property in a stage's stack: its template, and the template's hash in the stage's manifest and
+    // asset manifest, and the construct tree.
+    expect(
+      plantedChange(({ nested }) => {
+        nested.topicName = 'changed'
+      }),
+    ).toEqual([
+      'assembly-x/manifest.json: differs',
+      'assembly-x/xPart.assets.json: differs',
+      'assembly-x/xPart.template.json: differs',
+      'tree.json: differs',
+    ])
+    // The same property under an override that keeps the template as it was: only the construct tree,
+    // whose properties are the ones cdk-nag reads, shows it.
+    expect(
+      plantedChange(({ nested }) => {
+        nested.topicName = 'changed'
+        nested.addPropertyOverride('TopicName', 'a')
+      }),
+    ).toEqual(['tree.json: differs'])
+    expect(
+      plantedChange(({ top }) => {
+        top.topicName = 'changed'
+      }),
+    ).toEqual([
+      'Top.assets.json: differs',
+      'Top.template.json: differs',
+      'manifest.json: differs',
+      'tree.json: differs',
+    ])
+    expect(
+      plantedChange(({ top }) => {
+        top.node.addMetadata('hearth:planted', 'a planted entry')
+      }),
+    ).toEqual(['Top.metadata.json: differs'])
+  })
+
   it.each(WORKLOAD_RUNS)(
-    'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version) and each asset manifest, so no test helper can hand them a profile, a run, a context or a stack’s facts the entry does not build (C11-D70, C11-D74)',
+    'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version), each asset manifest and every other file, the construct tree cdk-nag reads included, as the helper wrote them and as its app writes them again, with its stages the app’s own, so no test helper can hand them a profile, a run, a context, a construct tree or a stack’s facts the entry does not build (C11-D70, C11-D74)',
     async (_name, context, options, stackNames) => {
       const ran =
         context === undefined
@@ -521,11 +715,18 @@ describe('C11-D23: the entries run under plain Node', () => {
       expect(ran.code).toBe(0)
       const rendered = templatesIn(ran.outdir)
       expect([...rendered.keys()].sort()).toEqual(stackNames)
-      const { templates, synthesised } = synthWorkload(options)
+      const { templates, synthesised, app, stages } = synthWorkload(options)
       expect(templateDifferences(rendered, templates)).toEqual({})
       expect(templates).toStrictEqual(Object.fromEntries(rendered))
       expect(reportDifferences(stackFactsIn(ran.outdir), reportedFacts(synthesised))).toEqual([])
       expect(reportDifferences(assetManifestsIn(ran.outdir), synthesised.assetManifests)).toEqual([])
+      // Every file, as the helper wrote it, then as the app it hands the cdk-nag check writes it again
+      // (IAC-15), whose stages are the app's own.
+      const files = assemblyIn(ran.outdir)
+      expect(synthesised.outdir).toBe(app.outdir)
+      expect(fileDifferences(files, assemblyIn(synthesised.outdir))).toEqual([])
+      expect(stageProblems(app, stages, environmentsOf(stackNames))).toEqual([])
+      expect(fileDifferences(files, assemblyIn(synthesisedAgain(app)))).toEqual([])
     },
     120_000,
   )
@@ -588,17 +789,40 @@ describe('C11-D23: the entries run under plain Node', () => {
     expect(none.stderr).toContain('HEARTH_TARGET: is not set')
   }, 60_000)
 
-  it('bin/landing-zone.ts writes over the fixture the committed build every landing-zone assertion reads (synthLandingZone() with no options): each template, each stack’s artifact facts and each asset manifest, so no test helper can hand those assertions options, a context or a stack’s facts the entry does not build (C11-D70, C11-D74)', async () => {
+  it('bin/landing-zone.ts writes over the fixture the committed build every landing-zone assertion reads (synthLandingZone() with no options): each template, by stack and as the helper hands them by name, each stack’s artifact facts, each asset manifest and every other file, the construct tree cdk-nag reads included, as the helper wrote them and as its app writes them again, with its stacks the app’s own, so no test helper can hand those assertions options, a context, a construct tree or a stack’s facts the entry does not build (C11-D70, C11-D74)', async () => {
     const ran = await fixtureLandingZoneRun()
     expect(ran.code).toBe(0)
     const rendered = templatesIn(ran.outdir)
-    const { synthesised } = synthLandingZone()
+    const { synthesised, templates: named, app, stacks } = synthLandingZone()
     const templates = Object.fromEntries(synthesised.stacks.map(stack => [stack.stackName, stack.template]))
     expect(Object.keys(templates).sort()).toEqual(Object.values(STACK_OF).sort())
     expect(templateDifferences(rendered, templates)).toEqual({})
     expect(templates).toStrictEqual(Object.fromEntries(rendered))
+    // The templates the landing-zone assertions read by name (lz.templates.foundation and the rest).
+    expect(Object.keys(named).sort()).toEqual(Object.keys(LANDING_ZONE_STACK_NAMES).sort())
+    expect(
+      templateDifferences(
+        rendered,
+        Object.fromEntries(
+          Object.entries(named).map(([key, template]) => [
+            LANDING_ZONE_STACK_NAMES[key as keyof typeof LANDING_ZONE_STACK_NAMES],
+            template,
+          ]),
+        ),
+      ),
+    ).toEqual({})
+    for (const [key, name] of Object.entries(LANDING_ZONE_STACK_NAMES)) {
+      expect(named[key as keyof typeof named], key).toStrictEqual(rendered.get(name))
+    }
     expect(reportDifferences(stackFactsIn(ran.outdir), reportedFacts(synthesised))).toEqual([])
     expect(reportDifferences(assetManifestsIn(ran.outdir), synthesised.assetManifests)).toEqual([])
+    // Every file, as the helper wrote it, then as the app it hands the cdk-nag check writes it again
+    // (IAC-15), whose stacks are the app's own.
+    const files = assemblyIn(ran.outdir)
+    expect(synthesised.outdir).toBe(app.outdir)
+    expect(fileDifferences(files, assemblyIn(synthesised.outdir))).toEqual([])
+    expect(landingZoneStackProblems(app, stacks)).toEqual([])
+    expect(fileDifferences(files, assemblyIn(synthesisedAgain(app)))).toEqual([])
   }, 120_000)
 })
 

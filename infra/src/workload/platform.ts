@@ -14,8 +14,9 @@
 // Every log group keeps its class's days (app_logs, network_logs) and outlives the stack, but not a
 // first create that rolled back, whose retry would otherwise find the name taken. The cluster keeps no
 // Container Insights (C0.13's observability decides, for cost) and logs nothing of an ECS Exec
-// session: the bastion's one use is a port forward whose bytes are TLS to Postgres, and an interactive
-// shell's output, whatever it showed, would otherwise sit in the bastion's group for its days.
+// session: the bastion's one ECS Exec use is a port forward whose bytes are TLS to Postgres, and an
+// interactive shell's output, whatever it showed, would otherwise sit in the bastion's group for its
+// days.
 // CloudTrail records RunTask, ExecuteCommand and StartSession, and A8 alarms on every ExecuteCommand
 // and StartSession in prod (C11-D40, TECH-SPEC T24 item 15). A RunTask with no override raises
 // neither A7 nor A8: a bastion start alone is seen through A1, since only hearth-break-glass may

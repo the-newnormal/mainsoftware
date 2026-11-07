@@ -41,17 +41,22 @@
 // - one cluster per stage, whose ECS Exec logging is NONE, so a break-glass session into the network
 //   leaves nothing behind but CloudTrail's record of it (C11-D40, T24 item 15);
 // - the network's invariants (C11-D29 to C11-D31, C11-D37, C11-D45), which no SCP backs and none can
-//   target the restore stage with: no egress to the internet from any group and EC2's placeholder as
-//   every group's one inline egress, no route but a public table's default to its own internet
-//   gateway, none of EC2's other ways out or in and none of other services' ways in (VPC Lattice,
-//   API Gateway's VPC links, CloudFront's VPC origins, Global Accelerator, a classic load balancer),
-//   one application load balancer per stage, in its Platform, every security group, rule and VPC
-//   endpoint in the stage's Platform, every ingress from the stage's own groups but that load
-//   balancer's tcp 443 from anywhere, no public address, the restore stage's isolation (IAC-20's
-//   isolation half), every image by digest, every secret by reference, and no plain environment value
-//   with a URL's password (in its user information, or a query or fragment key naming a credential),
-//   a part no template fixes anywhere in a URL but its host, a secret's dynamic reference or a shape
-//   no static reading fixes. The exact rules, CIDRs and counts are src/workload's tests'.
+//   target the restore stage with: no egress to 0.0.0.0/0 or ::/0 from any group (every other egress
+//   peer, which the design keeps to the stage's own groups and its S3 prefix list, is network.test.ts's
+//   exact table, off the owner's-read list) and EC2's placeholder as every group's one inline egress,
+//   no route but a public table's default to its own internet gateway, none of EC2's other ways out or
+//   in and none of other services' ways in (VPC Lattice, API Gateway's VPC links, CloudFront's VPC
+//   origins, Global Accelerator, a classic load balancer), one application load balancer per stage, in
+//   its Platform, every security group, rule and VPC endpoint in the stage's Platform, every ingress
+//   from the stage's own groups but that load balancer's tcp 443 from anywhere, no public address, the
+//   restore stage's isolation (IAC-20's isolation half), every image by digest, every secret by
+//   reference, and no plain environment value with a URL's password (in the user information of any URL
+//   in it, or a query or fragment key naming a credential), a dynamic reference of any kind, a part no
+//   template fixes anywhere but a URL's host, a part read from any SSM parameter but the stage's Valkey
+//   endpoint, or a shape no static reading fixes; that endpoint written once a stage, in its Data, as
+//   the replication group's address or a literal host; and no SSM parameter a workload template writes
+//   with a name no static reading fixes or a dynamic reference in its value. The exact rules, CIDRs and
+//   counts are src/workload's tests'.
 // The planted cases come first, each found, so no check passes by reading nothing. This file holds
 // rules every template is held to, so it is on the owner's-read list (C11-D74). Expected ARNs are
 // joined from their parts here (IG-01), rendered with a made-up account for the workload's, model
@@ -1880,40 +1885,62 @@ const SECRET_NAMES = [
 // a check can see where such a part sits: the object replacement character, which no value holds.
 const UNFIXED = '\uFFFC'
 // An environment value as the task will hold it: literal text, or a Fn::Join of literal text and Refs,
-// each Ref rendered where the template fixes it and UNFIXED where it doesn't. Any other shape (an
-// Fn::If, an Fn::Sub, an import) is undefined, which the check refuses rather than reads.
-function environmentText(value: unknown, template: Template): string | undefined {
+// each Ref rendered where the template fixes it and UNFIXED where it doesn't, its logical id added to
+// `unfixed`. Any other shape (an Fn::If, an Fn::Sub, an import) is undefined, which the check refuses
+// rather than reads.
+function environmentText(value: unknown, template: Template, unfixed: string[] = []): string | undefined {
   if (typeof value === 'string') return value
-  if (refOf(value) !== undefined && Object.keys(value as object).length === 1) {
-    return renderedString(value, { account: ACCOUNT, region: REGION, template }) ?? UNFIXED
+  const ref = refOf(value)
+  if (ref !== undefined && Object.keys(value as object).length === 1) {
+    const text = renderedString(value, { account: ACCOUNT, region: REGION, template })
+    if (text === undefined) unfixed.push(ref)
+    return text ?? UNFIXED
   }
   const join = isObject(value) && Object.keys(value).length === 1 ? value['Fn::Join'] : undefined
   if (!Array.isArray(join) || join.length !== 2 || typeof join[0] !== 'string' || !Array.isArray(join[1])) {
     return undefined
   }
-  const parts = join[1].map(part => environmentText(part, template))
+  const parts = join[1].map(part => environmentText(part, template, unfixed))
   return parts.every(part => part !== undefined) ? parts.join(join[0]) : undefined
 }
-// A URL in a value, from its scheme to the next space or the value's end: its authority (user
-// information, host and port), up to the first `/`, `?` or `#`, then the rest (its path, query and
-// fragment).
-const URL_PARTS = /[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/gi
+// Where each URL in a value starts: at every scheme, so a URL joined to another by a comma or a
+// semicolon, or written as a query value, is read as a URL of its own.
+const SCHEME = /[a-z][a-z0-9+.-]*:\/\//gi
+// A URL from its scheme to the next space or the value's end: its authority (user information, host
+// and port), up to the first `/`, `?` or `#`, then the rest: its path, query and fragment, and all
+// that follows them, so text shaped like a scheme inside its query never cuts a key off it.
+const URL_AT = /^[a-z][a-z0-9+.-]*:\/\/([^/?#\s]*)(\S*)/i
+interface UrlParts {
+  userinfo: string
+  // Where its host sits in the value, from its first character to the one after its last.
+  host: readonly [number, number]
+  rest: string
+}
+function urlsIn(text: string): UrlParts[] {
+  return [...text.matchAll(SCHEME)].flatMap(({ index }) => {
+    const match = URL_AT.exec(text.slice(index))
+    if (match === null) return []
+    const [whole, authority = '', rest = ''] = match
+    const at = authority.lastIndexOf('@')
+    const hostStart = index + whole.indexOf('://') + 3 + at + 1
+    const hostLength = /^(?:\[[^\]]*\]|[^:]*)/.exec(authority.slice(at + 1))?.[0].length ?? 0
+    return [{ userinfo: at === -1 ? '' : authority.slice(0, at), host: [hostStart, hostStart + hostLength], rest }]
+  })
+}
 // A query or fragment key that names a credential, read percent-decoded as the server's clients read
 // it: pg and ioredis take a password from the query (`password`, any case, `pass%77ord` included) as
-// readily as from the user information, and the words are those the variable-name rule refuses
-// (SECRET_NAMES), so `sslpassword`, `pwd`, a token or a key are refused too.
+// readily as from the user information. The words are listed here by hand, not read from
+// SECRET_NAMES: the four its last pattern ends in (password, secret, token, key), and `pass` and
+// `pwd`, which take in password's other spellings, so `sslpassword`, `pwd`, a token or a key are
+// refused too.
 const CREDENTIAL_KEY = /pass|pwd|secret|token|key/i
-// Whether a value holds a URL with a password, or a part no template fixes where one could sit: a
-// password in its user information, a query or fragment key that names a credential, or an unfixed
-// part anywhere but its host (its user information, port, path, query or fragment). This is the text
-// CloudFormation resolves into a task definition's plain environment, which anyone who can describe
-// it reads. A query that names no credential (`sslmode=verify-full`) is not refused.
+// Whether a value holds a URL with a password: in the user information of any URL in it, or as a
+// query or fragment key that names a credential. This is the text CloudFormation resolves into a task
+// definition's plain environment, which anyone who can describe it reads. A query that names no
+// credential (`sslmode=verify-full`) is not refused.
 function holdsUrlPassword(text: string): boolean {
-  return [...text.matchAll(URL_PARTS)].some(([, authority = '', rest = '']) => {
-    const at = authority.lastIndexOf('@')
-    const userinfo = at === -1 ? '' : authority.slice(0, at)
-    const port = authority.slice(at + 1).replace(/^(?:\[[^\]]*\]|[^:]*)/, '')
-    if (userinfo.includes(':') || [userinfo, port, rest].some(part => part.includes(UNFIXED))) return true
+  return urlsIn(text).some(({ userinfo, rest }) => {
+    if (userinfo.includes(':')) return true
     const hash = rest.indexOf('#')
     const beforeHash = hash === -1 ? rest : rest.slice(0, hash)
     const question = beforeHash.indexOf('?')
@@ -1922,8 +1949,33 @@ function holdsUrlPassword(text: string): boolean {
     return [query, fragment].some(part => [...new URLSearchParams(part).keys()].some(key => CREDENTIAL_KEY.test(key)))
   })
 }
-// A dynamic reference that resolves a secret into the template, and so into the plain environment.
-const SECRET_REFERENCE = /\{\{resolve:(?:secretsmanager|ssm-secure):/
+// Whether a value holds a part no template fixes anywhere but a URL's host: in a URL's user
+// information, port, path, query or fragment, in its scheme, or outside any URL (a value that is an
+// SSM parameter's whole value), where it could carry a password the checks above never see. A host
+// is the one place such a part may sit, and the one part that may sit there is the stage's Valkey
+// endpoint, which its Data stack writes as an address (below).
+function holdsUnfixedOutsideHost(text: string): boolean {
+  let outside = text
+  for (const { host } of urlsIn(text)) {
+    outside = `${outside.slice(0, host[0])}${' '.repeat(host[1] - host[0])}${outside.slice(host[1])}`
+  }
+  return outside.includes(UNFIXED)
+}
+// A dynamic reference, which CloudFormation resolves into the template, and so into the plain
+// environment, at deploy: a secret's, or a plain SSM parameter's, whose value no template fixes.
+const DYNAMIC_REFERENCE = /\{\{resolve:/
+// The stage's Valkey endpoint, the one SSM parameter a plain environment value may read.
+const valkeyEndpointName = (env: EnvironmentName) => ['', 'hearth', env, 'valkey', 'endpoint'].join('/')
+// The type of a template parameter CloudFormation fills at deploy from the SSM parameter it names.
+const SSM_STRING = 'AWS::SSM::Parameter::Value<String>'
+// The first rule a plain environment value, as environmentText reads it, breaks, or undefined.
+function environmentProblem(text: string | undefined): string | undefined {
+  if (text === undefined) return 'is a value no static reading fixes'
+  if (DYNAMIC_REFERENCE.test(text)) return 'resolves a dynamic reference into the plain environment'
+  if (holdsUrlPassword(text)) return 'holds a URL with a password'
+  if (holdsUnfixedOutsideHost(text)) return "holds a part no template fixes outside a URL's host"
+  return undefined
+}
 
 // Each place a workload template breaks one of the network's invariants, as problems. C0.12's egress
 // proxy group (tagged hearth:egress-proxy) will be the one exception to the egress rules, in the same
@@ -2020,6 +2072,11 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
   }
 
   const authSecret = parameterNamed(template, ['', 'hearth', env, 'auth-secret', 'arn'].join('/'))
+  // The template's own read of the stage's Valkey endpoint, as an SSM parameter (a parameter of
+  // another type takes whatever value the deploy passes it).
+  const endpoint = parameterNamed(template, valkeyEndpointName(env))
+  const read = isObject(template.Parameters) ? template.Parameters[endpoint ?? ''] : undefined
+  const valkeyEndpoint = isObject(read) && read.Type === SSM_STRING ? endpoint : undefined
   for (const [id, r] of ofType(template, 'AWS::ECS::TaskDefinition')) {
     const containers = (r.Properties?.ContainerDefinitions ?? []) as Array<Record<string, unknown>>
     for (const container of containers) {
@@ -2032,17 +2089,52 @@ function networkProblems(template: Template, env: EnvironmentName): string[] {
       }
       for (const { Name, Value } of (container.Environment ?? []) as Array<{ Name: string; Value: unknown }>) {
         if (SECRET_NAMES.some(name => name.test(Name))) found.push(`${id}: ${Name} in the plain environment`)
-        const text = environmentText(Value, template)
-        if (text === undefined) found.push(`${id}: ${Name} is a value no static reading fixes`)
-        else if (SECRET_REFERENCE.test(text)) found.push(`${id}: ${Name} resolves a secret into the plain environment`)
-        else if (holdsUrlPassword(text)) found.push(`${id}: ${Name} holds a URL with a password`)
+        const unfixed: string[] = []
+        const problem = environmentProblem(environmentText(Value, template, unfixed))
+        if (problem !== undefined) found.push(`${id}: ${Name} ${problem}`)
+        if (unfixed.some(ref => ref !== valkeyEndpoint)) {
+          found.push(`${id}: ${Name} reads a part no template fixes other than the stage's Valkey endpoint`)
+        }
       }
     }
   }
   for (const [id, r] of ofType(template, 'AWS::SecretsManager::Secret')) {
     if (r.Properties?.SecretString !== undefined) found.push(`${id}: a secret written into the template`)
   }
+  // Every SSM parameter a workload template writes: a name a static reading fixes, so the Valkey
+  // endpoint's writers can be counted (below), and a value with no dynamic reference, so no secret is
+  // copied into a plain parameter, which ssm:GetParameter reads as text.
+  for (const [id, r] of ofType(template, 'AWS::SSM::Parameter')) {
+    if (renderedString(r.Properties?.Name, { template }) === undefined) {
+      found.push(`${id}: a parameter whose name no static reading fixes`)
+    }
+    if (DYNAMIC_REFERENCE.test(JSON.stringify(r.Properties?.Value ?? ''))) {
+      found.push(`${id}: a parameter that resolves a dynamic reference`)
+    }
+  }
   return found
+}
+
+// The Valkey endpoint parameter a stage's templates write (C11-D37): one, in its Data, whose value is
+// the replication group's own address there or a literal host, so the one part of a plain environment
+// value no template fixes, a URL's host, never carries user information, a port or a query at deploy.
+const ADDRESS = /^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/i
+function valkeyEndpointProblems(templates: ReadonlyArray<readonly [string, Template]>, env: EnvironmentName): string[] {
+  const writers = templates.flatMap(([part, template]) =>
+    ofType(template, 'AWS::SSM::Parameter')
+      .filter(([, r]) => renderedString(r.Properties?.Name, { template }) === valkeyEndpointName(env))
+      .map(([id, r]) => ({ part, template, id, value: r.Properties?.Value })),
+  )
+  if (writers.length !== 1) return [`${writers.length} writers of ${valkeyEndpointName(env)}, not one`]
+  const [{ part, template, id, value }] = writers as [(typeof writers)[number]]
+  const group = getAttOf(value, 'PrimaryEndPoint.Address')
+  const address =
+    (group !== undefined && ofType(template, 'AWS::ElastiCache::ReplicationGroup').some(([g]) => g === group)) ||
+    (typeof value === 'string' && ADDRESS.test(value))
+  return [
+    ...(part === 'Data' ? [] : [`${id}: in ${part}, not Data`]),
+    ...(address ? [] : [`${id}: neither the replication group's address nor a literal host`]),
+  ]
 }
 
 // The part of each load balancer a stage's templates hold: one, in its Platform, where the stage has
@@ -2262,11 +2354,10 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
       'Balancer: AWS::ElasticLoadBalancingV2::LoadBalancer in the restore stage',
       `${publicSubnet}: a public subnet in the restore stage`,
     ])
-    const container = (edit: (container: Record<string, unknown>) => void) =>
-      plantedIn(services, resources => {
+    const container = (edit: (container: Record<string, unknown>) => void, base: Template = services) =>
+      plantedIn(base, resources => {
         const [id] =
-          ofType(services, 'AWS::ECS::TaskDefinition').find(([, r]) => r.Properties?.Family === 'hearth-nonprod-api') ??
-          []
+          ofType(base, 'AWS::ECS::TaskDefinition').find(([, r]) => r.Properties?.Family === 'hearth-nonprod-api') ?? []
         const [first] = (resources[id ?? '']?.Properties?.ContainerDefinitions ?? []) as Array<Record<string, unknown>>
         if (first !== undefined) edit(first)
       })
@@ -2299,35 +2390,87 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     ).toEqual([`${apiTask}: TWILIO_AUTH_TOKEN in the plain environment`])
     // A value set in place of the api's own, each as C0.12's Valkey users or a database password might
     // be written: the password in literal text or an SSM parameter's value inside the user information,
-    // a secret's dynamic reference, and a shape no static reading fixes.
-    const valued = (Name: string, Value: unknown) =>
+    // a dynamic reference, and a shape no static reading fixes.
+    const valued = (Name: string, Value: unknown, base: Template = services) =>
       networkProblems(
         container(c => {
           const environment = (c.Environment ?? []) as Array<{ Name: string; Value: unknown }>
           c.Environment = [...environment.filter(e => e.Name !== Name), { Name, Value }]
-        }),
+        }, base),
         'nonprod',
       )
-    const host = { Ref: parameterNamed(services, ['', 'hearth', 'nonprod', 'valkey', 'endpoint'].join('/')) }
+    const password = (Name: string) => [`${apiTask}: ${Name} holds a URL with a password`]
+    const outsideHost = (Name: string) => [`${apiTask}: ${Name} holds a part no template fixes outside a URL's host`]
+    const pair = ['hearth_api', 'planted'].join(':')
+    const host = { Ref: parameterNamed(services, valkeyEndpointName('nonprod')) }
     const valkey = (...parts: unknown[]) => ({ 'Fn::Join': ['', ['rediss://', ...parts, '@', host, ':6379']] })
     expect(host.Ref).toBeDefined()
-    expect(valued('VALKEY_URL', valkey('hearth_api:', host))).toEqual([
-      `${apiTask}: VALKEY_URL holds a URL with a password`,
-    ])
-    expect(valued('VALKEY_URL', valkey(['hearth_api', 'planted'].join(':')))).toEqual([
-      `${apiTask}: VALKEY_URL holds a URL with a password`,
-    ])
-    expect(valued('VALKEY_URL', valkey(host))).toEqual([`${apiTask}: VALKEY_URL holds a URL with a password`])
+    expect(valued('VALKEY_URL', valkey('hearth_api:', host))).toEqual(password('VALKEY_URL'))
+    expect(valued('VALKEY_URL', valkey(pair))).toEqual(password('VALKEY_URL'))
+    expect(valued('VALKEY_URL', valkey(host))).toEqual(outsideHost('VALKEY_URL'))
     expect(valued('VALKEY_URL', valkey('hearth_api'))).toEqual([])
     expect(
       valued('DATABASE_URL', ['postgres://hearth_app:', 'planted', '@database.pending.invalid:5432/hearth'].join('')),
-    ).toEqual([`${apiTask}: DATABASE_URL holds a URL with a password`])
+    ).toEqual(password('DATABASE_URL'))
+    // Every URL in a value, not the first alone: a second joined by a comma (after a URL with no path,
+    // or with one) or a semicolon, one written as a query value, a writer and a reader, a key naming a
+    // credential in a later URL's query, and one after text shaped like a scheme inside a query, which
+    // never cuts the first URL's query short. Two URLs with no password pass, each host fixed or not.
+    for (const value of [
+      `rediss://valkey-a:6379,rediss://${pair}@valkey-b:6379`,
+      `https://a.example/x,postgres://${pair}@db:5432/hearth`,
+      `https://otel.example:4318;postgres://${pair}@db/hearth`,
+      `https://a.example/cb?next=postgres://${pair}@db:5432/hearth`,
+      { 'Fn::Join': [',', ['postgres://hearth_app@writer/hearth', `postgres://${pair}@reader/hearth`]] },
+      'https://a.example/x?y=1,postgres://db/hearth?password=x',
+      'postgres://hearth_app@db/hearth?x=y://&password=x',
+    ]) {
+      expect(valued('DATABASE_URL', value), JSON.stringify(value)).toEqual(password('DATABASE_URL'))
+    }
+    expect(valued('VALKEY_URL', 'rediss://valkey-a:6379,rediss://valkey-b:6379')).toEqual([])
+    expect(valued('VALKEY_URL', { 'Fn::Join': [',', [valkey('hearth_api'), valkey('hearth_api')]] })).toEqual([])
+    // A part no template fixes outside a URL's host, where it could carry a password no reading here
+    // sees: an SSM parameter's whole value, a scheme read from one before a literal password, part of
+    // a scheme, and user information. And any part read from a parameter but the stage's Valkey
+    // endpoint, even as a URL's host, as a database's URL or host might be read: a parameter of the
+    // database's, and the endpoint's own read as a plain parameter, which the deploy fills.
+    expect(valued('DATABASE_URL', host)).toEqual(outsideHost('DATABASE_URL'))
+    for (const parts of [
+      [host, `://${pair}@db.internal:5432/hearth`],
+      ['postgres', host, ['://hearth_app', 'db.internal:5432/hearth'].join('@')],
+      ['postgres://', host, '@db.internal:5432/hearth'],
+    ]) {
+      expect(valued('DATABASE_URL', { 'Fn::Join': ['', parts] }), JSON.stringify(parts)).toEqual(
+        outsideHost('DATABASE_URL'),
+      )
+    }
+    const database = ['postgres://hearth_app', 'database.pending.invalid:5432/hearth'].join('@')
+    const read = structuredClone(services)
+    read.Parameters = {
+      ...(read.Parameters as Record<string, unknown>),
+      PlantedDatabase: { Type: SSM_STRING, Default: ['', 'hearth', 'nonprod', 'database', 'url'].join('/') },
+    }
+    const other = [`${apiTask}: DATABASE_URL reads a part no template fixes other than the stage's Valkey endpoint`]
+    expect(valued('DATABASE_URL', { Ref: 'PlantedDatabase' }, read)).toEqual([...outsideHost('DATABASE_URL'), ...other])
+    expect(
+      valued(
+        'DATABASE_URL',
+        { 'Fn::Join': ['', ['postgres://hearth_app@', { Ref: 'PlantedDatabase' }, ':5432']] },
+        read,
+      ),
+    ).toEqual(other)
+    const untyped = structuredClone(services)
+    const parameter = (untyped.Parameters as Record<string, Record<string, unknown>>)[host.Ref ?? '']
+    if (parameter !== undefined) parameter.Type = 'String'
+    expect(networkProblems(untyped, 'nonprod')).toEqual(
+      ofType(services, 'AWS::ECS::TaskDefinition').map(
+        ([id]) => `${id}: VALKEY_URL reads a part no template fixes other than the stage's Valkey endpoint`,
+      ),
+    )
     // A password in the query, which pg and ioredis read as readily as from the user information:
     // literal, in any case and percent-encoded, with a user or without, in a fragment, and from a part
-    // no template fixes, which is refused anywhere but the host (the port, the path, the query). A
-    // query that names no credential passes, and so does each real value.
-    const password = (Name: string) => [`${apiTask}: ${Name} holds a URL with a password`]
-    const database = ['postgres://hearth_app', 'database.pending.invalid:5432/hearth'].join('@')
+    // no template fixes. Such a part is refused anywhere but the host (the port, the path, the query),
+    // whatever key it follows. A query that names no credential passes, and so does each real value.
     for (const query of ['password=x', 'PASSWORD=x', 'pass%77ord=x', 'sslpassword=x', 'user=hearth_app&password=x']) {
       expect(valued('DATABASE_URL', `${database}?${query}`), query).toEqual(password('DATABASE_URL'))
     }
@@ -2350,19 +2493,29 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
       ['?password=x'],
       ['?username=hearth_api&password=', host],
       ['?password=', host],
-      ['?', host],
       ['#password=x'],
-      ['/', host],
     ]) {
       expect(valued('VALKEY_URL', queried(...parts)), JSON.stringify(parts)).toEqual(password('VALKEY_URL'))
     }
-    expect(valued('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] })).toEqual(password('VALKEY_URL'))
+    for (const parts of [
+      ['?', host],
+      ['/', host],
+    ]) {
+      expect(valued('VALKEY_URL', queried(...parts)), JSON.stringify(parts)).toEqual(outsideHost('VALKEY_URL'))
+    }
+    expect(valued('VALKEY_URL', { 'Fn::Join': ['', ['rediss://', host, ':', host]] })).toEqual(
+      outsideHost('VALKEY_URL'),
+    )
     expect(valued('VALKEY_URL', queried())).toEqual([])
-    expect(
-      valued('DATABASE_URL', {
-        'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:planted}}', '@h']],
-      }),
-    ).toEqual([`${apiTask}: DATABASE_URL resolves a secret into the plain environment`])
+    // A dynamic reference, a secret's or a plain SSM parameter's, whole or as a later URL's password.
+    const dynamic = (Name: string) => [`${apiTask}: ${Name} resolves a dynamic reference into the plain environment`]
+    for (const value of [
+      { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:planted}}', '@h']] },
+      `{{resolve:ssm:${['', 'hearth', 'nonprod', 'database', 'url'].join('/')}}}`,
+      `${database},postgres://hearth_ro:{{resolve:ssm:${['', 'hearth', 'nonprod', 'planted'].join('/')}}}@reader/hearth`,
+    ]) {
+      expect(valued('DATABASE_URL', value), JSON.stringify(value)).toEqual(dynamic('DATABASE_URL'))
+    }
     expect(valued('VALKEY_URL', { 'Fn::If': ['Planted', valkey('hearth_api'), 'rediss://h:6379'] })).toEqual([
       `${apiTask}: VALKEY_URL is a value no static reading fixes`,
     ])
@@ -2374,6 +2527,79 @@ describe('C11-D29 to C11-D31 C11-D37 C11-D45: the network’s invariants', () =>
     expect(networkProblems(written, 'nonprod')).toEqual([
       `${ofType(data, 'AWS::SecretsManager::Secret')[0]?.[0]}: a secret written into the template`,
     ])
+    // An SSM parameter that copies a secret into plain text, as a database's URL might be written, and
+    // one whose name no static reading fixes.
+    const parameterIn = (properties: Record<string, unknown>) =>
+      plantedIn(data, resources => {
+        resources.Planted = { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', ...properties } }
+      })
+    const url = { 'Fn::Join': ['', ['postgres://hearth_app:', '{{resolve:secretsmanager:planted}}', '@db.internal']] }
+    expect(
+      networkProblems(
+        parameterIn({ Name: ['', 'hearth', 'nonprod', 'database', 'url'].join('/'), Value: url }),
+        'nonprod',
+      ),
+    ).toEqual(['Planted: a parameter that resolves a dynamic reference'])
+    expect(networkProblems(parameterIn({ Name: { Ref: 'PlantedName' }, Value: 'h' }), 'nonprod')).toEqual([
+      'Planted: a parameter whose name no static reading fixes',
+    ])
+  })
+
+  it('C11-D37 IAC-09: each stage writes its Valkey endpoint, the one part of a plain environment value no template fixes, once, in its Data, as the replication group’s address or a literal host, in every build; each break, planted in copies of the real templates, is found', () => {
+    const stage = (synth: WorkloadSynth, env: EnvironmentName) =>
+      PARTS.map(part => [part, workloadTemplate(synth, env, part)] as const)
+    const nonprod = stage(workload, 'nonprod')
+    const swapped = (part: string, template: Template) =>
+      valkeyEndpointProblems(
+        nonprod.map(([p, t]) => [p, p === part ? template : t] as const),
+        'nonprod',
+      )
+    const data = workloadTemplate(workload, 'nonprod', 'Data')
+    const platform = workloadTemplate(workload, 'nonprod', 'Platform')
+    const [id, written] = ofType(data, 'AWS::SSM::Parameter').find(
+      ([, r]) => r.Properties?.Name === valkeyEndpointName('nonprod'),
+    ) as [string, Resource]
+    const valued = (Value: unknown) =>
+      swapped(
+        'Data',
+        plantedIn(data, resources => {
+          const properties = resources[id]?.Properties
+          if (properties !== undefined) properties.Value = Value
+        }),
+      )
+    // A value that isn't the replication group's address or a host: user information with a password,
+    // a port, a dynamic reference, an SSM parameter of the account's, and another resource's address.
+    const notAddress = [`${id}: neither the replication group's address nor a literal host`]
+    for (const value of [
+      `${['hearth_api', 'planted'].join(':')}@valkey.internal`,
+      'valkey.internal:6379',
+      '{{resolve:secretsmanager:planted}}',
+      { Ref: 'PlantedParameter' },
+      { 'Fn::GetAtt': ['Planted', 'PrimaryEndPoint.Address'] },
+    ]) {
+      expect(valued(value), JSON.stringify(value)).toEqual(notAddress)
+    }
+    expect(valued('valkey.pending.invalid')).toEqual([])
+    // Written a second time, in Platform instead, and by none.
+    const moved = { ...structuredClone(written), Properties: { ...written.Properties, Value: 'valkey.internal' } }
+    const twice = plantedIn(platform, resources => {
+      resources.Planted = moved
+    })
+    const none = plantedIn(data, resources => {
+      delete resources[id]
+    })
+    const count = (n: number) => [`${n} writers of ${valkeyEndpointName('nonprod')}, not one`]
+    expect(swapped('Platform', twice)).toEqual(count(2))
+    expect(
+      valkeyEndpointProblems(
+        nonprod.map(([p, t]) => [p, p === 'Platform' ? twice : p === 'Data' ? none : t] as const),
+        'nonprod',
+      ),
+    ).toEqual(['Planted: in Platform, not Data'])
+    expect(swapped('Data', none)).toEqual(count(0))
+    for (const [build, synth, envs] of builds()) {
+      for (const env of envs) expect(valkeyEndpointProblems(stage(synth, env), env), `${build} ${env}`).toEqual([])
+    }
   })
 
   it('IAC-03 IAC-12 C11-D30 C11-D31: no security group, rule or VPC endpoint outside a stage’s Platform, in any build; one planted in each of copies of the real Services, Data and Tasks templates is found, an endpoint to a PrivateLink service outside AWS among them', () => {

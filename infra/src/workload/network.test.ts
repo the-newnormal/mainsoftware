@@ -6,9 +6,10 @@
 //   description that names it, or, where a stack reads a group's id by name, by the parameter Platform
 //   writes that group's id to (restore's without the load balancer's rows); every prefix-list peer is
 //   the Region's S3 list the profile names; the endpoints' and Valkey's groups send nothing;
-// - IAC-04: each stage's VPC and subnets at exactly their CIDRs (parsed) and AZs by Fn::GetAZs, no
-//   route in an isolated table, the S3 gateway on exactly the isolated tables, one internet gateway
-//   where there is a load balancer, and every service in its own stage's isolated subnets;
+// - IAC-04: each stage's VPC and subnets at exactly their CIDRs (parsed) and AZs by Fn::GetAZs, two
+//   isolated route tables with no route in them (a route or an association naming its table other
+//   than by Ref counts against them), the S3 gateway on exactly the isolated tables, one internet
+//   gateway where there is a load balancer, and every service in its own stage's isolated subnets;
 // - C11-D32: one flow log of all the VPC's traffic to /hearth/<env>/vpc-flow, through an unnamed role
 //   only VPC Flow Logs may assume, for this account, that writes that group's streams alone;
 // - the VPC's default-group handler (T24 item 28): one custom resource, its one function and that
@@ -19,8 +20,10 @@
 // route shape, no public address, the restore stage's isolation) are aspects/templates.test.ts's, on
 // the owner's-read list; this file holds the exact rules, CIDRs and counts, which a reviewed change to
 // the network edits. Expected values are literals, or joined from their parts here (IG-01), and ARNs
-// are rendered with a made-up account. Each checker is proved on a planted copy of a real template
-// first.
+// are rendered with a made-up account. IAC-03's rule checkers and IAC-04's route checker are proved
+// on planted copies of real templates first, parseCidr() and confineDefaultSgHandler() on made-up
+// input; the other cases (the CIDRs, the public routes, the services' subnets, the flow log and the
+// handler's resources) compare each template exactly against literals, so they need no plant.
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -571,6 +574,36 @@ function routeTablesOf(template: Template, group: string): string[] {
 }
 const vpcIdOf = (template: Template) => ofType(template, 'AWS::EC2::VPC')[0]?.[0] ?? ''
 
+// IAC-04's routes, as problems: each association naming its subnet or table other than by Ref, and
+// each route naming its table other than by Ref (so what this can't read counts against the template,
+// never for it), isolated route tables other than two, each route in an isolated table, and an S3
+// gateway endpoint other than one, on exactly the isolated tables.
+function routeProblems(template: Template): string[] {
+  const isolated = routeTablesOf(template, 'isolated')
+  const found: string[] = []
+  for (const [id, r] of ofType(template, 'AWS::EC2::SubnetRouteTableAssociation')) {
+    const { SubnetId, RouteTableId } = propertiesOf(r)
+    if (refOf(SubnetId) === undefined || refOf(RouteTableId) === undefined) {
+      found.push(`${id}: names its subnet or route table other than by Ref`)
+    }
+  }
+  if (isolated.length !== 2) found.push(`${isolated.length} isolated route tables, not 2`)
+  for (const [id, r] of ofType(template, 'AWS::EC2::Route')) {
+    const table = refOf(propertiesOf(r).RouteTableId)
+    if (table === undefined) found.push(`${id}: in a route table no Ref names`)
+    else if (isolated.includes(table)) found.push(`${id}: in isolated route table ${table}`)
+  }
+  const gateways = ofType(template, 'AWS::EC2::VPCEndpoint').filter(
+    ([, r]) => propertiesOf(r).VpcEndpointType === 'Gateway',
+  )
+  if (gateways.length !== 1) found.push(`${gateways.length} gateway endpoints, not 1`)
+  for (const [id, r] of gateways) {
+    const tables = ((propertiesOf(r).RouteTableIds ?? []) as unknown[]).map(table => refOf(table) ?? '?').sort()
+    if (!isDeepStrictEqual(tables, isolated)) found.push(`${id}: on ${tables.join(' ')}, not the isolated tables`)
+  }
+  return found
+}
+
 describe('IAC-04 C11-D29: the VPC, its subnets and routes, exactly', () => {
   it('IAC-04 parses a CIDR, refusing a host bit, a wrong shape and an out-of-range octet', () => {
     expect(parseCidr('10.20.16.0/20')).toEqual({ network: (10 * 256 + 20) * 65_536 + 16 * 256, prefix: 20 })
@@ -607,24 +640,91 @@ describe('IAC-04 C11-D29: the VPC, its subnets and routes, exactly', () => {
     },
   )
 
+  it('IAC-04 finds a route in an isolated table, by Ref and by Fn::GetAtt, an association it can’t read and an isolated subnet moved to a routed table of its own, planted in copies of restore’s and non-prod’s Platform', () => {
+    const restore = platformOf(committed, 'restore')
+    expect(routeProblems(restore)).toEqual([])
+    const [table] = routeTablesOf(restore, 'isolated')
+    if (table === undefined) throw new Error('no isolated route table in restore')
+    const routed = (routeTableId: unknown) => {
+      const copy = structuredClone(restore)
+      ;(copy.Resources as Record<string, Resource>).PlantedRoute = {
+        Type: 'AWS::EC2::Route',
+        Properties: { DestinationCidrBlock: '0.0.0.0/0', GatewayId: 'planted', RouteTableId: routeTableId },
+      }
+      return copy
+    }
+    expect(routeProblems(routed({ Ref: table }))).toEqual([`PlantedRoute: in isolated route table ${table}`])
+    expect(routeProblems(routed({ 'Fn::GetAtt': [table, 'RouteTableId'] }))).toEqual([
+      'PlantedRoute: in a route table no Ref names',
+    ])
+
+    // An association naming its table by Fn::GetAtt, which routeTablesOf can't read, is found; so is
+    // an isolated subnet re-tagged into another group, which leaves one isolated table, and either way
+    // the S3 gateway is found still on both tables.
+    const isolatedTables = routeTablesOf(restore, 'isolated')
+    const [s3Endpoint] = ofType(restore, 'AWS::EC2::VPCEndpoint').filter(
+      ([, r]) => propertiesOf(r).VpcEndpointType === 'Gateway',
+    )
+    const onBoth = `${s3Endpoint?.[0]}: on ${isolatedTables.join(' ')}, not the isolated tables`
+    const unread = structuredClone(restore)
+    const [unreadAssociation] = ofType(unread, 'AWS::EC2::SubnetRouteTableAssociation').filter(
+      ([, r]) => refOf(propertiesOf(r).RouteTableId) === table,
+    )
+    if (unreadAssociation?.[1].Properties === undefined) throw new Error('no association to plant')
+    unreadAssociation[1].Properties.RouteTableId = { 'Fn::GetAtt': [table, 'RouteTableId'] }
+    expect(routeProblems(unread)).toEqual([
+      `${unreadAssociation[0]}: names its subnet or route table other than by Ref`,
+      onBoth,
+    ])
+    const retagged = structuredClone(restore)
+    const [isolatedSubnet] = subnetsOf(retagged).filter(({ group }) => group === 'isolated')
+    const tags = propertiesOf((retagged.Resources as Record<string, Resource>)[isolatedSubnet?.id ?? '']).Tags
+    const tag = ((tags ?? []) as Array<{ Key: string; Value: unknown }>).find(t => t.Key === 'aws-cdk:subnet-name')
+    if (tag === undefined) throw new Error('no subnet to re-tag')
+    tag.Value = 'planted'
+    expect(routeProblems(retagged)).toEqual(['1 isolated route tables, not 2', onBoth])
+
+    // An isolated subnet re-associated with a new table that routes to the internet gateway: the new
+    // table counts as isolated, so its route is found, and so is the S3 gateway, still on the old one.
+    const nonprod = platformOf(committed, 'nonprod')
+    expect(routeProblems(nonprod)).toEqual([])
+    const isolated = routeTablesOf(nonprod, 'isolated')
+    const moved = structuredClone(nonprod)
+    const [subnet] = subnetsOf(moved).filter(({ group }) => group === 'isolated')
+    const [association] = ofType(moved, 'AWS::EC2::SubnetRouteTableAssociation').filter(
+      ([, r]) => refOf(propertiesOf(r).SubnetId) === subnet?.id,
+    )
+    const [gateway] = ofType(moved, 'AWS::EC2::InternetGateway')
+    const [s3] = ofType(moved, 'AWS::EC2::VPCEndpoint').filter(([, r]) => propertiesOf(r).VpcEndpointType === 'Gateway')
+    const left = refOf(association?.[1].Properties?.RouteTableId)
+    if (association?.[1].Properties === undefined || gateway === undefined || s3 === undefined || left === undefined) {
+      throw new Error('nothing to move')
+    }
+    const resources = moved.Resources as Record<string, Resource>
+    resources.PlantedTable = { Type: 'AWS::EC2::RouteTable', Properties: { VpcId: { Ref: vpcIdOf(moved) } } }
+    resources.PlantedRoute = {
+      Type: 'AWS::EC2::Route',
+      Properties: {
+        DestinationCidrBlock: '0.0.0.0/0',
+        GatewayId: { Ref: gateway[0] },
+        RouteTableId: { Ref: 'PlantedTable' },
+      },
+    }
+    association[1].Properties.RouteTableId = { Ref: 'PlantedTable' }
+    expect(routeTablesOf(moved, 'isolated')).toEqual([...isolated.filter(kept => kept !== left), 'PlantedTable'].sort())
+    expect(routeProblems(moved)).toEqual([
+      'PlantedRoute: in isolated route table PlantedTable',
+      `${s3[0]}: on ${isolated.join(' ')}, not the isolated tables`,
+    ])
+  })
+
   it.each(ENVIRONMENTS)(
     'IAC-04 %s: no isolated route table holds a route, and the S3 gateway endpoint is on exactly the isolated tables',
     env => {
       for (const [label, synth] of builds()) {
         const template = platformOf(synth, env)
-        const isolated = routeTablesOf(template, 'isolated')
-        expect(isolated, label).toHaveLength(2)
-        const routed = ofType(template, 'AWS::EC2::Route').map(([, r]) => refOf(propertiesOf(r).RouteTableId))
-        expect(
-          routed.filter(table => table !== undefined && isolated.includes(table)),
-          label,
-        ).toEqual([])
-        const gateways = ofType(template, 'AWS::EC2::VPCEndpoint').filter(
-          ([, r]) => propertiesOf(r).VpcEndpointType === 'Gateway',
-        )
-        expect(gateways, label).toHaveLength(1)
-        const tables = (propertiesOf(gateways[0]?.[1]).RouteTableIds ?? []) as unknown[]
-        expect(tables.map(refOf).sort(), label).toEqual(isolated)
+        expect(routeTablesOf(template, 'isolated'), label).toHaveLength(2)
+        expect(routeProblems(template), label).toEqual([])
       }
     },
   )
