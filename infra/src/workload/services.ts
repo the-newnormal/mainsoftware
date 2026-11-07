@@ -15,7 +15,9 @@
 // incident rollback to an earlier revision while GitHub is down, which can neither register a
 // revision nor pass these roles, would have nothing to go back to. A revision costs nothing, and a
 // first create that rolls back still removes its own (RetainExceptOnCreate). Such a rollback skips the
-// pipeline's floors check (C11-D58), and the next pipeline deploy reconciles it.
+// pipeline's floors check (C11-D58); until a pipeline run deploys the release gone back to, this stack
+// and the release record still name the one rolled back from, so the first run afterwards is the
+// pipeline's rollback to the release gone back to (break-glass.md).
 //
 // The services are L1s, so the template holds exactly what is written here: Fargate on the latest
 // platform, in the cluster by name, in the isolated subnets with the role's own security group and no

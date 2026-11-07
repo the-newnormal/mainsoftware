@@ -597,10 +597,13 @@ open_console() {
 }
 
 # The shell holding the role: the credentials reach it as prefix assignments alone, so they sit in its
-# environment and never in an argument; its prompt counts the minutes left and warns at 10 and 5.
+# environment and never in an argument; its prompt counts the minutes left and warns at 10 and 5. It
+# keeps no history, its own or psql's or its pager's, which would otherwise keep what was typed or
+# searched in it in a file that outlives the session (access-request.md, step 3).
 run_shell() {
   cat >"$rc" <<'RC'
 unset HISTFILE
+export PSQL_HISTORY=/dev/null LESSHISTFILE=-
 hearth_bg_prompt() {
   local left
   left=$(( (HEARTH_BREAK_GLASS_UNTIL - $(date -u +%s)) / 60 ))

@@ -1675,7 +1675,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     const afterAssume = (line: string) =>
       plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
     const inRc = (line: string) =>
-      plant('unset HISTFILE\nhearth_bg_prompt', `unset HISTFILE\n${line}\nhearth_bg_prompt`)
+      plant('LESSHISTFILE=-\nhearth_bg_prompt', `LESSHISTFILE=-\n${line}\nhearth_bg_prompt`)
     const afterModeCheck = (line: string) =>
       plant("(docs/runbooks/break-glass.md)'\nfi\n", `(docs/runbooks/break-glass.md)'\nfi\n${line}\n`)
     const profile = 'profile="hearth-$environment-entry"\n'
@@ -1690,7 +1690,12 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         inRc(`awk 'BEGIN { for (k in ENVIRON) print k, ENVIRON[k] }' >"$HOME/session.env"`),
         ['IG-09i'],
       ],
-      ['i: the rc keeps history', plant('unset HISTFILE\nhearth_bg_prompt', 'hearth_bg_prompt'), ['IG-09i']],
+      ['i: the rc keeps history', plant('unset HISTFILE\nexport PSQL_HISTORY', 'export PSQL_HISTORY'), ['IG-09i']],
+      [
+        'i: the rc keeps psql’s and its pager’s history',
+        plant('export PSQL_HISTORY=/dev/null LESSHISTFILE=-\nhearth_bg_prompt', 'hearth_bg_prompt'),
+        ['IG-09i'],
+      ],
       ['i: the shell keeps history', plant(' HISTFILE=/dev/null \\\n', ' \\\n'), ['IG-09i']],
       [
         'i: a line appended to the rc after it is written',

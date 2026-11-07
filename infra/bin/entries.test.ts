@@ -9,10 +9,13 @@
 // each template's hash where the manifests name it.
 // - The workload entry builds its twelve stacks from CI's fake release (HEARTH_FAKE_RELEASE=1, as
 //   synth:ci runs it; C11-D62) and prints nothing; its assembly, nested stages included, publishes
-//   templates and the VPC's one handler zip alone (IAC-22) and holds no run of 12 digits outside a
-//   digest or a hash (IG-01, C11-D24). It refuses every run it can't build with one line naming the
-//   key, never its value: no release, a malformed one, the marker beside one or set to anything but 1,
-//   another drill or restoreActive, and a real release while the domains are placeholders (C11-Q08).
+//   templates and the VPC's one handler zip alone (IAC-22). It refuses every run it can't build with
+//   one line naming the key, never its value: no release, a malformed one, the marker beside one or
+//   set to anything but 1, another drill or restoreActive, and a real release while the domains are
+//   placeholders (C11-Q08).
+// - No assembly it writes here, nested stages included, holds a run of 12 digits outside a digest or a
+//   hash (IG-01, C11-D24): CI's fake release, restoreActive's and the drill's alike, since a value the
+//   source joins from parts passes IG-01 and can still name an account in the one run that builds it.
 // - What it writes, read from its assembly here, equals what the workload assertions read from
 //   src/testing/workload.ts for the same run: the committed build (synthWorkload() with no options)
 //   and the two run variants they read, restoreActive and the drill. That is every template, every
@@ -435,6 +438,11 @@ function digitRunsOutsideHashes(text: string): number {
   return masked.match(/\d{12,}/g)?.length ?? 0
 }
 
+// The files of an assembly, nested stages' included, that hold such a run, by their paths relative to it.
+function filesWithDigitRuns(outdir: string): string[] {
+  return filesIn(outdir).filter(path => digitRunsOutsideHashes(readFileSync(join(outdir, path), 'utf8')) > 0)
+}
+
 // The workload's twelve stacks (C11-D27), as an assembly lists them.
 const WORKLOAD_STACK_NAMES = [
   'Hearth-nonprod-Data',
@@ -562,7 +570,7 @@ describe('C11-D23: the entries run under plain Node', () => {
     expect(assetProblems(manifests, 'workload')).toEqual([])
     const files = filesIn(ran.outdir)
     expect(files.length).toBeGreaterThan(manifests.size)
-    expect(files.filter(path => digitRunsOutsideHashes(readFileSync(join(ran.outdir, path), 'utf8')) > 0)).toEqual([])
+    expect(filesWithDigitRuns(ran.outdir)).toEqual([])
   }, 60_000)
 
   it('the binding finds a stack whose termination protection, deploy role, bootstrap version, account, Region or place a helper reports otherwise, a fact it reports that this file does not read, a stack or a manifest only one side holds, and an asset manifest that differs, on a planted assembly (C11-D70, C11-D74)', () => {
@@ -702,7 +710,7 @@ describe('C11-D23: the entries run under plain Node', () => {
   })
 
   it.each(WORKLOAD_RUNS)(
-    'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version), each asset manifest and every other file, the construct tree cdk-nag reads included, as the helper wrote them and as its app writes them again, with its stages the app’s own, so no test helper can hand them a profile, a run, a context, a construct tree or a stack’s facts the entry does not build (C11-D70, C11-D74)',
+    'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version), each asset manifest and every other file, the construct tree cdk-nag reads included, as the helper wrote them and as its app writes them again, with its stages the app’s own, so no test helper can hand them a profile, a run, a context, a construct tree or a stack’s facts the entry does not build (C11-D70, C11-D74), and no account id anywhere in that assembly (C11-D24)',
     async (_name, context, options, stackNames) => {
       const ran =
         context === undefined
@@ -713,6 +721,9 @@ describe('C11-D23: the entries run under plain Node', () => {
             })
       expect(ran.stderr).toBe('')
       expect(ran.code).toBe(0)
+      // No account id in any file of this run's assembly, nested stages included (C11-D24): a value
+      // only this run builds is in no other assembly a check reads.
+      expect(filesWithDigitRuns(ran.outdir)).toEqual([])
       const rendered = templatesIn(ran.outdir)
       expect([...rendered.keys()].sort()).toEqual(stackNames)
       const { templates, synthesised, app, stages } = synthWorkload(options)
