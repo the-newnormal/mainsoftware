@@ -3,8 +3,11 @@
 // generator makes from the pinned CLI's own template, differs from that template only by the model
 // deny on each of its five roles, one trust statement more in the deploy and file-publishing roles,
 // allowing sts:SetSourceIdentity to the account's hearth-break-glass role alone (which a break-glass
-// session's chain into them needs, and nobody else may use to stamp a name: C11-D11, C11-D27), and the
-// variant's default, fits the landing zone's bootstrap version and qualifier, keeps the stock
+// session's chain into them needs, and nobody else may use to stamp a name: C11-D11, C11-D27), the
+// deploy role's read of the parameters under /hearth/, straight after the stock ReadVersion (which
+// CloudFormation needs to resolve the workload stacks' SSM-typed parameters as the caller at
+// CreateChangeSet: C11-D24, C0.11 PR 3), and the variant's default, fits the landing zone's and the
+// workload's bootstrap versions and qualifiers, keeps the stock
 // template's S3 delete grants and lifecycle rules where they were, passes IAC-01's model check and
 // its own copy of the template check (no Lambda, custom resource, transform or import, its one export
 // pinned), and fits the request body `cdk bootstrap` sends. The generator's refusals are proved on
@@ -28,6 +31,7 @@ import {
   modelCheck,
   policyStatements,
 } from '../src/testing/policies.ts'
+import { synthWorkload } from '../src/testing/workload.ts'
 import {
   BOOTSTRAP_ROLES,
   type CfnTemplate,
@@ -68,6 +72,25 @@ const BREAK_GLASS_SOURCE_IDENTITY = {
     ArnEquals: {
       'aws:PrincipalArn': { 'Fn::Sub': `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/hearth-break-glass` },
     },
+  },
+}
+
+// The one statement the deploy role's grants gain (C11-D24): ssm:GetParameter and GetParameters on the
+// account's parameters under /hearth/, in its own Region, the ARN joined from its parts here.
+const variable = (name: string) => `\${${name}}`
+const READ_PARAMETERS = {
+  Sid: 'HearthReadParameters',
+  Effect: 'Allow',
+  Action: ['ssm:GetParameter', 'ssm:GetParameters'],
+  Resource: {
+    'Fn::Sub': [
+      'arn',
+      variable('AWS::Partition'),
+      'ssm',
+      variable('AWS::Region'),
+      variable('AWS::AccountId'),
+      'parameter/hearth/*',
+    ].join(':'),
   },
 }
 
@@ -115,6 +138,31 @@ function differences(before: unknown, after: unknown, path = ''): Difference[] {
 const trustStatements = (template: CfnTemplate, role: string): unknown[] => {
   const trust = propertiesOf(template, role).AssumeRolePolicyDocument
   return isObject(trust) && Array.isArray(trust.Statement) ? trust.Statement : []
+}
+
+// Every statement of every role's inline policies with this Sid, as "role policy after <the Sid before
+// it> as written" (or "changed" when it differs from READ_PARAMETERS), and the template with each taken
+// out, so (d) holds the rest to the other changes by path.
+function parameterReads(template: CfnTemplate): { found: string[]; rest: CfnTemplate } {
+  const rest = structuredClone(template)
+  const found: string[] = []
+  for (const role of typesOf(rest, 'AWS::IAM::Role')) {
+    const policies = propertiesOf(rest, role).Policies
+    for (const policy of Array.isArray(policies) ? policies : []) {
+      const document = isObject(policy) && isObject(policy.PolicyDocument) ? policy.PolicyDocument : {}
+      const statements: unknown[] = Array.isArray(document.Statement) ? document.Statement : []
+      for (let i = statements.length - 1; i >= 0; i--) {
+        const statement = statements[i]
+        if (!isObject(statement) || statement.Sid !== READ_PARAMETERS.Sid) continue
+        const before = statements[i - 1]
+        found.push(
+          `${role} ${isObject(policy) ? String(policy.PolicyName) : '?'} after ${isObject(before) ? String(before.Sid) : 'nothing'} ${isDeepStrictEqual(statement, READ_PARAMETERS) ? 'as written' : 'changed'}`,
+        )
+        statements.splice(i, 1)
+      }
+    }
+  }
+  return { found: found.sort(), rest }
 }
 
 // The differences the deny, the trust and the variant make, and nothing else: each role's deny
@@ -345,9 +393,44 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(render(missing)).not.toBe(render(withModelDeny(stock)))
   })
 
-  it('(d) it differs from the CLI’s template by the five denies, the two roles’ trust and the variant’s default alone', () => {
+  it('(d) it differs from the CLI’s template by the five denies, the two roles’ trust, the deploy role’s one parameter read straight after ReadVersion and the variant’s default alone', () => {
     const byPath = (list: Difference[]) => [...list].sort((a, b) => a.path.localeCompare(b.path))
-    expect(byPath(differences(stock, committed))).toEqual(byPath(expectedDifferences(stock)))
+    // The parameter read, exactly as written and exactly where it belongs, then everything else by path.
+    const { found, rest } = parameterReads(committed)
+    expect(found).toEqual(['DeploymentActionRole default after ReadVersion as written'])
+    expect(byPath(differences(stock, rest))).toEqual(byPath(expectedDifferences(stock)))
+    // The CLI's own template holds no such read, and one planted on another role, widened, or moved
+    // elsewhere in the deploy role's policy is found as such.
+    expect(parameterReads(stock).found).toEqual([])
+    const onLookup = structuredClone(committed)
+    for (const policy of propertiesOf(onLookup, 'LookupRole').Policies as Array<{
+      PolicyName: string
+      PolicyDocument: { Statement: unknown[] }
+    }>) {
+      if (policy.PolicyName === 'LookupRolePolicy')
+        policy.PolicyDocument.Statement.push(structuredClone(READ_PARAMETERS))
+    }
+    expect(parameterReads(onLookup).found).toEqual([
+      'DeploymentActionRole default after ReadVersion as written',
+      'LookupRole LookupRolePolicy after DontReadSecrets as written',
+    ])
+    const widened = structuredClone(committed)
+    for (const policy of propertiesOf(widened, 'DeploymentActionRole').Policies as Array<{
+      PolicyDocument: { Statement: Array<Record<string, unknown>> }
+    }>) {
+      for (const statement of policy.PolicyDocument.Statement) {
+        if (statement.Sid === READ_PARAMETERS.Sid) statement.Resource = '*'
+      }
+    }
+    expect(parameterReads(widened).found).toEqual(['DeploymentActionRole default after ReadVersion changed'])
+    const moved = structuredClone(committed)
+    for (const policy of propertiesOf(moved, 'DeploymentActionRole').Policies as Array<{
+      PolicyDocument: { Statement: unknown[] }
+    }>) {
+      const at = policy.PolicyDocument.Statement.findIndex(s => isDeepStrictEqual(s, READ_PARAMETERS))
+      if (at >= 0) policy.PolicyDocument.Statement.push(...policy.PolicyDocument.Statement.splice(at, 1))
+    }
+    expect(parameterReads(moved).found).toEqual(['DeploymentActionRole default after Refactor as written'])
     const missing = structuredClone(committed)
     const policies = propertiesOf(missing, 'DeploymentActionRole').Policies as unknown[]
     propertiesOf(missing, 'DeploymentActionRole').Policies = policies.slice(0, -1)
@@ -380,7 +463,7 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     expect(roleDenies(conditional).FilePublishingRole).toEqual([])
   })
 
-  it('(f) its version is the bootstrap parameter’s and at least what every landing-zone stack requires, under the hearthbase qualifier', () => {
+  it('(f) its version is the bootstrap parameter’s and at least what every landing-zone stack requires, under the hearthbase qualifier, and every workload stack’s, under hearthapp', () => {
     const outputs = committed.Outputs as Record<string, { Value: unknown }>
     const version = Number(outputs.BootstrapVersion?.Value)
     expect(Number.isInteger(version)).toBe(true)
@@ -396,6 +479,17 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
       expect(stack.artifact.assumeRoleArn, stack.stackName).toContain('cdk-hearthbase-deploy-role-')
       const parameters = stack.template.Parameters as Record<string, { Default?: unknown }> | undefined
       expect(parameters?.BootstrapVersion?.Default, stack.stackName).toBe('/cdk-bootstrap/hearthbase/version')
+    }
+    // The workload's twelve stacks, deployed by the pipeline through hearthapp (C11-D26).
+    const workload = synthWorkload().synthesised
+    expect(workload.stacks.length).toBe(12)
+    for (const stack of workload.stacks) {
+      expect(stack.artifact.requiresBootstrapStackVersion ?? 0, stack.stackName).toBeGreaterThan(0)
+      expect(stack.artifact.requiresBootstrapStackVersion ?? 0, stack.stackName).toBeLessThanOrEqual(version)
+      expect(stack.artifact.bootstrapStackVersionSsmParameter, stack.stackName).toBe('/cdk-bootstrap/hearthapp/version')
+      expect(stack.artifact.assumeRoleArn, stack.stackName).toContain('cdk-hearthapp-deploy-role-')
+      const parameters = stack.template.Parameters as Record<string, { Default?: unknown }> | undefined
+      expect(parameters?.BootstrapVersion?.Default, stack.stackName).toBe('/cdk-bootstrap/hearthapp/version')
     }
   }, 60_000)
 
@@ -535,6 +629,43 @@ describe('IAC-24 (C11-D75): the bootstrap template is the CLI’s own, with the 
     const generated = withModelDeny(stock)
     expect(bodyLength(generated), spare(generated)).toBeLessThanOrEqual(ceiling)
   })
+
+  it('(l) the deploy role reads the parameters under /hearth/ in its own account and Region, which CloudFormation resolves the workload stacks’ SSM-typed parameters through as the caller, and no other statement of any role but the stock ReadVersion names an ssm:Get action', () => {
+    const reads = policyStatements(committed).filter(
+      s => s.type === 'AWS::IAM::Role' && s.actions.some(action => globsOverlap(action.toLowerCase(), 'ssm:get*')),
+    )
+    expect(reads.map(s => `${s.logicalId} ${s.effect} ${s.sid ?? '(no Sid)'}`)).toEqual([
+      'DeploymentActionRole Allow ReadVersion',
+      'DeploymentActionRole Allow HearthReadParameters',
+    ])
+    const [readVersion, read] = reads
+    expect(read?.actions).toEqual(['ssm:GetParameter', 'ssm:GetParameters'])
+    expect(read?.resources).toEqual([READ_PARAMETERS.Resource])
+    expect(read?.conditional).toBe(false)
+    expect(read?.condition).toBeUndefined()
+    // ReadVersion stays the stock template's: the bootstrap version's own parameter.
+    const stockReads = policyStatements(stock).filter(
+      s => s.type === 'AWS::IAM::Role' && s.actions.some(action => globsOverlap(action.toLowerCase(), 'ssm:get*')),
+    )
+    expect(stockReads.map(s => `${s.logicalId} ${s.sid ?? '(no Sid)'}`)).toEqual(['DeploymentActionRole ReadVersion'])
+    expect(readVersion?.resources).toEqual(stockReads[0]?.resources)
+    // Every workload stack reads its SSM-typed parameters under /hearth/, or the bootstrap version's.
+    const types = new Set<string>()
+    for (const stack of synthWorkload().synthesised.stacks) {
+      const parameters = (stack.template.Parameters ?? {}) as Record<string, { Type?: string; Default?: unknown }>
+      for (const [name, parameter] of Object.entries(parameters)) {
+        if (!String(parameter.Type).startsWith('AWS::SSM::Parameter::Value<')) continue
+        types.add(String(parameter.Type))
+        expect(String(parameter.Default), `${stack.stackName} ${name}`).toMatch(
+          name === 'BootstrapVersion' ? /^\/cdk-bootstrap\/hearthapp\/version$/ : /^\/hearth\/[a-z0-9/-]+$/,
+        )
+      }
+    }
+    expect([...types].sort()).toEqual([
+      'AWS::SSM::Parameter::Value<List<String>>',
+      'AWS::SSM::Parameter::Value<String>',
+    ])
+  })
 })
 
 describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t written for, naming what changed', () => {
@@ -550,7 +681,7 @@ describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t wri
     expect(differences(readCloudFormationFile(STOCK_TEMPLATE), stock)).toEqual([])
   })
 
-  it('refuses a sixth role, Policies given as Fn::If, an existing hearth-no-models, a user, another managed policy, a version mismatch and a trust it wasn’t written for', () => {
+  it('refuses a sixth role, Policies given as Fn::If, an existing hearth-no-models, a user, another managed policy, a version mismatch, a deploy role with no ReadVersion, a template already naming HearthReadParameters and a trust it wasn’t written for', () => {
     const cases: Array<[string, CfnTemplate, RegExp]> = [
       [
         'a sixth role',
@@ -613,6 +744,27 @@ describe('IAC-24 (C11-D75): the generator refuses a CLI template it wasn’t wri
           if (isObject(statement)) statement.Condition = { Bool: { 'aws:SecureTransport': 'true' } }
         }),
         /FilePublishingRole's trust doesn't hold exactly one same-account sts:TagSession statement/,
+      ],
+      [
+        'a deploy role with no ReadVersion statement',
+        plant(t => {
+          for (const policy of propertiesOf(t, 'DeploymentActionRole').Policies as Array<{
+            PolicyDocument: { Statement: Array<{ Sid?: string }> }
+          }>) {
+            policy.PolicyDocument.Statement = policy.PolicyDocument.Statement.filter(s => s.Sid !== 'ReadVersion')
+          }
+        }),
+        /DeploymentActionRole's inline policies hold 0 ReadVersion statements, not one/,
+      ],
+      [
+        'a CLI template already holding HearthReadParameters',
+        plant(t => {
+          const [policy] = propertiesOf(t, 'DeploymentActionRole').Policies as Array<{
+            PolicyDocument: { Statement: unknown[] }
+          }>
+          policy?.PolicyDocument.Statement.push(structuredClone(READ_PARAMETERS))
+        }),
+        /the template already names HearthReadParameters/,
       ],
       [
         'a deploy role whose trust already names sts:SetSourceIdentity',

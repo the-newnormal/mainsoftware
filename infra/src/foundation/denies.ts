@@ -7,7 +7,16 @@
 // Statement ids are fixed strings, which the assertion tests pin.
 import { arnPattern, bucketArns, roleArn } from '../config/arns.ts'
 import { modelDenyActions } from '../config/models.ts'
-import { LOG_BUCKET_PREFIX, QUALIFIER, ROLE, TAG_KEY, type TaskRoleKind } from '../config/names.ts'
+import {
+  LOG_BUCKET_PREFIX,
+  QUALIFIER,
+  ROLE,
+  TAG_KEY,
+  type TaskRoleKind,
+  TOOLKIT_STACK,
+  WORKLOAD_STACK_PARTS,
+  workloadStackName,
+} from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 
 // One IAM statement as a policy document holds it. No statement here or in any landing-zone policy
@@ -72,6 +81,16 @@ export const LOG_BUCKET_PATTERNS = (): string[] =>
 // (`cdk-<qualifier>-assets-<account>-<region>`): it holds each Baseline's template, which CloudFormation
 // runs as the hearthbase execution role (C11-D26).
 export const BASE_ASSETS = (): string[] => bucketArns(`cdk-${QUALIFIER.base}-assets-*`)
+// hearthapp's staging bucket in any account, and its objects: it holds each workload stack's template,
+// which CloudFormation runs as the hearthapp execution role (C11-D26).
+export const APP_ASSETS = (): string[] => bucketArns(`cdk-${QUALIFIER.app}-assets-*`)
+
+// The workload stacks in any environment, by their four parts (never Hearth-<env>-*, which would take in
+// the Baselines and C0.12's Edge stacks), and hearthapp's toolkit stack (C11-D26, C11-D27).
+export const WORKLOAD_STACKS = (): string[] => [
+  ...WORKLOAD_STACK_PARTS.map(part => workloadStackName('*', part)),
+  TOOLKIT_STACK.app,
+]
 
 // Every write to a bucket or its objects, its configuration included, written as wildcards LCG-02
 // doesn't read as S3 calls (C11-D08).
@@ -141,6 +160,16 @@ export const ROUTE_OUT_ACTIONS: readonly string[] = [
   'ec2:CreateTransitGateway*',
   'ec2:CreateVpnGateway',
   'ec2:CreateCustomerGateway',
+]
+
+// Another way into a VPC than the bastion's alarmed port forward (C11-D29, C11-D40): nothing Hearth
+// builds uses one. An interface endpoint to a non-AWS service is held by IAC-12's exact endpoint set
+// instead, since its SCP condition is unproved (TECH-SPEC T24 item 13).
+export const OTHER_WAYS_IN: readonly string[] = [
+  'ec2:CreateClientVpnEndpoint',
+  'ec2:CreateInstanceConnectEndpoint',
+  'ec2:CreateVpcEndpointServiceConfiguration',
+  'ec2:CreateVerifiedAccess*',
 ]
 
 // What would change who a Rule 9 role is or what it may do, or hand it to a task (C11-D05).
@@ -214,9 +243,10 @@ export const APP_EXEC = roleArn('*', APP_EXEC_ROLE)
 // `cdk deploy` (C11-D26).
 export const BASE_DEPLOY = roleArn('*', `cdk-${QUALIFIER.base}-deploy-role-*-${REGION}`)
 export const APP_DEPLOY = roleArn('*', `cdk-${QUALIFIER.app}-deploy-role-*-${REGION}`)
-// hearthbase's file-publishing role, the one that uploads each Baseline's template to hearthbase's
-// staging bucket in a `cdk deploy` (C11-D26).
+// Each qualifier's file-publishing role, the one that uploads each stack's template to its staging
+// bucket in a `cdk deploy`: hearthbase's for the Baselines, hearthapp's for the workload stacks (C11-D26).
 export const BASE_PUBLISH = roleArn('*', `cdk-${QUALIFIER.base}-file-publishing-role-*-${REGION}`)
+export const APP_PUBLISH = roleArn('*', `cdk-${QUALIFIER.app}-file-publishing-role-*-${REGION}`)
 // The role Organizations makes in each member account (C11-D02).
 export const OAAR = roleArn('*', ROLE.oaar)
 export const BREAK_GLASS = roleArn('*', ROLE.breakGlass)

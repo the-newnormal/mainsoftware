@@ -7,7 +7,10 @@
 // - hearth-break-glass (C11-D11, C11-D12);
 // - the ops topic and the fast alarms: A1, A14 and A15, and in prod A7 and A8 (C11-D16);
 // - the server image's repository (C11-D44) and the public zones (C11-D43);
-// - the SSM parameters the workload stacks and the break-glass helper read by name (C11-D24).
+// - the SSM parameters the workload stacks and the break-glass helper read by name (C11-D24), the
+//   organisation's id among them, which every workload endpoint policy compares (C11-D30): the workload
+//   entry holds no configuration, so its Platform stack reads the id by name and CloudFormation resolves
+//   it at deploy.
 // Nothing here refers to another stack: names cross accounts by construction (src/config/names.ts).
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
@@ -101,6 +104,13 @@ export class BaselineStack extends cdk.Stack {
       parameterName: SSM_PARAMETER.breakGlassLogBucket,
       stringValue: logBucketName('breakGlass', logArchive),
       description: 'The bucket break-glass entries are written to (C11-D13)',
+    })
+    // The organisation's id, which the workload's endpoint policies compare as the principal's and the
+    // resource's organisation (C11-D30): published here so no workload source or deploy input holds it.
+    new ssm.StringParameter(this, 'OrganisationId', {
+      parameterName: SSM_PARAMETER.organisationId,
+      stringValue: config.organization.id,
+      description: 'The organisation id the workload endpoint policies compare (C11-D30)',
     })
   }
 }

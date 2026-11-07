@@ -2,7 +2,8 @@
 // proves each on planted text and then holds the repository to it. This file and infra.test.ts are on
 // the owner's-read list (C11-D74): they hold the rules every infra change is checked against.
 //
-// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12.
+// Cases so far (C0.11 PR 1 to PR 3): IG-01 to IG-12, and C11-D62's synth scripts: synth:lz, and from
+// PR 3 the workload's synth (the pipeline's) and synth:ci (CI's), with no hook around any of them.
 import { posix } from 'node:path'
 import ts from 'typescript'
 import { globsOverlap, MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
@@ -475,7 +476,7 @@ const propertyName = (property: ts.ObjectLiteralElementLike): string | undefined
 // - a spread in props is followed by env written out, which overrides whatever the spread held, and a
 //   spread in env by its region written out;
 // - env and its region are written out, never by shorthand or as another value.
-// The templates' regions are IAC-13's, from C0.11 PR 3.
+// The templates' regions are IAC-13's (infra/src/aspects/templates.test.ts).
 export function regionFindings(path: string, source: string): Finding[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true)
   const found: Finding[] = []
@@ -2315,7 +2316,7 @@ export const ASSET_RULES: readonly CodeRule[] = [
   { id: 'IG-12', pattern: /\bDockerImage\s*\.\s*fromBuild\s*\(/, why: 'an image built at synth runs Docker' },
 ]
 
-// --- C11-D62: the landing-zone synth runs credential-free and offline ---------------------------
+// --- C11-D62: the synths run credential-free and offline ------------------------------------------
 
 // A command line's words as written, quotes kept, split at whitespace outside quotes.
 function rawWords(command: string): string[] {
@@ -2354,30 +2355,62 @@ export const SYNTH_LZ_ENVIRONMENT = [
   'HEARTH_FIXTURE=1',
 ] as const
 
-// The script itself, whole: one command, so nothing runs before, beside or after it outside env -i
-// (npm runs a script through sh with the caller's environment, AWS keys and all), and no option but
-// these, so no plugin, profile, role or instance credentials either. npm also runs a script's pre and
-// post hooks, and hands every script to a root .npmrc's script-shell, each with the caller's
-// environment, so synthHookProblems and npmrcProblems refuse those.
-export const SYNTH_LZ_SCRIPT = `env -i ${SYNTH_LZ_ENVIRONMENT.join(' ')} cdk synth --app 'node bin/landing-zone.ts' --no-lookups --no-notices --quiet`
+// The environment the workload's synth, the pipeline's, runs in (C0.11 PR 3): synth:lz's without the
+// fixture, so it builds the committed profiles alone and takes the release npm appends
+// (`npm run synth -w @hearth/infra -- -c release=<commit>:<digest>`, C11-D51), refusing a run without one.
+export const SYNTH_ENVIRONMENT: readonly string[] = SYNTH_LZ_ENVIRONMENT.filter(
+  assignment => assignment !== 'HEARTH_FIXTURE=1',
+)
+// CI's workload synth: the same with the fake-release marker, which only this script's string holds,
+// so the marker can't reach the pipeline's synth, whose env -i drops any marker its caller sets; the
+// entry refuses a release beside it (C11-D62).
+export const SYNTH_CI_ENVIRONMENT: readonly string[] = [...SYNTH_ENVIRONMENT, 'HEARTH_FAKE_RELEASE=1']
 
-// What's wrong with infra's synth:lz script: it must run the CLI in exactly that environment, as
-// synth of the landing-zone entry with no lookups, notices or output, and with no profile, role or
-// instance credentials, and be exactly SYNTH_LZ_SCRIPT; the parts are named first, to say what moved.
-export function synthScriptProblems(command: string): Finding[] {
+// Each script itself, whole: one command, so nothing runs before, beside or after it outside env -i
+// (npm runs a script through sh with the caller's environment, AWS keys and all), and no option but
+// these, so no plugin, profile, role, context or instance credentials either. npm also runs a
+// script's pre and post hooks, and hands every script to a root .npmrc's script-shell, each with the
+// caller's environment, so synthHookProblems and npmrcProblems refuse those.
+interface SynthScript {
+  app: string
+  environment: readonly string[]
+  script: string
+}
+const synthScript = (app: string, environment: readonly string[]): SynthScript => ({
+  app,
+  environment,
+  script: `env -i ${environment.join(' ')} cdk synth --app '${app}' --no-lookups --no-notices --quiet`,
+})
+
+// infra's three synth scripts, each with its entry, its environment and its whole string.
+export type SynthScriptName = 'synth:lz' | 'synth' | 'synth:ci'
+export const SYNTH_SCRIPTS: Readonly<Record<SynthScriptName, SynthScript>> = {
+  'synth:lz': synthScript('node bin/landing-zone.ts', SYNTH_LZ_ENVIRONMENT),
+  synth: synthScript('node bin/workload.ts', SYNTH_ENVIRONMENT),
+  'synth:ci': synthScript('node bin/workload.ts', SYNTH_CI_ENVIRONMENT),
+}
+export const SYNTH_LZ_SCRIPT = SYNTH_SCRIPTS['synth:lz'].script
+export const SYNTH_SCRIPT = SYNTH_SCRIPTS.synth.script
+export const SYNTH_CI_SCRIPT = SYNTH_SCRIPTS['synth:ci'].script
+
+// What's wrong with one of infra's synth scripts: it must run the CLI in exactly its environment, as
+// synth of its entry with no lookups, notices or output, and with no profile, role or instance
+// credentials, and be exactly its string; the parts are named first, to say what moved.
+export function synthScriptProblems(command: string, which: SynthScriptName): Finding[] {
+  const { app, environment, script } = SYNTH_SCRIPTS[which]
   const found: Finding[] = []
-  const at = 'infra/package.json synth:lz'
+  const at = `infra/package.json ${which}`
   const words = rawWords(command)
   if (words[0] !== 'env' || words[1] !== '-i')
     found.push(`${at}: C11-D62 starts with env -i, dropping every inherited variable`)
   const cdk = words.indexOf('cdk')
   const assignments = words.slice(2, cdk < 0 ? undefined : cdk)
-  if (JSON.stringify([...assignments].sort()) !== JSON.stringify([...SYNTH_LZ_ENVIRONMENT].sort())) {
-    found.push(`${at}: C11-D62 sets exactly ${SYNTH_LZ_ENVIRONMENT.join(' ')}`)
+  if (JSON.stringify([...assignments].sort()) !== JSON.stringify([...environment].sort())) {
+    found.push(`${at}: C11-D62 sets exactly ${environment.join(' ')}`)
   }
   const cli = cdk < 0 ? [] : words.slice(cdk)
-  if (cli.slice(0, 4).join(' ') !== "cdk synth --app 'node bin/landing-zone.ts'") {
-    found.push(`${at}: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'`)
+  if (cli.slice(0, 4).join(' ') !== `cdk synth --app '${app}'`) {
+    found.push(`${at}: C11-D62 runs cdk synth --app '${app}'`)
   }
   for (const flag of ['--no-lookups', '--no-notices', '--quiet']) {
     if (!cli.includes(flag)) found.push(`${at}: C11-D62 passes ${flag}`)
@@ -2385,29 +2418,37 @@ export function synthScriptProblems(command: string): Finding[] {
   for (const flag of ['--profile', '--role-arn', '--ec2creds']) {
     if (cli.some(word => word === flag || word.startsWith(`${flag}=`))) found.push(`${at}: C11-D62 passes no ${flag}`)
   }
-  if (found.length === 0 && command !== SYNTH_LZ_SCRIPT) {
-    found.push(`${at}: C11-D62 is exactly ${SYNTH_LZ_SCRIPT}, one command, so nothing runs outside env -i`)
+  if (found.length === 0 && command !== script) {
+    found.push(`${at}: C11-D62 is exactly ${script}, one command, so nothing runs outside env -i`)
   }
   return found
 }
 
-// The hooks npm runs around `npm run synth:lz` by themselves, each in its own shell with the caller's
-// environment, outside the script's env -i: a `cdk ls` there would reach STS with the caller's keys.
-// npm runs no root manifest's hook for `-w @hearth/infra`, so only infra's manifest is read.
-export const SYNTH_LZ_HOOKS = ['presynth:lz', 'postsynth:lz'] as const
+// The hooks npm runs around `npm run synth`, `synth:ci` or `synth:lz` by themselves, each in its own
+// shell with the caller's environment, outside the script's env -i: a `cdk ls` there would reach STS
+// with the caller's keys. npm runs no root manifest's hook for `-w @hearth/infra`, so only infra's
+// manifest is read.
+export const SYNTH_HOOKS = [
+  'presynth',
+  'postsynth',
+  'presynth:ci',
+  'postsynth:ci',
+  'presynth:lz',
+  'postsynth:lz',
+] as const
 
-// What's wrong with infra's manifest around synth:lz: a pre or post hook of it (C11-D62). The parsed
-// keys are read, so a key spelled with a JSON escape is found as npm finds it.
+// What's wrong with infra's manifest around its synth scripts: a pre or post hook of one (C11-D62).
+// The parsed keys are read, so a key spelled with a JSON escape is found as npm finds it.
 export function synthHookProblems(manifest: unknown): Finding[] {
   const scripts = (manifest as { scripts?: Record<string, unknown> } | null)?.scripts ?? {}
-  return SYNTH_LZ_HOOKS.filter(hook => Object.hasOwn(scripts, hook)).map(
+  return SYNTH_HOOKS.filter(hook => Object.hasOwn(scripts, hook)).map(
     hook =>
       `infra/package.json ${hook}: C11-D62 no ${hook} script: npm runs it with the caller's environment, outside env -i`,
   )
 }
 
 // What's wrong with a tracked root .npmrc (C11-D62): a script-shell, which names the program npm hands
-// every script to, synth:lz included, with the caller's environment before env -i runs. npm reads
+// every script to, the synth scripts included, with the caller's environment before env -i runs. npm reads
 // the key with or without quotes, and reads no workspace's own .npmrc. Its other case and underscore
 // spellings are refused too, though npm 11 ignores them, so a later npm that reads one changes nothing.
 export function npmrcProblems(text: string): Finding[] {
@@ -2416,13 +2457,16 @@ export function npmrcProblems(text: string): Finding[] {
     return /^script[-_]shell$/i.test(key)
   })
   return sets
-    ? [".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i"]
+    ? [
+        ".npmrc: C11-D62 sets no script-shell: npm hands the synth scripts to it with the caller's environment, before env -i",
+      ]
     : []
 }
 
-// What's wrong with ci.yml for the landing zone's synth (C11-D62): the check job runs synth:lz
-// straight after npm test, each step its run line alone (so neither is skipped by an if: or let fail
-// by continue-on-error), and the workflow can hold no AWS credential: no id-token permission, only
+// What's wrong with ci.yml for the synths (C11-D62): the check job runs synth:lz straight after npm
+// test, and synth:ci (C0.11 PR 3) straight after synth:lz, each step its run line alone (so none is
+// skipped by an if: or let fail by continue-on-error, and the pipeline's synth, which refuses with no
+// release, never stands in for CI's), and the workflow can hold no AWS credential: no id-token permission, only
 // contents: read at the top, no credentials action and no AWS_ variable. The id-token clause reads
 // every line, comments included, for id-token and write-all (which grants it), so a job's own
 // permissions can't ask for one in a block, a flow mapping or a quoted key, a uses: job included;
@@ -2435,6 +2479,11 @@ export function ciSynthProblems(text: string, steps: readonly string[]): Finding
   if (test < 0 || steps[test + 1] !== 'run: npm run synth:lz -w @hearth/infra') {
     found.push(
       '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test, each step its run line alone',
+    )
+  }
+  if (test < 0 || steps[test + 2] !== 'run: npm run synth:ci -w @hearth/infra') {
+    found.push(
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:ci -w @hearth/infra straight after synth:lz, its run line alone',
     )
   }
   if (/id-token|write-all/i.test(text)) {
