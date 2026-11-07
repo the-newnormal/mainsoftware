@@ -35,14 +35,15 @@ import {
 import { type EnvironmentName, type Profile, REGION } from '../config/profiles.ts'
 
 // One IAM statement as a workload document holds it. A Resource or Condition value may be a token (an
-// account, a VPC's id, the organisation's id from SSM), which CloudFormation renders.
+// account, a VPC's id, the organisation's id from SSM), which CloudFormation renders. A trust's
+// statements name no resource.
 export interface IamStatement {
   Sid: string
   Effect: 'Allow' | 'Deny'
   Principal?: unknown
   Action?: string | readonly string[]
   NotAction?: string | readonly string[]
-  Resource: unknown
+  Resource?: unknown
   Condition?: Record<string, Record<string, unknown>>
 }
 
