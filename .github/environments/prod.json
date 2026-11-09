@@ -1,0 +1,9 @@
+{
+  "environment": "prod",
+  "required_reviewers": 1,
+  "prevent_self_review": false,
+  "wait_timer": 0,
+  "can_admins_bypass": false,
+  "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true },
+  "branch_policies": [{ "name": "main", "type": "branch" }]
+}
