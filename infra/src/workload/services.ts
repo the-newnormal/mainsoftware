@@ -25,11 +25,13 @@
 // public address; rolling deploys at 100 % minimum and 200 % maximum with the circuit breaker rolling a
 // failed release back; AZ rebalancing on; no ECS Exec; no autoscaling. The api and realtime are
 // registered with their target groups, read by name from SSM, where the profile has a load balancer,
-// with a 30 s health-check grace period, which only a service with a load balancer has (so never the
-// worker, and never a restore service). Realtime runs at least two tasks wherever there is a load
-// balancer (T19 item 16). There are no deployment alarms in C0.11 (C11-D39): SMK-02's expected 503
-// counts as a target 5xx, so an alarm that rolls back on it would roll back every deploy; C0.13 adds
-// them once SMK-02 expects 400.
+// with a 30 s health-check grace period exactly there, so never on the worker or a restore service.
+// That is a choice, not a limit: ECS applies a grace period to container health checks too, but it
+// has refused one on a service with no load balancer and whether it still does is unproved, so those
+// services rely on their container check's 20 s start period to cover their start. Realtime runs at
+// least two tasks wherever there is a load balancer (T19 item 16). There are no deployment alarms in
+// C0.11 (C11-D39): SMK-02's expected 503 counts as a target 5xx, so an alarm that rolls back on it
+// would roll back every deploy; C0.13 adds them once SMK-02 expects 400.
 //
 // The restore stage's services exist at desired 0, reading its placeholder Valkey host, unless
 // restoreActive is set (C11-D45).

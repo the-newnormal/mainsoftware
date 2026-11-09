@@ -61,9 +61,9 @@ const NO_CONTAINER_INSIGHTS = "Container Insights waits for C0.13's observabilit
 const PLAIN_ENVIRONMENT =
   'The plain environment holds no secret: the AUTH_SECRET is a reference, and C0.12 moves the database and Valkey URLs to secrets (C11-D37)'
 const VALKEY_ONE_NODE =
-  "One Valkey node, as C11-Q01's answer pulled it forward, until C0.12 decides on a replica; reachable only from the api, realtime and worker groups (C11-D35)"
+  "One Valkey node, as C11-Q01's answer pulled it forward, until C0.12 decides on a replica; reachable only from the api, realtime and worker groups, or a task a run-task call places in one of them (C11-D35)"
 const VALKEY_NO_AUTH =
-  "No Valkey AUTH until C0.12's ACL users; it is reachable over TLS only from the api, realtime and worker groups (C11-D35)"
+  "No Valkey AUTH until C0.12's ACL users; it is reachable over TLS only from the api, realtime and worker groups, or a task a run-task call places in one of them (C11-D35)"
 const NO_ROTATION = "The AUTH_SECRET's rotation, with AUTH_SECRET_PREVIOUS, is C0.12's (C11-D35)"
 const EXEC_ROLES =
   "The registry token takes no resource, and each execution role writes only its own log group's streams (C11-D38)"
