@@ -2,7 +2,7 @@
 
 ## What these are
 
-The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71), C0.10 added how records are kept and deleted (TECH-SPEC T23), and C0.11 the AWS set-up, break-glass, alerts and the quarterly review (TECH-SPEC T24). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
+The procedures the Data Protection Officer (DPO) and the people running Hearth follow when something needs doing by hand: PDPA-04's written manual procedure, the PDPA's accountability row, C0.9's Done and the C0 exit ("the breach runbook and the access and correction procedures are written"). They were written in C0.9 PR 3a (TECH-SPEC T22 item 46), C0.9 PR 3b moved the request procedures to the queue (item 60), the first-Owner bootstrap PR added the set-up's runbook (items 63 to 71), C0.10 added how records are kept and deleted (TECH-SPEC T23), and C0.11 the AWS set-up, break-glass, alerts, the quarterly review, and deploying and rolling back (TECH-SPEC T24). C1.11 runs them as timed dry runs and updates them for the Rule 9 service, and C6.1's consoles replace the request procedures.
 
 Every runbook but this one has the same sections, in this order: *Use this when*, *Who does what*, *Before you start*, *Steps*, *Check it worked*, *Afterwards* and *Code paths*. *Don't* may sit between them where a mistake would make things worse, and other sections, such as *Prevention*, may too. *Code paths* lists the code each one relies on, so a change to that code shows here (`scripts/guards/runbooks.test.ts`).
 
@@ -39,7 +39,8 @@ Hearth has no screen yet for signing out someone else's devices, resetting a PIN
 | [A request to correct someone's personal data](correction-request.md) | Someone asks for an error or omission to be corrected | The DPO |
 | [A withdrawal of consent, or an objection, carried out by hand](withdrawal-by-hand.md) | Someone withdraws deemed consent or objects; and before recording deemed consent by conduct for any purpose | The DPO |
 | [A question or complaint about how personal data is handled](complaints.md) | Someone asks or complains about how their personal data is handled | The DPO |
-| [Setting up the AWS organisation and its accounts](aws-account-set-up.md) | Building the landing zone, a tier-2 change, or the quarterly read-backs | The owner; a repo admin for GitHub's setting |
+| [Setting up the AWS organisation and its accounts](aws-account-set-up.md) | Building the landing zone, a tier-2 change, or the quarterly read-backs | The owner; a repo admin for GitHub's settings |
+| [Deploying a release, and rolling one back](deploy-and-rollback.md) | A merge is deploying, a release must be rolled back, a deploy is stuck or failed, the pipeline must be paused, the rehearsal or a restore is due | The owner approves; a repo admin pauses; the person on call for incidents |
 | [Reaching production: the break-glass role](break-glass.md) | Anyone needs production or the log-archive account | The person on call |
 | [A security alert](security-alerts.md) | An alert email from any account | The person on call; the DPO if personal data may be affected |
 | [The quarterly review of break-glass uses](break-glass-review.md) | Each quarter, and after any unexpected use | The second reviewer |

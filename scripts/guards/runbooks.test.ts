@@ -16,7 +16,7 @@
 //   leans on code that isn't there. A name() is a function a migration creates; an /api/… path is
 //   one the server registers (api.ts's prefixes joined to each route module's paths); any other
 //   /… path is one of the web app's (APP_PATHS, or NOTICE_PATH outside the shell); a repository
-//   path is a file; an access action (ADMIN_ACTIONS or SELF_ACTIONS) is one a server handler
+//   path (under apps/, packages/, db/, docs/, scripts/, infra/ or .github/) is a file; an access action (ADMIN_ACTIONS or SELF_ACTIONS) is one a server handler
 //   serves, named as action: '<name>' outside tests; and any other name (a log event, an audit
 //   result, a constant) appears in the server's or the packages' runtime code. Only that section
 //   is read, so a step may say in words what a later step brings, and a code path is listed only
@@ -339,7 +339,9 @@ function codePathProblem(name: string, world: CodeWorld): string | undefined {
   if (fn) return world.functions.has(fn[1] ?? '') ? undefined : 'no migration creates that function'
   if (name.startsWith('/api/')) return world.apiPaths.has(name) ? undefined : 'the api registers no such path'
   if (name.startsWith('/')) return world.webPaths.has(name) ? undefined : 'the web app has no such path'
-  if (/^(?:apps|packages|db|docs|scripts|infra)\//.test(name)) return world.files.has(name) ? undefined : 'no such file'
+  if (/^(?:apps|packages|db|docs|scripts|infra|\.github)\//.test(name)) {
+    return world.files.has(name) ? undefined : 'no such file'
+  }
   if (world.actions.has(name)) return world.served.has(name) ? undefined : 'no server handler serves that action'
   return world.mentions(name) ? undefined : 'the code holds no such name'
 }
@@ -459,7 +461,7 @@ describe('RB-04 (C0.9 PD-81): every code path a runbook names exists now', () =>
     ]),
     apiPaths: apiPathsOf(path => sources[path] ?? ''),
     webPaths: new Set(['/dpo/transfers', '/notice']),
-    files: new Set(['apps/server/src/admin/people.ts']),
+    files: new Set(['apps/server/src/admin/people.ts', '.github/workflows/deploy.yml']),
     actions: new Set(['person.reset_pin', 'person.change_phone']),
     served: new Set(['person.reset_pin']),
     mentions: name => ['sms_provider_unstated', 'PIN_RULE_SESSION'].includes(name),
@@ -475,6 +477,7 @@ describe('RB-04 (C0.9 PD-81): every code path a runbook names exists now', () =>
       '- `/api/admin/people/reset-pin`, `/api/admin/people/:person/devices`, `/api/devices`, `/api/admin/cases`',
       '- `/notice`, `/dpo/transfers`, `/dpo/cases`',
       '- `apps/server/src/admin/people.ts`, `apps/server/src/admin/cases.ts`',
+      '- `.github/workflows/deploy.yml`, `.github/workflows/gone.yml`',
       '- `person.reset_pin`, `person.change_phone`',
       '- `sms_provider_unstated`, `PIN_RULE_SESSION`, `sms_provider_lost`',
     ].join('\n')
@@ -484,6 +487,7 @@ describe('RB-04 (C0.9 PD-81): every code path a runbook names exists now', () =>
       'a.md: /api/admin/cases: the api registers no such path',
       'a.md: /dpo/cases: the web app has no such path',
       'a.md: apps/server/src/admin/cases.ts: no such file',
+      'a.md: .github/workflows/gone.yml: no such file',
       'a.md: person.change_phone: no server handler serves that action',
       'a.md: sms_provider_lost: the code holds no such name',
     ])

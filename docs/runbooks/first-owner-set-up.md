@@ -89,8 +89,8 @@ Each run without `--commit` is a plan: it runs every check and every write, then
 
 C0.11 gives production one path to the database: Session Manager's port forward through the bastion (TECH-SPEC T24 item 24). The steps that reach RDS work from C0.12, which makes the database, the bootstrap's login and the CA bundle's checksum; until then there is nothing to connect to. Non-prod takes the same path, with `nonprod` for `prod`.
 
-1. The person on call, in their own terminal outside any Claude Code session, with no AWS session open, pauses the deploy pipeline. The command is C0.11 PR 4's; until PR 4 there is no pipeline to pause.
-2. In the same terminal, still with no AWS session, they take a fresh checkout of the commit the database was migrated by (the release record's `migratedCommit`, from C0.11 PR 4) and install it with `npm ci --ignore-scripts`.
+1. The person on call, in their own terminal outside any Claude Code session, with no AWS session open, pauses the deploy pipeline (or has a repo admin pause it), as [Deploying a release, and rolling one back](deploy-and-rollback.md#pausing-and-resuming) gives it: disable the deploy workflow, then see that no run of it is in progress, queued or waiting, rejecting any waiting approval and letting a run past its migrate step or probe finish.
+2. In the same terminal, still with no AWS session, they take a fresh checkout of the commit the database was migrated by (the release record's `migratedCommit`, or a newer migration record's commit: [The commit the database was migrated by](deploy-and-rollback.md#the-commit-the-database-was-migrated-by)) and install it with `npm ci --ignore-scripts`.
 3. From C0.12, in the same terminal: they download RDS's regional CA bundle to a path outside the checkout, check it against the checksum C0.12 documents, and `export NODE_EXTRA_CA_CERTS=<that path>`.
 4. From the checkout's root, `infra/bin/break-glass.sh prod bootstrap:set-up` (or `bootstrap:correct-number`) opens the break-glass shell in the prod account; A1 fires, as expected.
 5. From C0.12, in the break-glass shell, they start the bastion and open its port forward to the writer endpoint, as [Reaching production: the break-glass role](break-glass.md#the-bastion-and-a-port-forward) gives them, with `<env>` `prod`; the forward runs as a background job of that same shell (its step 4), never in another terminal tab or window, which holds none of the session's credentials.
@@ -98,7 +98,7 @@ C0.11 gives production one path to the database: Session Manager's port forward 
 7. From C0.12, just before the plan: `export PGPASSWORD="$(aws rds generate-db-auth-token --hostname <writer endpoint> --port 5432 --region ap-southeast-1 --username hearth_bootstrap)"`, and again before the commit if 15 minutes have passed. The token names the writer endpoint and port 5432, never the local forward.
 8. From C0.12, the plan, then the commit, as [Steps](#steps) says.
 9. In the break-glass shell, they stop the forward (`kill %1`) and then the bastion ([the break-glass runbook](break-glass.md#the-bastion-and-a-port-forward), step 5), check that `jobs` lists nothing, run `unset doc PGPASSWORD`, and `exit`, giving the ids the commit printed, which the helper writes into the close entry.
-10. Back in their own terminal, they resume the deploy pipeline, whether or not the commit landed.
+10. Back in their own terminal, they resume the deploy pipeline ([Deploying a release, and rolling one back](deploy-and-rollback.md#pausing-and-resuming)), whether or not the commit landed.
 
 ### If it fails before it connects
 
