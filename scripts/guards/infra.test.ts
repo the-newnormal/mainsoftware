@@ -1,9 +1,11 @@
 // The infra source guard (IG, C0.11; TECH-SPEC T24 item 28): what the CDK app's source must and
 // mustn't hold, before any template is synthesised. Each case is first proved on planted text, then
 // held over the repository. The templates themselves are the assertion tests' (IAC, infra/**/*.test.ts).
-// Cases so far (C0.11 PR 1 to PR 3): IG-01 to IG-12, and C11-D62's synth scripts (synth:lz, and from
+// Cases so far (C0.11 PR 1 to PR 4): IG-01 to IG-12, and C11-D62's synth scripts (synth:lz, and from
 // PR 3 the workload's synth, the pipeline's, and synth:ci, CI's), with no hook around any of them and
-// no script-shell in a root .npmrc, and their ci.yml steps.
+// no script-shell in a root .npmrc, and their ci.yml steps. From PR 4, IG-08 holds every script under
+// infra/scripts/deploy/ to loading no npm package, and the id-token clause this file proved for ci.yml
+// is DPW-02's, proved in deploy-workflow.test.ts for every workflow (T24 item 28).
 // This file and infra.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -636,14 +638,27 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
     expect(graph.specifiers).toEqual(new Map([[floors, []]]))
   })
 
-  // PR 4 adds the check with the deploy workflow, so once the workflow exists a check under another
-  // name fails here, rather than leaving this case reading nothing.
-  it('the rollback floors’ check loads no npm package, and is there once the deploy workflow is (C0.11 PR 4)', () => {
-    const check = 'infra/scripts/deploy/floors-check.ts'
+  // The gate, prod-gate and the smoke jobs run the deploy scripts with no npm ci (C11-D58, C11-D54), so
+  // each script under infra/scripts/deploy/ loads no npm package, its graph read from its own file; the
+  // three the deploy workflow runs are there now that it is, so this case never reads nothing.
+  it('every deploy script loads no npm package, found on each with an npm import planted in it (C0.11 PR 4)', () => {
+    const scripts = files.filter(path => /^infra\/scripts\/deploy\/[^/]+\.ts$/.test(path) && !path.endsWith('.test.ts'))
+    expect(existsSync(join(root, '.github/workflows/deploy.yml'))).toBe(true)
+    expect(scripts).toEqual(
+      expect.arrayContaining([
+        'infra/scripts/deploy/floors-check.ts',
+        'infra/scripts/deploy/history.ts',
+        'infra/scripts/deploy/smoke.ts',
+      ]),
+    )
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
-    const graph = importGraph(check, read, importsOf)
-    if (existsSync(join(root, '.github/workflows/deploy.yml'))) expect(graph.files).toContain(check)
-    expect(packageFindings(graph.specifiers)).toEqual([])
+    for (const script of scripts) {
+      const planted = (path: string) => (path === script ? `import { z } from 'zod'\n${read(path) ?? ''}` : read(path))
+      expect(packageFindings(importGraph(script, planted, importsOf).specifiers), script).toContain(
+        `${script}: IG-08 loads zod, but runs without npm ci`,
+      )
+      expect(packageFindings(importGraph(script, read, importsOf).specifiers), script).toEqual([])
+    }
   })
 })
 
@@ -2427,7 +2442,7 @@ describe('C11-D62: the synth scripts run credential-free and offline, and CI run
     expect(npmrcProblems('engine-strict=true\nsave-exact=true\n; script-shell=bash\n# script-shell=bash\n')).toEqual([])
   }, 30_000)
 
-  it('ci.yml runs synth:lz straight after npm test and synth:ci straight after it, and holds no id-token, credentials action or AWS_ variable', () => {
+  it('ci.yml runs synth:lz straight after npm test and synth:ci straight after it, and holds no credentials action or AWS_ variable', () => {
     const ci = readRepoFile('.github/workflows/ci.yml')
     const stepsOf = (text: string) => workflowJobs(text).find(job => job.id === 'check')?.steps ?? []
     expect(stepsOf(ci).length).toBeGreaterThan(10)
@@ -2470,30 +2485,10 @@ describe('C11-D62: the synth scripts run credential-free and offline, and CI run
       .replace('@@lz@@', () => synthCiStep)
     expect(swapped).not.toBe(ci)
     expect(ciSynthProblems(swapped, stepsOf(swapped))).toEqual([...step, ...ciStep])
+    // Any other top-level permission (DPW-02 holds the id-token clause itself, for every workflow).
     expect(planted('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n')).toEqual([
-      '.github/workflows/ci.yml: C11-D62 no job may ask for an id-token',
       '.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone',
     ])
-    // A job's own permissions, in every spelling that grants an id-token, a uses: job's included.
-    const idToken = ['.github/workflows/ci.yml: C11-D62 no job may ask for an id-token']
-    const check = '  check:\n    needs: [secrets, audit]\n'
-    expect(planted(check, `${check}    permissions: write-all\n`)).toEqual(idToken)
-    expect(planted(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual(idToken)
-    expect(planted(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual(idToken)
-    expect(planted(check, `${check}    permissions:\n      "id-token": write\n`)).toEqual(idToken)
-    expect(
-      planted(
-        '  secrets:\n    uses: ./.github/workflows/secrets.yml\n',
-        '  secrets:\n    permissions:\n      id-token: write\n    uses: ./.github/workflows/secrets.yml\n',
-      ),
-    ).toEqual(idToken)
-    // An escape spells either word unseen, in a key or a value.
-    const escaped = [
-      '.github/workflows/ci.yml: C11-D62 no key or value is spelled with an escape, which could name id-token or write-all unseen',
-    ]
-    expect(planted(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual(escaped)
-    expect(planted(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual(escaped)
-    expect(planted(check, `${check}    permissions: "write\\x2Dall"\n`)).toEqual(escaped)
     expect(
       planted('      - run: npm ci\n', '      - uses: aws-actions/configure-aws-credentials@v4\n      - run: npm ci\n'),
     ).toEqual(['.github/workflows/ci.yml: C11-D62 no step takes AWS credentials'])

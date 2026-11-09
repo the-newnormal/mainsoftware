@@ -2,8 +2,11 @@
 // proves each on planted text and then holds the repository to it. This file and infra.test.ts are on
 // the owner's-read list (C11-D74): they hold the rules every infra change is checked against.
 //
-// Cases so far (C0.11 PR 1 to PR 3): IG-01 to IG-12, and C11-D62's synth scripts: synth:lz, and from
-// PR 3 the workload's synth (the pipeline's) and synth:ci (CI's), with no hook around any of them.
+// Cases so far (C0.11 PR 1 to PR 4): IG-01 to IG-12, and C11-D62's synth scripts: synth:lz, and from
+// PR 3 the workload's synth (the pipeline's) and synth:ci (CI's), with no hook around any of them. From
+// PR 4, IG-01 reads the deploy workflow, its environments and their script, IG-08 holds every script
+// under infra/scripts/deploy/ to loading no npm package, and the id-token clause ciSynthProblems held for
+// ci.yml is DPW-02's, for every workflow (scripts/guards/deploy-workflow.ts; T24 item 28).
 import { posix } from 'node:path'
 import ts from 'typescript'
 import { globsOverlap, MODEL_ACTIONS, MODEL_SERVICE_PREFIXES } from '../../infra/src/config/models.ts'
@@ -2470,13 +2473,11 @@ export function npmrcProblems(text: string): Finding[] {
 // What's wrong with ci.yml for the synths (C11-D62): the check job runs synth:lz straight after npm
 // test, and synth:ci (C0.11 PR 3) straight after synth:lz, each step its run line alone (so none is
 // skipped by an if: or let fail by continue-on-error, and the pipeline's synth, which refuses with no
-// release, never stands in for CI's), and the workflow can hold no AWS credential: no id-token permission, only
-// contents: read at the top, no credentials action and no AWS_ variable. The id-token clause reads
-// every line, comments included, for id-token and write-all (which grants it), so a job's own
-// permissions can't ask for one in a block, a flow mapping or a quoted key, a uses: job included;
-// and refuses a double-quoted key, or a key's double-quoted value, holding a backslash, since an
-// escape (id\x2Dtoken) could spell either unseen. DPW-02 (C0.11 PR 4) takes the id-token clause over
-// for every workflow.
+// release, never stands in for CI's), and the workflow can hold no AWS credential: only contents: read
+// at the top, no credentials action and no AWS_ variable. The id-token clause this held until C0.11
+// PR 4 (no id-token or write-all anywhere, comments included, in any case, and no key or value spelled
+// with a backslash escape) is DPW-02's now, held as it stood for every workflow but the deploy
+// workflow's five environment jobs (scripts/guards/deploy-workflow.ts; T24 item 28).
 export function ciSynthProblems(text: string, steps: readonly string[]): Finding[] {
   const found: Finding[] = []
   const test = steps.indexOf('run: npm test')
@@ -2488,18 +2489,6 @@ export function ciSynthProblems(text: string, steps: readonly string[]): Finding
   if (test < 0 || steps[test + 2] !== 'run: npm run synth:ci -w @hearth/infra') {
     found.push(
       '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:ci -w @hearth/infra straight after synth:lz, its run line alone',
-    )
-  }
-  if (/id-token|write-all/i.test(text)) {
-    found.push('.github/workflows/ci.yml: C11-D62 no job may ask for an id-token')
-  }
-  const quoted = String.raw`"(?:[^"\\\n]|\\.)*`
-  if (
-    new RegExp(String.raw`${quoted}\\(?:[^"\\\n]|\\.)*"\s*:(?:\s|$)`, 'm').test(text) ||
-    new RegExp(String.raw`^\s*(?:-\s+)?(?:[\w-]+|${quoted}")\s*:\s+${quoted}\\`, 'm').test(text)
-  ) {
-    found.push(
-      '.github/workflows/ci.yml: C11-D62 no key or value is spelled with an escape, which could name id-token or write-all unseen',
     )
   }
   if (!/^permissions:\n {2}contents: read\n(?! )/m.test(text)) {
