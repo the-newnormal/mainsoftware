@@ -41,6 +41,7 @@ import {
   deployStepFindings,
   evaluateIf,
   forbiddenWordFindings,
+  functionDefinitions,
   GENERAL_WORDS,
   gateFindings,
   JOB_IDS,
@@ -330,6 +331,25 @@ describe('DPW: the guard reads the deploy workflow', () => {
       'jq',
     ])
     expect(shellViews('echo "a # b" # c').text).toBe('echo "a # b"    ')
+  })
+
+  it('reads through a wrapper or a redirection before a command, and both spellings of a function', () => {
+    const read = (run: string) => shellCommands(run).map(command => [...command.prefixes, command.word].join(' '))
+    expect(read('command -p ./x.sh')).toEqual(['command -p ./x.sh'])
+    expect(read('exec -a name ./x.sh')).toEqual(['exec -a name'])
+    expect(read('time -p ./x.sh; nohup -- ./y.sh')).toEqual(['time -p ./x.sh', 'nohup -- ./y.sh'])
+    expect(read('timeout -s KILL 5 ./x.sh')).toEqual(['timeout -s KILL 5'])
+    expect(read('env -0')).toEqual(['env -0'])
+    expect(read('2>/dev/null aws sts get-caller-identity')).toEqual(['2>/dev/null aws'])
+    expect(read('</dev/null cp a b; x &>/dev/null y')).toEqual(['</dev/null cp', 'x'])
+    expect(read('[ ! -L "$x" ] && echo 2')).toEqual(['[', 'echo'])
+    expect(
+      functionDefinitions('mask() { cat; }\nfunction run { :; }\nget () ( : )\nlocal x=() y\necho "f() {"'),
+    ).toEqual([
+      { name: 'mask', line: 0 },
+      { name: 'run', line: 1 },
+      { name: 'get', line: 2 },
+    ])
   })
 
   it("evaluates an if: as GitHub would with some values unknown (Kleene's logic)", () => {
@@ -622,6 +642,28 @@ describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
     expect(
       timeoutAndGroupFindings(plant(check, `${check}    concurrency:\n      group: Deploy-Prod\n`, '', CI)),
     ).toEqual([`${CI}: DPW-05 names neither deploy-nonprod nor deploy-prod, in any letter case`])
+    // A group built by an expression could come to either deploy group, whatever its text.
+    const EXPRESSION = `${CI}: DPW-05 sets no concurrency group by an expression, which could come to deploy-nonprod or deploy-prod`
+    expect(
+      timeoutAndGroupFindings(
+        plant(
+          check,
+          `${check}    concurrency:\n      group: \${{ format('deploy-{0}', 'prod') }}\n      cancel-in-progress: true\n`,
+          '',
+          CI,
+        ),
+      ),
+    ).toEqual([EXPRESSION])
+    expect(
+      timeoutAndGroupFindings(
+        plant(
+          check,
+          `${check}    concurrency:\n      group: deploy-\${{ 'prod' }}\n      cancel-in-progress: true\n`,
+          '',
+          CI,
+        ),
+      ),
+    ).toEqual([EXPRESSION])
   })
 
   it('holds the repository', () => {
@@ -831,14 +873,12 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${line}\n`),
     )
   const MASK = 'masks secrets.AWS_ACCOUNT_ID (::add-mask::) before the credentials action'
+  const TRACE =
+    'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
 
   it('finds each planted breakage', () => {
-    expect(added('set -x')).toEqual([
-      at(readBack, 'runs no set -x, set -o xtrace, bare env or set, printenv, export -p or declare -p'),
-    ])
-    expect(added('env | sort')).toEqual([
-      at(readBack, 'runs no set -x, set -o xtrace, bare env or set, printenv, export -p or declare -p'),
-    ])
+    expect(added('set -x')).toEqual([at(readBack, TRACE)])
+    expect(added('env | sort')).toEqual([at(readBack, TRACE)])
     expect(added(`echo "\${{ inputs.release }}"`)).toEqual([
       at(readBack, 'takes inputs and outputs through env:, never an expression in its run'),
     ])
@@ -904,6 +944,45 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
         plant('      STAGE: nonprod\n', '      STAGE: nonprod\n      AWS_REGION: ap-southeast-1\n', job('nonprod')),
       ),
     ).toEqual([at('nonprod', 'sets no AWS_ variable and no ROLE_TO_ASSUME')])
+  })
+
+  // The preamble's filter undone after it, env in any use, and a wrapper or a redirection before aws: each
+  // would print what the filter is there to hide.
+  it('finds the preamble’s filter undone, env in any use, and a wrapper or a redirection before aws', () => {
+    const FILTER =
+      'defines mask, run and get only in its preamble, and no later definition, alias or unset changes them'
+    for (const line of [
+      'mask() { cat; }',
+      'run() { "$@"; }',
+      'get() { "$@"; }',
+      'function mask { cat; }',
+      'sed() { cat; }',
+      'unset -f mask',
+      'unset mask',
+      'alias mask=cat',
+    ]) {
+      expect(added(line)).toEqual([at(readBack, FILTER)])
+    }
+    for (const line of ['env -0', 'env -u X', 'X=1 env', 'jq -n env', 'declare -x']) {
+      expect(added(line)).toEqual([at(readBack, TRACE)])
+    }
+    const smoke = (before: string) =>
+      maskingFindings(
+        plant(
+          'node infra/scripts/deploy/smoke.ts',
+          `${before}node infra/scripts/deploy/smoke.ts`,
+          job('smoke-nonprod'),
+        ),
+      )
+    expect(smoke('env -0; ')).toEqual([at('smoke-nonprod (Smoke)', TRACE)])
+    expect(smoke('env -u X; ')).toEqual([at('smoke-nonprod (Smoke)', TRACE)])
+    for (const line of [
+      '2>/dev/null aws sts get-caller-identity',
+      'command -p aws sts get-caller-identity',
+      'time -p aws sts get-caller-identity',
+    ]) {
+      expect(added(line)).toEqual([at(readBack, 'runs every aws, CDK and skopeo command as run … or $(get …)')])
+    }
   })
 
   it('holds the repository', () => {
@@ -996,6 +1075,48 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(
       prodPathFindings(plant('      - name: Rolled back\n', '      - name: Rolled back, prod\n', job('rollback-prod'))),
     ).toEqual([at('rollback-prod', SAME_STEPS)])
+    // Each run the gates rest on is pinned whole: an early exit 0 or a forged output is found.
+    const WAIT = "waits for main's check and migrations for a deploy alone, read from ci.yml's own run and its jobs"
+    expect(
+      prodPathFindings(addedBefore('prod-gate', "main's own CI", '          DEADLINE=', '          exit 0\n')),
+    ).toEqual([at('prod-gate', WAIT)])
+    expect(
+      prodPathFindings(
+        addedBefore(
+          'prod-gate',
+          'The prod gate',
+          '          if ! OUT=$(node',
+          '          echo current_prod_id= >>"$GITHUB_OUTPUT"; exit 0\n',
+        ),
+      ),
+    ).toEqual([at('prod-gate', 'runs history.ts prod-gate with the mode')])
+    expect(
+      prodPathFindings(
+        addedBefore('prod', 'The fast re-check', '          newest=$(newest_release prod)\n', '          exit 0\n'),
+      ),
+    ).toEqual([at('prod', RECHECK)])
+    expect(
+      prodPathFindings(
+        addedBefore(
+          'nonprod',
+          'The fast re-check',
+          '          newest=$(newest_release nonprod)\n',
+          '          exit 0\n',
+        ),
+      ),
+    ).toEqual([at('nonprod', RECHECK)])
+    expect(
+      prodPathFindings(
+        addedBefore(
+          'gate',
+          'The pull request that made this commit, and its checks',
+          '          PULLS=',
+          `          jq -n '{pull: 1, check: "success", migrations: "success"}' >"$RUNNER_TEMP/checks.json"; exit 0\n`,
+        ),
+      ),
+    ).toEqual([
+      at('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs"),
+    ])
   })
 
   it('holds the repository', () => {
@@ -1345,6 +1466,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const WITH = 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source'
   const ENV = 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
+  const DEFINES =
+    'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does'
+  const SETS =
+    "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively'
   const readBack = (id: string) => `${id} (Read back what runs)`
@@ -1369,7 +1494,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', 'X=$(curl -s x)')).toEqual([at(readBack('nonprod'), RUNS)])
     expect(added('nonprod', './scripts/x.ts')).toEqual([at(readBack('nonprod'), RUNS)])
     expect(added('nonprod', '"$TOOL" x')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', 'jq() { :; }')).toEqual([at(readBack('nonprod'), RUNS)])
+    expect(added('nonprod', 'jq() { :; }')).toEqual([at(readBack('nonprod'), DEFINES)])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --no-rollback', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
     ])
@@ -1411,6 +1536,8 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         'nonprod (What runs)',
         'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk',
       ),
+      // The preamble changed is no preamble, so its mask, run and get are functions of the run's own.
+      at('nonprod (What runs)', DEFINES),
     ])
     expect(
       credentialedCodeFindings(
@@ -1439,7 +1566,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', "git -c alias.x='!node y.js' x")).toEqual(runs)
     expect(added('nonprod', 'gh extension exec x')).toEqual(runs)
     expect(added('nonprod', 'X=node; echo $X')).toEqual(runs)
-    expect(added('nonprod', 'mapfile -C cb -c 1 X <"$RUNNER_TEMP/x"')).toEqual(runs)
+    expect(added('nonprod', 'mapfile -C cb -c 1 X <"$RUNNER_TEMP/x"')).toEqual([...runs, at(readBack('nonprod'), SETS)])
     expect(added('nonprod', 'cat "$RUNNER_TEMP/assembly/x" > node_modules/aws-cdk/bin/cdk')).toEqual([
       at(readBack('nonprod'), WRITES),
     ])
@@ -1449,6 +1576,96 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ])
     expect(added('nonprod', 'export PATH="$RUNNER_TEMP/assembly:$PATH"')).toEqual([at(readBack('nonprod'), LOADER)])
     expect(added('nonprod', 'HOME="$RUNNER_TEMP/assembly"')).toEqual([at(readBack('nonprod'), LOADER)])
+  })
+
+  // A program run through a wrapper or after a redirection, a function out of its step or its canonical
+  // text, a tool that writes the file the CLI then runs, and a variable set by printf -v, read, for or an
+  // arithmetic or default assignment: each with the credentials in hand.
+  it('finds a wrapper, a redirection first, a function of its own and a tool that writes the file the CLI runs', () => {
+    const runs = [at(readBack('nonprod'), RUNS)]
+    for (const line of [
+      'command -p ./scripts/x.sh',
+      'exec -a name ./scripts/x.sh',
+      'time -p ./scripts/x.sh',
+      'nohup -- ./scripts/x.sh',
+      'timeout -s KILL 5 ./scripts/x.sh',
+      "command -p awk 'BEGIN{system(1)}'",
+      'builtin echo x',
+      'sudo -E true',
+      'xargs -0 true',
+      'env -0',
+      '>/dev/null ./scripts/x.sh',
+      '</dev/null cp "$RUNNER_TEMP/assembly/x" node_modules/aws-cdk/bin/cdk',
+      'uniq "$RUNNER_TEMP/assembly/x" node_modules/aws-cdk/bin/cdk',
+      'run aws s3 cp s3://x/y node_modules/aws-cdk/bin/cdk',
+      'set -- ./scripts/x.sh; "$@"',
+      'local -n ref=PATH',
+    ]) {
+      expect(added('nonprod', line)).toEqual(runs)
+    }
+    expect(added('nonprod', 'cp() { command cp "$@"; }\n          cp a node_modules/aws-cdk/bin/cdk')).toEqual([
+      ...runs,
+      at(readBack('nonprod'), DEFINES),
+    ])
+    expect(added('nonprod', 'function jq { :; }')).toEqual([at(readBack('nonprod'), DEFINES)])
+    // A function defined in one step and called in another, where bash no longer has it.
+    const readBackStep = stepText(deployText, 'nonprod', 'Read back what runs')
+    const recheckStep = stepText(deployText, 'nonprod', 'The fast re-check')
+    const newest = '          newest=$(newest_release nonprod)\n'
+    const crossed = edited(
+      edited(
+        deployText,
+        readBackStep,
+        edited(readBackStep, "          SERVICE_LIST='[]'\n", "          cp() { :; }\n          SERVICE_LIST='[]'\n"),
+        job('nonprod'),
+      ),
+      recheckStep,
+      edited(recheckStep, newest, `          cp a node_modules/aws-cdk/bin/cdk\n${newest}`),
+      job('nonprod'),
+    )
+    expect(credentialedCodeFindings(withText(DEPLOY, crossed), manifests, lockfile)).toEqual([
+      at('nonprod (The fast re-check)', RUNS),
+      at(readBack('nonprod'), DEFINES),
+    ])
+  })
+
+  // A variable that chooses what runs, or which assembly the CLI deploys, set by printf -v, read, mapfile,
+  // for, an arithmetic or a default assignment, or by NAME= where it may not be.
+  it('finds a variable that chooses what runs set otherwise than by NAME=, and one set where it may not be', () => {
+    for (const line of [
+      "printf -v PATH '%s' x",
+      'read -r PATH <<<"x"',
+      'for PATH in x; do jq -n 1; done',
+      'mapfile -t PATH < <(jq -n 1)',
+    ]) {
+      expect(added('nonprod', line)).toEqual([at(readBack('nonprod'), SETS)])
+    }
+    for (const line of [
+      'GITHUB_OUTPUT=node_modules/aws-cdk/bin/cdk',
+      '(( PATH = 1 ))',
+      'export TMPDIR="$GITHUB_WORKSPACE"',
+      `: "\${RUNNER_TEMP:=x}"`,
+    ]) {
+      expect(added('nonprod', line)).toEqual([at(readBack('nonprod'), LOADER)])
+    }
+    // The assembly the CLI deploys, chosen otherwise than by its one line.
+    const deployServices = (line: string, added: string) =>
+      credentialedCodeFindings(addedBefore('nonprod', 'Deploy Services', line, added), manifests, lockfile)
+    const assembly = '          ASSEMBLY="$RUNNER_TEMP/assembly"\n'
+    expect(deployServices(assembly, '          RUNNER_TEMP="$GITHUB_WORKSPACE"\n')).toEqual([
+      at('nonprod (Deploy Services)', LOADER),
+    ])
+    expect(deployServices(assembly, "          printf -v RUNNER_TEMP '%s' x\n")).toEqual([
+      at('nonprod (Deploy Services)', SETS),
+    ])
+    const folder = `          ${CDK_FOLDER}\n`
+    expect(deployServices(folder, '          read -r ASSEMBLY <<<"x"\n')).toEqual([
+      at('nonprod (Deploy Services)', SETS),
+    ])
+    expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([at('nonprod (Deploy Services)', CLI)])
+    expect(find('DIFF="$RUNNER_TEMP/diff.txt"', 'DIFF=node_modules/aws-cdk/bin/cdk', job('prod-plan'))).toEqual([
+      at('prod-plan (Diff)', WRITES),
+    ])
   })
 
   // A job or step key, an action input or an env: key that runs a program, or changes what runs, unseen.
@@ -1749,6 +1966,33 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         job('prod'),
       ),
     ).toEqual([at('prod (Push the image)', ONLY_PUSH)])
+  })
+
+  // A record job holds deployments: write, so it runs no repository code: one step, no action, and only
+  // bash's own, its functions, jq and gh api.
+  it('finds a checkout or a program in a record job', () => {
+    const RECORD = 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code'
+    const write = '      - name: Write the record\n'
+    const checkout = [
+      '      - name: Check out',
+      '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+      '        with:',
+      '          persist-credentials: false',
+      '      - name: Run code',
+      '        run: node scripts/x.ts',
+      '',
+    ].join('\n')
+    expect(find(write, `${checkout}${write}`, job('record-nonprod'))).toEqual([at('record-nonprod', RECORD)])
+    expect(
+      releaseFindings(
+        addedBefore('record-prod', 'Write the record', '          record() {\n', '          node scripts/x.ts\n'),
+      ),
+    ).toEqual([at('record-prod', RECORD)])
+    expect(
+      releaseFindings(
+        addedBefore('record-prod', 'Write the record', '          record() {\n', '          ./scripts/x.sh\n'),
+      ),
+    ).toEqual([at('record-prod', RECORD)])
   })
 
   it('holds the repository', () => {

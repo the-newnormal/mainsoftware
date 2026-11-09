@@ -7,18 +7,20 @@
 //
 // Beside the cases are the canonical texts the workflow pastes byte for byte wherever it runs them:
 // the preamble, the CLI's folder, the CLI, asset and AWS checks, the one-off runs and their parts,
-// the newest-release reader, the CLI's lines, the push and the synth's lines, so the workflow and
-// its guard can't drift apart unseen. A shell text here is a raw template in which a backtick is
-// written \` and a dollar-brace $\{, the one way it differs from the workflow's own text.
+// the newest-release reader, the gates' reads of the CI runs and prod-gate's call, the fast re-checks,
+// the CLI's lines, the push and the synth's lines, so the workflow and its guard can't drift apart
+// unseen. A shell text here is a raw template in which a backtick is written \` and a dollar-brace $\{,
+// the one way it differs from the workflow's own text.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and each run
 // step through shellViews() and shellCommands() below, which set aside what bash reads as data
-// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns),
-// so a word a rule forbids as a command is found where bash would run it and not where it is a jq path,
-// a message or a URL; the words no credentialed job may name at all (an interpreter's, say) are found
-// anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any value it doesn't
-// know could let a bot, a drill or a failed job through. This file decides who and what may deploy, so
-// it is on the owner's-read list (C11-D74).
+// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns)
+// and read through what comes before a command (an assignment, a redirection, a wrapper such as exec,
+// command or env), so a word a rule forbids as a command is found where bash would run it and not where
+// it is a jq path, a message or a URL; the words no credentialed job may name at all (an interpreter's,
+// say) are found anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any
+// value it doesn't know could let a bot, a drill or a failed job through. This file decides who and
+// what may deploy, so it is on the owner's-read list (C11-D74).
 import {
   type BlockValue,
   blockValue,
@@ -474,6 +476,116 @@ export const NEWEST_RELEASE = sh`newest_release() {
     | sort_by(.revision, .id) | last'
 }`
 
+// The gate's read of a deploy's pull request (C11-D49, DPW-08): the merged pull request whose merge commit
+// is this run's, its head's tree and its ci.yml run's check and migrations, read from the run and its jobs,
+// for history.ts plan to decide.
+export const PULL_CHECKS = sh`set -euo pipefail
+# For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
+# head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head (the
+# newest such run, read from the run and its jobs, never from a check run, which any token with
+# checks: write can make). history.ts plan decides; no merged pull request writes pull: null.
+if [ "$\{MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
+PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
+PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
+if [ "$PULL" = null ]; then
+  jq -n '{pull: null, base: "", mergeCommit: "", headTree: "", check: "", migrations: ""}' >"$RUNNER_TEMP/checks.json"
+  exit 0
+fi
+HEAD=$(jq -er '.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"$PULL")
+TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
+RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100")
+RUN_ID=$(jq -r --arg head "$HEAD" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $head)] | max_by(.id) | .id // ""' <<<"$RUNS")
+JOBS='{"jobs": []}'
+if [ -n "$RUN_ID" ]; then JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"); fi
+jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" '
+  def conclusion($name): [$jobs.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "missing" end;
+  {pull: $pull.number, base: $pull.base.ref, mergeCommit: $pull.merge_commit_sha, headTree: $tree, check: conclusion("check"), migrations: conclusion("migrations")}' >"$RUNNER_TEMP/checks.json"`
+
+// prod-gate's wait for main's own CI (C11-D52, DPW-08): ci.yml's push run on main for this commit, its check
+// and migrations jobs, until both succeed.
+export const MAIN_CI = sh`set -euo pipefail
+# main's own CI on this commit (C11-D52): ci.yml's push run on main, the newest, read from the run and
+# its jobs (never a check run, which any token with checks: write can make), until check and
+# migrations both succeed; any other conclusion fails at once, and 30 minutes ends the wait.
+DEADLINE=$((SECONDS + 30 * 60))
+while :; do
+  RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&event=push&branch=main&per_page=100")
+  RUN_ID=$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $sha)] | max_by(.id) | .id // ""' <<<"$RUNS")
+  if [ -n "$RUN_ID" ]; then
+    JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100")
+    CONCLUSIONS=$(jq -r '[("check", "migrations") as $name | [.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "pending" end] | join(" ")' <<<"$JOBS")
+    if [ "$CONCLUSIONS" = 'success success' ]; then break; fi
+    for CONCLUSION in $CONCLUSIONS; do
+      case "$CONCLUSION" in
+        success | pending) ;;
+        *)
+          echo "prod-gate: main's CI on this commit concluded $CONCLUSION"
+          exit 1
+          ;;
+      esac
+    done
+  fi
+  if [ "$SECONDS" -ge "$DEADLINE" ]; then
+    echo "prod-gate: main's CI on this commit didn't succeed within 30 minutes"
+    exit 1
+  fi
+  sleep 30
+done
+echo "prod-gate: main's check and migrations passed on this commit" >>"$GITHUB_STEP_SUMMARY"`
+
+// prod-gate's call of history.ts prod-gate (C11-D52, C11-D58, DPW-08), with the mode.
+export const PROD_GATE_CALL = sh`set -euo pipefail
+# history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release and its
+# image is the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
+# the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
+if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records"); then
+  printf '%s\n' "$OUT"
+  exit 1
+fi
+if ! [[ "$OUT" =~ ^current_prod_id=[0-9]*$ ]]; then
+  echo 'prod-gate: history.ts printed something else'
+  exit 1
+fi
+echo "$OUT" >>"$GITHUB_OUTPUT"`
+
+// The fast re-checks (C11-D52, DPW-08), before the credentials: the newest release record read again; a
+// deploy's ancestry (and in prod both digests), any other mode's record id.
+export const FAST_RECHECK_NONPROD = sh`set -euo pipefail
+# The fast re-check (C11-D52), before the credentials: non-prod's newest release record, read again
+# and checked by its shape. A deploy's commit descends from it (none on a first deploy); any other
+# mode finds the record the gate read.
+${NEWEST_RELEASE}
+newest=$(newest_release nonprod)
+if [ "$MODE" = deploy ]; then
+  if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then
+    echo "fast re-check: nonprod's newest release isn't an ancestor of this commit"
+    exit 1
+  fi
+elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
+  echo "fast re-check: nonprod's release records changed since the gate read them"
+  exit 1
+fi`
+export const FAST_RECHECK_PROD = sh`set -euo pipefail
+# The fast re-check (C11-D52), after the approval and before the credentials: prod's newest release
+# record, read again and checked by its shape. A deploy's commit descends from it (none on a first
+# deploy) and its image is the one the build made and non-prod deployed in this run; a rollback or
+# a restore finds the record prod-gate read.
+${NEWEST_RELEASE}
+newest=$(newest_release prod)
+if [ "$MODE" = deploy ] && [ "$TARGET" = prod ]; then
+  if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then
+    echo "fast re-check: prod's newest release isn't an ancestor of this commit"
+    exit 1
+  fi
+  if ! [[ "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || [ "$BUILD_DIGEST" != "$NONPROD_DIGEST" ]; then
+    echo "fast re-check: the image isn't the one the build made and non-prod deployed"
+    exit 1
+  fi
+elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
+  echo "fast re-check: prod's release records changed since prod-gate read them"
+  exit 1
+fi`
+
 // The CLI's lines (C11-D52, C11-D59, C11-D76; TECH-SPEC T24 items 11 and 18, DPW-06, DPW-10): one per shape,
 // each naming its stacks through "$STAGE", which its job sets once, and its folder through "$ASSEMBLY",
 // which its step sets once; every deploy with --exclusively.
@@ -823,10 +935,10 @@ function commandCode(code: string): string {
 }
 
 // A command bash would run, by its line in the run: its word (as the code view shows it, a quoted word's
-// text blanked), the prefixes before it (run, get, exec, command, env, an assignment, …), and whether it
-// is the first command of a $( … ), whose output is captured. A word starts a command at the start of a
-// line, after ; & | ! or a keyword (never a keyword itself), inside $( … ), <( … ) or a subshell's ( … ),
-// or after a group's {.
+// text blanked), the prefixes before it (run, get, a wrapper such as exec, command or env with its flags,
+// an assignment, a redirection), and whether it is the first command of a $( … ), whose output is
+// captured. A word starts a command at the start of a line, after ; & | ! or a keyword (never a keyword
+// itself), inside $( … ), <( … ) or a subshell's ( … ), or after a group's {.
 export interface ShellCommand {
   line: number
   prefixes: string[]
@@ -834,12 +946,28 @@ export interface ShellCommand {
   substituted: boolean
   // Its arguments as the command code shows them, up to the next ;, |, &, ) or substitution.
   rest: string
+  // The rest of its line as the command code shows it, up to the next ;, | or &.
+  tail: string
 }
 
+// The words that run the command after them (time, bash's keyword, among them). The reader reads
+// through each with its flags, so the command it runs is seen, and a credentialed run uses none (DPW-10).
+export const WRAPPERS: readonly string[] = [
+  'exec',
+  'command',
+  'builtin',
+  'nohup',
+  'time',
+  'sudo',
+  'xargs',
+  'timeout',
+  'env',
+]
+
 const COMMAND = new RegExp(
-  String.raw`(^|[;|!]|(?<![<>])&|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)|\b(?:then|do|else|elif|if|while|until|time)(?=\s))\s*` +
-    String.raw`((?:(?:run|get|exec|command|builtin|nohup|sudo(?:\s+-\S+)*|xargs(?:\s+-\S+)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*)\s+)*)` +
-    String.raw`(?!(?:then|do|else|elif|if|while|until|time)(?![\w-])|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
+  String.raw`(^|[;|!]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)|\b(?:then|do|else|elif|if|while|until)(?=\s))\s*` +
+    String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"]+))\s+)*)` +
+    String.raw`(?!(?:then|do|else|elif|if|while|until)(?![\w-])|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
   'g',
 )
 
@@ -853,27 +981,53 @@ export function shellCommands(run: string): ShellCommand[] {
       const read = views.quotedLines.has(line) ? `)${text}` : text
       for (const match of read.matchAll(COMMAND)) {
         const word = match[3] ?? ''
+        const prefixes = (match[2] ?? '').trim().split(/\s+/).filter(Boolean)
         // An assignment alone (X=$(…)) runs nothing itself, what it substitutes is read after it, and a
-        // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2).
-        if (/^[A-Za-z_]\w*\+?=|^[-=\d]/.test(word)) continue
+        // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2),
+        // but after a wrapper, whose flag or operand it is (command -p, timeout 5), it is kept, so the
+        // wrapper is seen.
+        if (/^[A-Za-z_]\w*\+?=/.test(word)) continue
+        if (/^[-=\d]/.test(word) && !prefixes.some(prefix => WRAPPERS.includes(prefix))) continue
         const after = read.slice(match.index + match[0].length)
         commands.push({
           line,
-          prefixes: (match[2] ?? '').trim().split(/\s+/).filter(Boolean),
+          prefixes,
           word,
           substituted: match[1] === '$(',
           rest: after.slice(0, after.search(/[;|&)]|[$<>]\(|$/)),
+          tail: after.slice(0, after.search(/[;|&]|$/)),
         })
       }
     })
   return commands
 }
 
-// The functions a run defines (name() {), each as bash would then run it.
-const definedFunctions = (run: string) =>
-  [...shellViews(run).code.matchAll(/(?:^|[;&|({]\s*|\n\s*)([A-Za-z_][\w-]*)\s*\(\)\s*\{/g)].map(
-    match => match[1] ?? '',
-  )
+// The functions a run defines, in either of bash's spellings (name () body, or function name body), each
+// with its line in the run.
+const FUNCTION_NAME = String.raw`[^\s;&|()<>'"$=\`\\]+`
+const DEFINITION = new RegExp(
+  String.raw`(?:^|[\s;&|(){}])(?:function\s+(${FUNCTION_NAME})|(${FUNCTION_NAME})\s*\(\s*\))`,
+  'g',
+)
+export function functionDefinitions(run: string): Array<{ name: string; line: number }> {
+  const found: Array<{ name: string; line: number }> = []
+  commandCode(shellViews(run).code)
+    .split('\n')
+    .forEach((text, line) => {
+      for (const match of text.matchAll(DEFINITION)) found.push({ name: match[1] ?? match[2] ?? '', line })
+    })
+  return found
+}
+
+// An assignment to one of the names in any of bash's spellings: NAME=, NAME+=, NAME[i]=, export, local
+// or readonly NAME=, (( NAME = … )), $(( NAME += … )) and ${NAME:=…}. (printf -v, read, mapfile and for
+// set a variable too: a credentialed run uses them only on DPW-10's SETTER_LINES.)
+const assigns = (names: string) =>
+  new RegExp(String.raw`(?<![\w$.-])(?:${names})(?:\[[^\]]*\])?\s*(?:[-+*/%&|^:]|<<|>>)?=(?!=)`)
+const STAGE_ASSIGNMENT = assigns('STAGE')
+const CDK_ASSIGNMENT = assigns('CDK')
+const ASSEMBLY_ASSIGNMENT = assigns('ASSEMBLY')
+const DIFF_ASSIGNMENT = assigns('DIFF')
 
 // Each line of a run with its two views, for the rules that read a line's text or its code.
 function runLines(run: string): Array<{ index: number; raw: string; text: string; code: string }> {
@@ -1229,8 +1383,8 @@ const GROUP_OF: Readonly<Record<string, string>> = {
 // DPW-05 (C11-D47, C11-D79): every job has a timeout at most its figure and sets cache-mode: none; nonprod and
 // rollback-nonprod hold exactly the group deploy-nonprod and prod and rollback-prod deploy-prod, each with
 // cancel-in-progress false; no other job and no workflow-level concurrency; and no other workflow names
-// either group in any letter case (groups are the repository's and ignore case, so one there could hold
-// or cancel a deploy).
+// either group in any letter case, or sets a concurrency group by an expression, which could come to
+// either (groups are the repository's and ignore case, so one there could hold or cancel a deploy).
 export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const text = workflows.get(DEPLOY) ?? ''
@@ -1273,11 +1427,40 @@ export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
     }
   })
   for (const [path, other] of workflows) {
-    if (path !== DEPLOY && GROUPS.test(other)) {
+    if (path === DEPLOY) continue
+    if (GROUPS.test(other)) {
       found.push(at(path, 'DPW-05', 'names neither deploy-nonprod nor deploy-prod, in any letter case'))
+    }
+    if (concurrencyBlocks(other).some(block => block.includes('${{'))) {
+      found.push(
+        at(
+          path,
+          'DPW-05',
+          'sets no concurrency group by an expression, which could come to deploy-nonprod or deploy-prod',
+        ),
+      )
     }
   }
   return found
+}
+
+// Each concurrency: key in a workflow, at any depth (the top level's or a job's), with its value and every
+// line under it, comments blanked.
+function concurrencyBlocks(text: string): string[] {
+  const lines = text.split('\n').map(line => line.replace(/(^|\s)#.*$/, '$1'))
+  const blocks: string[] = []
+  lines.forEach((line, index) => {
+    const key = /^(\s*)(?:-\s+)?concurrency\s*:(.*)$/.exec(line)
+    if (!key) return
+    const depth = (key[1] ?? '').length
+    const block = [key[2] ?? '']
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() !== '' && next.length - next.trimStart().length <= depth) break
+      block.push(next)
+    }
+    blocks.push(block.join('\n'))
+  })
+  return blocks
 }
 
 // --- DPW-06: the deploy jobs' steps ------------------------------------------------------------------------
@@ -1449,7 +1632,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
         if (line.text.includes('get-log-events') && !(ONE_OFF_LINES.has(raw) && run.includes(ONE_OFF))) {
           add(id, "only the one-off's end reads a task's log, and prints only its kind's lines")
         }
-        if (/(?:^|[\s;&|(])(?:export\s+|declare\s+(?:-\S+\s+)*|local\s+|readonly\s+)?STAGE=/.test(line.code)) {
+        if (STAGE_ASSIGNMENT.test(line.code)) {
           add(id, `sets STAGE once, at the job, to ${wantStage ?? 'nothing'}`)
         }
         const cdk = /"\$CDK"|\$\{?CDK\b/.test(line.text) && !/(?:^|[\s;&|(])CDK=/.test(line.code)
@@ -1591,16 +1774,26 @@ const credentialsWith = (role: string): Readonly<Record<string, string>> => ({
 
 const TRACE =
   /\bset\s+(?:-[A-Za-z]*x[A-Za-z]*\b|[-+]o\s+xtrace\b)|\bprintenv\b|\b(?:export|declare|typeset)\s+-[A-Za-z]*p\b/
+// env as a word outside quotes and comments: as a command (env -0, env -u X) or handed to one (xargs env,
+// jq -n env), each of which prints the environment. No run uses it.
+const ENV_WORD = /(?<![\w.$/-])env(?![\w./=-])/
+// The builtins that print every variable they're given no name for (declare -x, local, readonly).
+const PRINTS_VARIABLES = ['declare', 'typeset', 'export', 'readonly', 'local']
+// The preamble's functions and the sed mask runs, which a credentialed run defines only in its preamble
+// and never unsets or shadows by an alias, so every later run …, $(get …) and summary write is filtered.
+const FILTER_FUNCTIONS = ['mask', 'run', 'get', 'sed']
+const PREAMBLE_LINES = PREAMBLE.split('\n').length
 // What comes right before a write to the job summary: mask as a command after a pipe (or first on its line,
 // a pipe's next line), then tee -a or >>.
 const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
-const AWS_ENV_ASSIGNMENT = /(?:^|[\s;&|(])(?:export\s+)?(?:AWS_[A-Z0-9_]*|ROLE_TO_ASSUME)=/
+const AWS_ENV_ASSIGNMENT = assigns('AWS_[A-Z0-9_]*|ROLE_TO_ASSUME')
 
-// DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, bare env or set,
-// printenv, export -p or declare -p; no ${{ }} inside a run (inputs and outputs come through env:);
-// secrets. names only the role and the account id in the five environment jobs, and never
-// GITHUB_TOKEN; in each environment job the account id is masked before the credentials action, every
-// run after it starts with the preamble, every aws, CDK and skopeo command is run … or $(get …), get
+// DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, env in any use,
+// bare set, printenv, export -p, declare -p or a declare, export, local or readonly given no name; no ${{ }}
+// inside a run (inputs and outputs come through env:); secrets. names only the role and the account id in
+// the five environment jobs, and never GITHUB_TOKEN; in each environment job the account id is masked
+// before the credentials action, every run after it starts with the preamble, whose mask, run and get no
+// later definition, alias or unset changes, every aws, CDK and skopeo command is run … or $(get …), get
 // only ever first in a $( … ), whose output is kept (the registry login alone piped into skopeo login,
 // then the filter), each write to the job summary goes through mask, the credentials action takes
 // exactly its seven inputs, and no AWS_ variable or ROLE_TO_ASSUME is set.
@@ -1635,19 +1828,23 @@ export function maskingFindings(workflows: Texts): Finding[] {
       const lines = runLines(run)
       const commands = shellCommands(run)
       if (
-        lines.some(line => TRACE.test(line.code)) ||
+        lines.some(line => TRACE.test(line.code) || ENV_WORD.test(line.code)) ||
         commands.some(
           command =>
-            ['env', 'set', 'declare', 'typeset', 'export'].includes(command.word) &&
-            command.prefixes.length === 0 &&
-            /^\s*(?:$|[|;&>)])/.test(
-              (lines[command.line]?.code ?? '').slice(
-                (lines[command.line]?.code ?? '').indexOf(command.word) + command.word.length,
-              ),
-            ),
+            (['env', 'set', 'declare', 'typeset', 'export'].includes(command.word) &&
+              command.prefixes.length === 0 &&
+              /^\s*(?:$|[|;&>)])/.test(
+                (lines[command.line]?.code ?? '').slice(
+                  (lines[command.line]?.code ?? '').indexOf(command.word) + command.word.length,
+                ),
+              )) ||
+            (PRINTS_VARIABLES.includes(command.word) && /^(?:\s+[-+]\S+)*\s*$/.test(command.tail)),
         )
       ) {
-        add(where, 'runs no set -x, set -o xtrace, bare env or set, printenv, export -p or declare -p')
+        add(
+          where,
+          'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name',
+        )
       }
       for (const command of commands) {
         const wrapped = command.word === '"$CDK"' ? ['run'] : ['run', 'get']
@@ -1669,8 +1866,25 @@ export function maskingFindings(workflows: Texts): Finding[] {
         }
       }
       if (!credentialed) return
-      if (credentials >= 0 && index > credentials && !(run === PREAMBLE || run.startsWith(`${PREAMBLE}\n`))) {
+      const preambled = run === PREAMBLE || run.startsWith(`${PREAMBLE}\n`)
+      if (credentials >= 0 && index > credentials && !preambled) {
         add(where, 'a run after the credentials action starts with the preamble')
+      }
+      if (
+        functionDefinitions(run).some(
+          each => FILTER_FUNCTIONS.includes(each.name) && !(preambled && each.line < PREAMBLE_LINES),
+        ) ||
+        commands.some(
+          command =>
+            command.word === 'alias' ||
+            (command.word === 'unset' &&
+              new RegExp(String.raw`(?:^|\s)(?:-[A-Za-z]*f|${FILTER_FUNCTIONS.join('|')})(?=\s|$)`).test(command.tail)),
+        )
+      ) {
+        add(
+          where,
+          'defines mask, run and get only in its preamble, and no later definition, alias or unset changes them',
+        )
       }
       for (const line of lines) {
         // Each write to the summary on its own: piped through mask straight into it.
@@ -1710,30 +1924,21 @@ export function maskingFindings(workflows: Texts): Finding[] {
 
 const has = (run: string | undefined, ...parts: readonly string[]) =>
   run !== undefined && parts.every(part => run.includes(part))
-const RECHECK: Readonly<Record<string, { record: string; parts: readonly string[] }>> = {
-  nonprod: {
-    record: expr('needs.gate.outputs.current_nonprod_id'),
-    parts: [NEWEST_RELEASE, 'newest=$(newest_release nonprod)'],
-  },
-  prod: {
-    record: expr('needs.prod-gate.outputs.current_prod_id'),
-    parts: [
-      NEWEST_RELEASE,
-      'newest=$(newest_release prod)',
-      'if ! [[ "$BUILD_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || [ "$BUILD_DIGEST" != "$NONPROD_DIGEST" ]; then',
-    ],
-  },
+// Each fast re-check's run, pinned, and the record id it compares.
+const RECHECK: Readonly<Record<string, { record: string; run: string }>> = {
+  nonprod: { record: expr('needs.gate.outputs.current_nonprod_id'), run: FAST_RECHECK_NONPROD },
+  prod: { record: expr('needs.prod-gate.outputs.current_prod_id'), run: FAST_RECHECK_PROD },
 }
-const ANCESTRY = `if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then`
-const SAME_RECORD = `elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then`
 const READS_CHECKS = /check-runs|check-suites|commits\/[^/\s"]+\/status|\/statuses\/|\bcheck_runs\b/
 
 // DPW-08 (C11-D52): prod needs prod-gate and prod-plan; prod-plan's if: requires non-prod's smoke for a
 // deploy; prod-gate names no environment and holds no id-token, waits for main's check and migrations
-// for a deploy alone, read from ci.yml's own run and its jobs (and the gate the pull request's the same
-// way), never from a check run, and runs history.ts prod-gate with the mode; the fast re-checks come
-// before the credentials and cover a deploy (ancestry, and in prod both digests) and a rollback or
-// restore (the record id); each rollback job needs build, takes this run's digest from build for a
+// for a deploy alone, read from ci.yml's own run and its jobs (MAIN_CI, and the gate the pull request's
+// the same way, PULL_CHECKS), never from a check run, and runs history.ts prod-gate with the mode
+// (PROD_GATE_CALL); the fast re-checks (FAST_RECHECK_NONPROD and FAST_RECHECK_PROD) come before the
+// credentials and cover a deploy (ancestry, and in prod both digests) and a rollback or restore (the
+// record id), each of those runs pinned whole, so no early exit 0 or forged output passes it; each
+// rollback job needs build, takes this run's digest from build for a
 // deploy and from the gate for a drill-smoke, and runs only once its deploy job set services_started;
 // rollback-prod's steps are rollback-nonprod's but for the environment's name; and only prod and
 // rollback-prod deploy to prod, rollback-prod only the previous release's Tasks and Services.
@@ -1766,38 +1971,25 @@ export function prodPathFindings(workflows: Texts): Finding[] {
   ) {
     add('prod-gate', 'names no environment and holds no id-token')
   }
-  const wait = gate?.steps.find(step => step.run?.includes('actions/runs?head_sha=$SHA&event=push&branch=main'))
+  // Each run the gates rest on is pinned whole, so no early exit 0, || true or forged output passes them.
+  const wait = gate?.steps.find(step => step.name === "main's own CI")
   if (
     wait?.if !== expr("needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'") ||
-    !has(
-      wait.run,
-      '"repos/$REPO/actions/runs?head_sha=$SHA&event=push&branch=main&per_page=100"',
-      '.path == ".github/workflows/ci.yml"',
-      '"repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"',
-      '("check", "migrations")',
-    )
+    wait.run !== MAIN_CI
   ) {
     add(
       'prod-gate',
       "waits for main's check and migrations for a deploy alone, read from ci.yml's own run and its jobs",
     )
   }
-  const prodGate = gate?.steps.find(step => step.run?.includes('infra/scripts/deploy/history.ts prod-gate'))
-  if (
-    !has(prodGate?.run, 'node infra/scripts/deploy/history.ts prod-gate --mode "$MODE"') ||
-    prodGate?.env.get('MODE') !== MODE
-  ) {
+  const prodGate = gate?.steps.find(step => step.id === 'check')
+  if (prodGate?.run !== PROD_GATE_CALL || prodGate.env.get('MODE') !== MODE) {
     add('prod-gate', 'runs history.ts prod-gate with the mode')
   }
-  const pull = jobs.get('gate')?.steps.find(step => step.run?.includes('event=pull_request'))
-  if (
-    !has(
-      pull?.run,
-      '"repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100"',
-      '.path == ".github/workflows/ci.yml"',
-      '"repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"',
-    )
-  ) {
+  const pull = jobs
+    .get('gate')
+    ?.steps.find(step => step.name === 'The pull request that made this commit, and its checks')
+  if (pull?.run !== PULL_CHECKS) {
     add('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs")
   }
   for (const { id, steps } of jobs.values()) {
@@ -1813,7 +2005,7 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       step === undefined ||
       credentials < 0 ||
       recheck > credentials ||
-      !has(step.run, ...want.parts, ANCESTRY, SAME_RECORD) ||
+      step.run !== want.run ||
       step.env.get('RECORD_ID') !== want.record ||
       (id === 'prod' &&
         (step.env.get('BUILD_DIGEST') !== expr('needs.build.outputs.digest') ||
@@ -2050,10 +2242,11 @@ export function gateFindings(
 
 // --- DPW-10: no repository code where the credentials are ---------------------------------------------
 
-// What a credentialed job may run (C11-D48): bash's own builtins and keywords, the functions its steps
-// define, gh, git and jq, the text tools, aws and skopeo (through run and get), the pinned CLI (through
-// run) and npm for the one install line. Anything else, a script by path, a variable or quoted word run
-// as a command, is refused, and so is a function named as a program.
+// What a credentialed job may run (C11-D48): bash's own builtins and keywords, the functions its step
+// defines, gh, git and jq, the text tools it reads with, aws and skopeo (through run and get), the pinned
+// CLI (through run) and npm for the one install line. Anything else, a script by path, a variable or
+// quoted word run as a command, a wrapper (exec, command, env, …) or a builtin that sets what runs
+// (unset, wait -p, select), is refused, and so is a function named as a program.
 const BASH_OWN = [
   '[',
   '[[',
@@ -2075,7 +2268,6 @@ const BASH_OWN = [
   'until',
   'do',
   'done',
-  'select',
   'function',
   'echo',
   'printf',
@@ -2090,14 +2282,15 @@ const BASH_OWN = [
   'pwd',
   'shift',
   'set',
-  'unset',
   'true',
   'false',
   'test',
   'break',
   'continue',
-  'wait',
 ]
+// The tools a credentialed run uses, with aws and skopeo: each only reads the files it is named (tee, sort,
+// mktemp and find are held to their uses below), so none, as uniq or cp would, rewrites a file the CLI
+// then runs.
 const TOOLS = [
   'jq',
   'gh',
@@ -2107,38 +2300,42 @@ const TOOLS = [
   'tee',
   'cat',
   'head',
-  'tail',
   'wc',
   'sort',
-  'uniq',
-  'tr',
-  'cut',
   'mktemp',
   'readlink',
   'realpath',
   'find',
-  'basename',
-  'dirname',
-  'date',
-  'sleep',
   'aws',
   'skopeo',
 ]
-// The tools that could run another program, held to the one use each job makes of them: git only to ask
-// whether one commit is an ancestor of another, gh only as gh api, sed only as the preamble's mask, find
-// only in ASSET_CHECK's search for a symbolic link, sort only with its plain flags, tee only appending to
-// the summary, and mapfile with no callback. (trap, which runs its text, is no builtin a job may use.)
+// The tools that could run another program or write a file, held to the one use each job makes of them:
+// git only to ask whether one commit is an ancestor of another, gh only as gh api, sed only as the
+// preamble's mask, find only in ASSET_CHECK's search for a symbolic link, sort only with its plain flags,
+// tee only appending to the summary, mapfile with no callback, aws only for the reads and one-offs the
+// workflow makes (no s3 cp, which would write a file), skopeo only as the registry login and the push,
+// set only as set -euo pipefail (no set --, which would hand "$@" a program), and local
+// and export with no flag (no -n, which would set another variable through a name). (trap, which runs its
+// text, is no builtin a job may use.)
 const MASK_LINE = PREAMBLE.split('\n').find(line => line.startsWith('mask()')) ?? ''
 const FIND_LINE = ASSET_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
-const TOOL_USES: Readonly<Record<string, (rest: string, raw: string) => boolean>> = {
-  git: rest => /^\s+merge-base\s+--is-ancestor\s/.test(rest),
-  gh: rest => /^\s+api\s/.test(rest),
+const AWS_CALLS =
+  /^\s+(?:ecs\s+(?:run-task|describe-tasks|describe-services|list-tasks|stop-task|wait\s+tasks-stopped|describe-task-definition)|elbv2\s+describe-(?:target-groups|target-group-attributes|target-health|load-balancers|load-balancer-attributes)|cloudformation\s+describe-stacks|ecr\s+(?:describe-images|get-login-password)|logs\s+get-log-events)(?:\s|$)/
+const NO_FLAG = (command: ShellCommand) => !/(?:^|\s)[-+][A-Za-z]/.test(command.tail)
+const TOOL_USES: Readonly<Record<string, (command: ShellCommand, raw: string) => boolean>> = {
+  git: ({ rest }) => /^\s+merge-base\s+--is-ancestor\s/.test(rest),
+  gh: ({ rest }) => /^\s+api\s/.test(rest),
   sed: (_, raw) => raw === MASK_LINE.trim(),
   find: (_, raw) => raw === FIND_LINE.trim(),
-  sort: rest => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
-  tee: rest => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
-  mapfile: rest => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
-  readarray: rest => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
+  sort: ({ rest }) => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
+  tee: ({ rest }) => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
+  mapfile: ({ rest }) => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
+  readarray: ({ rest }) => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
+  aws: ({ rest }) => AWS_CALLS.test(rest),
+  skopeo: (_, raw) => raw === SKOPEO_LOGIN || raw === SKOPEO_COPY,
+  set: ({ tail }) => /^\s+-euo\s+pipefail\s*$/.test(tail),
+  local: NO_FLAG,
+  export: NO_FLAG,
 }
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
@@ -2146,15 +2343,55 @@ const TOOL_USES: Readonly<Record<string, (rest: string, raw: string) => boolean>
 // transport are data.
 const RUNNER_WORDS =
   /(?<![\w.-])(?:node|nodejs|npx|tsx|ts-node|deno|bun|python[\d.]*|perl|ruby|php|bash|sh|zsh|dash|ksh|eval|source|curl|wget|make|docker(?!:\/\/))(?![\w-])/
-// The variables that choose what a later command runs or reads its settings from, which no credentialed
-// run sets (but CDK_FOLDER's fresh HOME), and the files that set a later step's environment or path.
-const LOADER_ASSIGNMENT =
-  /(?:^|[\s;&|(])(?:export\s+|declare\s+(?:-\S+\s+)*|typeset\s+(?:-\S+\s+)*|local\s+|readonly\s+)?(?:PATH|HOME|BASH_ENV|ENV|CDPATH|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+)\+?=/
+// The variables that choose what a later command runs, where the CLI's assembly is read from or where an
+// output is written, which no credentialed run sets (but CDK_FOLDER's fresh HOME): PATH and the shell's
+// own, the loaders', npm's, git's and gh's, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT,
+// GITHUB_WORKSPACE, …); and the files that set a later step's environment or path.
+const LOADER_ASSIGNMENT = assigns(
+  String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+`,
+)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
-// What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff and
-// /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk, say) is rewritten.
+// What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff (DIFF, set
+// by its one line) and /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk,
+// say) is rewritten.
 const REDIRECTION = /(?<![<>&])(?:\d+|&)?>>?\|?\s*(\(|[^\s;|()<>]+)/g
 const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|DIFF)")$/
+const DIFF_LINE = 'DIFF="$RUNNER_TEMP/diff.txt"'
+// The canonical texts that define functions, and the lines on which a credentialed run sets a variable by
+// printf -v, read, mapfile or for: the canonical texts' own, and the read-back's and the rollback jobs'
+// two loops, whose variables choose nothing that runs. "$@" runs only inside the preamble's run and get.
+const DEFINING_TEXTS = [PREAMBLE, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE] as const
+const SETTERS = ['read', 'mapfile', 'readarray', 'for', 'select', 'getopts']
+const isSetter = (command: ShellCommand) =>
+  SETTERS.includes(command.word) || (command.word === 'printf' && /(?:^|\s)-/.test(command.rest))
+const SETTER_LINES: ReadonlySet<string> = new Set([
+  ...[PREAMBLE, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, PROBE, NEWEST_RELEASE, RESTORE_DOWN].flatMap(text => {
+    const lines = text.split('\n')
+    return shellCommands(text)
+      .filter(isSetter)
+      .map(command => lines[command.line]?.trim() ?? '')
+  }),
+  'for ROLE in api realtime; do',
+  'for RELEASE in "$COMMIT:$DIGEST" "$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"; do',
+])
+const PREAMBLE_RUNNERS = PREAMBLE.split('\n').filter(line => line.includes('"$@"'))
+
+// Whether each function a run defines stands where a canonical text that defines it stands in the run,
+// line for line, so no run defines a function of its own or redefines one (a cp, a jq, the preamble's
+// mask) after its canonical text.
+const CANONICAL_DEFINITIONS = DEFINING_TEXTS.map(text => ({ text, defined: functionDefinitions(text) }))
+function definitionsAreCanonical(run: string): boolean {
+  const allowed = new Set<string>()
+  for (const { text, defined } of CANONICAL_DEFINITIONS) {
+    for (let at = run.indexOf(text); at >= 0; at = run.indexOf(text, at + 1)) {
+      const end = at + text.length
+      if ((at > 0 && run[at - 1] !== '\n') || (end < run.length && run[end] !== '\n')) continue
+      const first = run.slice(0, at).split('\n').length - 1
+      for (const each of defined) allowed.add(`${each.name}@${first + each.line}`)
+    }
+  }
+  return functionDefinitions(run).every(each => allowed.has(`${each.name}@${each.line}`))
+}
 
 // The shape of every job and step (DPW-10): the top level, each job's keys and runner, each step's keys,
 // each action's inputs and every env: key are the ones the workflow uses, so no shell, container,
@@ -2287,19 +2524,21 @@ function cliLineIsSafe(line: string): boolean {
 // DPW-10 (C11-D48, C11-D76): a credentialed job runs no repository code. Its uses: are only checkout,
 // download-artifact and the credentials action; npm runs only as the one install line, followed by
 // CLI_CHECK, both before the credentials action; it runs no npx, node, shell, source, eval, docker, tsx,
-// ts-node, npm exec, python, make, curl, wget, db:reset, check-server or script by path, nor anything
-// outside its list; CDK is assigned only by the preamble, as the registry package's own bin; the CLI
-// runs only as deploy or diff with --app "$ASSEMBLY" (set once in its step to the folder it downloaded),
-// after CDK_FOLDER, with no other change of folder, and with its safe flags; no line anywhere passes a
-// refused flag or subcommand. Across the repository no workspace is named aws-cdk or declares a cdk bin,
-// and the lockfile's aws-cdk is the registry's at infra's pin.
+// ts-node, npm exec, python, make, curl, wget, db:reset, check-server, script by path or wrapper, nor
+// anything outside its list; it defines a function only where a canonical text does, and calls only its
+// own step's (a function doesn't outlive its step); it sets a variable by printf -v, read, mapfile or for
+// only on SETTER_LINES, and never PATH, RUNNER_TEMP or another that chooses what runs; CDK is assigned
+// only by the preamble, as the registry package's own bin; the CLI runs only as deploy or diff with --app
+// "$ASSEMBLY" (set once in its step to the folder it downloaded), after CDK_FOLDER, with no other change of
+// folder, and with its safe flags; no line anywhere passes a refused flag or subcommand. Across the
+// repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
+// registry's at infra's pin.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>()
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
   shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
   for (const { id, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
     const credentialed = ENVIRONMENT_JOBS[id] !== undefined
-    const defined = new Set(steps.flatMap(step => (step.run === undefined ? [] : definedFunctions(step.run))))
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       const run = step.run ?? ''
@@ -2307,10 +2546,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (lines.some(line => REFUSED_CLI.test(line.text)))
         add(where, 'passes none of the CLI’s refused flags or subcommands')
       for (const line of lines) {
-        if (
-          /(?:^|[\s;&|(])(?:export\s+|declare\s+(?:-\S+\s+)*|local\s+|readonly\s+)?CDK=/.test(line.code) &&
-          line.raw.trim() !== PREAMBLE_CDK
-        ) {
+        if (CDK_ASSIGNMENT.test(line.code) && line.raw.trim() !== PREAMBLE_CDK) {
           add(where, 'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk')
         }
       }
@@ -2318,21 +2554,22 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (step.uses !== undefined && !ALLOWED_USES.test(step.uses)) {
         add(where, 'uses only checkout, download-artifact and the credentials action')
       }
-      const wrong = shellCommands(run).some(command => {
+      const commands = shellCommands(run)
+      const own = new Set(functionDefinitions(run).map(each => each.name))
+      const raw = (command: ShellCommand) => lines[command.line]?.raw.trim() ?? ''
+      const wrong = commands.some(command => {
         const word = command.word
-        if (word === '"$CDK"' || word === '"$@"') return false
+        if (command.prefixes.some(prefix => WRAPPERS.includes(prefix))) return true
+        if (word === '"$CDK"') return false
+        if (word === '"$@"') return !PREAMBLE_RUNNERS.includes(raw(command))
         if (word === 'npm') return run !== INSTALL
         if (/^["'$]|\/|\.(?:sh|ts|js|mjs|cjs|py)$/.test(word)) return true
         const use = TOOL_USES[word]
-        if (use !== undefined && !use(command.rest, lines[command.line]?.raw.trim() ?? '')) return true
-        return !(BASH_OWN.includes(word) || TOOLS.includes(word) || defined.has(word))
+        if (use !== undefined && !use(command, raw(command))) return true
+        return !(BASH_OWN.includes(word) || TOOLS.includes(word) || own.has(word))
       })
-      const shadows = definedFunctions(run).some(
-        name => TOOLS.includes(name) || BASH_OWN.includes(name) || name === 'npm',
-      )
       if (
         wrong ||
-        shadows ||
         lines.some(line => RUNNER_WORDS.test(line.text) || /\bdb:reset\b|\bcheck-server\b/.test(line.text))
       ) {
         add(
@@ -2340,12 +2577,25 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
           'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run',
         )
       }
+      if (!definitionsAreCanonical(run)) {
+        add(
+          where,
+          'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does',
+        )
+      }
+      if (commands.some(command => isSetter(command) && !SETTER_LINES.has(raw(command)))) {
+        add(
+          where,
+          "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's",
+        )
+      }
       // Nothing it writes or sets chooses what a later command or step runs.
       const code = commandCode(shellViews(run).code).split('\n')
       if (
         code.some(line =>
           [...line.matchAll(REDIRECTION)].some(write => write[1] !== '(' && !WRITABLE.test(write[1] ?? '')),
-        )
+        ) ||
+        lines.some(line => DIFF_ASSIGNMENT.test(line.code) && line.raw.trim() !== DIFF_LINE)
       ) {
         add(where, "writes no file but its outputs, its summary, prod-plan's diff and /dev/null")
       }
@@ -2359,15 +2609,15 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
           "sets no PATH, HOME (but CDK_FOLDER's), BASH_ENV or other variable that chooses what runs, and writes neither GITHUB_ENV nor GITHUB_PATH",
         )
       }
-      const cli = lines.filter(line => /"\$CDK"|\$\{?CDK\b/.test(line.text) && !/(?:^|[\s;&|(])CDK=/.test(line.code))
+      const cli = lines.filter(line => /"\$CDK"|\$\{?CDK\b/.test(line.text) && !CDK_ASSIGNMENT.test(line.code))
       if (cli.length === 0) return
       const first = cli[0]?.index ?? 0
       const folder = lines.filter(line => line.raw.trim() === CDK_FOLDER)
-      const assembly = lines.filter(line => /(?:^|[\s;&|(])ASSEMBLY=/.test(line.code))
+      const assembly = lines.filter(line => ASSEMBLY_ASSIGNMENT.test(line.code))
       const wantAssembly = DEPLOY_JOBS[id]?.rollback
         ? 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"'
         : 'ASSEMBLY="$RUNNER_TEMP/assembly"'
-      const moves = shellCommands(run).filter(command => ['cd', 'pushd', 'popd'].includes(command.word))
+      const moves = commands.filter(command => ['cd', 'pushd', 'popd'].includes(command.word))
       if (
         cli.some(line => !cliLineIsSafe(line.text)) ||
         assembly.length !== 1 ||
@@ -2540,6 +2790,28 @@ function ghWrites(call: string): boolean {
   })
 }
 const NAMES_DEPLOYMENTS = /\/deployments(?![\w-])/
+// What a record job runs beside its deployments: write (DPW-13): bash's own, its step's functions, jq and
+// gh api, in one step with no action, so no checkout and no repository code runs where records can be
+// written.
+const RECORD_JOBS = ['record-nonprod', 'record-prod']
+const RECORD_WORDS = [
+  '[',
+  '[[',
+  ']]',
+  '{',
+  '}',
+  'if',
+  'then',
+  'else',
+  'elif',
+  'fi',
+  'echo',
+  'local',
+  'exit',
+  'set',
+  'jq',
+  'gh',
+]
 const RECORD_BODY = ['jq -n', 'ref: "main"', 'auto_merge: false', 'required_contexts: []']
 const MIGRATED_BODY = 'task: "hearth-migrated"'
 const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
@@ -2553,8 +2825,9 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 // migration record by nonprod's and prod's migrate steps alone, after migrate's own end, a write being
 // any gh api call with a body or a method other than GET, however spelled (ghWrites), and no other
 // GitHub API write made; each record's body built whole by jq -n with ref main, auto_merge false and no
-// required contexts, and sent with --input -. (Every deploy of a recorded digest checks ECR's tags for
-// its commit inside AWS_CHECK, which DPW-06 pins.)
+// required contexts, and sent with --input -; and each record job is one step, with no action (so no
+// checkout), running only bash's own, its functions, jq and gh api. (Every deploy of a recorded digest
+// checks ECR's tags for its commit inside AWS_CHECK, which DPW-06 pins.)
 export function releaseFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -2570,6 +2843,24 @@ export function releaseFindings(workflows: Texts): Finding[] {
       'deploy.yml',
       "synthesises only with the pipeline's npm run synth, never synth:ci, synth:lz, HEARTH_FAKE_RELEASE or cdk synth",
     )
+  }
+  for (const id of RECORD_JOBS) {
+    const steps = jobs.get(id)?.steps ?? []
+    const run = steps[0]?.run ?? ''
+    const own = new Set(functionDefinitions(run).map(each => each.name))
+    if (
+      steps.length !== 1 ||
+      steps[0]?.uses !== undefined ||
+      runLines(run).some(line => RUNNER_WORDS.test(line.text)) ||
+      shellCommands(run).some(
+        command =>
+          command.prefixes.some(prefix => WRAPPERS.includes(prefix)) ||
+          !(RECORD_WORDS.includes(command.word) || own.has(command.word)) ||
+          (command.word === 'gh' && !/^\s+api\s/.test(command.rest)),
+      )
+    ) {
+      add(id, 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code')
+    }
   }
   for (const { id, steps } of jobs.values()) {
     steps.forEach((step, index) => {
