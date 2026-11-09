@@ -14,11 +14,12 @@
 // it replaced; ECS refuses to point a service at a deregistered (INACTIVE) revision, so an incident
 // rollback to an earlier revision under break-glass, which can neither register a revision nor pass
 // these roles, would have nothing to go back to. A revision costs nothing, and a first create that
-// rolls back still removes its own (RetainExceptOnCreate). The rollback's procedure (choosing the
-// revision, the floors check, what the pipeline does next) is written with C0.11 PR 4's deploy and
-// rollback runbook, since it rests on the release record and the floors check PR 4 builds; until then
-// no service is rolled back by hand outside the pipeline, and nothing is deployed before PR 4
-// (break-glass.md).
+// rolls back still removes its own (RetainExceptOnCreate). Such a rollback is break-glass.md's "An
+// incident rollback to an earlier revision" (C11-D58): it chooses the release that ran before the
+// current one first did, checks the floors, and moves one service at a time; this stack and the
+// release record still name the release rolled back from, so the pipeline's deploy job refuses a
+// forward deploy while a service runs another release than Release names, and the first run
+// afterwards is a rollback to the release gone back to.
 //
 // The services are L1s, so the template holds exactly what is written here: Fargate on the latest
 // platform, in the cluster by name, in the isolated subnets with the role's own security group and no
