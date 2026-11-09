@@ -1176,11 +1176,13 @@ const SHELL_RUN = /\bbash\s+--rcfile\b/
 // IG-09 (i): the rc runs inside the shell that holds the role's credentials in its environment, so
 // any line added to it could print or write them (env, /proc/self/environ, awk's ENVIRON), and the
 // two keep the shell's history off (unset HISTFILE, HISTFILE=/dev/null), and the rc psql's and its
-// pager's (PSQL_HISTORY=/dev/null, LESSHISTFILE=-).
+// pager's (PSQL_HISTORY=/dev/null, LESSHISTFILE=-), pointing psql at an empty psqlrc
+// (PSQLRC=/dev/null) since a psqlrc's HISTFILE would otherwise win over PSQL_HISTORY; a
+// system-wide psqlrc is skipped only by psql -X, which access-request.md's step 3 runs.
 const SHELL_RC = [
   `cat >"$rc" <<'RC'`,
   'unset HISTFILE',
-  'export PSQL_HISTORY=/dev/null LESSHISTFILE=-',
+  'export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-',
   'hearth_bg_prompt() {',
   '  local left',
   '  left=$(( (HEARTH_BREAK_GLASS_UNTIL - $(date -u +%s)) / 60 ))',

@@ -623,9 +623,26 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
     expect(workloadGraphFindings(graph.files)).toEqual([])
   })
 
-  it('the rollback floors’ check, once it exists (C0.11 PR 4), loads no npm package', () => {
+  // The pipeline's gate runs the floors without npm ci, so floors.ts imports nothing (C11-D58): held
+  // here from now, not only once PR 4's check exists to import it.
+  it('the rollback floors import nothing, found on floors.ts with an npm import planted in it', () => {
+    const floors = 'infra/src/release/floors.ts'
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
-    const graph = importGraph('infra/scripts/deploy/floors-check.ts', read, importsOf)
+    const planted = (path: string) => (path === floors ? `import { z } from 'zod'\n${read(path) ?? ''}` : read(path))
+    const plantedGraph = importGraph(floors, planted, importsOf)
+    expect(plantedGraph.specifiers).not.toEqual(new Map([[floors, []]]))
+    expect(packageFindings(plantedGraph.specifiers)).toContain(`${floors}: IG-08 loads zod, but runs without npm ci`)
+    const graph = importGraph(floors, read, importsOf)
+    expect(graph.specifiers).toEqual(new Map([[floors, []]]))
+  })
+
+  // PR 4 adds the check with the deploy workflow, so once the workflow exists a check under another
+  // name fails here, rather than leaving this case reading nothing.
+  it('the rollback floors’ check loads no npm package, and is there once the deploy workflow is (C0.11 PR 4)', () => {
+    const check = 'infra/scripts/deploy/floors-check.ts'
+    const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
+    const graph = importGraph(check, read, importsOf)
+    if (existsSync(join(root, '.github/workflows/deploy.yml'))) expect(graph.files).toContain(check)
     expect(packageFindings(graph.specifiers)).toEqual([])
   })
 })
@@ -1693,7 +1710,15 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
       ['i: the rc keeps history', plant('unset HISTFILE\nexport PSQL_HISTORY', 'export PSQL_HISTORY'), ['IG-09i']],
       [
         'i: the rc keeps psql’s and its pager’s history',
-        plant('export PSQL_HISTORY=/dev/null LESSHISTFILE=-\nhearth_bg_prompt', 'hearth_bg_prompt'),
+        plant('export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-\nhearth_bg_prompt', 'hearth_bg_prompt'),
+        ['IG-09i'],
+      ],
+      [
+        'i: the rc lets a psqlrc set psql’s history file',
+        plant(
+          'export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-',
+          'export PSQL_HISTORY=/dev/null LESSHISTFILE=-',
+        ),
         ['IG-09i'],
       ],
       ['i: the shell keeps history', plant(' HISTFILE=/dev/null \\\n', ' \\\n'), ['IG-09i']],
