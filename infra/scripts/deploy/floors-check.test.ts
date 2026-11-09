@@ -1,7 +1,8 @@
 // The rollback floors check's cases (C11-D58; TECH-SPEC T24 item 22): the rule on its own, the
 // floors' shape, and the command line in a scratch git repository with fictional migrations and a
 // floors.ts of its own in the real one's shape. CI's runner gives git no identity, so every commit
-// here names its own (an address built from parts, IG-01).
+// here names its own (an address built from parts, IG-01). It holds what the floors check must
+// decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

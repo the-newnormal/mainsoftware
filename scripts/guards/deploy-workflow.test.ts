@@ -988,6 +988,39 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
   it('holds the repository', () => {
     expect(maskingFindings(workflows)).toEqual([])
   })
+
+  // The preamble's filter, run with bash and sed as the deploy jobs run it: an account id goes wherever it
+  // stands, side by side included, and a commit or digest stays whole, even one holding twelve digits.
+  it('the filter blanks an account id and keeps a commit and a digest whole', () => {
+    const account = '4'.repeat(12)
+    const commit = '0123456789'.repeat(4)
+    const digest = `sha256:${'1'.repeat(12)}${'c'.repeat(52)}`
+    const lines = [
+      ['arn', 'aws', 'iam', '', account, 'role/x'].join(':'),
+      `${account}.dkr.ecr.ap-southeast-1.amazonaws.com/hearth-server`,
+      `:${account}:${account}:${account}:`,
+      account,
+      `account ${account}, Account ${account}`,
+      `release ${commit}:${digest}`,
+      `tag sha-${commit}-11-1`,
+    ]
+    const result = spawnSync('bash', ['-c', `${PREAMBLE}\nmask`], {
+      input: `${lines.join('\n')}\n`,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', GITHUB_WORKSPACE: '/nowhere' },
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout.split('\n')).toEqual([
+      ['arn', 'aws', 'iam', '', '***', 'role/x'].join(':'),
+      '***.dkr.ecr.ap-southeast-1.amazonaws.com/hearth-server',
+      ':***:***:***:',
+      '***',
+      'account ***, Account ***',
+      `release ${commit}:${digest}`,
+      `tag sha-${commit}-11-1`,
+      '',
+    ])
+  })
 })
 
 describe('DPW-08 (C11-D52): the way to prod', () => {
@@ -2204,9 +2237,8 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     const drifted = { ...runsB(), running: D.A }
     const deploy = awsCheck({ mode: 'deploy', release: release('C', D.C), ...drifted, ecr: all() })
     expect(deploy.verdict).toBe('refused')
-    // The refusal is shown through the 12-digit filter, which a commit's own digits can trip.
-    const shown = c.A.replace(/[0-9]{12}/g, '***')
-    expect(deploy.said).toContain(`dispatch mode=rollback with release ${shown} first (deploy-and-rollback.md)`)
+    // The refusal is shown through the account-id filter, which leaves a commit whole.
+    expect(deploy.said).toContain(`dispatch mode=rollback with release ${c.A} first (deploy-and-rollback.md)`)
     // One service drifted: a deploy and a drill are refused alike. No single release is what all three run,
     // so the line's reason is pinned and not the release it names.
     const reason = "aws-check: the services don't run Release's image (an incident rollback outside the pipeline)"
@@ -2219,7 +2251,7 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     }
     const drill = awsCheck({ mode: 'drill', release: release('B', D.B), ...drifted, ecr: all() })
     expect(drill.verdict).toBe('refused')
-    expect(drill.said).toContain(`dispatch mode=rollback with release ${shown} first (deploy-and-rollback.md)`)
+    expect(drill.said).toContain(`dispatch mode=rollback with release ${c.A} first (deploy-and-rollback.md)`)
     expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...drifted, ecr: all() }).verdict).toBe('pass')
     const elsewhere = { stack: stack('UPDATE_COMPLETE', release('C', D.C)), services: ONE, running: D.B }
     expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...elsewhere, ecr: all() }).verdict).toBe('refused')

@@ -18,8 +18,9 @@
 # job sets cache-mode: none, so none restores or saves an Actions cache.
 #
 # Every run step after the credentials action starts with the pinned preamble, so every aws, cdk
-# and skopeo line's output is shown only through the 12-digit filter, or kept and never printed
-# (C11-D61), beside the action's own masking and the masked account id. The canonical texts (the
+# and skopeo line's output is shown only through the account-id filter (which blanks a run of twelve
+# digits with no digit or lowercase hex letter beside it, so a commit or digest stays whole), or kept
+# and never printed (C11-D61), beside the action's own masking and the masked account id. The canonical texts (the
 # preamble, the CLI, asset and AWS checks, the one-off runs and the CLI's lines) are held byte for
 # byte by the deploy-workflow guard (DPW-01 to DPW-14), which also holds this file's shape: two-space
 # indents, block mappings, every run a block scalar or one line. This file holds who and what may
@@ -125,8 +126,9 @@ jobs:
           set -euo pipefail
           # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
           # head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head (the
-          # newest such run, read from the run and its jobs, never from a check run, which any token with
-          # checks: write can make). history.ts plan decides; no merged pull request writes pull: null.
+          # newest such run, its path read without any @<ref> GitHub adds, and read from the run and its jobs,
+          # never from a check run, which any token with checks: write can make). history.ts plan decides; no
+          # merged pull request writes pull: null.
           if [ "${MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
           PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
           PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
@@ -137,7 +139,7 @@ jobs:
           HEAD=$(jq -er '.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"$PULL")
           TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
           RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100")
-          RUN_ID=$(jq -r --arg head "$HEAD" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $head)] | max_by(.id) | .id // ""' <<<"$RUNS")
+          RUN_ID=$(jq -r --arg head "$HEAD" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $head)] | max_by(.id) | .id // ""' <<<"$RUNS")
           JOBS='{"jobs": []}'
           if [ -n "$RUN_ID" ]; then JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"); fi
           jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" '
@@ -184,10 +186,13 @@ jobs:
           # request, each environment's current release and, for a deploy or a drill-smoke, the release each
           # automatic rollback goes back to and whether it may (above every floor at this commit). Every commit
           # it outputs is on main at this run's commit. A refusal is one line, `history: refused <code>: <why>`.
-          if ! PLAN=$(node infra/scripts/deploy/history.ts plan --event "$EVENT" --ref "$REF" --actor "$ACTOR" --triggering-actor "$TRIGGERING_ACTOR" --sha "$SHA" --target "$TARGET" --mode "$MODE" --release "$RELEASE" --restore "$RESTORE" --records "$RUNNER_TEMP/records" --checks "$RUNNER_TEMP/checks.json"); then
+          # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
+          if ! PLAN=$(node infra/scripts/deploy/history.ts plan --event "$EVENT" --ref "$REF" --actor "$ACTOR" --triggering-actor "$TRIGGERING_ACTOR" --sha "$SHA" --target "$TARGET" --mode "$MODE" --release "$RELEASE" --restore "$RESTORE" --records "$RUNNER_TEMP/records" --checks "$RUNNER_TEMP/checks.json" 2>"$RUNNER_TEMP/plan-ignored.txt"); then
+            tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/plan-ignored.txt" >&2
             printf '%s\n' "$PLAN"
             exit 1
           fi
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/plan-ignored.txt" >&2
           if grep -Evq '^[a-z_]+=[0-9a-z:._-]*$' <<<"$PLAN"; then
             echo 'gate: the plan printed a line that is not key=value'
             exit 1
@@ -911,20 +916,23 @@ jobs:
           # and checked by its shape. A deploy's commit descends from it (none on a first deploy); any other
           # mode finds the record the gate read.
           newest_release() {
-            gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
-              [.[] | select(.task == "hearth-release" and .environment == $environment and (.payload | type == "object"))
-                | {id, payload}
-                | select(
-                    (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
+            local records
+            records=$(gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
+              [.[] | select(.task == "hearth-release" and .environment == $environment)
+                | {id, payload, valid: (
+                    (.payload | type == "object")
+                    and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
                     and .payload.schema == 1
                     and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
                     and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
                     and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
                     and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
                     and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))
-                | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}]
-              | sort_by(.revision, .id) | last'
+                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+              | {ignored: [.[] | select(.valid | not) | .id],
+                newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
+            jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
+            jq -c .newest <<<"$records"
           }
           newest=$(newest_release nonprod)
           if [ "$MODE" = deploy ]; then
@@ -979,7 +987,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1116,7 +1124,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1146,7 +1154,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1166,7 +1174,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1262,7 +1270,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1275,7 +1283,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1291,7 +1299,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1307,7 +1315,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1345,7 +1353,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1456,7 +1464,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1790,7 +1798,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1919,7 +1927,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -1935,7 +1943,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -2047,7 +2055,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -2144,7 +2152,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -2452,7 +2460,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -2527,13 +2535,14 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # main's own CI on this commit (C11-D52): ci.yml's push run on main, the newest, read from the run and
-          # its jobs (never a check run, which any token with checks: write can make), until check and
-          # migrations both succeed; any other conclusion fails at once, and 30 minutes ends the wait.
+          # main's own CI on this commit (C11-D52): ci.yml's push run on main (its path read without any @<ref>
+          # GitHub adds), the newest, read from the run and its jobs (never a check run, which any token with
+          # checks: write can make), until check and migrations both succeed; any other conclusion fails at
+          # once, and 30 minutes ends the wait.
           DEADLINE=$((SECONDS + 30 * 60))
           while :; do
             RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&event=push&branch=main&per_page=100")
-            RUN_ID=$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $sha)] | max_by(.id) | .id // ""' <<<"$RUNS")
+            RUN_ID=$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $sha)] | max_by(.id) | .id // ""' <<<"$RUNS")
             if [ -n "$RUN_ID" ]; then
               JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100")
               CONCLUSIONS=$(jq -r '[("check", "migrations") as $name | [.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "pending" end] | join(" ")' <<<"$JOBS")
@@ -2571,10 +2580,13 @@ jobs:
           # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release and its
           # image is the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
           # the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
-          if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records"); then
+          # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
+          if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
+            tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
             printf '%s\n' "$OUT"
             exit 1
           fi
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
           if ! [[ "$OUT" =~ ^current_prod_id=[0-9]*$ ]]; then
             echo 'prod-gate: history.ts printed something else'
             exit 1
@@ -2768,20 +2780,23 @@ jobs:
           # deploy) and its image is the one the build made and non-prod deployed in this run; a rollback or
           # a restore finds the record prod-gate read.
           newest_release() {
-            gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
-              [.[] | select(.task == "hearth-release" and .environment == $environment and (.payload | type == "object"))
-                | {id, payload}
-                | select(
-                    (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
+            local records
+            records=$(gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
+              [.[] | select(.task == "hearth-release" and .environment == $environment)
+                | {id, payload, valid: (
+                    (.payload | type == "object")
+                    and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
                     and .payload.schema == 1
                     and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
                     and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
                     and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
                     and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
                     and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))
-                | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}]
-              | sort_by(.revision, .id) | last'
+                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+              | {ignored: [.[] | select(.valid | not) | .id],
+                newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
+            jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
+            jq -c .newest <<<"$records"
           }
           newest=$(newest_release prod)
           if [ "$MODE" = deploy ] && [ "$TARGET" = prod ]; then
@@ -2841,7 +2856,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -2980,7 +2995,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3010,7 +3025,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3030,7 +3045,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3126,7 +3141,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3139,7 +3154,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3155,7 +3170,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3171,7 +3186,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3213,7 +3228,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3324,7 +3339,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3661,7 +3676,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3790,7 +3805,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3806,7 +3821,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -3918,7 +3933,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -4015,7 +4030,7 @@ jobs:
           set -euo pipefail
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE 's/[0-9]{12}/***/g'; }
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"

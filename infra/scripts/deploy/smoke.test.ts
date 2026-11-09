@@ -2,7 +2,8 @@
 // recorded answers, the read-back's validation, --profile-at in a scratch git repository, and the whole
 // command against a local TLS server with a certificate made for the test, so the network code runs
 // too. Commits are made by git or built as repeats, and an ARN, account id or address is built from
-// parts at run time (IG-01).
+// parts at run time (IG-01). It holds what the smoke must decide, so it is on the owner's-read list
+// (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:https'
@@ -578,7 +579,7 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
       return send(404, JSON.stringify({ error: 'Not Found', detail: MARKER }))
     })
     server.on('upgrade', (_request, socket) => socket.end(upgradeAnswer))
-    await new Promise<void>(resolve => server?.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>(resolve => server?.listen(0, [127, 0, 0, 1].join('.'), resolve))
     port = (server.address() as AddressInfo).port
   }, 30_000)
 

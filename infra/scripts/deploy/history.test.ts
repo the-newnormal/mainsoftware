@@ -2,7 +2,8 @@
 // validation and order, both incident-rollback rules and their parity, a target's validation, the
 // gate's plan mode by mode, prod-gate, the migration record, and what the command line prints. The
 // commits are real ones in a scratch git repository (main, and a branch off it), so ancestry is git's
-// own answer; every ARN, account id and address is built from parts at run time (IG-01).
+// own answer; every ARN, account id and address is built from parts at run time (IG-01). It holds what
+// the history must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -374,12 +375,11 @@ describe('C11-D58, T24 item 22: checking a target against the records', () => {
 
   it('C11-D58: recordedTarget passes a recorded release while a later one runs unrecorded, again after an incident rollback, and refuses one off main', () => {
     const h = history()
-    // R4 (m4) runs with no record: the gate still passes the rollback to R3.
+    // R4 (m4) runs with no record: the gate still passes the rollback to R3, the newest record. An
+    // incident rollback to R3 under break-glass writes no record either, so the first pipeline run
+    // afterwards, `mode=rollback` to R3, passes the same way (the plan's case below).
     const r3 = recordedTarget(h, at(3), at(6), isAncestor)
     expect(r3.ok && r3.value.digest).toBe(D.c)
-    // An incident rollback to R3 under break-glass writes no record: the first pipeline run
-    // afterwards, `mode=rollback` to R3, passes the gate the same way.
-    expect(recordedTarget(h, at(3), at(6), isAncestor)).toEqual(r3)
     expect(recordedTarget(h, at(5), at(6), isAncestor)).toEqual({ ok: false, reason: 'not-recorded' })
     const onBranch = [...h, ...records('prod', deployment(9, 'prod', branch, D.f, 9))]
     expect(recordedTarget(onBranch, branch, at(6), isAncestor)).toEqual({ ok: false, reason: 'not-on-main' })
@@ -603,6 +603,22 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       prod: 'true',
       current_prod_id: '202',
       current_nonprod: '',
+    })
+    // After an incident rollback to the environment's newest record (R5 in non-prod, a later release
+    // that ran unrecorded rolled back under break-glass), the rollback to it passes the gate: only
+    // AWS_CHECK, against what runs, decides whether it changes anything.
+    expect(await outputsOf(dispatch({ mode: 'rollback', release: at(5) }))).toMatchObject({
+      mode: 'rollback',
+      target: 'nonprod',
+      commit: at(5),
+      digest: D.e,
+      nonprod: 'true',
+      current_nonprod: `${at(5)}:${D.e}`,
+    })
+    expect(await outputsOf(dispatch({ target: 'prod', mode: 'rollback', release: at(4) }))).toMatchObject({
+      commit: at(4),
+      digest: D.d,
+      prod: 'true',
     })
     expect(await refusalOf(dispatch({ mode: 'rollback', release: at(2) }))).toBe('not-recorded')
     expect(await refusalOf(dispatch({ mode: 'rollback', release: at(4) }, { floorsAllowed: () => false }))).toBe(
@@ -1042,13 +1058,34 @@ describe('C11-D58, C11-D61: the command line', () => {
       ],
       ['migrated', '--records', join(scratch, 'migrated.json')],
       ['prod-gate', '--mode', 'restore'],
+      [
+        'prod-gate',
+        ...['--mode', 'deploy', '--target', 'prod', '--sha', at(6), '--commit', at(6), '--digest', ''],
+        ...['--record-id', '202', '--build-digest', D.f, '--nonprod-digest', D.f, '--records', folder],
+      ],
     ]
     const printed: string[] = []
     for (const argv of runs) {
       const { out, err } = await cli(argv)
       printed.push(...out, ...err)
     }
-    expect(printed.length).toBeGreaterThan(runs.length)
+    expect(printed).toContain('current_prod_id=202')
+    // The plan's lines in every mode, as the command prints them once DOMAINS holds real names.
+    const inputs = [
+      planInput(),
+      dispatch({}),
+      dispatch({ mode: 'rollback', release: at(4) }),
+      dispatch({ target: 'prod', mode: 'rollback', release: at(3) }),
+      dispatch({ mode: 'drill-break' }),
+      dispatch({ mode: 'drill-smoke' }),
+      dispatch({ target: 'restore', restore: 'up' }),
+      dispatch({ target: 'restore', restore: 'down' }),
+    ]
+    for (const input of inputs) {
+      const outputs = await outputsOf(input)
+      printed.push(...PLAN_OUTPUTS.map(key => `${key}=${outputs[key]}`))
+    }
+    expect(printed.length).toBeGreaterThan(runs.length + inputs.length * PLAN_OUTPUTS.length)
     const stripped = printed.map(line => line.replace(/sha256:[0-9a-f]{64}/g, '').replace(/\b[0-9a-f]{40}\b/g, ''))
     expect(
       stripped.filter(line => /arn:/i.test(line) || /\d{12}/.test(line) || /\b\d{1,3}(?:\.\d{1,3}){3}\b/.test(line)),

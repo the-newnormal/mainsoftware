@@ -16,8 +16,9 @@
 //   leans on code that isn't there. A name() is a function a migration creates; an /api/… path is
 //   one the server registers (api.ts's prefixes joined to each route module's paths); any other
 //   /… path is one of the web app's (APP_PATHS, or NOTICE_PATH outside the shell); a repository
-//   path (under apps/, packages/, db/, docs/, scripts/, infra/ or .github/) is a file; an access action (ADMIN_ACTIONS or SELF_ACTIONS) is one a server handler
-//   serves, named as action: '<name>' outside tests; and any other name (a log event, an audit
+//   path (under apps/, packages/, db/, docs/, scripts/, infra/ or .github/) is a file; an access
+//   action (ADMIN_ACTIONS or SELF_ACTIONS) is one a server handler serves, named as
+//   action: '<name>' outside tests; and any other name (a log event, an audit
 //   result, a constant) appears in the server's or the packages' runtime code. Only that section
 //   is read, so a step may say in words what a later step brings, and a code path is listed only
 //   once it exists;

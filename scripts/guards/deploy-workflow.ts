@@ -50,12 +50,13 @@ function sh(strings: TemplateStringsArray, ...values: readonly string[]): string
 // --- The canonical texts ------------------------------------------------------------------------------
 
 // The preamble (C11-D61): the first lines of every run step after the credentials action. Every aws,
-// cdk and skopeo command then runs as `run …`, its output shown through the 12-digit filter, or
-// inside `$(get …)`, its output kept and never printed and its errors filtered (DPW-07).
+// cdk and skopeo command then runs as `run …`, its output shown through the account-id filter (a run
+// of twelve digits with no digit or lowercase hex letter beside it, so a commit or digest stays whole),
+// or inside `$(get …)`, its output kept and never printed and its errors filtered (DPW-07).
 export const PREAMBLE = sh`set -euo pipefail
 # Every aws, cdk and skopeo command runs as \`run …\` (its output shown through the account-id filter)
 # or inside \`$(get …)\` (its output kept for use and never printed, its errors filtered) (C11-D61).
-mask() { sed -uE 's/[0-9]{12}/***/g'; }
+mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
 run() { "$@" 2>&1 | mask; }
 get() { "$@" 2> >(mask >&2); }
 CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
@@ -458,22 +459,27 @@ ${RUN_TASK_MIGRATE}
 one_off_end migrate "$MIGRATE_LINES" "$RUN"`
 
 // The fast re-checks' reader (C11-D52, C11-D58, DPW-08): an environment's newest release record, its
-// payload checked as history.ts checks it, in its order (the api's revision, then the deployment's id).
+// payload checked as history.ts checks it, in its order (the api's revision, then the deployment's id),
+// and one line in the log naming each record it ignores (the gate's and prod-gate's summaries name it
+// too, from history.ts's own line).
 export const NEWEST_RELEASE = sh`newest_release() {
-  gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
-    [.[] | select(.task == "hearth-release" and .environment == $environment and (.payload | type == "object"))
-      | {id, payload}
-      | select(
-          (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
+  local records
+  records=$(gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
+    [.[] | select(.task == "hearth-release" and .environment == $environment)
+      | {id, payload, valid: (
+          (.payload | type == "object")
+          and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
           and .payload.schema == 1
           and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
           and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
           and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
           and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
           and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-          and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))
-      | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}]
-    | sort_by(.revision, .id) | last'
+          and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+    | {ignored: [.[] | select(.valid | not) | .id],
+      newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
+  jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
+  jq -c .newest <<<"$records"
 }`
 
 // The gate's read of a deploy's pull request (C11-D49, DPW-08): the merged pull request whose merge commit
@@ -482,8 +488,9 @@ export const NEWEST_RELEASE = sh`newest_release() {
 export const PULL_CHECKS = sh`set -euo pipefail
 # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
 # head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head (the
-# newest such run, read from the run and its jobs, never from a check run, which any token with
-# checks: write can make). history.ts plan decides; no merged pull request writes pull: null.
+# newest such run, its path read without any @<ref> GitHub adds, and read from the run and its jobs,
+# never from a check run, which any token with checks: write can make). history.ts plan decides; no
+# merged pull request writes pull: null.
 if [ "$\{MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
 PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
 PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
@@ -494,7 +501,7 @@ fi
 HEAD=$(jq -er '.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"$PULL")
 TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
 RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100")
-RUN_ID=$(jq -r --arg head "$HEAD" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $head)] | max_by(.id) | .id // ""' <<<"$RUNS")
+RUN_ID=$(jq -r --arg head "$HEAD" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $head)] | max_by(.id) | .id // ""' <<<"$RUNS")
 JOBS='{"jobs": []}'
 if [ -n "$RUN_ID" ]; then JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"); fi
 jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" '
@@ -504,13 +511,14 @@ jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" '
 // prod-gate's wait for main's own CI (C11-D52, DPW-08): ci.yml's push run on main for this commit, its check
 // and migrations jobs, until both succeed.
 export const MAIN_CI = sh`set -euo pipefail
-# main's own CI on this commit (C11-D52): ci.yml's push run on main, the newest, read from the run and
-# its jobs (never a check run, which any token with checks: write can make), until check and
-# migrations both succeed; any other conclusion fails at once, and 30 minutes ends the wait.
+# main's own CI on this commit (C11-D52): ci.yml's push run on main (its path read without any @<ref>
+# GitHub adds), the newest, read from the run and its jobs (never a check run, which any token with
+# checks: write can make), until check and migrations both succeed; any other conclusion fails at
+# once, and 30 minutes ends the wait.
 DEADLINE=$((SECONDS + 30 * 60))
 while :; do
   RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&event=push&branch=main&per_page=100")
-  RUN_ID=$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .head_sha == $sha)] | max_by(.id) | .id // ""' <<<"$RUNS")
+  RUN_ID=$(jq -r --arg sha "$SHA" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $sha)] | max_by(.id) | .id // ""' <<<"$RUNS")
   if [ -n "$RUN_ID" ]; then
     JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100")
     CONCLUSIONS=$(jq -r '[("check", "migrations") as $name | [.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "pending" end] | join(" ")' <<<"$JOBS")
@@ -538,10 +546,13 @@ export const PROD_GATE_CALL = sh`set -euo pipefail
 # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release and its
 # image is the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
 # the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
-if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records"); then
+# Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
+if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
+  tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
   printf '%s\n' "$OUT"
   exit 1
 fi
+tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
 if ! [[ "$OUT" =~ ^current_prod_id=[0-9]*$ ]]; then
   echo 'prod-gate: history.ts printed something else'
   exit 1
@@ -2063,7 +2074,7 @@ export function prodPathFindings(workflows: Texts): Finding[] {
 // --- DPW-09: the gate, the bot test and the environments -----------------------------------------------
 
 export const PLAN_CALL =
-  'if ! PLAN=$(node infra/scripts/deploy/history.ts plan --event "$EVENT" --ref "$REF" --actor "$ACTOR" --triggering-actor "$TRIGGERING_ACTOR" --sha "$SHA" --target "$TARGET" --mode "$MODE" --release "$RELEASE" --restore "$RESTORE" --records "$RUNNER_TEMP/records" --checks "$RUNNER_TEMP/checks.json"); then'
+  'if ! PLAN=$(node infra/scripts/deploy/history.ts plan --event "$EVENT" --ref "$REF" --actor "$ACTOR" --triggering-actor "$TRIGGERING_ACTOR" --sha "$SHA" --target "$TARGET" --mode "$MODE" --release "$RELEASE" --restore "$RESTORE" --records "$RUNNER_TEMP/records" --checks "$RUNNER_TEMP/checks.json" 2>"$RUNNER_TEMP/plan-ignored.txt"); then'
 const PLAN_ENV: Readonly<Record<string, string>> = {
   EVENT: expr('github.event_name'),
   REF: expr('github.ref'),
