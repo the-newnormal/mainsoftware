@@ -10,7 +10,10 @@
 # can't pass. With the stack up, each role must also have logged its subscription to the flags
 # channel (channel_subscribed), and the realtime role its subscriptions to the revoked and access
 # channels too, and answer 200 on /ready/local, the load balancer's health check (C0.7, TECH-SPEC T19
-# item 12).
+# item 12). Once /ready answers 200, the readiness probe (apps/server/src/deploy/ready-probe.ts, C0.11,
+# C11-D53) is run against the role, gated on it by its --gate= argument, from the source or inside the
+# image read-only as its one-off task runs it, and must print exactly its one line, the role's 200
+# with no failing check, and exit 0 (RPB-05).
 #
 # The routes (C0.5): a code request (POST /api/auth/otp/request from APP_ORIGIN, for the number
 # "x") and a WebSocket upgrade to /ws from another origin. The api role answers them 400
@@ -122,6 +125,22 @@ for role in api realtime worker; do
       status=$(curl -sS --max-time 5 -o "$log.ready" -w '%{http_code}' "http://127.0.0.1:$port/ready/local" || true)
       [ "$status" = 200 ] || { show_log; cat "$log.ready" >&2; fail "realtime /ready/local answered $status, not 200"; }
     fi
+  fi
+
+  # The readiness probe against this role (C11-D53, RPB-05): from source, or inside the image read-only as the
+  # probe task runs it, gated on this role by its --gate= argument, it prints exactly one line and exits 0.
+  # The source run starts from the repository root; Node resolves the probe's #src/ imports from
+  # apps/server's own package.json, as it does for main.ts.
+  if [ "$expect_ready" = 1 ]; then
+    if [ -n "$image" ]; then
+      probe=$(docker run --rm --read-only --network host -e PROBE_TARGETS="$role=127.0.0.1:$port" "$image" \
+        node src/deploy/ready-probe.ts "--gate=$role") || { show_log; fail "$role: the readiness probe exited non-zero"; }
+    else
+      probe=$(PROBE_TARGETS="$role=127.0.0.1:$port" node apps/server/src/deploy/ready-probe.ts "--gate=$role") ||
+        { show_log; fail "$role: the readiness probe exited non-zero"; }
+    fi
+    [ "$probe" = "$role 0 200 -" ] || { show_log; fail "$role: the readiness probe printed something other than its one line"; }
+    echo "check-server: $role readiness probe: $probe"
   fi
 
   # Each role serves only its own routes (see the top of this file).

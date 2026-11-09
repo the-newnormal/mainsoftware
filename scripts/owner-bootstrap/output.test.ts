@@ -339,6 +339,31 @@ describe('BSU-10 (PD-132): the exit statuses, and a failure to connect names its
     expect(altname.all()).toContain('for a port forward, PGHOST=127.0.0.1 with OWNER_BOOTSTRAP_TLS_NAME')
   })
 
+  it('sends a database behind the checkout to the commit it was migrated by, never the deployed one (T22 item 71)', () => {
+    // A rollback leaves the release record's migratedCommit where it was, so the deployed commit
+    // can be older than the database (T24 item 24).
+    const migrateFirst =
+      "run the deploy's migrate step first, or check out the commit the database was migrated by (the release record's migratedCommit)"
+    const behind = capture()
+    behind.print({
+      kind: 'refused',
+      refusal: {
+        kind: 'target',
+        problems: [
+          { code: 'migration_missing', name: '0012_request_cases' },
+          { code: 'no_ledger' },
+          { code: 'no_function' },
+          { code: 'no_orgs' },
+        ],
+      },
+    })
+    expect(behind.all()).toContain(`This database hasn't applied 0012_request_cases: ${migrateFirst}.`)
+    expect(behind.all()).toContain(`(no kysely_migration table): ${migrateFirst}`)
+    expect(behind.all()).toContain(`of the expected signature: ${migrateFirst}`)
+    expect(behind.all()).toContain(`no orgs table: ${migrateFirst}`)
+    expect(behind.all()).not.toContain('deployed commit')
+  })
+
   it('maps every failure before the first statement returns to 2 with its own line, echoing no host, user or message', () => {
     const host = 'db.wren-canary.example'
     const node = (code: string) => Object.assign(new Error(`connect ${code} ${host} as wren_canary`), { code })

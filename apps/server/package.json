@@ -7,6 +7,9 @@
   "imports": {
     "#src/*": "./src/*"
   },
+  "exports": {
+    "./config": "./src/config.ts"
+  },
   "scripts": {
     "dev": "node --env-file=../../.env.example --env-file-if-exists=../../.env --watch src/main.ts",
     "start": "node src/main.ts",

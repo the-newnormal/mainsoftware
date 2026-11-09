@@ -14,7 +14,9 @@
 // - the fast rules each account holds, their patterns, states and inputs, and the topic they email;
 // - C11-D43: the zones, Amazon's CAA alone, retained once made, and prod's `nonprod.` delegation only once its
 //   name servers are committed, which the committed synth follows and two variants pin (filled and
-//   empty), so committing them turns none of these red; C11-D44: the server image's repository.
+//   empty), so committing them turns none of these red; C11-D44: the server image's repository;
+// - C11-D24, C11-D30: the SSM parameters by fixed names, the organisation's id among them, which the
+//   workload's Platform stacks read into every endpoint policy (C0.11 PR 3), so the workload holds none.
 // prod's statements also name the restore stage, which lives in its account (C11-Q02). Expected ARNs
 // are joined from their parts (IG-01) and the model deny comes from the lists (IG-10).
 import { spawnSync } from 'node:child_process'
@@ -1070,7 +1072,9 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+    // It runs bash and jq some thirty times, so its time follows the machine's load: beside the
+    // workload synths on CI's runner it took over 9 s, past Vitest's 5 s default (C0.11 PR 3).
+  }, 60_000)
 })
 
 // hearth-boundary (C11-D26), statement by statement, in one account. Its SMS statements left by
@@ -1560,7 +1564,7 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
     ])
   })
 
-  it('C11-D24 C11-D43 C11-D44: the zones’ ids, the repository’s name and the break-glass-log bucket’s name sit in SSM parameters by fixed names', () => {
+  it('C11-D24 C11-D30 C11-D43 C11-D44: the zones’ ids, the repository’s name, the break-glass-log bucket’s name and the organisation’s id sit in SSM parameters by fixed names, and nothing else does', () => {
     const template = templateOf(kind)
     const zone = (name: string | undefined) => ({
       Ref: one(template, 'AWS::Route53::HostedZone', 'Name', `${name}.`)[0],
@@ -1575,7 +1579,22 @@ describe.each(KINDS)('C11-D43 C11-D44: %s’s zones, repository and parameters',
       { name: `/hearth/${kind}/zone/app`, value: zone(host.app) },
       { name: `/hearth/${kind}/zone/usercontent`, value: zone(host.userContent) },
       { name: '/hearth/break-glass/log-bucket', value: `hearth-break-glass-log-${logArchive}` },
+      // The fixture's organisation id, joined from its parts as the fixture joins it (IG-01).
+      { name: '/hearth/organisation/id', value: ['o', 'a'.repeat(10)].join('-') },
     ])
+  })
+
+  it('C11-D30: the organisation’s id, which every workload endpoint policy compares, is a plain String parameter holding the configuration’s id, made by the Baseline’s own construct', () => {
+    const template = templateOf(kind)
+    const [id, parameter] = one(template, 'AWS::SSM::Parameter', 'Name', '/hearth/organisation/id')
+    expect(id).toMatch(/^OrganisationId[0-9A-F]{8}$/)
+    expect(parameter.Properties).toEqual({
+      Type: 'String',
+      Name: '/hearth/organisation/id',
+      Value: fixture.organization.id,
+      Description: 'The organisation id the workload endpoint policies compare (C11-D30)',
+    })
+    expect(parameter.DeletionPolicy).toBeUndefined()
   })
 
   it('C11-D44: hearth-server’s repository keeps tags fixed, scans every push, keeps the newest 50 images, lets hearth-gh-deploy alone push and nobody delete an image, and is retained once made', () => {

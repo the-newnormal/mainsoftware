@@ -597,10 +597,17 @@ open_console() {
 }
 
 # The shell holding the role: the credentials reach it as prefix assignments alone, so they sit in its
-# environment and never in an argument; its prompt counts the minutes left and warns at 10 and 5.
+# environment and never in an argument; its prompt counts the minutes left and warns at 10 and 5. It
+# keeps no history, its own or psql's or its pager's, which would otherwise keep what was typed or
+# searched in it in a file that outlives the session (access-request.md, step 3). psql takes its
+# history file from PSQL_HISTORY only while no psqlrc sets HISTFILE, so the shell also points psql at
+# an empty psqlrc (PSQLRC=/dev/null) instead of the one an inherited PSQLRC names or the one in the
+# account's home, where psql 14 and older look whatever HOME says. A system-wide psqlrc is still read
+# unless psql runs with -X, as that step runs it.
 run_shell() {
   cat >"$rc" <<'RC'
 unset HISTFILE
+export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-
 hearth_bg_prompt() {
   local left
   left=$(( (HEARTH_BREAK_GLASS_UNTIL - $(date -u +%s)) / 60 ))

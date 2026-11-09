@@ -8,7 +8,11 @@
 // replays the requests that would mute an alarm, hand a role outside, rewrite the break-glass helper's
 // parameter, or reach the hearthbase execution role through CloudFormation, directly or through the template it runs from hearthbase's
 // staging bucket, against the SCPs binding a workload account, and the Baselines' own asset manifests
-// are checked against that bucket's fence, so the two can't drift apart. It also replays the calls the
+// are checked against that bucket's fence, so the two can't drift apart. From C0.11 PR 3 it replays
+// the same for the workload stacks, hearthapp's toolkit stack and hearthapp's staging bucket (TECH-SPEC
+// T24 item 28), checks every workload stack's asset manifest and deploy role against those fences, and
+// replays NoOtherWayIn, which leaves the bastion the only way into a workload VPC (C11-D40), measuring
+// hearth-workload-fences with them. It also replays the calls the
 // quarterly trail validation makes in each of its two Regions against the SCPs binding log-archive.
 // Root holds four of Hearth's SCPs beside AWS's FullAWSAccess, the five Organizations allows, so a
 // later step merges into one of them. The floor's bucket patterns are checked against LogArchive's
@@ -21,6 +25,7 @@ import { githubSubject } from '../config/env.ts'
 import { globsOverlap, modelDenyActions } from '../config/models.ts'
 import { fixtureConfig } from '../testing/fixture.ts'
 import { type LandingZoneSynth, synthLandingZone } from '../testing/landing-zone.ts'
+import { synthWorkload } from '../testing/workload.ts'
 
 type Template = Record<string, unknown>
 interface Resource {
@@ -48,6 +53,8 @@ const resourcesIn = (template: Template): Array<[string, Resource]> =>
   Object.entries((template.Resources ?? {}) as Record<string, Resource>)
 const list = (value: string | string[] | undefined): string[] =>
   value === undefined ? [] : Array.isArray(value) ? value : [value]
+// A CloudFormation pseudo parameter as the asset manifests write it (`${AWS::AccountId}`).
+const variable = (name: string) => `\${${name}}`
 
 // ARNs and patterns, joined from their parts (IG-01).
 const arn = (service: string, region: string, account: string, resource: string) =>
@@ -60,7 +67,7 @@ const secret = (name: string) => anywhere('secretsmanager', `secret:${name}`)
 const taskDefinitions = (family: string) => anywhere('ecs', `task-definition/${family}:*`)
 
 // The role patterns an SCP may name in a principal condition (C11-D05, C11-D26): each qualifier's
-// CloudFormation execution role and deploy role, hearthbase's file-publishing role,
+// CloudFormation execution role, deploy role and file-publishing role,
 // OrganizationAccountAccessRole, break-glass, GitHub's deploy role and both GitHub roles, every hearth
 // bootstrap role, the server task roles by kind and Rule 9's execution role, each in any account.
 const EXEC = role('cdk-hearthbase-cfn-exec-role-*-ap-southeast-1')
@@ -68,6 +75,7 @@ const APP_EXEC = role('cdk-hearthapp-cfn-exec-role-*-ap-southeast-1')
 const BASE_DEPLOY = role('cdk-hearthbase-deploy-role-*-ap-southeast-1')
 const APP_DEPLOY = role('cdk-hearthapp-deploy-role-*-ap-southeast-1')
 const BASE_PUBLISH = role('cdk-hearthbase-file-publishing-role-*-ap-southeast-1')
+const APP_PUBLISH = role('cdk-hearthapp-file-publishing-role-*-ap-southeast-1')
 const OAAR = role('OrganizationAccountAccessRole')
 const BREAK_GLASS = role('hearth-break-glass')
 const GH_DEPLOY = role('hearth-gh-deploy')
@@ -82,6 +90,7 @@ const ALLOWED_PRINCIPAL_PATTERNS: readonly string[] = [
   BASE_DEPLOY,
   APP_DEPLOY,
   BASE_PUBLISH,
+  APP_PUBLISH,
   BREAK_GLASS,
   GH_DEPLOY,
   GH_ROLES,
@@ -101,6 +110,8 @@ const LOG_BUCKETS = ['hearth-org-trail-', 'hearth-break-glass-log-', 'hearth-arc
 ])
 // hearthbase's staging bucket and its objects, in any account (C11-D26).
 const BASE_ASSETS = [arn('s3', '', '', 'cdk-hearthbase-assets-*'), arn('s3', '', '', 'cdk-hearthbase-assets-*/*')]
+// hearthapp's staging bucket and its objects, in any account (C11-D26).
+const APP_ASSETS = [arn('s3', '', '', 'cdk-hearthapp-assets-*'), arn('s3', '', '', 'cdk-hearthapp-assets-*/*')]
 // A key carrying the hearth-sec tag, which the floor protects keys by.
 const TAGGED = { Null: { 'aws:ResourceTag/hearth-sec': 'false' } }
 const except = (...patterns: string[]) => ({
@@ -134,6 +145,19 @@ const OIDC_PROVIDER_WRITES = [
   'iam:CreateOpenIDConnectProvider',
   'iam:AddClientIDToOpenIDConnectProvider',
   'iam:UpdateOpenIDConnectProviderThumbprint',
+]
+// Every write to a bucket or its objects, as the staging-bucket fences deny them.
+const BUCKET_WRITES = ['s3:Put*', 's3:Delete*', 's3:Replicate*', 's3:Restore*']
+// Another way into a VPC than the bastion's port forward, which NoOtherWayIn denies (C11-D40): EC2's
+// four products, and VPC Lattice's resource gateway, target group and VPC association.
+const VPC_WAYS_IN = [
+  'ec2:CreateClientVpnEndpoint',
+  'ec2:CreateInstanceConnectEndpoint',
+  'ec2:CreateVpcEndpointServiceConfiguration',
+  'ec2:CreateVerifiedAccess*',
+  'vpc-lattice:CreateResourceGateway',
+  'vpc-lattice:CreateTargetGroup',
+  'vpc-lattice:CreateServiceNetworkVpcAssociation',
 ]
 const OTHER_WAYS_IN = [
   'iam:CreateSAMLProvider',
@@ -542,10 +566,31 @@ const EXPECTED: Record<string, { type: string; targets: string[]; document: unkn
       {
         Sid: 'HearthbaseAssetsOnlyItsPublisher',
         Effect: 'Deny',
-        Action: ['s3:Put*', 's3:Delete*', 's3:Replicate*', 's3:Restore*'],
+        Action: BUCKET_WRITES,
         Resource: BASE_ASSETS,
         Condition: except(BASE_PUBLISH),
       },
+      {
+        Sid: 'WorkloadStacksOnlyItsDeploy',
+        Effect: 'Deny',
+        Action: CFN_WRITES,
+        Resource: [
+          anywhere('cloudformation', 'stack/Hearth-*-Platform/*'),
+          anywhere('cloudformation', 'stack/Hearth-*-Data/*'),
+          anywhere('cloudformation', 'stack/Hearth-*-Tasks/*'),
+          anywhere('cloudformation', 'stack/Hearth-*-Services/*'),
+          anywhere('cloudformation', 'stack/CDKToolkit-hearthapp/*'),
+        ],
+        Condition: except(APP_DEPLOY),
+      },
+      {
+        Sid: 'HearthappAssetsOnlyItsPublisher',
+        Effect: 'Deny',
+        Action: BUCKET_WRITES,
+        Resource: APP_ASSETS,
+        Condition: except(APP_PUBLISH),
+      },
+      { Sid: 'NoOtherWayIn', Effect: 'Deny', Action: VPC_WAYS_IN, Resource: '*' },
     ]),
   },
   'hearth-workload-fences-2': {
@@ -913,6 +958,15 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
     }
   })
 
+  it('IAC-02 C11-D26 C11-D40: hearth-workload-fences, with the workload stacks’, hearthapp’s staging bucket’s and NoOtherWayIn’s statements, holds 4,248 of its 5,120 characters (TECH-SPEC T24 items 2 and 28)', () => {
+    const content = String(policiesIn(foundation).get('hearth-workload-fences')?.Properties?.Content)
+    expect(content.length, `hearth-workload-fences holds ${content.length} characters`).toBeLessThanOrEqual(
+      POLICY_LIMIT,
+    )
+    // Measured, so a statement added or widened re-measures it here and in TECH-SPEC T24 item 2.
+    expect(content.length, 'record the new size in TECH-SPEC T24 item 2').toBe(4_248)
+  })
+
   it('IAC-02 C11-D05: who each statement excepts, and no pattern wider than one role family', () => {
     const exceptions: string[] = []
     for (const [name, policy] of policiesIn(foundation)) {
@@ -954,6 +1008,8 @@ describe('IAC-02 C11-D05 to C11-D08: the guardrails as Hearth-Foundation renders
       'hearth-workload-fences DbWorkerLogin ArnNotLike aws:PrincipalArn: hearth-*-worker-task',
       'hearth-workload-fences DbRule9Login ArnNotLike aws:PrincipalArn: hearth-*-rule9-task',
       'hearth-workload-fences HearthbaseAssetsOnlyItsPublisher ArnNotLike aws:PrincipalArn: cdk-hearthbase-file-publishing-role-*-ap-southeast-1',
+      'hearth-workload-fences WorkloadStacksOnlyItsDeploy ArnNotLike aws:PrincipalArn: cdk-hearthapp-deploy-role-*-ap-southeast-1',
+      'hearth-workload-fences HearthappAssetsOnlyItsPublisher ArnNotLike aws:PrincipalArn: cdk-hearthapp-file-publishing-role-*-ap-southeast-1',
       'hearth-workload-fences-2 NoPipelineSecretReads ArnLike aws:PrincipalArn: hearth-gh-*, cdk-hearth*',
       'hearth-workload-fences-2 BootstrapInputOnlyBreakGlass ArnNotLike aws:PrincipalArn: hearth-break-glass',
       'hearth-workload-fences-2 Rule9SecretByName ArnNotLike aws:PrincipalArn: hearth-*-rule9-task, hearth-*-rule9-exec',
@@ -1200,7 +1256,7 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
         expect(denied({ action, resource: stack(name), principal: baseDeploy }), `${action} ${name}`).toEqual([])
       }
       // The workload's own stacks are hearthapp's deploy role's to change.
-      expect(denied({ action, resource: stack('Hearth-prod-Workload'), principal: appDeploy }), action).toEqual([])
+      expect(denied({ action, resource: stack('Hearth-prod-Platform'), principal: appDeploy }), action).toEqual([])
     }
   })
 
@@ -1361,7 +1417,8 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
     for (const action of ['s3:PutObject', 's3:DeleteObjectVersion']) {
       expect(denied({ action, resource: template, principal: basePublish }), action).toEqual([])
     }
-    // Reading stays open, and hearthapp's own bucket is its file-publishing role's (PR 3 fences it).
+    // Reading stays open, and hearthapp's own bucket is its file-publishing role's
+    // (HearthappAssetsOnlyItsPublisher, below).
     expect(denied({ action: 's3:GetObject', resource: template, principal: task })).toEqual([])
     const appTemplate = arn('s3', '', '', `cdk-hearthapp-assets-${prod}-ap-southeast-1/0a1b2c3d.json`)
     expect(denied({ action: 's3:PutObject', resource: appTemplate, principal: appPublish })).toEqual([])
@@ -1407,6 +1464,168 @@ describe('IAC-02 C11-D05 C11-D07 C11-D16 C11-D26: requests replayed against the 
     }
     expect(accounts.sort()).toEqual([fixture.accounts.nonprod, fixture.accounts.prod].sort())
   })
+
+  const breakGlass = prodRole('hearth-break-glass')
+  const ghDeploy = prodRole('hearth-gh-deploy')
+
+  it('IAC-02 C11-D26: the workload stacks and hearthapp’s toolkit stack change only through hearthapp’s deploy role, since a stack keeps the hearthapp execution role it was deployed with; the Baselines stay hearthbase’s, and C0.12’s Edge stacks are named by neither fence (TECH-SPEC T24 item 28)', () => {
+    const workloadStacks = [
+      'Hearth-nonprod-Platform',
+      'Hearth-prod-Data',
+      'Hearth-restore-Tasks',
+      'Hearth-prod-Services',
+      'CDKToolkit-hearthapp',
+    ]
+    for (const action of [
+      'cloudformation:UpdateStack',
+      'cloudformation:ExecuteChangeSet',
+      'cloudformation:DeleteStack',
+      'cloudformation:CreateChangeSet',
+      'cloudformation:SetStackPolicy',
+      'cloudformation:ContinueUpdateRollback',
+    ]) {
+      for (const name of workloadStacks) {
+        for (const principal of [task, exec, appExec, baseDeploy, appPublish, breakGlass, ghDeploy]) {
+          expect(denied({ action, resource: stack(name), principal }), `${action} ${name} ${principal}`).toEqual([
+            'WorkloadStacksOnlyItsDeploy',
+          ])
+        }
+        expect(denied({ action, resource: stack(name), principal: appDeploy }), `${action} ${name}`).toEqual([])
+      }
+      // A Baseline is still hearthbase's alone, and the new fence doesn't name it.
+      expect(denied({ action, resource: stack('Hearth-nonprod-Baseline'), principal: appDeploy }), action).toEqual([
+        'HearthbaseStacksOnlyItsDeploy',
+      ])
+      expect(denied({ action, resource: stack('Hearth-nonprod-Baseline'), principal: baseDeploy }), action).toEqual([])
+      // C0.12 fences its Edge stacks with its own change.
+      expect(denied({ action, resource: stack('Hearth-nonprod-Edge'), principal: task }), action).toEqual([])
+    }
+    // Reading a workload stack stays open.
+    expect(
+      denied({ action: 'cloudformation:DescribeStacks', resource: stack('Hearth-prod-Services'), principal: task }),
+    ).toEqual([])
+  })
+
+  it('IAC-02 C11-D26: only hearthapp’s file-publishing role writes hearthapp’s staging bucket, whose templates CloudFormation runs as the hearthapp execution role, and nobody changes its configuration (TECH-SPEC T24 item 28)', () => {
+    const appAssets = `cdk-hearthapp-assets-${prod}-ap-southeast-1`
+    const appTemplate = arn('s3', '', '', `${appAssets}/0a1b2c3d.json`)
+    const bucket = arn('s3', '', '', appAssets)
+    for (const [action, resource] of [
+      ['s3:PutObject', appTemplate],
+      ['s3:DeleteObjectVersion', appTemplate],
+      ['s3:PutBucketPolicy', bucket],
+      ['s3:PutReplicationConfiguration', bucket],
+    ] as const) {
+      for (const principal of [task, exec, appExec, baseDeploy, appDeploy, basePublish]) {
+        expect(denied({ action, resource, principal }), `${action} ${principal}`).toEqual([
+          'HearthappAssetsOnlyItsPublisher',
+        ])
+      }
+    }
+    for (const action of ['s3:PutObject', 's3:DeleteObjectVersion']) {
+      expect(denied({ action, resource: appTemplate, principal: appPublish }), action).toEqual([])
+    }
+    expect(denied({ action: 's3:GetObject', resource: appTemplate, principal: task })).toEqual([])
+  })
+
+  it('IAC-02 C11-D40: nobody, the deploy and execution roles and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service, Verified Access, or VPC Lattice’s resource gateway, target group or VPC association, so the bastion stays the only way into a workload VPC; reading VPC Lattice stays open, and an interface endpoint is named by no statement, IAC-12’s exact set holding it (TECH-SPEC T24 item 13)', () => {
+    // A concrete principal for each pattern an SCP may name, in prod's account.
+    const principals = [
+      prodRole('OrganizationAccountAccessRole'),
+      exec,
+      appExec,
+      baseDeploy,
+      appDeploy,
+      basePublish,
+      appPublish,
+      breakGlass,
+      ghDeploy,
+      prodRole('hearth-gh-diff'),
+      prodRole(`cdk-hearthapp-lookup-role-${prod}-ap-southeast-1`),
+      ...['migrate', 'api', 'realtime', 'worker', 'rule9'].map(kind => prodRole(`hearth-prod-${kind}-task`)),
+      prodRole('hearth-prod-rule9-exec'),
+    ]
+    expect(principals).toHaveLength(ALLOWED_PRINCIPAL_PATTERNS.length)
+    for (const pattern of ALLOWED_PRINCIPAL_PATTERNS) {
+      const name = pattern.slice(pattern.indexOf(':role/'))
+      expect(
+        principals.filter(principal => globsOverlap(`*${name}`, principal)),
+        pattern,
+      ).not.toEqual([])
+    }
+    const oaar = (principal: string) => principal.endsWith(':role/OrganizationAccountAccessRole')
+    for (const action of [
+      'ec2:CreateClientVpnEndpoint',
+      'ec2:CreateInstanceConnectEndpoint',
+      'ec2:CreateVpcEndpointServiceConfiguration',
+      'ec2:CreateVerifiedAccessInstance',
+      'vpc-lattice:CreateResourceGateway',
+      'vpc-lattice:CreateTargetGroup',
+      'vpc-lattice:CreateServiceNetworkVpcAssociation',
+    ]) {
+      for (const principal of principals) {
+        const expected = oaar(principal) ? ['NoOaar', 'NoOtherWayIn'] : ['NoOtherWayIn']
+        expect(denied({ action, resource: '*', principal }), `${action} ${principal}`).toEqual(expected)
+      }
+    }
+    // Reading VPC Lattice is no way in, and the statement names no wider pattern than its own actions.
+    for (const action of ['vpc-lattice:ListServiceNetworks', 'vpc-lattice:GetResourceGateway']) {
+      for (const principal of principals) {
+        expect(denied({ action, resource: '*', principal }), `${action} ${principal}`).toEqual(
+          oaar(principal) ? ['NoOaar'] : [],
+        )
+      }
+    }
+    expect(denied({ action: 'ec2:CreateVpcEndpoint', resource: '*', principal: appExec })).toEqual([])
+  })
+
+  it('IAC-02 C11-D26: each workload stack’s template and asset, as its manifest publishes them, sit where hearthapp’s staging-bucket fence binds and are uploaded through the one role it excepts, and each stack is deployed through the one role its stack fence excepts', () => {
+    const workload = synthWorkload()
+    // The manifests leave the account and partition for the CLI to fill in; the replay puts prod's in.
+    const filled = (text: string) =>
+      text.replaceAll(variable('AWS::AccountId'), prod).replaceAll(variable('AWS::Partition'), 'aws')
+    interface Destination {
+      bucketName: string
+      objectKey: string
+      assumeRoleArn: string
+    }
+    const manifests = [...workload.synthesised.assetManifests].filter(([path]) =>
+      /^assembly-(?:nonprod|prod|restore)\//.test(path),
+    )
+    expect(manifests).toHaveLength(12)
+    const destinations = manifests
+      .flatMap(([, manifest]) =>
+        Object.values(
+          (manifest as { files?: Record<string, { destinations: Record<string, Destination> }> }).files ?? {},
+        ),
+      )
+      .flatMap(file => Object.values(file.destinations))
+    // Twelve templates and the default-security-group handler's code in each Platform.
+    expect(destinations).toHaveLength(15)
+    for (const destination of destinations) {
+      const bucket = filled(destination.bucketName)
+      const object = arn('s3', '', '', `${bucket}/${destination.objectKey}`)
+      const publisher = filled(destination.assumeRoleArn)
+      expect(bucket, object).toBe(`cdk-hearthapp-assets-${prod}-ap-southeast-1`)
+      expect(publisher, object).toBe(prodRole(`cdk-hearthapp-file-publishing-role-${prod}-ap-southeast-1`))
+      expect(denied({ action: 's3:PutObject', resource: object, principal: publisher }), object).toEqual([])
+      for (const principal of [task, appExec, appDeploy]) {
+        expect(denied({ action: 's3:PutObject', resource: object, principal }), principal).toEqual([
+          'HearthappAssetsOnlyItsPublisher',
+        ])
+      }
+    }
+    expect(workload.synthesised.stacks).toHaveLength(12)
+    for (const { stackName, artifact } of workload.synthesised.stacks) {
+      const deployer = filled(artifact.assumeRoleArn ?? '')
+      expect(deployer, stackName).toBe(prodRole(`cdk-hearthapp-deploy-role-${prod}-ap-southeast-1`))
+      const action = 'cloudformation:ExecuteChangeSet'
+      expect(denied({ action, resource: stack(stackName), principal: deployer }), stackName).toEqual([])
+      expect(denied({ action, resource: stack(stackName), principal: appExec }), stackName).toEqual([
+        'WorkloadStacksOnlyItsDeploy',
+      ])
+    }
+  }, 60_000)
 })
 
 // The quarterly review's `aws cloudtrail validate-logs`, run in log-archive as HearthSecurityReview for
