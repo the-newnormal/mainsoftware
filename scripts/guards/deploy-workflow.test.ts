@@ -1,7 +1,8 @@
 // The deploy-workflow guard's cases (DPW-01 to DPW-14; C0.11, TECH-SPEC T24 items 20 to 23 and 28). The
-// reader first finds the fifteen jobs and their steps, and reads every canonical text back exactly, so a
-// reformatted workflow fails rather than passing unread. Then each case is proved on planted text, an
-// exact edit of the real file that throws when its anchor is gone, before it holds the repository.
+// reader first finds the fifteen jobs and their steps, and reads every canonical text back exactly, and
+// DPW-02 refuses any line in a shape it doesn't read, so a reformatted workflow fails rather than passing
+// unread. Then each case is proved on planted text, an exact edit of the real file that throws when its
+// anchor is gone, before it holds the repository.
 // AWS_CHECK runs with bash and jq against planted AWS answers and a real git, ASSET_CHECK against
 // planted copies of the workload's own assembly, protect-environments.sh check --from against planted
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
@@ -87,12 +88,20 @@ const environments: ReadonlyMap<string, string> = new Map(
   files.filter(path => path.startsWith('.github/environments/')).map(path => [path, readRepoFile(path)]),
 )
 const protectEnvironments = readRepoFile('scripts/protect-environments.sh')
-const manifests: ReadonlyMap<string, string> = new Map(
-  files
-    .filter(path =>
-      /^(?:package\.json|(?:apps|packages)\/[^/]+\/package\.json|infra\/package\.json|demo\/package\.json)$/.test(path),
+// Every workspace's package.json, read from the root's workspaces globs (a folder, or a folder's children
+// by a trailing /*), and the root's own.
+const workspaceGlobs = (JSON.parse(readRepoFile('package.json')) as { workspaces?: unknown }).workspaces
+const workspacePattern = new RegExp(
+  `^(?:${(Array.isArray(workspaceGlobs) ? workspaceGlobs : [])
+    .map(glob =>
+      String(glob)
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/\/\*$/, '/[^/]+'),
     )
-    .map(path => [path, readRepoFile(path)]),
+    .join('|')})/package\\.json$`,
+)
+const manifests: ReadonlyMap<string, string> = new Map(
+  files.filter(path => path === 'package.json' || workspacePattern.test(path)).map(path => [path, readRepoFile(path)]),
 )
 const lockfile = readRepoFile('package-lock.json')
 
@@ -146,6 +155,10 @@ function addedBefore(jobId: string, stepName: string, line: string, added: strin
   const step = stepText(deployText, jobId, stepName)
   return withText(DEPLOY, edited(deployText, step, edited(step, line, `${added}${line}`), job(jobId)))
 }
+
+// DPW-02's finding for a file workflow.ts would read wrong.
+const SHAPE =
+  'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
 
 const indent = (text: string, n: number) =>
   text
@@ -414,8 +427,71 @@ describe('DPW-02 (C11-D55): permissions', () => {
         ),
       ),
     ).toEqual([
+      `${secrets}: DPW-02 ${SHAPE}`,
       `${secrets}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`,
     ])
+  })
+
+  // A shape GitHub runs but workflow.ts would read wrong fails, never passes unread.
+  it('finds a step, key or value workflow.ts would read wrong, in any workflow', () => {
+    const shape = (path: string) => [`${path}: DPW-02 ${SHAPE}`]
+    // A step with its keys at ten spaces, and npx run with the credentials in hand: the reader sees no run.
+    const step = stepText(deployText, 'nonprod', 'Read back what runs')
+    const reindented = step
+      .replace('      - name: Read back what runs', '      -   name: Read back what runs')
+      .replace(/\n(?=.)/g, '\n  ')
+      .replace('            set -euo pipefail\n', '            set -euo pipefail\n            npx cdk deploy --all\n')
+    expect(reindented).not.toBe(step)
+    const unread = withText(DEPLOY, edited(deployText, step, reindented, job('nonprod')))
+    const nonprod = workflowJobs(unread.get(DEPLOY) ?? '').find(each => each.id === 'nonprod')
+    expect(nonprod === undefined ? [] : parsedSteps(nonprod).at(-1)?.run).toBeUndefined()
+    expect(permissionFindings(unread)).toEqual(shape(DEPLOY))
+    // A plain scalar YAML continues on the next line, which the reader would cut at its first.
+    const install = '        run: npm ci --ignore-scripts -w @hearth/infra\n'
+    expect(permissionFindings(plant(install, `${install}          && npx cdk deploy --all\n`, job('nonprod')))).toEqual(
+      shape(DEPLOY),
+    )
+    expect(
+      permissionFindings(
+        plant(
+          install,
+          '        run: "npm ci --ignore-scripts -w @hearth/infra\n          && npx cdk deploy --all"\n',
+          job('nonprod'),
+        ),
+      ),
+    ).toEqual(shape(DEPLOY))
+    expect(
+      permissionFindings(
+        plant('    runs-on: ubuntu-24.04\n', '    runs-on: ubuntu-24.04\n      self-hosted\n', job('prod')),
+      ),
+    ).toEqual(shape(DEPLOY))
+    // A key given twice, of which the reader keeps the first.
+    expect(permissionFindings(plant(install, `${install}        run: npx cdk deploy --all\n`, job('nonprod')))).toEqual(
+      shape(DEPLOY),
+    )
+    expect(
+      permissionFindings(
+        plant('    runs-on: ubuntu-24.04\n', '    runs-on: ubuntu-24.04\n    runs-on: self-hosted\n', job('prod')),
+      ),
+    ).toEqual(shape(DEPLOY))
+    // A flow sequence over two lines, and a sequence at its key's own indent.
+    expect(
+      permissionFindings(
+        plant(
+          '    needs: [gate, build, synth, nonprod, prod-plan, prod-gate]\n',
+          '    needs: [gate, build, synth,\n      nonprod, prod-plan, prod-gate]\n',
+        ),
+      ),
+    ).toEqual(shape(DEPLOY))
+    expect(
+      permissionFindings(
+        plant('    steps:\n      - name: Check out', '    steps:\n    - name: Check out', job('smoke-prod')),
+      ),
+    ).toEqual(shape(DEPLOY))
+    // And in ci.yml, whose checkout DPW-11 reads through the same reader.
+    expect(
+      permissionFindings(plant('      - uses: actions/checkout@', '      -   uses: actions/checkout@', '', CI)),
+    ).toEqual(shape(CI))
   })
 
   // The clause infra.ts's ciSynthProblems held for ci.yml until C0.11 PR 4, with its cases, as they stood.
@@ -430,8 +506,13 @@ describe('DPW-02 (C11-D55): permissions', () => {
       idToken,
     )
     expect(ci(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual(idToken)
-    expect(ci(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual(idToken)
-    expect(ci(check, `${check}    permissions:\n      "id-token": write\n`)).toEqual(idToken)
+    // A quoted key is also a shape workflow.ts doesn't read.
+    const shape = `${CI}: DPW-02 ${SHAPE}`
+    expect(ci(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual([
+      shape,
+      ...idToken,
+    ])
+    expect(ci(check, `${check}    permissions:\n      "id-token": write\n`)).toEqual([shape, ...idToken])
     expect(ci(check, `${check}    # ID-TOKEN: write, once\n`)).toEqual(idToken)
     expect(
       ci(
@@ -440,7 +521,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
       ),
     ).toEqual(idToken)
     expect(ci(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual(escaped)
-    expect(ci(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual(escaped)
+    expect(ci(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual([shape, ...escaped])
     expect(ci(check, `${check}    permissions: "write\\x2Dall"\n`)).toEqual(escaped)
   })
 
@@ -569,6 +650,11 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
     'restore=down takes Services, then Data, then Platform down, one call each, each only for a stack that exists and has settled'
   const AWS =
     'AWS_CHECK, byte for byte, is the step right after the credentials action, before any push or deploy, called with its mode'
+  const GOES_ON =
+    "lets no failure pass: no continue-on-error, and no step's if: calls always(), success(), failure() or cancelled()"
+  const UNCONDITIONAL =
+    'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads'
+  const CLI_IF = "runs each CLI line only in the modes that call for it: its step's if: as written"
   const migrate = '      - name: Migrate\n'
   const probe = '      - name: Probe\n'
   const find = (from: string, to: string, after: string) => deployStepFindings(plant(from, to, after))
@@ -659,6 +745,7 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
       ),
     ).toEqual([at('nonprod', CLI), at('nonprod', ORDER)])
     expect(deployStepFindings(movedStep('nonprod', 'What runs', 'Deploy Platform, Data and Tasks'))).toEqual([
+      at('nonprod', UNCONDITIONAL),
       at('nonprod', AWS),
     ])
     expect(
@@ -678,7 +765,57 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
     ).toEqual([at('nonprod', 'sets STAGE once, at the job, to nonprod')])
     expect(
       find(`    if: \${{ needs.gate.outputs.mode != 'drill-break' }}\n`, `    if: \${{ always() }}\n`, probe),
-    ).toEqual([at('nonprod', 'probes once, after every Services deploy but restore=down’s')])
+    ).toEqual([at('nonprod', GOES_ON), at('nonprod', 'probes once, after every Services deploy but restore=down’s')])
+  })
+
+  // Nothing lets a failed or skipped check go on to deploy: a job goes on only while each step before succeeded.
+  it('finds each planted way past a failed check: continue-on-error, a status function, a skipped check, an if: of its own', () => {
+    const what = '      - name: What runs\n        id: aws\n'
+    const goOn = '      - name: What runs\n        continue-on-error: true\n        id: aws\n'
+    expect(find(what, goOn, job('nonprod'))).toEqual([at('nonprod', GOES_ON)])
+    expect(find(what, goOn, job('prod'))).toEqual([at('prod', GOES_ON)])
+    expect(find('        id: plan\n', '        id: plan\n        continue-on-error: true\n', job('gate'))).toEqual([
+      at('gate', GOES_ON),
+    ])
+    expect(
+      find('    timeout-minutes: 40\n', '    timeout-minutes: 40\n    continue-on-error: true\n', job('prod-gate')),
+    ).toEqual([at('prod-gate', GOES_ON)])
+    // Both forward steps run after AWS_CHECK refused.
+    const forward = `        if: \${{ needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke' }}\n`
+    const always = `        if: \${{ always() && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke') }}\n`
+    const both = withText(
+      DEPLOY,
+      edited(edited(deployText, forward, always, job('nonprod')), forward, always, job('nonprod')),
+    )
+    expect(deployStepFindings(both)).toEqual([at('nonprod', GOES_ON), at('nonprod', CLI_IF)])
+    // A check skipped: AWS_CHECK, the asset check before prod-plan's diff, the fast re-check.
+    expect(find(what, `${what}        if: \${{ false }}\n`, job('nonprod'))).toEqual([at('nonprod', UNCONDITIONAL)])
+    expect(
+      find(
+        '      - name: Check the assembly\n',
+        `      - name: Check the assembly\n        if: \${{ false }}\n`,
+        job('prod-plan'),
+      ),
+    ).toEqual([at('prod-plan', UNCONDITIONAL)])
+    expect(
+      find(
+        '      - name: The fast re-check\n',
+        `      - name: The fast re-check\n        if: \${{ false }}\n`,
+        job('prod'),
+      ),
+    ).toEqual([at('prod', UNCONDITIONAL)])
+    // A CLI line in a mode that doesn't call for it: a forward deploy in a rollback, a rollback job's deploy
+    // after AWS_CHECK said nothing is to be rolled back.
+    expect(
+      find(
+        forward,
+        `        if: \${{ needs.gate.outputs.mode != 'drill-break' }}\n`,
+        '      - name: Deploy Services\n',
+      ),
+    ).toEqual([at('nonprod', CLI_IF)])
+    expect(
+      find(`        if: \${{ steps.aws.outputs.go == 'true' }}\n`, `        if: \${{ true }}\n`, job('rollback-prod')),
+    ).toEqual([at('rollback-prod', CLI_IF)])
   })
 
   it('holds the repository', () => {
@@ -744,6 +881,23 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     ])
     expect(added('echo "x" >>"$GITHUB_STEP_SUMMARY"')).toEqual([
       at(readBack, 'writes the job summary only through mask'),
+    ])
+    // Each write on its own, beside a masked one; and mask named as an argument, not piped into.
+    expect(added('echo ok | mask | tee -a "$GITHUB_STEP_SUMMARY"; echo "$COMMIT" >> "$GITHUB_STEP_SUMMARY"')).toEqual([
+      at(readBack, 'writes the job summary only through mask'),
+    ])
+    expect(added('echo "$COMMIT" mask >>"$GITHUB_STEP_SUMMARY"')).toEqual([
+      at(readBack, 'writes the job summary only through mask'),
+    ])
+    // get keeps its output only as the first command of a $( … ): bare, or after another in it, it prints.
+    expect(added('get aws sts get-caller-identity')).toEqual([
+      at(readBack, 'runs every aws, CDK and skopeo command as run … or $(get …)'),
+    ])
+    expect(added('get aws ecs describe-services --cluster x | cat')).toEqual([
+      at(readBack, 'runs every aws, CDK and skopeo command as run … or $(get …)'),
+    ])
+    expect(added('X=$(true; get aws sts get-caller-identity)')).toEqual([
+      at(readBack, 'runs every aws, CDK and skopeo command as run … or $(get …)'),
     ])
     expect(
       maskingFindings(
@@ -893,6 +1047,17 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     ])
     expect(gate(plant('--release "$RELEASE" --restore', '--release "" --restore', job('gate')))).toEqual([
       at('gate', 'plans through history.ts plan, every input and actor through env:'),
+    ])
+    // An if: with !cancelled() isn't joined to success(): prod after a failed prod-gate, nonprod after a
+    // failed synth, prod-gate after a failed prod-plan.
+    expect(gate(plant(" && needs.prod-gate.result == 'success'", '', job('prod')))).toEqual([
+      at('prod', 'its if: runs it only once synth and prod-gate succeeded'),
+    ])
+    expect(gate(plant(" && needs.synth.result == 'success'", '', job('nonprod')))).toEqual([
+      at('nonprod', 'its if: runs it only once synth succeeded'),
+    ])
+    expect(gate(plant(" && needs.prod-plan.result == 'success')", ')', job('prod-gate')))).toEqual([
+      at('prod-gate', 'its if: runs it only once gate and prod-plan succeeded'),
     ])
   })
 
@@ -1169,7 +1334,16 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
 describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials are', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const RUNS =
-    'runs nothing but bash’s own, its functions, gh, git, jq, the text tools, aws, skopeo and the pinned CLI: no npx, node, shell, source, eval, docker, npm exec, python, make, curl, wget or script'
+    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run'
+  const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
+  const LOADER =
+    "sets no PATH, HOME (but CDK_FOLDER's), BASH_ENV or other variable that chooses what runs, and writes neither GITHUB_ENV nor GITHUB_PATH"
+  const JOB_KEYS =
+    'holds only needs, if, runs-on, timeout-minutes, cache-mode, permissions, environment, concurrency, outputs, env and steps, each once: no container, services, defaults, strategy, uses or continue-on-error'
+  const STEP_KEYS =
+    'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error'
+  const WITH = 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source'
+  const ENV = 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
   const CLI =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively'
@@ -1253,6 +1427,90 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ])
   })
 
+  // A tool allowed for its plain use handed a program to run, a file the CLI then runs rewritten, or a
+  // variable set that chooses what a later command runs: each with the credentials in hand.
+  it('finds a tool handed a program, a file rewritten and a variable that chooses what runs', () => {
+    const runs = [at(readBack('nonprod'), RUNS)]
+    expect(added('nonprod', 'find . -name x -exec node {} \\;')).toEqual(runs)
+    expect(added('nonprod', 'find . -name x -execdir true {} +')).toEqual(runs)
+    expect(added('nonprod', "trap 'npx cdk deploy' EXIT")).toEqual(runs)
+    expect(added('nonprod', "echo | sed -e '1e node x.js'")).toEqual(runs)
+    expect(added('nonprod', 'sort --compress-program=node x')).toEqual(runs)
+    expect(added('nonprod', "git -c alias.x='!node y.js' x")).toEqual(runs)
+    expect(added('nonprod', 'gh extension exec x')).toEqual(runs)
+    expect(added('nonprod', 'X=node; echo $X')).toEqual(runs)
+    expect(added('nonprod', 'mapfile -C cb -c 1 X <"$RUNNER_TEMP/x"')).toEqual(runs)
+    expect(added('nonprod', 'cat "$RUNNER_TEMP/assembly/x" > node_modules/aws-cdk/bin/cdk')).toEqual([
+      at(readBack('nonprod'), WRITES),
+    ])
+    expect(added('nonprod', 'echo "BASH_ENV=$RUNNER_TEMP/x" >> "$GITHUB_ENV"')).toEqual([
+      at(readBack('nonprod'), WRITES),
+      at(readBack('nonprod'), LOADER),
+    ])
+    expect(added('nonprod', 'export PATH="$RUNNER_TEMP/assembly:$PATH"')).toEqual([at(readBack('nonprod'), LOADER)])
+    expect(added('nonprod', 'HOME="$RUNNER_TEMP/assembly"')).toEqual([at(readBack('nonprod'), LOADER)])
+  })
+
+  // A job or step key, an action input or an env: key that runs a program, or changes what runs, unseen.
+  it('finds a key that runs a program or changes what runs', () => {
+    const credentialed = (planted: ReadonlyMap<string, string>) =>
+      credentialedCodeFindings(planted, manifests, lockfile)
+    const readBackStep = '      - name: Read back what runs\n        id: readback\n'
+    expect(
+      find(readBackStep, `${readBackStep}        shell: npx --yes cdk deploy --all; bash {0}\n`, job('nonprod')),
+    ).toEqual([at(readBack('nonprod'), STEP_KEYS)])
+    expect(find(readBackStep, `${readBackStep}        continue-on-error: true\n`, job('nonprod'))).toEqual([
+      at(readBack('nonprod'), STEP_KEYS),
+    ])
+    expect(find(readBackStep, `${readBackStep}        working-directory: infra\n`, job('nonprod'))).toEqual([
+      at(readBack('nonprod'), STEP_KEYS),
+    ])
+    const cache = '    cache-mode: none\n'
+    for (const added of [
+      '    defaults:\n      run:\n        shell: node {0}\n',
+      '    container:\n      image: node:24\n',
+      '    services:\n      helper:\n        image: alpine:3\n',
+      '    strategy:\n      matrix:\n        x: [a, b]\n',
+      '    continue-on-error: true\n',
+    ]) {
+      expect(find(cache, `${cache}${added}`, job('nonprod'))).toEqual([at('nonprod', JOB_KEYS)])
+    }
+    expect(find('    runs-on: ubuntu-24.04\n', '    runs-on: [self-hosted, linux]\n', job('prod'))).toEqual([
+      at('prod', "runs on ubuntu-24.04, GitHub's own runner"),
+    ])
+    expect(
+      find(
+        'permissions:\n  contents: read\njobs:',
+        'permissions:\n  contents: read\ndefaults:\n  run:\n    shell: node {0}\njobs:',
+        '',
+      ),
+    ).toEqual([at('the top level', 'holds only name, on, permissions and jobs: no env, defaults or concurrency')])
+    const persist = '          persist-credentials: false\n'
+    expect(find(persist, `${persist}          repository: x/y\n`, job('nonprod'))).toEqual([
+      at("nonprod (Check out the run's commit)", WITH),
+    ])
+    const ids = `          artifact-ids: \${{ needs.synth.outputs.assembly }}\n`
+    expect(find(ids, `${ids}          run-id: 1\n          github-token: x\n`, job('nonprod'))).toEqual([
+      at('nonprod (Download the assembly)', WITH),
+    ])
+    expect(
+      find('      STAGE: nonprod\n', '      STAGE: nonprod\n      BASH_ENV: infra/x.sh\n', job('nonprod')),
+    ).toEqual([at('nonprod', ENV)])
+    expect(
+      credentialed(
+        withText(
+          DEPLOY,
+          edited(
+            deployText,
+            '        env:\n',
+            '        env:\n          NODE_OPTIONS: --require ./x.js\n',
+            '      - name: What runs\n',
+          ),
+        ),
+      ),
+    ).toEqual([at('nonprod (What runs)', ENV)])
+  })
+
   it('finds a workspace that could stand in for the CLI, and a lockfile entry that isn’t the registry’s', () => {
     const planted = (path: string, manifest: unknown) =>
       credentialedCodeFindings(workflows, new Map([...manifests, [path, JSON.stringify(manifest)]]), lockfile)
@@ -1280,8 +1538,13 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
 
   it('holds the repository', () => {
     expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+    // The globs are folders or a folder's children, which the pattern reads exactly.
+    expect(
+      Array.isArray(workspaceGlobs) &&
+        workspaceGlobs.every(glob => /^[\w.-]+(?:\/[\w.-]+)*(?:\/\*)?$/.test(String(glob))),
+    ).toBe(true)
     expect([...manifests.keys()]).toEqual(
-      expect.arrayContaining(['package.json', 'infra/package.json', 'apps/server/package.json']),
+      expect.arrayContaining(['package.json', 'infra/package.json', 'apps/server/package.json', 'demo/package.json']),
     )
   })
 })
@@ -1318,6 +1581,13 @@ describe('DPW-12 (C11-D63, C11-D64): words no workflow needs', () => {
         ),
       ),
     ).toEqual([`${DEPLOY}: DPW-12 names get-secret-value`])
+    // In deploy.yml a word inside a longer one counts too.
+    expect(
+      forbiddenWordFindings(plant('name: deploy\n', '# apps/server/scripts/check-owner-bootstrap.ts\nname: deploy\n')),
+    ).toEqual([`${DEPLOY}: DPW-12 names owner-bootstrap`])
+    expect(forbiddenWordFindings(plant('name: deploy\n', '# x-get-secret-value\nname: deploy\n'))).toEqual([
+      `${DEPLOY}: DPW-12 names get-secret-value`,
+    ])
     for (const word of GENERAL_WORDS) {
       expect(
         forbiddenWordFindings(
@@ -1403,6 +1673,42 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         'writes no record: release records are record-nonprod’s and record-prod’s, migration records migrate’s',
       ),
       at('nonprod (Read back what runs)', BODY),
+    ])
+    // A record written by a deploy job in any spelling gh takes: the method after the path, with =, or
+    // left to gh, which posts whenever there is a body.
+    const record = (line: string) =>
+      releaseFindings(
+        addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${line}\n`),
+      )
+    const NO_RECORD = [
+      at(
+        'nonprod (Read back what runs)',
+        'writes no record: release records are record-nonprod’s and record-prod’s, migration records migrate’s',
+      ),
+      at('nonprod (Read back what runs)', BODY),
+    ]
+    expect(record('ID=$(gh api "repos/$REPO/deployments" --method POST --input - <<<"$B")')).toEqual(NO_RECORD)
+    expect(record('gh api --method=POST "repos/$REPO/deployments" --input - <<<"$B"')).toEqual(NO_RECORD)
+    expect(record('gh api -XPOST "repos/$REPO/deployments" --input - <<<"$B"')).toEqual(NO_RECORD)
+    expect(record('gh api "repos/$REPO/deployments" --input - <<<"$B"')).toEqual(NO_RECORD)
+    expect(record('gh api \\\n            "repos/$REPO/deployments" --input - <<<"$B"')).toEqual(NO_RECORD)
+    expect(record('gh api -X DELETE "repos/$REPO/deployments/$ID"')).toEqual([
+      at('nonprod (Read back what runs)', 'sends a record’s body whole, with --input -'),
+      ...NO_RECORD,
+    ])
+    // migrate's step writes its one migration record and that record's status, nothing beside them.
+    const ended = '          one_off_end migrate "$MIGRATE_LINES" "$RUN"\n'
+    expect(
+      find(
+        ended,
+        `${ended}          ID=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$BODY")\n`,
+        job('nonprod'),
+      ),
+    ).toEqual([at('nonprod (Migrate)', 'writes in its migrate step the one migration record and its status alone')])
+    // Any other write, GraphQL's included, is no record's.
+    expect(record("gh api graphql -f query='mutation { x }'")).toEqual([
+      at('nonprod (Read back what runs)', 'makes no GitHub API write but a record’s'),
+      at('nonprod (Read back what runs)', 'sends a record’s body whole, with --input -'),
     ])
     expect(find('auto_merge: false, ', '', job('record-nonprod'))).toEqual([
       at('record-nonprod (Write the record)', BODY),
@@ -1657,10 +1963,19 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     // The refusal is shown through the 12-digit filter, which a commit's own digits can trip.
     const shown = c.A.replace(/[0-9]{12}/g, '***')
     expect(deploy.said).toContain(`dispatch mode=rollback with release ${shown} first (deploy-and-rollback.md)`)
-    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), drift: D.A, ecr: all() }).verdict).toBe(
-      'refused',
-    )
-    expect(awsCheck({ mode: 'drill', release: release('B', D.B), ...drifted, ecr: all() }).verdict).toBe('refused')
+    // One service drifted: a deploy and a drill are refused alike. No single release is what all three run,
+    // so the line's reason is pinned and not the release it names.
+    const reason = "aws-check: the services don't run Release's image (an incident rollback outside the pipeline)"
+    for (const oneDrifted of [
+      awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), drift: D.A, ecr: all() }),
+      awsCheck({ mode: 'drill', release: release('B', D.B), ...runsB(), drift: D.A, ecr: all() }),
+    ]) {
+      expect(oneDrifted.verdict).toBe('refused')
+      expect(oneDrifted.said).toContain(reason)
+    }
+    const drill = awsCheck({ mode: 'drill', release: release('B', D.B), ...drifted, ecr: all() })
+    expect(drill.verdict).toBe('refused')
+    expect(drill.said).toContain(`dispatch mode=rollback with release ${shown} first (deploy-and-rollback.md)`)
     expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...drifted, ecr: all() }).verdict).toBe('pass')
     const elsewhere = { stack: stack('UPDATE_COMPLETE', release('C', D.C)), services: ONE, running: D.B }
     expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...elsewhere, ecr: all() }).verdict).toBe('refused')

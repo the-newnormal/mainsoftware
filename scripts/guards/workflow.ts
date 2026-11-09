@@ -6,10 +6,12 @@
 // block mappings, block sequences, flow sequences of scalars and block scalars, so a test that uses it
 // first checks it found the jobs and steps it expects, and a reformatted file fails the test rather
 // than passing unread. What it can't read: a flow mapping ({…}, kept as its raw text), an anchor or
-// alias, and a key quoted with escapes; the deploy-workflow guard refuses each of them in the deploy
-// workflow outright (DPW-02), and refuses the id-token and write-all words and backslash escapes in
-// every other workflow. That guard (scripts/guards/deploy-workflow.ts) reads the deploy workflow
-// through this file, so this file is on the owner's-read list (C11-D74).
+// alias, a key quoted with escapes, a value continued on the next line (a plain or quoted scalar, or
+// a flow sequence, over two lines), a key given twice, and any other indent; shapeProblems() names
+// each line in none of the shapes it reads. The deploy-workflow guard refuses every such line in
+// every workflow, and a flow mapping, an anchor or alias, a quoted key and the id-token and write-all
+// words where it reads them (DPW-02). That guard (scripts/guards/deploy-workflow.ts) reads the deploy
+// workflow through this file, so this file is on the owner's-read list (C11-D74).
 
 // One job: its id, its runner, its timeout in minutes, and its steps, each as its own lines with
 // the indent and the step's leading "- " taken off (so `run: npm test`, or `uses: …` then `with:`
@@ -274,7 +276,8 @@ export const jobConcurrency = (job: WorkflowJob): Concurrency | undefined => con
 // One step, parsed: its name, id, if, uses (the action and its pin, the version comment cut off),
 // its with: and env: entries, and its run (a block scalar's text with the block's indent taken off,
 // comment and blank lines inside it kept, line order kept, trailing blank lines dropped; or the one
-// line). Every key it has, with its value as read, is in keys, and its raw lines in lines.
+// line). Every key it has, with its value as read, is in keys, every key's name in order (a repeated
+// one as often as it appears) in keyNames, and its raw lines in lines.
 export interface WorkflowStep {
   name: string | undefined
   id: string | undefined
@@ -284,6 +287,7 @@ export interface WorkflowStep {
   env: Map<string, string>
   run: string | undefined
   keys: Map<string, string>
+  keyNames: string[]
   lines: string[]
 }
 
@@ -326,12 +330,14 @@ export function parsedSteps(job: WorkflowJob): WorkflowStep[] {
     // The step's first key sits after its "- ", read as if at eight spaces like the others.
     const shaped = [`        ${(lines[0] ?? '').slice(8)}`, ...lines.slice(1)]
     const keys = new Map<string, string>()
+    const keyNames: string[] = []
     let withEntries = new Map<string, string>()
     let envEntries = new Map<string, string>()
     for (let i = 0; i < shaped.length; i++) {
       const key = /^ {8}([\w-]+):(?:\s+(.*))?$/.exec(shaped[i] ?? '')
       if (!key) continue
       const name = key[1] ?? ''
+      keyNames.push(name)
       const inline = (key[2] ?? '').trim()
       let end = i + 1
       while (end < shaped.length && (isBlankOrComment(shaped[end] ?? '') || indentOf(shaped[end] ?? '') > 8)) end++
@@ -354,21 +360,29 @@ export function parsedSteps(job: WorkflowJob): WorkflowStep[] {
       env: envEntries,
       run: keys.get('run'),
       keys,
+      keyNames,
       lines,
     }
   })
 }
 
 // The lines of a workflow that are YAML rather than a block scalar's content or a comment, each with
-// its index, for the checks of the file's own shape (no flow mapping, anchor or quoted key).
+// its index, for the checks of the file's own shape. A block scalar's content is read as blockScalar()
+// reads it: the lines past its key, ending at the first indented less than its first line.
 export function yamlLines(text: string): Array<{ index: number; text: string }> {
   const found: Array<{ index: number; text: string }> = []
   let blockKey: number | undefined
+  let blockIndent: number | undefined
   text.split('\n').forEach((line, index) => {
     if (line.trim() === '') return
     if (blockKey !== undefined) {
-      if (indentOf(line) > blockKey) return
+      const indent = indentOf(line)
+      if (indent > blockKey && (blockIndent === undefined || indent >= blockIndent)) {
+        blockIndent ??= indent
+        return
+      }
       blockKey = undefined
+      blockIndent = undefined
     }
     if (/^\s*#/.test(line)) return
     found.push({ index, text: line })
@@ -378,4 +392,59 @@ export function yamlLines(text: string): Array<{ index: number; text: string }> 
     }
   })
   return found
+}
+
+// The lines (by index) in none of the shapes this reader reads, so a check can refuse a file it would
+// otherwise read wrong (DPW-02). Each YAML line (yamlLines) sits two spaces inside the key that opens
+// it, at the indent of the mapping or sequence it belongs to: a key (`name:` or `name: value`, the
+// name a plain word, given once in its mapping) or a sequence item (`- value`, or `- name:` starting a
+// mapping whose keys sit two spaces in). A value after its key is whole on its line: a block scalar's
+// indicator, a plain scalar no line below continues (anything deeper under it is refused), a quoted
+// scalar closed on the line, or a flow sequence or mapping closed on the line with nothing nested.
+export function shapeProblems(text: string): number[] {
+  const problems: number[] = []
+  const open: Array<{ indent: number; kind: 'map' | 'list' | undefined; keys: Set<string> }> = [
+    { indent: 0, kind: 'map', keys: new Set() },
+  ]
+  for (const { index, text: line } of yamlLines(text)) {
+    const indent = indentOf(line)
+    while (open.length > 1 && (open[open.length - 1]?.indent ?? 0) > indent) open.pop()
+    const block = open[open.length - 1]
+    const body = line.slice(indent)
+    const item = /^- (?! )/.test(body)
+    if (block === undefined || block.indent !== indent || block.kind === (item ? 'map' : 'list')) {
+      problems.push(index)
+      continue
+    }
+    block.kind = item ? 'list' : 'map'
+    const rest = item ? body.slice(2) : body
+    const key = /^([\w-]+):(?:\s+(.*))?$/.exec(rest)
+    if (!key && !item) {
+      problems.push(index)
+      continue
+    }
+    if (key && !item && block.keys.has(key[1] ?? '')) {
+      problems.push(index)
+      continue
+    }
+    if (key && !item) block.keys.add(key[1] ?? '')
+    // An item that is a mapping: its keys sit two spaces past its dash.
+    if (key && item) open.push({ indent: indent + 2, kind: 'map', keys: new Set([key[1] ?? '']) })
+    const value = key ? (key[2] ?? '').trim() : rest.trim()
+    if (key && (value === '' || value.startsWith('#'))) {
+      open.push({ indent: (item ? indent + 2 : indent) + 2, kind: undefined, keys: new Set() })
+      continue
+    }
+    const whole =
+      BLOCK_SCALAR.test(value) ||
+      (value.startsWith("'")
+        ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
+        : value.startsWith('"')
+          ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
+          : value.startsWith('[') || value.startsWith('{')
+            ? /^(?:\[[^[\]{}]*\]|\{[^[\]{}]*\})\s*(?:#.*)?$/.test(value)
+            : true)
+    if (!whole) problems.push(index)
+  }
+  return problems
 }

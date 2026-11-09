@@ -11,12 +11,14 @@
 // its guard can't drift apart unseen. A shell text here is a raw template in which a backtick is
 // written \` and a dollar-brace $\{, the one way it differs from the workflow's own text.
 //
-// The workflow is read through workflow.ts, and each run step through shellViews() and shellCommands()
-// below, which set aside what bash reads as data (comments, quoted text outside its command
-// substitutions, a test's operands and a case's patterns), so a word a rule forbids as a command is
-// found where bash would run it and not where it is a jq path, a message or a URL. An if: is read by
-// evaluateIf(), which asks whether any value it doesn't know could let a bot or a drill through. This file decides who and what may deploy, so it is on the owner's-read list
-// (C11-D74).
+// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and each run
+// step through shellViews() and shellCommands() below, which set aside what bash reads as data
+// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns),
+// so a word a rule forbids as a command is found where bash would run it and not where it is a jq path,
+// a message or a URL; the words no credentialed job may name at all (an interpreter's, say) are found
+// anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any value it doesn't
+// know could let a bot, a drill or a failed job through. This file decides who and what may deploy, so
+// it is on the owner's-read list (C11-D74).
 import {
   type BlockValue,
   blockValue,
@@ -28,6 +30,7 @@ import {
   jobScalar,
   parsedSteps,
   permissionsOf,
+  shapeProblems,
   type WorkflowJob,
   type WorkflowStep,
   workflowJobs,
@@ -820,17 +823,21 @@ function commandCode(code: string): string {
 }
 
 // A command bash would run, by its line in the run: its word (as the code view shows it, a quoted word's
-// text blanked) and the prefixes before it (run, get, exec, command, env, an assignment, …). A word
-// starts a command at the start of a line, after ; & | ! or a keyword (never a keyword itself), inside
-// $( … ), <( … ) or a subshell's ( … ), or after a group's {.
+// text blanked), the prefixes before it (run, get, exec, command, env, an assignment, …), and whether it
+// is the first command of a $( … ), whose output is captured. A word starts a command at the start of a
+// line, after ; & | ! or a keyword (never a keyword itself), inside $( … ), <( … ) or a subshell's ( … ),
+// or after a group's {.
 export interface ShellCommand {
   line: number
   prefixes: string[]
   word: string
+  substituted: boolean
+  // Its arguments as the command code shows them, up to the next ;, |, &, ) or substitution.
+  rest: string
 }
 
 const COMMAND = new RegExp(
-  String.raw`(?:^|[;|!]|(?<![<>])&|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)|\b(?:then|do|else|elif|if|while|until|time)(?=\s))\s*` +
+  String.raw`(^|[;|!]|(?<![<>])&|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)|\b(?:then|do|else|elif|if|while|until|time)(?=\s))\s*` +
     String.raw`((?:(?:run|get|exec|command|builtin|nohup|sudo(?:\s+-\S+)*|xargs(?:\s+-\S+)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*)\s+)*)` +
     String.raw`(?!(?:then|do|else|elif|if|while|until|time)(?![\w-])|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
   'g',
@@ -843,12 +850,20 @@ export function shellCommands(run: string): ShellCommand[] {
     .split('\n')
     .forEach((text, line) => {
       // A line that starts inside a quoted string starts no command there.
-      for (const match of (views.quotedLines.has(line) ? `)${text}` : text).matchAll(COMMAND)) {
-        const word = match[2] ?? ''
+      const read = views.quotedLines.has(line) ? `)${text}` : text
+      for (const match of read.matchAll(COMMAND)) {
+        const word = match[3] ?? ''
         // An assignment alone (X=$(…)) runs nothing itself, what it substitutes is read after it, and a
         // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2).
         if (/^[A-Za-z_]\w*\+?=|^[-=\d]/.test(word)) continue
-        commands.push({ line, prefixes: (match[1] ?? '').trim().split(/\s+/).filter(Boolean), word })
+        const after = read.slice(match.index + match[0].length)
+        commands.push({
+          line,
+          prefixes: (match[2] ?? '').trim().split(/\s+/).filter(Boolean),
+          word,
+          substituted: match[1] === '$(',
+          rest: after.slice(0, after.search(/[;|&)]|[$<>]\(|$/)),
+        })
       }
     })
   return commands
@@ -1055,6 +1070,9 @@ const ESCAPED_KEY = new RegExp(String.raw`${QUOTED}\\(?:[^"\\\n]|\\.)*"\s*:(?:\s
 const ESCAPED_VALUE = new RegExp(String.raw`^\s*(?:-\s+)?(?:[\w-]+|${QUOTED}")\s*:\s+${QUOTED}\\`, 'm')
 const escaped = (text: string) => ESCAPED_KEY.test(text) || ESCAPED_VALUE.test(text)
 
+const SHAPE =
+  'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
+
 const describePermissions = (record: Readonly<Record<string, string>>) =>
   Object.entries(record)
     .map(([scope, level]) => `${scope}: ${level}`)
@@ -1063,8 +1081,9 @@ const describePermissions = (record: Readonly<Record<string, string>>) =>
 // DPW-02 (C11-D55): deploy.yml's top-level permissions are contents: read alone; each job's are exactly
 // its own, an id-token in the five environment jobs alone and nowhere else in the file; no write-all,
 // read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, anchor,
-// alias or quoted key, which workflow.ts can't read) and spells nothing with an escape. Every other
-// workflow holds the id-token clause as ciSynthProblems held it for ci.yml, and names no environment.
+// alias or quoted key, which workflow.ts can't read) and spells nothing with an escape. Every workflow is
+// in the shape workflow.ts reads (shapeProblems), so none is read wrong. Every other workflow holds the
+// id-token clause as ciSynthProblems held it for ci.yml, and names no environment.
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -1113,6 +1132,11 @@ export function permissionFindings(workflows: Texts): Finding[] {
     found.push(
       at(DEPLOY, 'DPW-02', 'spells no key or value with an escape, which could name id-token or write-all unseen'),
     )
+  }
+  // Every workflow is in the shape workflow.ts reads, so no step, key or value is read wrong or passes
+  // unread (a step's keys at another indent, a run continued on the next line, a key given twice).
+  for (const [path, text] of workflows) {
+    if (shapeProblems(text).length > 0) found.push(at(path, 'DPW-02', SHAPE))
   }
   for (const [path, text] of workflows) {
     if (path === DEPLOY) continue
@@ -1323,6 +1347,36 @@ export const PUSH_IF: Readonly<Record<string, string>> = {
   prod: expr("needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'"),
 }
 const RESTORE_DOWN_IF = expr("needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down'")
+// The if: of each step that runs a CLI line, by its job and line (DPW-06): each line only in the modes that
+// call for it, and a rollback job's only once AWS_CHECK said go.
+const FORWARD_IF: Readonly<Record<string, string>> = {
+  nonprod: expr("needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke'"),
+  prod: expr(
+    "(needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod') || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'up')",
+  ),
+}
+const GO_IF = expr("steps.aws.outputs.go == 'true'")
+const CLI_STEP_IF: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  nonprod: {
+    [CDK_DEPLOY_FORWARD]: FORWARD_IF.nonprod ?? '',
+    [CDK_DEPLOY_SERVICES]: FORWARD_IF.nonprod ?? '',
+    [CDK_DEPLOY_ROLLBACK]: expr("needs.gate.outputs.mode == 'rollback'"),
+    [CDK_DEPLOY_DRILL]: expr("needs.gate.outputs.mode == 'drill-break'"),
+  },
+  'rollback-nonprod': { [CDK_DEPLOY_ROLLBACK]: GO_IF },
+  prod: {
+    [CDK_DEPLOY_FORWARD]: FORWARD_IF.prod ?? '',
+    [CDK_DEPLOY_SERVICES]: FORWARD_IF.prod ?? '',
+    [CDK_DEPLOY_ROLLBACK]: expr("needs.gate.outputs.mode == 'rollback' && needs.gate.outputs.target == 'prod'"),
+    [CDK_DEPLOY_DOWN]: RESTORE_DOWN_IF,
+  },
+  'rollback-prod': { [CDK_DEPLOY_ROLLBACK]: GO_IF },
+}
+// GitHub's status functions: an if: that calls one isn't joined to success(), so its step or job runs
+// after a failure before it.
+const STATUS_FUNCTION = /\b(?:always|success|failure|cancelled)\s*\(/i
+const GOES_ON =
+  "lets no failure pass: no continue-on-error, and no step's if: calls always(), success(), failure() or cancelled()"
 
 const FORBIDDEN_RUN_FLAGS =
   /(?<![\w-])(?:--cli-input-json|--cli-input-yaml|--generate-cli-skeleton|--enable-execute-command|--tags)(?![\w-])/
@@ -1337,8 +1391,11 @@ const stepWith = (steps: readonly WorkflowStep[], line: string) =>
 // canonical run, after every Services deploy but restore=down's; migrate is its canonical run, in nonprod
 // and prod alone, for a deploy, after the push and before Services. Only the one-off's end reads a
 // task's log. Every CLI line is a canonical one in a job that may run it, naming its stacks through
-// "$STAGE", which each job sets once: a forward deploy is Platform, Data and Tasks, then migrate, then
-// Services; restore=down is RESTORE_DOWN's three calls.
+// "$STAGE", which each job sets once, in a step whose if: is its own: a forward deploy is Platform, Data
+// and Tasks, then migrate, then Services; restore=down is RESTORE_DOWN's three calls; a rollback job's
+// only once AWS_CHECK said go. No failure passes: nothing in the workflow has continue-on-error, no
+// step's if: calls a status function, and a credentialed job runs every step up to its credentials
+// action (and AWS_CHECK after them) unconditionally, but its downloads.
 export function deployStepFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (id: string, rule: string) => found.add(at(DEPLOY, 'DPW-06', `${id}: ${rule}`))
@@ -1418,9 +1475,38 @@ export function deployStepFindings(workflows: Texts): Finding[] {
         }
       }
     }
-    if (deploy === undefined) continue
-    // AWS_CHECK, right after the credentials, before anything moves.
+    // No failure passes: a failed AWS_CHECK, gate or check stops its job, and a failed job its dependants.
+    if (
+      job.keyNames.includes('continue-on-error') ||
+      steps.some(step => step.keyNames.includes('continue-on-error') || STATUS_FUNCTION.test(step.if ?? ''))
+    ) {
+      add(id, GOES_ON)
+    }
     const credentials = credentialsAt(steps)
+    // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped.
+    if (ENVIRONMENT_JOBS[id] !== undefined) {
+      const last = deploy === undefined ? credentials : credentials + 1
+      if (
+        steps
+          .slice(0, last + 1)
+          .some(step => step.if !== undefined && !step.uses?.startsWith('actions/download-artifact@'))
+      ) {
+        add(
+          id,
+          'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads',
+        )
+      }
+    }
+    if (deploy === undefined) continue
+    // Each CLI line only in the modes that call for it.
+    for (const [line, want] of Object.entries(CLI_STEP_IF[id] ?? {})) {
+      if (
+        steps.some(step => step.run !== undefined && lineIndexOf(step.run.split('\n'), line) >= 0 && step.if !== want)
+      ) {
+        add(id, "runs each CLI line only in the modes that call for it: its step's if: as written")
+      }
+    }
+    // AWS_CHECK, right after the credentials, before anything moves.
     const check = steps[credentials + 1]
     const wantCheck = [PREAMBLE, AWS_CHECK, AWS_CHECK_CALLS[id] ?? ''].join('\n')
     const moved = steps
@@ -1461,8 +1547,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
       migrate === undefined ||
       push < 0 ||
       !(push < forward && forward < migrate && migrate < services) ||
-      steps[migrate]?.if !== PUSH_IF[id] ||
-      steps[forward]?.if !== steps[services]?.if
+      steps[migrate]?.if !== PUSH_IF[id]
     ) {
       add(
         id,
@@ -1506,17 +1591,19 @@ const credentialsWith = (role: string): Readonly<Record<string, string>> => ({
 
 const TRACE =
   /\bset\s+(?:-[A-Za-z]*x[A-Za-z]*\b|[-+]o\s+xtrace\b)|\bprintenv\b|\b(?:export|declare|typeset)\s+-[A-Za-z]*p\b/
-const SUMMARY_THROUGH_MASK = /\bmask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$GITHUB_STEP_SUMMARY"/
+// What comes right before a write to the job summary: mask as a command after a pipe (or first on its line,
+// a pipe's next line), then tee -a or >>.
+const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
 const AWS_ENV_ASSIGNMENT = /(?:^|[\s;&|(])(?:export\s+)?(?:AWS_[A-Z0-9_]*|ROLE_TO_ASSUME)=/
 
 // DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, bare env or set,
 // printenv, export -p or declare -p; no ${{ }} inside a run (inputs and outputs come through env:);
 // secrets. names only the role and the account id in the five environment jobs, and never
 // GITHUB_TOKEN; in each environment job the account id is masked before the credentials action, every
-// run after it starts with the preamble, every aws, CDK and skopeo command is run … or $(get …) (the
-// registry login alone piped into skopeo login, then the filter), every write to the job summary goes
-// through mask, the credentials action takes exactly its seven inputs, and no AWS_ variable or
-// ROLE_TO_ASSUME is set.
+// run after it starts with the preamble, every aws, CDK and skopeo command is run … or $(get …), get
+// only ever first in a $( … ), whose output is kept (the registry login alone piped into skopeo login,
+// then the filter), each write to the job summary goes through mask, the credentials action takes
+// exactly its seven inputs, and no AWS_ variable or ROLE_TO_ASSUME is set.
 export function maskingFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -1565,8 +1652,19 @@ export function maskingFindings(workflows: Texts): Finding[] {
       for (const command of commands) {
         const wrapped = command.word === '"$CDK"' ? ['run'] : ['run', 'get']
         const tool = command.word === 'aws' || command.word === 'skopeo' || /^"?\$\{?CDK\b/.test(command.word)
-        const login = command.word === 'skopeo' && (lines[command.line]?.raw.trim() ?? '') === SKOPEO_LOGIN
-        if (tool && !login && !(command.prefixes.length === 1 && wrapped.includes(command.prefixes[0] ?? ''))) {
+        const login = (lines[command.line]?.raw.trim() ?? '') === SKOPEO_LOGIN
+        // get's output is kept for use, never printed: it is the first command of a $( … ), but in the
+        // registry login, which pipes the password into skopeo login.
+        const prefix = command.prefixes[0] ?? ''
+        if (
+          tool &&
+          !(login && command.word === 'skopeo') &&
+          !(
+            command.prefixes.length === 1 &&
+            wrapped.includes(prefix) &&
+            (prefix !== 'get' || command.substituted || login)
+          )
+        ) {
           add(where, 'runs every aws, CDK and skopeo command as run … or $(get …)')
         }
       }
@@ -1575,7 +1673,9 @@ export function maskingFindings(workflows: Texts): Finding[] {
         add(where, 'a run after the credentials action starts with the preamble')
       }
       for (const line of lines) {
-        if (line.text.includes('GITHUB_STEP_SUMMARY') && !SUMMARY_THROUGH_MASK.test(line.text)) {
+        // Each write to the summary on its own: piped through mask straight into it.
+        const writes = [...line.text.matchAll(/GITHUB_STEP_SUMMARY/g)]
+        if (writes.some(write => !SUMMARY_THROUGH_MASK.test(line.text.slice(0, write.index)))) {
           add(where, 'writes the job summary only through mask')
         }
         if (AWS_ENV_ASSIGNMENT.test(line.code)) add(id, 'sets no AWS_ variable and no ROLE_TO_ASSUME')
@@ -1786,6 +1886,26 @@ const PLAN_ENV: Readonly<Record<string, string>> = {
 const ENVIRONMENTS_CHECK = 'scripts/protect-environments.sh check "$REPO"'
 // The jobs whose if: no drill may pass (C11-D59): drills are non-prod's alone.
 const NO_DRILL = ['prod-plan', 'prod-gate', 'prod', 'rollback-prod', 'record-prod'] as const
+// The jobs each job runs only once they succeeded, with what else its if: is then told (DPW-09): an if:
+// that calls a status function (!cancelled(), say) isn't joined to success(), so it must ask itself.
+const REQUIRES: Readonly<Record<string, ReadonlyArray<readonly [string, Readonly<Record<string, string>>]>>> = {
+  synth: [['gate', {}]],
+  nonprod: [['synth', {}]],
+  'smoke-nonprod': [['nonprod', {}]],
+  'prod-plan': [
+    ['synth', {}],
+    ['smoke-nonprod', { 'needs.gate.outputs.mode': 'deploy' }],
+  ],
+  'prod-gate': [
+    ['gate', {}],
+    ['prod-plan', { 'needs.gate.outputs.target': 'prod' }],
+  ],
+  prod: [
+    ['synth', {}],
+    ['prod-gate', {}],
+  ],
+  'smoke-prod': [['prod', {}]],
+}
 const ENVIRONMENT_FILES = ['nonprod.json', 'prod-plan.json', 'prod.json'] as const
 const ENVIRONMENT_KEYS = [
   'environment',
@@ -1836,7 +1956,8 @@ function environmentFile(name: string, text: string): Record<string, unknown> | 
 // DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate plans through history.ts plan, every input through
 // env: (its refusals are history.ts's, which the test drives), after protect-environments.sh check; every
 // job after it starts its if: with the bot test, which no if: can then pass with a bot as either actor,
-// since a re-run of one job skips the gate; no if: of the prod jobs admits a drill; .github/environments
+// since a re-run of one job skips the gate; no if: of the prod jobs admits a drill; a job whose if: calls
+// a status function runs only once the jobs it relies on succeeded (REQUIRES); .github/environments
 // holds exactly the three files, each the environment file's shape: prod.json asks for at least one
 // reviewer and no admin bypass, prod-plan.json for none, nonprod.json for one exactly when non-prod
 // holds real data (C0.12's flip can't land half done); and the script's agent markers are the Owner
@@ -1880,6 +2001,15 @@ export function gateFindings(
         mode => evaluateIf(condition, { 'needs.gate.outputs.mode': mode }) !== false,
       )
       if (drill) add(id, 'its if: admits no drill: drills are non-prod’s alone')
+    }
+    const requires = REQUIRES[id] ?? []
+    const passes = requires.some(([need, given]) =>
+      ['failure', 'cancelled', 'skipped'].some(
+        result => evaluateIf(condition, { ...given, [`needs.${need}.result`]: result }) !== false,
+      ),
+    )
+    if (STATUS_FUNCTION.test(condition) && passes) {
+      add(id, `its if: runs it only once ${requires.map(([need]) => need).join(' and ')} succeeded`)
     }
   }
   const names = [...environments.keys()].map(path => path.slice(`${ENVIRONMENTS_DIR}/`.length)).sort()
@@ -1967,7 +2097,6 @@ const BASH_OWN = [
   'break',
   'continue',
   'wait',
-  'trap',
 ]
 const TOOLS = [
   'jq',
@@ -1995,6 +2124,149 @@ const TOOLS = [
   'aws',
   'skopeo',
 ]
+// The tools that could run another program, held to the one use each job makes of them: git only to ask
+// whether one commit is an ancestor of another, gh only as gh api, sed only as the preamble's mask, find
+// only in ASSET_CHECK's search for a symbolic link, sort only with its plain flags, tee only appending to
+// the summary, and mapfile with no callback. (trap, which runs its text, is no builtin a job may use.)
+const MASK_LINE = PREAMBLE.split('\n').find(line => line.startsWith('mask()')) ?? ''
+const FIND_LINE = ASSET_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
+const TOOL_USES: Readonly<Record<string, (rest: string, raw: string) => boolean>> = {
+  git: rest => /^\s+merge-base\s+--is-ancestor\s/.test(rest),
+  gh: rest => /^\s+api\s/.test(rest),
+  sed: (_, raw) => raw === MASK_LINE.trim(),
+  find: (_, raw) => raw === FIND_LINE.trim(),
+  sort: rest => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
+  tee: rest => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
+  mapfile: rest => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
+  readarray: rest => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
+}
+// The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
+// find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
+// the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
+// transport are data.
+const RUNNER_WORDS =
+  /(?<![\w.-])(?:node|nodejs|npx|tsx|ts-node|deno|bun|python[\d.]*|perl|ruby|php|bash|sh|zsh|dash|ksh|eval|source|curl|wget|make|docker(?!:\/\/))(?![\w-])/
+// The variables that choose what a later command runs or reads its settings from, which no credentialed
+// run sets (but CDK_FOLDER's fresh HOME), and the files that set a later step's environment or path.
+const LOADER_ASSIGNMENT =
+  /(?:^|[\s;&|(])(?:export\s+|declare\s+(?:-\S+\s+)*|typeset\s+(?:-\S+\s+)*|local\s+|readonly\s+)?(?:PATH|HOME|BASH_ENV|ENV|CDPATH|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+)\+?=/
+const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
+// What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff and
+// /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk, say) is rewritten.
+const REDIRECTION = /(?<![<>&])(?:\d+|&)?>>?\|?\s*(\(|[^\s;|()<>]+)/g
+const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|DIFF)")$/
+
+// The shape of every job and step (DPW-10): the top level, each job's keys and runner, each step's keys,
+// each action's inputs and every env: key are the ones the workflow uses, so no shell, container,
+// service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
+// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen.
+const TOP_KEYS = ['name', 'on', 'permissions', 'jobs']
+const JOB_KEYS = [
+  'needs',
+  'if',
+  'runs-on',
+  'timeout-minutes',
+  'cache-mode',
+  'permissions',
+  'environment',
+  'concurrency',
+  'outputs',
+  'env',
+  'steps',
+]
+const RUNNER = (id: string) => (id === 'build' ? 'ubuntu-24.04-arm' : 'ubuntu-24.04')
+const STEP_KEYS = ['name', 'id', 'if', 'uses', 'with', 'env', 'run']
+const WITH_KEYS: Readonly<Record<string, readonly string[]>> = {
+  'actions/checkout': ['fetch-depth', 'persist-credentials', 'ref', 'path'],
+  'actions/setup-node': ['node-version-file', 'package-manager-cache'],
+  'actions/upload-artifact': ['name', 'path', 'archive', 'retention-days', 'if-no-files-found', 'include-hidden-files'],
+  'actions/download-artifact': ['artifact-ids', 'path'],
+  'aws-actions/configure-aws-credentials': [
+    'role-to-assume',
+    'aws-region',
+    'allowed-account-ids',
+    'role-session-name',
+    'role-duration-seconds',
+    'mask-aws-account-id',
+    'translate-env-variables',
+  ],
+}
+const ENV_KEYS = [
+  'ACCOUNT_ID',
+  'ACTOR',
+  'BUILD',
+  'BUILD_DIGEST',
+  'COMMIT',
+  'CURRENT_PROD_ID',
+  'DIGEST',
+  'ENVIRONMENT',
+  'EVENT',
+  'FIRST',
+  'GATE_DIGEST',
+  'GH_TOKEN',
+  'MODE',
+  'NONPROD_DIGEST',
+  'PREVIOUS',
+  'PREVIOUS_COMMIT',
+  'PREVIOUS_DIGEST',
+  'PROFILE_AT',
+  'READBACK',
+  'RECORD_ID',
+  'REF',
+  'RELEASE',
+  'REPO',
+  'RESMOKE',
+  'RESTORE',
+  'ROLLBACK_SERVICES',
+  'SERVICES',
+  'SHA',
+  'SMOKE',
+  'STAGE',
+  'TARGET',
+  'TRIGGERING_ACTOR',
+]
+const onceEach = (names: readonly string[], allowed: readonly string[]) =>
+  names.every(name => allowed.includes(name)) && new Set(names).size === names.length
+
+// The keys a mapping value's lines hold (a job's env:), each as often as it appears.
+const mappingKeys = (lines: readonly string[] | undefined) =>
+  (lines ?? []).slice(1).flatMap(line => /^ {6}([\w-]+):/.exec(line)?.[1] ?? [])
+
+function shapeOfJobsFindings(text: string, add: (where: string, rule: string) => void): void {
+  const top = yamlLines(text).flatMap(line => /^([\w-]+):/.exec(line.text)?.[1] ?? [])
+  if (!onceEach(top, TOP_KEYS) || !TOP_KEYS.every(key => top.includes(key))) {
+    add('the top level', 'holds only name, on, permissions and jobs: no env, defaults or concurrency')
+  }
+  for (const { id, job, steps } of jobsOf(text).values()) {
+    if (!onceEach(job.keyNames, JOB_KEYS)) {
+      add(
+        id,
+        'holds only needs, if, runs-on, timeout-minutes, cache-mode, permissions, environment, concurrency, outputs, env and steps, each once: no container, services, defaults, strategy, uses or continue-on-error',
+      )
+    }
+    if (jobScalar(job, 'runs-on') !== RUNNER(id)) add(id, `runs on ${RUNNER(id)}, GitHub's own runner`)
+    if (!onceEach(mappingKeys(job.keys.get('env')), ENV_KEYS)) {
+      add(id, 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS')
+    }
+    steps.forEach((step, index) => {
+      const where = `${id} (${label(step, index)})`
+      if (!onceEach(step.keyNames, id === 'synth' ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
+        add(
+          where,
+          'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error',
+        )
+      }
+      const action = step.uses?.split('@')[0]
+      if (action !== undefined && !onceEach([...step.with.keys()], WITH_KEYS[action] ?? [])) {
+        add(where, 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source')
+      }
+      if (!onceEach([...step.env.keys()], ENV_KEYS)) {
+        add(where, 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS')
+      }
+    })
+  }
+}
+
 const INSTALL = 'npm ci --ignore-scripts -w @hearth/infra'
 const PREAMBLE_CDK = 'CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"'
 const ALLOWED_USES = /^(?:actions\/checkout|actions\/download-artifact|aws-actions\/configure-aws-credentials)@/
@@ -2024,6 +2296,7 @@ function cliLineIsSafe(line: string): boolean {
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>()
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
+  shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
   for (const { id, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
     const credentialed = ENVIRONMENT_JOBS[id] !== undefined
     const defined = new Set(steps.flatMap(step => (step.run === undefined ? [] : definedFunctions(step.run))))
@@ -2050,15 +2323,40 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         if (word === '"$CDK"' || word === '"$@"') return false
         if (word === 'npm') return run !== INSTALL
         if (/^["'$]|\/|\.(?:sh|ts|js|mjs|cjs|py)$/.test(word)) return true
+        const use = TOOL_USES[word]
+        if (use !== undefined && !use(command.rest, lines[command.line]?.raw.trim() ?? '')) return true
         return !(BASH_OWN.includes(word) || TOOLS.includes(word) || defined.has(word))
       })
       const shadows = definedFunctions(run).some(
         name => TOOLS.includes(name) || BASH_OWN.includes(name) || name === 'npm',
       )
-      if (wrong || shadows || lines.some(line => /\bdb:reset\b|\bcheck-server\b/.test(line.text))) {
+      if (
+        wrong ||
+        shadows ||
+        lines.some(line => RUNNER_WORDS.test(line.text) || /\bdb:reset\b|\bcheck-server\b/.test(line.text))
+      ) {
         add(
           where,
-          'runs nothing but bash’s own, its functions, gh, git, jq, the text tools, aws, skopeo and the pinned CLI: no npx, node, shell, source, eval, docker, npm exec, python, make, curl, wget or script',
+          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run',
+        )
+      }
+      // Nothing it writes or sets chooses what a later command or step runs.
+      const code = commandCode(shellViews(run).code).split('\n')
+      if (
+        code.some(line =>
+          [...line.matchAll(REDIRECTION)].some(write => write[1] !== '(' && !WRITABLE.test(write[1] ?? '')),
+        )
+      ) {
+        add(where, "writes no file but its outputs, its summary, prod-plan's diff and /dev/null")
+      }
+      if (
+        lines.some(
+          line => STEP_FILES.test(line.text) || (LOADER_ASSIGNMENT.test(line.code) && line.raw.trim() !== CDK_FOLDER),
+        )
+      ) {
+        add(
+          where,
+          "sets no PATH, HOME (but CDK_FOLDER's), BASH_ENV or other variable that chooses what runs, and writes neither GITHUB_ENV nor GITHUB_PATH",
         )
       }
       const cli = lines.filter(line => /"\$CDK"|\$\{?CDK\b/.test(line.text) && !/(?:^|[\s;&|(])CDK=/.test(line.code))
@@ -2179,20 +2477,23 @@ export const GENERAL_WORDS = DEPLOY_WORDS.filter(word => word !== 'owner-bootstr
 const wordIn = (text: string, word: string) =>
   new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}(?![\\w-])`, 'i').test(text)
 
-// DPW-12 (C11-D63, C11-D64): deploy.yml, comments included, names none of DEPLOY_WORDS; every other workflow,
-// comments stripped, none of GENERAL_WORDS.
+// DPW-12 (C11-D63, C11-D64): deploy.yml, comments included, names none of DEPLOY_WORDS anywhere, even inside
+// a longer word (check-owner-bootstrap, x-get-secret-value); every other workflow, comments stripped,
+// none of GENERAL_WORDS as a word.
 export function forbiddenWordFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   for (const [path, text] of workflows) {
-    const words = path === DEPLOY ? DEPLOY_WORDS : GENERAL_WORDS
-    const read =
-      path === DEPLOY
-        ? text
-        : text
-            .split('\n')
-            .filter(line => !/^\s*#/.test(line))
-            .join('\n')
-    for (const word of words) if (wordIn(read, word)) found.push(at(path, 'DPW-12', `names ${word}`))
+    if (path === DEPLOY) {
+      for (const word of DEPLOY_WORDS) {
+        if (text.toLowerCase().includes(word.toLowerCase())) found.push(at(path, 'DPW-12', `names ${word}`))
+      }
+      continue
+    }
+    const read = text
+      .split('\n')
+      .filter(line => !/^\s*#/.test(line))
+      .join('\n')
+    for (const word of GENERAL_WORDS) if (wordIn(read, word)) found.push(at(path, 'DPW-12', `names ${word}`))
   }
   return found
 }
@@ -2200,7 +2501,45 @@ export function forbiddenWordFindings(workflows: Texts): Finding[] {
 // --- DPW-13: what is built, pushed, synthesised and recorded --------------------------------------------
 
 const BUILD_IF = `\${{ ${BOT_TEST} && needs.gate.outputs.build == 'true' }}`
-const CREATE_DEPLOYMENT = /gh\s+api\s+(?:-X\s+POST|--method\s+POST)\s+"repos\/\$REPO\/deployments"/
+
+// Each gh api call in a run as written (comments blanked), from gh to the end of its command: the next ;,
+// |, & or ) outside a $( … ), or the end of a line no backslash continues.
+function ghApiCalls(run: string): string[] {
+  const { text, code } = shellViews(run)
+  const calls: string[] = []
+  for (const match of code.matchAll(/(?<![\w$-])gh\s+api(?![\w-])/g)) {
+    let end = match.index + match[0].length
+    let depth = 0
+    for (; end < code.length; end++) {
+      const c = code[end] ?? ''
+      if (c === '$' && code[end + 1] === '(') {
+        depth++
+        end++
+      } else if (c === ')' && depth > 0) depth--
+      else if (depth === 0 && (/[;|&)]/.test(c) || (c === '\n' && code[end - 1] !== '\\'))) break
+    }
+    calls.push(text.slice(match.index, end))
+  }
+  return calls
+}
+
+// Whether a gh api call writes (DPW-13): a body in any spelling (--input, -f, -F, --field, --raw-field,
+// a flag's value attached or not, gh then sending a POST), a method other than GET in any spelling (-X
+// POST, -XPOST, --method=POST), or GraphQL.
+const GH_BODY = /^(?:--input|--field|--raw-field)(?:=|$)|^-[A-Za-z]*[fF]/
+function ghWrites(call: string): boolean {
+  const words = call
+    .split(/\s+/)
+    .slice(2)
+    .map(word => word.replace(/^(["'])(.*)\1$/, '$2'))
+  return words.some((word, i) => {
+    if (GH_BODY.test(word) || word === 'graphql') return true
+    const method = /^--method(?:=(.*))?$/.exec(word) ?? /^-[A-Za-z]*X(.*)$/.exec(word)
+    if (!method) return false
+    return (method[1] || words[i + 1] || '').replace(/^["']|["']$/g, '').toUpperCase() !== 'GET'
+  })
+}
+const NAMES_DEPLOYMENTS = /\/deployments(?![\w-])/
 const RECORD_BODY = ['jq -n', 'ref: "main"', 'auto_merge: false', 'required_contexts: []']
 const MIGRATED_BODY = 'task: "hearth-migrated"'
 const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
@@ -2211,10 +2550,11 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 // the deploy-mode push step of nonprod and prod alone, so no rollback, drill or restore pushes; the synth
 // is the pipeline's own, by mode, never synth:ci, synth:lz, HEARTH_FAKE_RELEASE or cdk synth; release
 // records are written by record-nonprod and record-prod alone (and restore records by record-prod), the
-// migration record by nonprod's and prod's migrate steps alone, after migrate's own end; each record's
-// body built whole by jq -n with ref main, auto_merge false and no required contexts, and sent with
-// --input -. (Every deploy of a recorded digest checks ECR's tags for its commit inside AWS_CHECK, which
-// DPW-06 pins.)
+// migration record by nonprod's and prod's migrate steps alone, after migrate's own end, a write being
+// any gh api call with a body or a method other than GET, however spelled (ghWrites), and no other
+// GitHub API write made; each record's body built whole by jq -n with ref main, auto_merge false and no
+// required contexts, and sent with --input -. (Every deploy of a recorded digest checks ECR's tags for
+// its commit inside AWS_CHECK, which DPW-06 pins.)
 export function releaseFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -2259,14 +2599,21 @@ export function releaseFindings(workflows: Texts): Finding[] {
             'synthesises only as npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST", by mode -c drill=break:nonprod or -c restoreActive=true, and -o',
           )
         }
-        if (
-          CREATE_DEPLOYMENT.test(line.text) &&
-          (!/--input\s+-(?:\s|$)/.test(line.text) || /\s-(?:f|F)\s|--field|--raw-field/.test(line.text))
-        ) {
-          add(where, 'sends a record’s body whole, with --input -')
-        }
       }
-      if (!CREATE_DEPLOYMENT.test(run)) return
+      // Every write through gh api is a record's (a deployment or its status), its body sent whole.
+      const writes = ghApiCalls(run).filter(ghWrites)
+      if (writes.some(call => !NAMES_DEPLOYMENTS.test(call))) {
+        add(where, 'makes no GitHub API write but a record’s')
+      }
+      if (
+        writes.some(
+          call =>
+            !/\s--input\s+-(?:\s|$)/.test(call) || /\s(?:-[A-Za-z]*[fF]|--field|--raw-field)(?:[\s=]|$)/.test(call),
+        )
+      ) {
+        add(where, 'sends a record’s body whole, with --input -')
+      }
+      if (!writes.some(call => NAMES_DEPLOYMENTS.test(call))) return
       const record = id === 'record-nonprod' || id === 'record-prod'
       const migrate = run.includes(MIGRATED_BODY)
       if (!record && !(migrate && (id === 'nonprod' || id === 'prod'))) {
@@ -2286,6 +2633,10 @@ export function releaseFindings(workflows: Texts): Finding[] {
         const body = run.split('\n').findIndex(line => line.includes(MIGRATED_BODY))
         if (end < 0 || body < end) {
           add(where, 'writes the migration record only after migrate’s own end, which fails on any exit but 0')
+        }
+        // Its one record and that record's status, and no release or restore record beside them.
+        if (writes.length !== 2 || /hearth-(?:release|restore)\b/.test(run)) {
+          add(where, 'writes in its migrate step the one migration record and its status alone')
         }
       }
     })
