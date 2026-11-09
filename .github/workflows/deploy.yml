@@ -14,7 +14,8 @@
 # records re-checked (prod-gate, then the prod job's fast re-check). A smoke that fails, or a deploy
 # job that fails once its Services deploy began, starts the pipeline's own rollback to the release
 # that ran before (prod's again behind the reviewer), whose own smoke then decides. Every job after
-# the gate refuses a bot's run or re-run, since a re-run of one job skips the gate (C11-D57).
+# the gate refuses a bot's run or re-run, since a re-run of one job skips the gate (C11-D57). Every
+# job sets cache-mode: none, so none restores or saves an Actions cache.
 #
 # Every run step after the credentials action starts with the pinned preamble, so every aws, cdk
 # and skopeo line's output is shown only through the 12-digit filter, or kept and never printed
@@ -60,6 +61,7 @@ jobs:
   gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    cache-mode: none
     permissions:
       contents: read
       actions: read
@@ -203,6 +205,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && needs.gate.outputs.build == 'true' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    cache-mode: none
     permissions:
       contents: read
     outputs:
@@ -290,6 +293,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.gate.outputs.build != 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    cache-mode: none
     permissions:
       contents: read
     outputs:
@@ -343,12 +347,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -380,8 +386,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -467,12 +484,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -504,8 +523,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -592,12 +622,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -629,8 +661,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -694,6 +737,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.gate.outputs.nonprod == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    cache-mode: none
     environment: nonprod
     concurrency:
       group: deploy-nonprod
@@ -759,12 +803,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -796,8 +842,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -1373,7 +1430,8 @@ jobs:
               echo "probe: hearth-$STAGE-$ROLE runs no task" | mask
               exit 1
             fi
-            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
+            # The [] after the task filter ends its projection, so the container filter runs on each task's list.
+            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'][].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
             if ! jq -e --argjson n "$DESIRED" 'length == $n and all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))' <<<"$ADDRESSES" >/dev/null; then
               echo "probe: hearth-$STAGE-$ROLE's new running tasks aren't its desired count" | mask
               exit 1
@@ -1466,8 +1524,17 @@ jobs:
                 ;;
             esac
           fi
+          # The release goes out as a job output and into the summary, so it is held to its shape first (a value
+          # with anything else in it, the CLI's None or a warning, is refused).
+          if ! [[ "$DEPLOYED" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+            echo "read-back: Hearth-$STAGE-Services' Release isn't <commit>:<digest>" | mask
+            exit 1
+          fi
           PROBE=ran
-          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then PROBE=skipped; fi
+          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then
+            PROBE=skipped
+            echo "probe: skipped (mode $MODE, restore $RESTORE): a drill-break leaves the tasks that ran before it, and a restore taken down runs none" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           READBACK=$(jq -nc --arg stage "$STAGE" --arg release "$DEPLOYED" --arg probe "$PROBE" --argjson services "$SERVICE_LIST" --argjson groups "$GROUP_LIST" --argjson balancer "$LOAD_BALANCER" '{schema: 1, env: $stage, release: $release, probe: $probe, services: $services, targetGroups: $groups, loadBalancer: $balancer}')
           if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then
             echo 'read-back: it would hold an ARN' | mask
@@ -1487,6 +1554,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.nonprod.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    cache-mode: none
     permissions:
       contents: read
     steps:
@@ -1522,6 +1590,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.rollback_nonprod == 'true' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke') && needs.nonprod.outputs.services_started == 'true' && (needs.smoke-nonprod.result == 'failure' || needs.nonprod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    cache-mode: none
     environment: nonprod
     concurrency:
       group: deploy-nonprod
@@ -1582,12 +1651,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -1619,8 +1690,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -1938,7 +2020,8 @@ jobs:
               echo "probe: hearth-$STAGE-$ROLE runs no task" | mask
               exit 1
             fi
-            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
+            # The [] after the task filter ends its projection, so the container filter runs on each task's list.
+            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'][].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
             if ! jq -e --argjson n "$DESIRED" 'length == $n and all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))' <<<"$ADDRESSES" >/dev/null; then
               echo "probe: hearth-$STAGE-$ROLE's new running tasks aren't its desired count" | mask
               exit 1
@@ -2032,8 +2115,17 @@ jobs:
                 ;;
             esac
           fi
+          # The release goes out as a job output and into the summary, so it is held to its shape first (a value
+          # with anything else in it, the CLI's None or a warning, is refused).
+          if ! [[ "$DEPLOYED" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+            echo "read-back: Hearth-$STAGE-Services' Release isn't <commit>:<digest>" | mask
+            exit 1
+          fi
           PROBE=ran
-          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then PROBE=skipped; fi
+          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then
+            PROBE=skipped
+            echo "probe: skipped (mode $MODE, restore $RESTORE): a drill-break leaves the tasks that ran before it, and a restore taken down runs none" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           READBACK=$(jq -nc --arg stage "$STAGE" --arg release "$DEPLOYED" --arg probe "$PROBE" --argjson services "$SERVICE_LIST" --argjson groups "$GROUP_LIST" --argjson balancer "$LOAD_BALANCER" '{schema: 1, env: $stage, release: $release, probe: $probe, services: $services, targetGroups: $groups, loadBalancer: $balancer}')
           if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then
             echo 'read-back: it would hold an ARN' | mask
@@ -2066,6 +2158,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.rollback-nonprod.outputs.rolled == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    cache-mode: none
     permissions:
       contents: read
     steps:
@@ -2099,6 +2192,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.nonprod == 'true' && needs.gate.outputs.mode != 'drill-break' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    cache-mode: none
     permissions:
       deployments: write
     steps:
@@ -2173,6 +2267,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    cache-mode: none
     environment: prod-plan
     permissions:
       id-token: write
@@ -2221,12 +2316,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -2258,8 +2355,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -2352,18 +2460,19 @@ jobs:
           # The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
           # the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
           # a rollback its Tasks and Services; into the log, and into the summary cut at 900 KB, both through
-          # the filter.
+          # the filter. A diff that fails still shows the CLI's message in both, then fails the step.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
+          STATUS=0
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
           if [ "$MODE" = rollback ]; then
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
-            } >"$DIFF"
+            } >"$DIFF" || STATUS=$?
           else
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --method template --no-lookups --no-notices --no-color --fail-on never
-            } >"$DIFF"
+            } >"$DIFF" || STATUS=$?
           fi
           cat "$DIFF"
           {
@@ -2372,7 +2481,9 @@ jobs:
             head -c 921600 "$DIFF"
             echo '```'
             if [ "$(wc -c <"$DIFF")" -gt 921600 ]; then echo "The diff is cut at 900 KB here; the job's log holds it whole."; fi
+            if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
           } | mask >>"$GITHUB_STEP_SUMMARY"
+          exit "$STATUS"
 
   # The prod gate (C11-D52): no credential and no environment, before the prod job's approval. A deploy
   # waits for main's own CI on its commit; a rollback or a restore doesn't (T24 item 20), but each is
@@ -2382,6 +2493,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && ((needs.gate.outputs.target == 'prod' && needs.prod-plan.result == 'success') || needs.gate.outputs.target == 'restore') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    cache-mode: none
     permissions:
       contents: read
       actions: read
@@ -2478,6 +2590,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.prod-gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    cache-mode: none
     environment: prod
     concurrency:
       group: deploy-prod
@@ -2543,12 +2656,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -2580,8 +2695,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -3172,7 +3298,8 @@ jobs:
               echo "probe: hearth-$STAGE-$ROLE runs no task" | mask
               exit 1
             fi
-            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
+            # The [] after the task filter ends its projection, so the container filter runs on each task's list.
+            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'][].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
             if ! jq -e --argjson n "$DESIRED" 'length == $n and all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))' <<<"$ADDRESSES" >/dev/null; then
               echo "probe: hearth-$STAGE-$ROLE's new running tasks aren't its desired count" | mask
               exit 1
@@ -3265,8 +3392,17 @@ jobs:
                 ;;
             esac
           fi
+          # The release goes out as a job output and into the summary, so it is held to its shape first (a value
+          # with anything else in it, the CLI's None or a warning, is refused).
+          if ! [[ "$DEPLOYED" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+            echo "read-back: Hearth-$STAGE-Services' Release isn't <commit>:<digest>" | mask
+            exit 1
+          fi
           PROBE=ran
-          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then PROBE=skipped; fi
+          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then
+            PROBE=skipped
+            echo "probe: skipped (mode $MODE, restore $RESTORE): a drill-break leaves the tasks that ran before it, and a restore taken down runs none" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           READBACK=$(jq -nc --arg stage "$STAGE" --arg release "$DEPLOYED" --arg probe "$PROBE" --argjson services "$SERVICE_LIST" --argjson groups "$GROUP_LIST" --argjson balancer "$LOAD_BALANCER" '{schema: 1, env: $stage, release: $release, probe: $probe, services: $services, targetGroups: $groups, loadBalancer: $balancer}')
           if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then
             echo 'read-back: it would hold an ARN' | mask
@@ -3286,6 +3422,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.prod.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    cache-mode: none
     permissions:
       contents: read
     steps:
@@ -3324,6 +3461,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.rollback_prod == 'true' && needs.gate.outputs.target == 'prod' && needs.gate.outputs.mode == 'deploy' && needs.prod.outputs.services_started == 'true' && (needs.smoke-prod.result == 'failure' || needs.prod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    cache-mode: none
     environment: prod
     concurrency:
       group: deploy-prod
@@ -3384,12 +3522,14 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a container image asset, or a file
-          # asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the tree;
-          # no asset manifest at all; any symbolic link. The release check then requires every Services
-          # template's Release output to be the release this job deploys, and every container image in the
-          # Tasks and Services templates to be the server image at its digest. A refusal is one line naming
-          # the rule, never a path or value from the assembly.
+          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
+          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
+          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
+          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
+          # link. The release check then requires every Services template's Release output to be the release
+          # this job deploys, and every container image in the Tasks and Services templates to be the server
+          # image at its digest. A refusal is one line naming the rule, never a path or value from the
+          # assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -3421,8 +3561,19 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | if .type == "aws:cloudformation:stack" then .properties.templateFile, (.additionalMetadataFile // empty) elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
                 jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
@@ -3740,7 +3891,8 @@ jobs:
               echo "probe: hearth-$STAGE-$ROLE runs no task" | mask
               exit 1
             fi
-            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
+            # The [] after the task filter ends its projection, so the container filter runs on each task's list.
+            ADDRESSES=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "${TASK_ARNS[@]}" --query "tasks[?startedBy=='$DEPLOYMENT' && lastStatus=='RUNNING'][].containers[?name=='server'][].networkInterfaces[].privateIpv4Address" --output json)
             if ! jq -e --argjson n "$DESIRED" 'length == $n and all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))' <<<"$ADDRESSES" >/dev/null; then
               echo "probe: hearth-$STAGE-$ROLE's new running tasks aren't its desired count" | mask
               exit 1
@@ -3834,8 +3986,17 @@ jobs:
                 ;;
             esac
           fi
+          # The release goes out as a job output and into the summary, so it is held to its shape first (a value
+          # with anything else in it, the CLI's None or a warning, is refused).
+          if ! [[ "$DEPLOYED" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+            echo "read-back: Hearth-$STAGE-Services' Release isn't <commit>:<digest>" | mask
+            exit 1
+          fi
           PROBE=ran
-          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then PROBE=skipped; fi
+          if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then
+            PROBE=skipped
+            echo "probe: skipped (mode $MODE, restore $RESTORE): a drill-break leaves the tasks that ran before it, and a restore taken down runs none" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           READBACK=$(jq -nc --arg stage "$STAGE" --arg release "$DEPLOYED" --arg probe "$PROBE" --argjson services "$SERVICE_LIST" --argjson groups "$GROUP_LIST" --argjson balancer "$LOAD_BALANCER" '{schema: 1, env: $stage, release: $release, probe: $probe, services: $services, targetGroups: $groups, loadBalancer: $balancer}')
           if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then
             echo 'read-back: it would hold an ARN' | mask
@@ -3868,6 +4029,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.rollback-prod.outputs.rolled == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    cache-mode: none
     permissions:
       contents: read
     steps:
@@ -3903,6 +4065,7 @@ jobs:
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.prod == 'true' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.prod.result == 'success' || needs.prod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    cache-mode: none
     permissions:
       deployments: write
     steps:
