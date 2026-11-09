@@ -139,7 +139,10 @@ describe('C11-D53: the readiness probe', () => {
   })
 
   it('RPB-03 C11-D53: silence and a refusal read no-answer within the fetch’s bound; a hostile body prints only ?; no line holds what a task was given or answered', async () => {
-    const bound = TIMING.timeoutMs + TIMING.intervalMs
+    // A silent target ends at the fetch's 200 ms timeout. The bound stays under the deadline a gated
+    // probe waits for (RPB-02), so an ungated probe that went on asking fails, yet it leaves 750 ms for
+    // a loaded runner's late timers: squeezed onto one CPU, some took over 300 ms (C0.11 PR 3).
+    const bound = TIMING.deadlineMs - TIMING.intervalMs
     const silent = await probed([target('api', port.silent)], [])
     expect(silent).toMatchObject({ code: 0, lines: ['api 0 no-answer -'] })
     expect(silent.elapsed).toBeLessThan(bound)
