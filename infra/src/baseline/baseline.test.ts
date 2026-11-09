@@ -1072,7 +1072,9 @@ describe('IAC-10 (C0.11 review 11 V22B-05): the quarterly review’s step 6 read
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+    // It runs bash and jq some thirty times, so its time follows the machine's load: beside the
+    // workload synths on CI's runner it took over 9 s, past Vitest's 5 s default (C0.11 PR 3).
+  }, 60_000)
 })
 
 // hearth-boundary (C11-D26), statement by statement, in one account. Its SMS statements left by

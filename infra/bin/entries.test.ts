@@ -707,7 +707,9 @@ describe('C11-D23: the entries run under plain Node', () => {
         top.node.addMetadata('hearth:planted', 'a planted entry')
       }),
     ).toEqual(['Top.metadata.json: differs'])
-  })
+    // Each planted app is synthesised twice in this process, so its time follows the machine's load,
+    // as the entry runs' does; they set 60 s too (C0.11 PR 3).
+  }, 60_000)
 
   it.each(WORKLOAD_RUNS)(
     'bin/workload.ts writes for %s what the workload assertions read for it from synthWorkload(): each template, each stack’s artifact facts (its place, account, Region, termination protection, deploy role and bootstrap version), each asset manifest and every other file, the construct tree cdk-nag reads included, as the helper wrote them and as its app writes them again, with its stages the app’s own, so no test helper can hand them a profile, a run, a context, a construct tree or a stack’s facts the entry does not build (C11-D70, C11-D74), and no account id anywhere in that assembly (C11-D24)',
