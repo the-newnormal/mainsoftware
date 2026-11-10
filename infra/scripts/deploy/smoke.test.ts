@@ -1,17 +1,18 @@
 // The smoke's cases, SMK-T01 to SMK-T08 (C11-D54; TECH-SPEC T24 items 16, 20 and 28): each check on
 // recorded answers, the read-back's validation, --profile-at in a scratch git repository, and the whole
 // command against a local TLS server with a certificate made for the test, so the network code runs
-// too. Commits are made by git or built as repeats, and an ARN, account id or address is built from
-// parts at run time (IG-01). It holds what the smoke must decide, so it is on the owner's-read list
-// (C11-D74).
+// too, its body limit and its timeout among it. Commits are made by git or built as repeats, and an
+// ARN, account id or address is built from parts at run time (IG-01). It holds what the smoke must
+// decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import type { ServerResponse } from 'node:http'
 import { createServer, type Server } from 'node:https'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { appHost, originHost, PROFILES, REGION } from '../../src/config/profiles.ts'
 import {
   type HttpAnswer,
@@ -179,6 +180,29 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
         }),
         'readback-worker-rollout',
       ],
+      // One deployment, completed but no longer the service's primary.
+      [
+        changed(v => {
+          const [deployment] = service(v, 'api').deployments
+          if (deployment !== undefined) deployment.status = 'ACTIVE'
+        }),
+        'readback-api-rollout',
+      ],
+      // The deployment's own counts disagreeing with the service's, each alone.
+      [
+        changed(v => {
+          const [deployment] = service(v, 'api').deployments
+          if (deployment !== undefined) deployment.desired = 2
+        }),
+        'readback-api-running',
+      ],
+      [
+        changed(v => {
+          const [deployment] = service(v, 'api').deployments
+          if (deployment !== undefined) deployment.running = 0
+        }),
+        'readback-api-running',
+      ],
       [
         changed(v => {
           for (const task of service(v, 'realtime').tasks) task.az = 'ap-southeast-1a'
@@ -197,6 +221,14 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
         changed(v => {
           const [task] = service(v, 'worker').tasks
           if (task !== undefined) task.health = 'UNHEALTHY'
+        }),
+        'readback-worker-health',
+      ],
+      // A worker task whose health check hasn't answered yet is not yet healthy.
+      [
+        changed(v => {
+          const [task] = service(v, 'worker').tasks
+          if (task !== undefined) task.health = 'UNKNOWN'
         }),
         'readback-worker-health',
       ],
@@ -271,9 +303,22 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
       }
     })
     expect(verdictOf(restoreUp, 'restore', 'up')).toEqual({ pass: true })
-    const tooMany = changed(v => Object.assign(v, structuredClone(restoreUp)))
+    // The api one above the profile's count in every field, every task running on the digest: the
+    // restore stage runs at the profile's counts, not at whatever its service asks for.
+    const tooMany = structuredClone(restoreUp)
     const api = service(tooMany, 'api')
-    api.desired = counts.api.count + 1
+    const more = counts.api.count + 1
+    Object.assign(api, {
+      desired: more,
+      running: more,
+      deployments: [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: more, running: more, failed: 0 }],
+      tasks: Array.from({ length: more }, () => ({
+        az: 'ap-southeast-1a',
+        last: 'RUNNING',
+        health: 'UNKNOWN',
+        digest: DIGEST,
+      })),
+    })
     expect(verdictOf(tooMany, 'restore', 'up')).toEqual({ pass: false, code: 'readback-api-running' })
     expect(
       verdictOf(
@@ -303,20 +348,40 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
     })
     expect(verdictOf(restoreUp, 'restore', 'down')).toEqual({ pass: false, code: 'readback-api-running' })
     expect(verdictOf(down, 'restore', 'up')).toEqual({ pass: false, code: 'readback-api-deployments' })
+    // Down fails on each sign of a task left, alone: one still asked for, one still counted as
+    // running, and one still listed (a restore-stage task holds production data).
+    const leftUp = (edit: Partial<ReadBack['services'][number]>) =>
+      verdictOf(
+        changed(v => {
+          Object.assign(v, structuredClone(down))
+          Object.assign(service(v, 'api'), edit)
+        }),
+        'restore',
+        'down',
+      )
+    expect(leftUp({ desired: 1 })).toEqual({ pass: false, code: 'readback-api-running' })
+    expect(leftUp({ running: 1 })).toEqual({ pass: false, code: 'readback-api-running' })
+    const task = { az: 'ap-southeast-1a', last: 'RUNNING', health: 'UNKNOWN', digest: DIGEST }
+    expect(leftUp({ tasks: [task] })).toEqual({ pass: false, code: 'readback-api-running' })
   })
 })
 
 describe('SMK-T07 (SMK-07, C11-D42, T24 item 16): the load balancer’s settings', () => {
-  it('SMK-T07: deregistration 10 passes and 11 fails; stickiness on, realtime on /health and idle 59 fail', () => {
+  it('SMK-T07: deregistration 10 passes and 11 fails; stickiness on, realtime on /health, the api on /ready/local and idle 59 fail', () => {
     expect(smk07(readBack())).toEqual({ pass: true })
-    const realtime = (edit: Partial<ReadBack['targetGroups'][number]>) =>
+    const group = (role: 'api' | 'realtime', edit: Partial<ReadBack['targetGroups'][number]>) =>
       changed(v => {
-        const group = v.targetGroups.find(g => g.role === 'realtime')
-        if (group !== undefined) Object.assign(group, edit)
+        const found = v.targetGroups.find(g => g.role === role)
+        if (found !== undefined) Object.assign(found, edit)
       })
+    const realtime = (edit: Partial<ReadBack['targetGroups'][number]>) => group('realtime', edit)
     expect(smk07(realtime({ deregistration: 11 }))).toEqual({ pass: false, code: 'readback-realtime-deregistration' })
     expect(smk07(realtime({ stickiness: true }))).toEqual({ pass: false, code: 'readback-realtime-stickiness' })
     expect(smk07(realtime({ healthPath: '/health' }))).toEqual({ pass: false, code: 'readback-realtime-health-path' })
+    expect(smk07(group('api', { healthPath: '/ready/local' }))).toEqual({
+      pass: false,
+      code: 'readback-api-health-path',
+    })
     expect(smk07(changed(v => Object.assign(v, { loadBalancer: { idleTimeout: 59 } })))).toEqual({
       pass: false,
       code: 'readback-idle-timeout',
@@ -374,14 +439,15 @@ beforeAll(() => {
   git(['init', '-q', '-b', 'main'])
   mkdirSync(join(repo, 'infra/src/config'), { recursive: true })
   const source = readFileSync(PROFILES_SOURCE, 'utf8')
-  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source)
+  // Non-prod's own smsProvider line, whatever the committed profiles.ts sets it to (C0.12 turns it to
+  // twilio): the release before has it unset, and the next release turns it to twilio.
+  const nonprodSms = /(\n {2}nonprod: \{\n(?: {4}.*\n)*? {4}smsProvider: )[^,\n]*,/
+  if (!nonprodSms.test(source)) throw new Error("profiles.ts no longer gives non-prod's smsProvider a line")
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(nonprodSms, '$1undefined,'))
   git(['add', '-A'])
   git(['commit', '-q', '-m', 'profiles'])
   before = git(['rev-parse', 'HEAD'])
-  // The next release turns non-prod's smsProvider to twilio (nonprod's profile comes first).
-  const flipped = source.replace('smsProvider: undefined,', "smsProvider: 'twilio',")
-  if (flipped === source) throw new Error("profiles.ts no longer reads 'smsProvider: undefined,'")
-  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), flipped)
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(nonprodSms, "$1'twilio',"))
   git(['commit', '-q', '-am', 'flip'])
   after = git(['rev-parse', 'HEAD'])
 })
@@ -567,6 +633,11 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
   let port = 0
   let cert = ''
   let upgradeAnswer = 'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'
+  // The body the api's sign-in answers from the app's origin, when a case sets one.
+  let signInBody: string | undefined
+  // Requests to /hang, which are never answered, and what to call when one arrives.
+  const hanging: ServerResponse[] = []
+  let onHang: () => void = () => undefined
 
   beforeAll(async () => {
     const folder = join(scratch, 'tls')
@@ -603,7 +674,11 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
       if (request.url === '/api/auth/otp/request' && request.method === 'POST') {
         request.resume()
         if (request.headers.origin !== APP_ORIGIN) return send(403, JSON.stringify({ error: 'forbidden' }))
-        return send(503, JSON.stringify({ error: 'unavailable', detail: MARKER, pad: 'x'.repeat(100) }))
+        return send(503, signInBody ?? JSON.stringify({ error: 'unavailable', detail: MARKER, pad: 'x'.repeat(100) }))
+      }
+      if (request.url === '/hang') {
+        hanging.push(response)
+        return onHang()
       }
       return send(404, JSON.stringify({ error: 'Not Found', detail: MARKER }))
     })
@@ -613,6 +688,7 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
   }, 30_000)
 
   afterAll(async () => {
+    for (const response of hanging) response.destroy()
     await new Promise<void>(resolve => (server === undefined ? resolve() : server.close(() => resolve())))
   })
 
@@ -654,5 +730,50 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
     expect(untrusted.signIn).toBe('no-answer')
     const closed = await liveAnswers(HOST, APP_ORIGIN, nodeTransport({ address: [127, 0, 0, 1].join('.'), port: 1 }))
     expect(Object.values(closed)).toEqual(Array(6).fill('no-answer'))
+  }, 30_000)
+
+  it('SMK-T08: a body past 4 KiB is cut off unread, so SMK-02 never reads its error word', async () => {
+    // A sign-in answer of exactly the limit's bytes is read whole; one byte more is cut off.
+    const sized = (bytes: number) => {
+      const start = '{"error":"unavailable","pad":"'
+      return `${start}${'x'.repeat(bytes - start.length - 2)}"}`
+    }
+    try {
+      signInBody = sized(4096)
+      expect((await liveAnswers(HOST, APP_ORIGIN, transport())).signIn).toEqual({ status: 503, error: 'unavailable' })
+      signInBody = sized(4097)
+      const cut = (await liveAnswers(HOST, APP_ORIGIN, transport())).signIn
+      expect(cut).toEqual({ status: 503 })
+      expect(smk02(cut, undefined)).toEqual({ pass: false, code: 'error-none' })
+    } finally {
+      signInBody = undefined
+    }
+  }, 30_000)
+
+  it('SMK-T08: a request nothing answers gives up as no-answer at 10 s, and not before', async () => {
+    const arrived = new Promise<void>(resolve => {
+      onHang = resolve
+    })
+    // Only the transport's own timers are the test's to move; the sockets run on real time.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      let answer: RawAnswer | undefined
+      void transport()
+        .http(HOST, { method: 'GET', path: '/hang', headers: {}, readBody: false })
+        .then(raw => {
+          answer = raw
+        })
+      await arrived
+      const settle = () => new Promise(resolve => setImmediate(resolve))
+      vi.advanceTimersByTime(9_999)
+      await settle()
+      expect(answer).toBeUndefined()
+      vi.advanceTimersByTime(1)
+      await settle()
+      expect(answer).toBe('no-answer')
+    } finally {
+      vi.useRealTimers()
+      for (const response of hanging.splice(0)) response.destroy()
+    }
   }, 30_000)
 })

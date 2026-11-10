@@ -119,7 +119,7 @@ describe('C11-D58: the rollback floors check', () => {
     }
   })
 
-  it('C11-D58: the command line exits 0 allowed, 1 with each floor crossed, 2 for a malformed or unknown target', async () => {
+  it('C11-D58: the command line exits 0 allowed, 1 with each floor crossed or a failure it didn’t expect, 2 for a malformed or unknown target', async () => {
     expect(await cli(['--target', c.c3, '--floors-at', c.c3])).toEqual({ code: 0, lines: ['floors-check: allowed'] })
     expect(await cli(['--target', c.c2, '--floors-at', c.c3])).toEqual({
       code: 1,
@@ -156,6 +156,19 @@ describe('C11-D58: the rollback floors check', () => {
       code: 2,
       lines: ['floors-check: --target is given twice'],
     })
+    // A failure it didn't expect (here an output that throws the first time it's written to) is one
+    // line, `floors-check: failed`, and 1, never the error's message.
+    let out = ''
+    let writes = 0
+    const write = (text: string) => {
+      writes += 1
+      if (writes === 1) throw new Error(`stdout closed ${c.c3}`)
+      out += text
+    }
+    expect([await main(['--target', c.c3, '--floors-at', c.c3], { write, cwd: repo }), out]).toEqual([
+      1,
+      'floors-check: failed\n',
+    ])
   })
 
   it('C11-D58: runs as a script under Node, with the same lines and exit codes', () => {

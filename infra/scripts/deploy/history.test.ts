@@ -191,7 +191,7 @@ async function refusalOf(input: PlanInput) {
 }
 
 describe('C11-D61, T24 item 23: the release record’s payload', () => {
-  it('C11-D61: keeps a good record, refuses an ARN, a long revision, an extra key and a string payload, and never reads a per-job deployment', () => {
+  it('C11-D61: keeps a good record, refuses an ARN, a long revision, an extra key, a string payload, another schema, a short migratedCommit and a fourth service, and never reads a per-job deployment', () => {
     const good = deployment(11, 'prod', 'a'.repeat(40), D.a, 3)
     const arn = deployment(12, 'prod', 'a'.repeat(40), D.a, 4)
     ;(arn.payload as { services: Record<string, string> }).services.api = [
@@ -217,6 +217,13 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     ;(otherEnvFamily.payload as { services: Record<string, string> }).services.realtime = 'hearth-nonprod-realtime:11'
     const perJob = { id: 21, task: 'deploy', environment: 'prod', ref: 'main', payload: {} }
     const otherEnvironment = deployment(22, 'nonprod', 'a'.repeat(40), D.a, 12)
+    // A later schema's record is never read as this one's, whatever it holds.
+    const schemaTwo = deployment(23, 'prod', 'a'.repeat(40), D.a, 13)
+    ;(schemaTwo.payload as Record<string, unknown>).schema = 2
+    const shortMigrated = deployment(24, 'prod', 'a'.repeat(40), D.a, 14)
+    ;(shortMigrated.payload as Record<string, unknown>).migratedCommit = 'b'.repeat(12)
+    const fourthService = deployment(25, 'prod', 'a'.repeat(40), D.a, 15)
+    ;(fourthService.payload as { services: Record<string, string> }).services.scheduler = 'hearth-prod-scheduler:15'
     const parsed = parseReleaseRecords(
       [
         good,
@@ -231,11 +238,14 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         otherEnvFamily,
         perJob,
         otherEnvironment,
+        schemaTwo,
+        shortMigrated,
+        fourthService,
       ],
       'prod',
     )
     expect(parsed.records.map(record => record.id)).toEqual([11, 17, 18])
-    expect(parsed.ignored).toEqual([12, 13, 14, 15, 16, 19, 20])
+    expect(parsed.ignored).toEqual([12, 13, 14, 15, 16, 19, 20, 23, 24, 25])
     // The record's ref is main; its payload's commit is the release's.
     expect(parsed.records[0]).toMatchObject({
       commit: 'a'.repeat(40),
@@ -250,7 +260,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     expect(() => parseReleaseRecords([{ id: 'x', task: 'hearth-release', environment: 'prod' }], 'prod')).toThrow()
   })
 
-  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records', () => {
+  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records, ignoring another schema’s', () => {
     // Run B's record (higher revisions) lands before run A's: read in revision order.
     const parsed = parseReleaseRecords(
       [
@@ -268,6 +278,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         { id: 3, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(1) } },
         { id: 10, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(3), extra: 1 } },
         { id: 11, task: 'hearth-migrated', environment: 'nonprod', payload: { schema: 1, commit: at(4) } },
+        { id: 12, task: 'hearth-migrated', environment: 'prod', payload: { schema: 2, commit: at(3) } },
       ],
       'prod',
     )
@@ -276,7 +287,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         { id: 3, commit: at(1) },
         { id: 9, commit: at(2) },
       ],
-      ignored: [10],
+      ignored: [10, 12],
     })
     const restores = parseRestoreRecords([
       {
@@ -291,8 +302,14 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         environment: 'prod',
         payload: { schema: 1, kind: 'sideways', commit: at(4), digest: D.d },
       },
+      {
+        id: 7,
+        task: 'hearth-restore',
+        environment: 'prod',
+        payload: { schema: 2, kind: 'down', commit: at(4), digest: D.d },
+      },
     ])
-    expect(restores).toEqual({ records: [{ id: 5, kind: 'up', commit: at(4), digest: D.d }], ignored: [6] })
+    expect(restores).toEqual({ records: [{ id: 5, kind: 'up', commit: at(4), digest: D.d }], ignored: [6, 7] })
   })
 })
 
@@ -336,6 +353,16 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from the reco
       ok: false,
       reason: 'no-earlier-release',
     })
+    // A record naming the current digest under another commit (only a forged one would) counts as
+    // the current release's first: the record before it, never the forged record itself.
+    const forged = records(
+      'prod',
+      deployment(1, 'prod', at(1), D.a, 1),
+      deployment(2, 'prod', at(2), D.c, 2),
+      deployment(3, 'prod', at(3), D.c, 3),
+    )
+    const pastForged = chooseFromRecords(forged, { commit: at(3), digest: D.c }, isAncestor)
+    expect(pastForged.ok && pastForged.value).toMatchObject({ id: 1, commit: at(1), digest: D.a })
   })
 
   it('C11-D58: reads records written out of order in revision order (run B’s before run A’s)', () => {
@@ -922,7 +949,7 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
     floorsAllowed: () => true,
   })
 
-  it('C11-D52: a deploy descends from prod’s newest record and deploys the image non-prod deployed', async () => {
+  it('C11-D52: a deploy of the run’s commit descends from prod’s newest record and deploys the image non-prod deployed', async () => {
     expect(await prodGate({ ...base(), records: prodRecords() })).toEqual({
       ok: true,
       value: { current_prod_id: '202' },
@@ -937,6 +964,12 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
     expect(await prodGate({ ...base(), records: prodRecords(), buildDigest: '', nonprodDigest: '' })).toEqual({
       ok: false,
       reason: 'digest-differs',
+    })
+    // A deploy's commit is the run's own: a commit the gate didn't output for this run is refused,
+    // though it descends from prod's newest record.
+    expect(await prodGate({ ...base(), commit: at(5), records: prodRecords() })).toEqual({
+      ok: false,
+      reason: 'bad-input',
     })
   })
 
@@ -1279,12 +1312,49 @@ describe('C11-D58, C11-D61: the command line', () => {
       ...['--record-id', '202', '--build-digest', D.f, '--nonprod-digest', D.f, '--records', folder],
     ]
     expect((await cli(gate)).out).toEqual(['current_prod_id=202'])
+    // --nonprod-digest reaches its input: the image non-prod pushed differing from the build's is refused.
+    const otherImage = gate.map((arg, i) => (gate[i - 1] === '--nonprod-digest' ? D.e : arg))
+    expect(await cli(otherImage)).toEqual({
+      code: 1,
+      out: [`history: refused digest-differs: ${REFUSALS['digest-differs']}`],
+      err: [],
+    })
     const rollbackGate = [
       'prod-gate',
       ...['--mode', 'rollback', '--target', 'prod', '--sha', at(6), '--commit', at(4), '--digest', D.d],
       ...['--record-id', '202', '--build-digest', '', '--nonprod-digest', '', '--records', folder],
     ]
     expect((await cli(rollbackGate)).out).toEqual(['current_prod_id=202'])
+    // --target reaches its input: a restore passes on the record the gate read, and only on it.
+    const restoreGate = (recordId: string) => [
+      'prod-gate',
+      ...['--mode', 'deploy', '--target', 'restore', '--sha', at(6), '--commit', at(4), '--digest', D.d],
+      ...['--record-id', recordId, '--build-digest', '', '--nonprod-digest', '', '--records', folder],
+    ]
+    expect(await cli(restoreGate('202'))).toEqual({ code: 0, out: ['current_prod_id=202'], err: [] })
+    expect((await cli(restoreGate('201'))).out).toEqual([
+      `history: refused record-changed: ${REFUSALS['record-changed']}`,
+    ])
+    // --env reaches choose and validate: prod's records read as prod's, with prod's task definitions.
+    const prodHistory = writeJson(join(folder, 'release-prod-history.json'), [
+      deployment(201, 'prod', at(3), D.c, 1),
+      deployment(202, 'prod', at(4), D.d, 2),
+      deployment(102, 'nonprod', at(4), D.e, 3),
+    ])
+    const prodChoice = {
+      code: 0,
+      out: [
+        `commit ${at(3)}`,
+        `digest ${D.c}`,
+        'api hearth-prod-api:1',
+        'realtime hearth-prod-realtime:1',
+        'worker hearth-prod-worker:1',
+      ],
+      err: [],
+    }
+    const onProd = ['--env', 'prod', '--records', prodHistory, '--current', `${at(4)}:${D.d}`]
+    expect(await cli(['choose', ...onProd])).toEqual(prodChoice)
+    expect(await cli(['validate', ...onProd, '--target', at(3)])).toEqual(prodChoice)
     // Bad input: one line naming it, exit 2.
     expect(await cli([])).toMatchObject({ code: 2, out: [expect.stringMatching(/^history: the command is not /)] })
     expect(await cli(['choose', '--env', 'staging'])).toMatchObject({
@@ -1305,6 +1375,24 @@ describe('C11-D58, C11-D61: the command line', () => {
       code: 2,
       out: ['history: --colour is not an option'],
     })
+  })
+
+  it('C11-D58: a failure it didn’t expect is one line, `history: failed`, and exit 1, never the error’s message', async () => {
+    const empty = writeJson(join(scratch, 'failed', 'empty.json'), [])
+    // An output that throws the first time it's written to: the error isn't one the command names.
+    let out = ''
+    let writes = 0
+    const code = await main(['migrated', '--records', empty], {
+      write: text => {
+        writes += 1
+        if (writes === 1) throw new Error(`stdout closed ${ACCOUNT}`)
+        out += text
+      },
+      warn: () => undefined,
+      readText: path => readFileSync(path, 'utf8'),
+      cwd: repo,
+    })
+    expect([code, out]).toEqual([1, 'history: failed\n'])
   })
 
   it('C11-D58: choose and validate name a commit the clone lacks, never reading it as a release that isn’t older', async () => {
@@ -1404,21 +1492,28 @@ describe('C11-D58, C11-D61: the command line', () => {
     })
     // The gate's own check of each line.
     expect(push.out.filter(line => !/^[a-z_]+=[0-9a-z:._-]*$/.test(line))).toEqual([])
-    // Each flag reaches its input: no checks file, a head tree git doesn't give the commit, and a bot that
-    // re-ran a person's run are each refused.
+    // Each flag reaches its input: another event, a ref off main, a bot as the actor or as the triggering
+    // actor (the other a person), no checks file, a head tree git doesn't give the commit, and a release
+    // off main are each refused, on a push the same flags otherwise pass.
     const refused = (reason: keyof typeof REFUSALS) => ({
       code: 1,
       out: [`history: refused ${reason}: ${REFUSALS[reason]}`],
       err: [],
     })
+    expect(await plan({ ...PUSH, checks, event: 'workflow_run' })).toEqual(refused('bad-event'))
+    expect(await plan({ ...PUSH, checks, ref: 'refs/heads/side' })).toEqual(refused('not-main'))
+    expect(await plan({ ...PUSH, checks, actor: 'github-actions[bot]' })).toEqual(refused('bot-actor'))
+    expect(await plan({ ...PUSH, checks, 'triggering-actor': 'github-actions[bot]' })).toEqual(refused('bot-actor'))
     expect(await plan({ ...PUSH, checks: join(scratch, 'no-checks.json') })).toEqual(refused('pr-not-found'))
     const otherTree = writeJson(join(scratch, 'plan-checks-tree.json'), {
       ...GOOD_CHECKS(),
       headTree: git(['rev-parse', `${at(5)}^{tree}`]),
     })
     expect(await plan({ ...PUSH, checks: otherTree })).toEqual(refused('pr-tree-differs'))
-    expect(await plan({ ...PUSH, checks, 'triggering-actor': 'github-actions[bot]' })).toEqual(refused('bot-actor'))
     expect(await plan({ mode: 'rollback', release: branch })).toEqual(refused('off-main'))
+    // --repo is where git answers (the command's folder otherwise): a folder outside any clone knows
+    // no commit, so the current releases read as off main.
+    expect(await plan({ ...PUSH, checks, repo: scratch })).toEqual(refused('off-main'))
     // A rollback, a drill and a restore print what plan decides for the same input in process.
     const same = { records: { nonprod: nonprodRecords, prod: prodRecords }, floorsAllowed: gitFloorsAllowed(repo) }
     const runs: Array<[Record<string, string>, PlanInput]> = [
@@ -1498,58 +1593,148 @@ describe('C11-D58, C11-D61: the command line', () => {
     })
   })
 
-  it('C11-D61: no output line of any subcommand holds an ARN, a 12-digit run outside a commit or digest, or an IPv4 address', async () => {
-    const folder = join(scratch, 'records')
-    const pages = join(scratch, 'pages')
-    writeJson(join(pages, 'worker-deployments-1.json'), {
-      next: null,
-      deployments: [
-        [new Date(10 * minute).toISOString(), revisionArn('worker', 1)],
-        [new Date(20 * minute).toISOString(), revisionArn('worker', 2)],
-      ],
+  it('C11-D58: choose-ecs refuses a gap in the deployment pages and a deployment whose revision wasn’t saved, never choosing past them', async () => {
+    // R1, R2, then R3 (current), the same for each role, one deployment a page.
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.a, 1],
+      [20, D.b, 2],
+      [30, D.c, 3],
+    ]
+    // Each role's pages in a folder of their own: [page number, entry] pairs, only the last page's next
+    // null, and one revisions page holding the entries' revisions given.
+    const save = (name: string, pageEntries: ReadonlyArray<readonly [number, number]>, saved = [0, 1, 2]) => {
+      const folder = join(scratch, name)
+      rmSync(folder, { recursive: true, force: true })
+      for (const role of ['api', 'realtime', 'worker']) {
+        for (const [i, [n, entry]] of pageEntries.entries()) {
+          const [when = 0] = entries[entry] ?? []
+          writeJson(join(folder, `${role}-deployments-${n}.json`), {
+            next: i === pageEntries.length - 1 ? null : `token${n}`,
+            deployments: [[new Date(when * minute).toISOString(), revisionArn(role, entry + 1)]],
+          })
+        }
+        const revisions = saved.map(entry => {
+          const [, digest = '', revision = 0] = entries[entry] ?? []
+          return [revisionArn(role, entry + 1), taskDefinitionArn(role, revision), digest]
+        })
+        writeJson(join(folder, `${role}-revisions-1.json`), revisions)
+      }
+      return ['choose-ecs', '--pages', folder, '--current-digest', D.c]
+    }
+    // Every page and revision saved: the release before R3's first, R2.
+    expect(
+      await cli(
+        save('pages-whole', [
+          [1, 0],
+          [2, 1],
+          [3, 2],
+        ]),
+      ),
+    ).toEqual({
+      code: 0,
+      out: [`digest ${D.b}`, 'api hearth-prod-api:2', 'realtime hearth-prod-realtime:2', 'worker hearth-prod-worker:2'],
+      err: [],
     })
-    const runs = [
+    // Page 2 (R2's) missing, the pages still ending where next is null: refused, never R1, two back.
+    const gap = { code: 2, out: ["history: --pages lacks api's deployment pages, numbered from 1"], err: [] }
+    expect(
+      await cli(
+        save('pages-gap', [
+          [1, 0],
+          [3, 2],
+        ]),
+      ),
+    ).toEqual(gap)
+    // Pages that don't start at 1.
+    expect(
+      await cli(
+        save('pages-from-2', [
+          [2, 1],
+          [3, 2],
+        ]),
+      ),
+    ).toEqual(gap)
+    // R2's deployment saved but not its revision: refused, never choosing R1 from what's left.
+    expect(
+      await cli(
+        save(
+          'pages-no-revision',
+          [
+            [1, 0],
+            [2, 1],
+            [3, 2],
+          ],
+          [0, 2],
+        ),
+      ),
+    ).toEqual({ code: 2, out: ["history: a api deployment's revision isn't in its pages"], err: [] })
+  })
+
+  it('C11-D61: no output line of any subcommand holds an ARN, a 12-digit run outside a commit or digest, or an IPv4 address', async () => {
+    // Its own files, in a folder of its own: non-prod's records with an ignored one holding an ARN,
+    // prod's, a migration record, and break-glass's pages, whose rows hold ARNs as the CLI saves them.
+    const own = join(scratch, 'no-output')
+    rmSync(own, { recursive: true, force: true })
+    const withArn = deployment(104, 'nonprod', at(5), D.e, 4)
+    ;(withArn.payload as { services: Record<string, string> }).services.api = taskDefinitionArn('api', 4)
+    const folder = join(own, 'records')
+    const nonprodFile = writeJson(join(folder, 'release-nonprod.json'), [
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+      withArn,
+    ])
+    writeJson(join(folder, 'release-prod.json'), [deployment(202, 'prod', at(4), D.d, 2)])
+    const migratedFile = writeJson(join(own, 'migrated.json'), [
+      { id: 4, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(3) } },
+    ])
+    const pages = join(own, 'pages')
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.b, 2],
+      [20, D.c, 3],
+    ]
+    for (const role of ['api', 'realtime', 'worker']) {
+      writeJson(join(pages, `${role}-deployments-1.json`), {
+        next: null,
+        deployments: entries.map(([when], i) => [new Date(when * minute).toISOString(), revisionArn(role, i + 1)]),
+      })
+      writeJson(
+        join(pages, `${role}-revisions-1.json`),
+        entries.map(([, digest, revision], i) => [revisionArn(role, i + 1), taskDefinitionArn(role, revision), digest]),
+      )
+    }
+    const gateArgs = (target: string, commitSha: string, digest: string, build: string) => [
+      'prod-gate',
+      ...['--mode', 'deploy', '--target', target, '--sha', at(6), '--commit', commitSha, '--digest', digest],
+      ...['--record-id', '202', '--build-digest', build, '--nonprod-digest', build, '--records', folder],
+    ]
+    // Each run's exit code and first line, so a missing file or a usage error never stands in for what
+    // the subcommand prints.
+    const runs: Array<[string[], number, string]> = [
+      [['choose', '--env', 'nonprod', '--records', nonprodFile, '--current', `${at(5)}:${D.e}`], 0, `commit ${at(4)}`],
       [
-        'plan',
-        '--event',
-        'push',
-        '--ref',
-        'refs/heads/main',
-        '--actor',
-        'a',
-        '--triggering-actor',
-        'a',
-        '--sha',
-        at(6),
+        ['validate', '--env', 'nonprod', '--records', nonprodFile, '--current', `${at(5)}:${D.e}`, '--target', at(4)],
+        0,
+        `commit ${at(4)}`,
       ],
-      ['choose', '--env', 'nonprod', '--records', join(folder, 'release-nonprod.json'), '--current', `${at(5)}:${D.e}`],
-      ['choose-ecs', '--pages', pages, '--current-digest', D.c],
-      ['choose-ecs', '--pages', pages, '--current-digest', D.a],
+      [['choose-ecs', '--pages', pages, '--current-digest', D.c], 0, `digest ${D.b}`],
       [
-        'validate',
-        '--env',
-        'nonprod',
-        '--records',
-        join(folder, 'release-nonprod.json'),
-        '--current',
-        `${at(5)}:${D.e}`,
-        '--target',
-        at(4),
+        ['choose-ecs', '--pages', pages, '--current-digest', D.a],
+        1,
+        `history: refused none-qualifies: ${REFUSALS['none-qualifies']}`,
       ],
-      ['migrated', '--records', join(scratch, 'migrated.json')],
-      ['prod-gate', '--mode', 'restore'],
-      [
-        'prod-gate',
-        ...['--mode', 'deploy', '--target', 'prod', '--sha', at(6), '--commit', at(6), '--digest', ''],
-        ...['--record-id', '202', '--build-digest', D.f, '--nonprod-digest', D.f, '--records', folder],
-      ],
+      [['migrated', '--records', migratedFile], 0, `commit ${at(3)}`],
+      [gateArgs('prod', at(6), '', D.f), 0, 'current_prod_id=202'],
+      [gateArgs('restore', at(4), D.d, ''), 0, 'current_prod_id=202'],
     ]
     const printed: string[] = []
-    for (const argv of runs) {
-      const { out, err } = await cli(argv)
+    for (const [argv, code, first] of runs) {
+      const { code: exit, out, err } = await cli(argv)
+      expect([exit, out[0]], argv.join(' ')).toEqual([code, first])
       printed.push(...out, ...err)
     }
-    expect(printed).toContain('current_prod_id=202')
+    // The record ignored for its ARN is named by its id alone, once for each command that read it.
+    const ignored = 'history: ignored hearth-release record 104 in nonprod: its payload fails validation'
+    expect(printed.filter(line => line === ignored)).toHaveLength(2)
     // The plan's lines in every mode, as the command prints them once DOMAINS holds real names.
     const plans = planFiles()
     const modes: Array<Record<string, string>> = [

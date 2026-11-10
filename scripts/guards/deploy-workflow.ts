@@ -197,7 +197,8 @@ export const AWS_CHECK = sh`# What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; T
 # goes back to), REPLACED (auto: what the deploy job's own check found running, or none), FIRST (true
 # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
 # - No Services stack, or one a failed first create left with no Release, is no release, which only
-#   a first deploy may find. A stack still moving, or a service with more than one deployment, waits.
+#   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
+#   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
 # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
 #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
 #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -205,9 +206,12 @@ export const AWS_CHECK = sh`# What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; T
 #   deployed since, or this release never went live); and the release this run's deploy replaced is
 #   PREVIOUS or a later one (or none), or it outputs rolled=false too (a rollback, or a failed one,
 #   left an older release live after the gate read the records, and PREVIOUS would move it forward).
-# - rollback and auto: no image in ECR is a later commit's than this run's (a deploy pushes before it
-#   migrates, so no later commit can have migrated the database since the gate read the floors at this
-#   commit); otherwise a rollback refuses and auto outputs rolled=false, naming that commit.
+# - Every mode but restore: no image in ECR is a later commit's than this run's (a deploy pushes before
+#   it moves Platform, Data and Tasks and migrates, so no later commit can have moved them or migrated
+#   the database since the gate read the floors at this commit, and no older commit's deploy goes over
+#   a later one's, which GitHub's queue for a concurrency group doesn't keep in order); otherwise auto
+#   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
+#   no release, may find no image at all.
 # - Drift (services running a digest other than Release's, as after an incident rollback outside the
 #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
 #   only to the release all three services run.
@@ -243,6 +247,8 @@ aws_check() {
     [ "$mode" = deploy ] && [ "$FIRST" = true ] || aws_refuse 'the Services stack holds no release, which only a first deploy may find'
     release=none
   else
+    [ "$status" != ROLLBACK_FAILED ] ||
+      aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
     [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
     release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
   fi
@@ -280,19 +286,24 @@ aws_check() {
       ;;
     *) aws_refuse 'the mode is not deploy, rollback, drill, restore or auto' ;;
   esac
-  # A rollback goes back only while no later commit than this run's, at which the gate read the floors,
-  # can have migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is this
-  # run's or an ancestor of it, since a deploy pushes its image before it migrates and nothing else pushes.
-  if [ "$mode" = rollback ] || [ "$mode" = auto ]; then
+  # Nothing moves while a later commit than this run's, at which the gate read the floors, can have moved
+  # the stacks or migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is
+  # this run's or an ancestor of it, since a deploy pushes its image before it moves anything and nothing
+  # else pushes. A restore deploys only the restore stage's own stacks, so it reads no image's commit.
+  if [ "$mode" != restore ]; then
     out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||
       aws_refuse "ECR's image tags can't be read"
-    jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+    jq -e 'type == "array"' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+    jq -e 'length > 0' <<<"$out" >/dev/null || [ "$release" = none ] ||
+      aws_refuse 'ECR holds no image, which only a first deploy may find'
     while IFS= read -r commit; do
       is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit
     done < <(jq -r '[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]' <<<"$out")
     if [ -n "$pushed" ]; then
-      [ "$mode" = auto ] ||
-        aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)"
+      case "$mode" in
+        rollback) aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)" ;;
+        deploy | drill) aws_refuse "a later commit ($pushed) pushed an image, so it may have moved the stacks or migrated the database: dispatch again from main's head (deploy-and-rollback.md)" ;;
+      esac
       printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
       echo "aws-check: auto: a later commit ($pushed) pushed an image, so it may have migrated the database, and nothing is rolled back: check the floors at it (deploy-and-rollback.md)" |
         mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -603,7 +614,8 @@ fi
 echo "$OUT" >>"$GITHUB_OUTPUT"`
 
 // The fast re-checks (C11-D52, DPW-08), before the credentials: the newest release record read again; a
-// deploy's ancestry (and in prod both digests), any other mode's record id.
+// deploy's ancestry (and in prod both digests), any other mode's record id (in prod every mode's, after
+// it holds a prod deploy's or rollback's approval to prod-plan's diff of this attempt).
 export const FAST_RECHECK_NONPROD = sh`set -euo pipefail
 # The fast re-check (C11-D52), before the credentials: non-prod's newest release record, read again
 # and checked by its shape. A deploy's commit descends from it (none on a first deploy); any other
@@ -620,12 +632,23 @@ elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
   exit 1
 fi`
 export const FAST_RECHECK_PROD = sh`set -euo pipefail
-# The fast re-check (C11-D52), after the approval and before the credentials: prod's newest release
-# record, read again and checked by its shape. A deploy's commit descends from it (none on a first
-# deploy) and its image is the one the build made and non-prod deployed in this run; a rollback or
-# a restore finds the record prod-gate read.
+# The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
+# rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
+# or of the failed jobs, keeps an earlier attempt's diff and prod-gate's read, so it refuses, and
+# re-running prod-plan re-runs prod-gate and this job after it. Then prod's newest release record,
+# read again and checked by its shape, is the one prod-gate read; a deploy's commit descends from
+# it (none on a first deploy) and its image is the one the build made and non-prod deployed in
+# this run.
+if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+  echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
+  exit 1
+fi
 ${NEWEST_RELEASE}
 newest=$(newest_release prod)
+if [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
+  echo "fast re-check: prod's release records changed since prod-gate read them"
+  exit 1
+fi
 if [ "$MODE" = deploy ] && [ "$TARGET" = prod ]; then
   if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then
     echo "fast re-check: prod's newest release isn't an ancestor of this commit"
@@ -635,9 +658,6 @@ if [ "$MODE" = deploy ] && [ "$TARGET" = prod ]; then
     echo "fast re-check: the image isn't the one the build made and non-prod deployed"
     exit 1
   fi
-elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
-  echo "fast re-check: prod's release records changed since prod-gate read them"
-  exit 1
 fi`
 
 // A smoke's first lines after set -euo pipefail (C11-D54, DPW-08): it judges only the read-back its deploy
@@ -663,8 +683,11 @@ export const CDK_DIFF_PROD = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --met
 export const CDK_DIFF_ROLLBACK = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
 // restore=down (C11-D45; TECH-SPEC T24 item 18, DPW-06): Services, then Data, then Platform, one call each,
 // each only for a restore stack that exists and has settled; one a failed create left (ROLLBACK_COMPLETE,
-// or REVIEW_IN_PROGRESS, which never settles) is skipped.
-export const RESTORE_DOWN = sh`for PART in Services Data Platform; do
+// or REVIEW_IN_PROGRESS, which never settles) is skipped, and one whose rollback failed too
+// (ROLLBACK_FAILED, which the CLI would delete and create again) is skipped and fails the step after the
+// others are down.
+export const RESTORE_DOWN = sh`KEPT=''
+for PART in Services Data Platform; do
   if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
     case "$STATUS" in
       *'does not exist'*)
@@ -682,13 +705,22 @@ export const RESTORE_DOWN = sh`for PART in Services Data Platform; do
       echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so it is skipped" | mask | tee -a "$GITHUB_STEP_SUMMARY"
       continue
       ;;
+    ROLLBACK_FAILED)
+      echo "restore down: Hearth-$STAGE-$PART is ROLLBACK_FAILED (a failed create whose rollback failed), so it is skipped: it may hold billed resources and waits for tier 2" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+      KEPT="$KEPT Hearth-$STAGE-$PART"
+      continue
+      ;;
     *_IN_PROGRESS)
       echo "restore down: Hearth-$STAGE-$PART is $STATUS: wait for it to settle, then dispatch again" | mask
       exit 1
       ;;
   esac
   ${CDK_DEPLOY_DOWN}
-done`
+done
+if [ -n "$KEPT" ]; then
+  echo "restore down: the restore stage isn't down: tier 2 deletes$KEPT (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+  exit 1
+fi`
 
 // The push (C11-D50, C11-D79, DPW-07, DPW-13): the login, the only skopeo line not through run, and the copy
 // of the build's own archive, its digest kept, to this run's own tag.
@@ -844,16 +876,23 @@ const expr = (inner: string) => `\${{ ${inner} }}`
 // Two views of a run, each the run's length and lines: its text with comments blanked, and its code,
 // with comments blanked and quoted text written as underscores too, except what bash runs inside a
 // quoted string (a $( … ) or a backtick substitution, kept as code) and its expansions ($NAME, ${…}),
-// kept as written. A single quote inside double quotes, a $# or a ${#…} is read as bash reads it, and a
-// # starts a comment only where bash's would: at the start of a word, never after a backslash (an
-// escaped blank, or a backslash-newline that joins a word to the next line's). nestedCase says whether
-// the word case stands inside a $( … ) within double quotes or a backtick substitution, whose patterns' )
-// this reader would take for the substitution's end, so a credentialed run refuses one (DPW-10, DPW-13).
+// kept as written. A single quote inside double quotes, a $# or a ${#…} is read as bash reads it, an
+// ANSI-C string ($'…') to its closing quote past each backslash escape, an unquoted ${…} as one word to
+// its matching brace, and a # starts a comment only where bash's would: at the start of a word, never
+// after a backslash (an escaped blank, or a backslash-newline that joins a word to the next line's) or a
+// substitution's closing ) ($( … ), $(( … )), <( … ) or >( … ), which goes on as part of its word).
+// nestedCase says whether the word case stands inside a substitution or a backtick substitution, whose
+// patterns' ) this reader would take for the substitution's end; odd names what bash might read
+// otherwise than this reader: a comment whose # stands after anything but a blank or a line's start, or
+// inside a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution
+// or another ${, or unquoted, a blank, or with no closing brace. A credentialed run refuses either
+// (DPW-10, DPW-13).
 export function shellViews(run: string): {
   text: string
   code: string
   quotedLines: ReadonlySet<number>
   nestedCase: boolean
+  odd: ReadonlySet<'comment' | 'ansi-c' | 'brace'>
 } {
   let text = ''
   let code = ''
@@ -861,8 +900,10 @@ export function shellViews(run: string): {
   const blank = (c: string) => (c === '\n' ? '\n' : ' ')
   // The lines that start inside a quoted string, whose first word is no command.
   const quotedLines = new Set<number>()
+  const odd = new Set<'comment' | 'ansi-c' | 'brace'>()
   let line = 0
-  // Whether the next character starts a word: at the start, and after an unescaped blank or ; & | ( ).
+  // Whether the next character starts a word: at the start, and after an unescaped blank or ; & | ( ), but
+  // never right after a substitution's closing ).
   let boundary = true
   // Whether the character before is a backtick, after which a command starts too.
   let afterTick = false
@@ -880,6 +921,19 @@ export function shellViews(run: string): {
       if (c === '\n') quotedLines.add(++line)
     }
   }
+  // A ${ … } from i: up to its matching brace (each { inside opens one more), a backslash escaping the
+  // character after it; its end (past the brace, or the run's end with none) and its body.
+  const braceEnd = (i: number) => {
+    let depth = 0
+    for (let at = i + 1; at < run.length; at++) {
+      const c = run[at]
+      if (c === '\\') at++
+      else if (c === '{') depth++
+      else if (c === '}' && --depth === 0) return { end: at + 1, body: run.slice(i + 2, at), closed: true }
+    }
+    return { end: run.length, body: run.slice(i + 2), closed: false }
+  }
+  const BRACE_ODD = /['"`]|\$[({]/
   let i = 0
   while (i < run.length) {
     const c = run[i] ?? ''
@@ -909,6 +963,7 @@ export function shellViews(run: string): {
       } else if (c === '$' && next === '{') {
         const end = run.indexOf('}', i)
         const stop = end < 0 ? run.length : end + 1
+        if (end < 0 || BRACE_ODD.test(run.slice(i + 2, stop - 1))) odd.add('brace')
         keep(run.slice(i, stop))
         i = stop
       } else if (c === '$' && /[A-Za-z_@#?*!$0-9]/.test(next)) {
@@ -928,12 +983,24 @@ export function shellViews(run: string): {
       // part of a word.
       if (next !== '\n') boundary = false
     } else if (c === '#' && boundary) {
+      if ((i > 0 && !/\s/.test(run[i - 1] ?? '')) || stack.length > 0) odd.add('comment')
       const end = run.indexOf('\n', i)
       const stop = end < 0 ? run.length : end
       const comment = [...run.slice(i, stop)].map(blank).join('')
       text += comment
       code += comment
       i = stop
+    } else if (c === '$' && next === "'") {
+      // An ANSI-C string: to the first quote no backslash escapes.
+      let close = i + 2
+      while (close < run.length && run[close] !== "'") close += run[close] === '\\' ? 2 : 1
+      const body = run.slice(i + 2, Math.min(close, run.length))
+      if (body !== '\\t' || close >= run.length) odd.add('ansi-c')
+      keep("$'")
+      quoted(body)
+      if (close < run.length) keep("'")
+      i = Math.min(close + 1, run.length)
+      boundary = false
     } else if (c === "'") {
       const end = run.indexOf("'", i + 1)
       const close = end < 0 ? run.length : end
@@ -956,19 +1023,39 @@ export function shellViews(run: string): {
       }
       i++
       boundary = false
+    } else if (c === '$' && next === '{') {
+      // An unquoted ${ … }: one word to its matching brace, inside which no # starts a comment.
+      const { end, body, closed } = braceEnd(i)
+      if (!closed || /\s/.test(body) || BRACE_ODD.test(body)) odd.add('brace')
+      keep(run.slice(i, end))
+      i = end
+      boundary = false
+    } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
+      // A substitution ($( … ), $(( … )), <( … ) or >( … )): its frame, whose closing ) goes on as its word.
+      keep(c + next)
+      stack.push({ kind: 'paren', depth: 1 })
+      i += 2
+      boundary = true
     } else {
       // (A backtick starts a command too, though a # right after one reads as code here, never a comment.)
-      if ((boundary || opened) && /^case\s/.test(run.slice(i, i + 5)) && stack.some(each => each.kind !== 'double')) {
+      if (
+        /^case\s/.test(run.slice(i, i + 5)) &&
+        stack.some(each => each.kind !== 'double') &&
+        (opened || (boundary && ENDS_AT_COMMAND_START.test(code.slice(code.lastIndexOf('\n') + 1))))
+      ) {
         nestedCase = true
       }
       if (frame?.kind === 'paren' && c === '(') frame.depth++
       keep(c)
       i++
-      if (frame?.kind === 'paren' && c === ')' && --frame.depth === 0) stack.pop()
       boundary = /[\s;&|()]/.test(c)
+      if (frame?.kind === 'paren' && c === ')' && --frame.depth === 0) {
+        stack.pop()
+        boundary = false
+      }
     }
   }
-  return { text, code, quotedLines, nestedCase }
+  return { text, code, quotedLines, nestedCase, odd }
 }
 
 // Blanks every character of a span but what a $( … ) inside it runs, newlines kept.
@@ -993,8 +1080,11 @@ function keepSubstitutions(span: string): string {
 }
 
 // Where a command may start (COMMAND's first part): a line's start, after ; | ! & (not a redirection's),
-// $( (not arithmetic's $(( ), <( or >(, a subshell's (, a group's {, or a keyword.
-const COMMAND_START = String.raw`^|[;|!]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)|\b(?:then|do|else|elif|if|while|until)(?=\s)`
+// $( (not arithmetic's $(( ), <( or >(, a subshell's (, a group's {, each followed by any keywords (then,
+// do, else, elif, if, while, until) that themselves stand where a command starts, so a keyword that is a
+// command's argument (echo then case …) starts nothing.
+const COMMAND_BOUNDARY = String.raw`^|[;|!]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)`
+const COMMAND_START = String.raw`(?:${COMMAND_BOUNDARY})(?:\s*\b(?:then|do|else|elif|if|while|until)(?=\s))*`
 const ENDS_AT_COMMAND_START = new RegExp(`(?:${COMMAND_START})\\s*$`)
 
 // The code view with the words bash reads as operands and not as commands blanked too: a [[ … ]] test's
@@ -1211,34 +1301,101 @@ function runLines(
 
 // Whether a run is written as the reader reads bash (DPW-10, DPW-13): no unquoted backslash before a blank, a
 // # or the end of a line (which joins it to the next, where a [[ or a case would otherwise read as a
-// command's start), no case inside a substitution, and no command whose word is a substitution's output.
+// command's start), no case inside a substitution, no command whose word is a substitution's output, and
+// none of what shellViews names odd (a comment's # after anything but a blank or a line's start, or inside
+// a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution or
+// another ${, or unquoted a blank). No backtick substitution, which the reader reads no command in, and no
+// here-document, whose body it would read as code. Off a canonical text's own lines, nothing bash
+// evaluates as arithmetic or as a name, where a quoted or constructed $( … ) would run unseen (an array's
+// subscript in an arithmetic context, bash 5.2): no (( or $(( )), no [[ … ]] comparing as numbers or
+// asking -v or -R, no [ or test asking -v or -R, no indirect ${!…}, no ${name[…]} but [@] or [*], no
+// ${name:offset} and no assignment to name[…].
 const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
+const HERE_DOCUMENT = /(?<!<)<<(?!<)/
+const EVALUATED = [
+  /\(\(/,
+  /\[\[(?:(?!\]\]).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])/,
+  /(?:^|[\s;&|(!])(?:\[|test)\s(?:(?!\]).)*(?<![\w-])-[vR](?![\w-])/,
+  /\$\{!/,
+  /\$\{#?[A-Za-z_]\w*\[(?![@*]\])/,
+  /\$\{[A-Za-z_]\w*(?:\[[@*]\])?:(?![-=?+])/,
+  /(?<![\w$])[A-Za-z_]\w*\[[^\]\n]*\]\+?=/,
+]
+// The lines of every canonical text, which a run may hold whatever the reader makes of them.
+const CANONICAL_LINES: () => ReadonlySet<string> = (() => {
+  let lines: ReadonlySet<string> | undefined
+  return () => {
+    lines ??= new Set(
+      [
+        PREAMBLE,
+        CDK_FOLDER,
+        CLI_CHECK,
+        ASSET_CHECK,
+        AWS_CHECK,
+        TASKS_OUTPUTS,
+        ONE_OFF,
+        PROBE,
+        NEWEST_RELEASE,
+        PULL_CHECKS,
+        MAIN_CI,
+        PROD_GATE_CALL,
+        FAST_RECHECK_NONPROD,
+        FAST_RECHECK_PROD,
+        SMOKE_ATTEMPT,
+        RESTORE_DOWN,
+      ].flatMap(text => text.split('\n').map(line => line.trim())),
+    )
+    return lines
+  }
+})()
 function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
-  return !views.nestedCase && !ESCAPED_BREAK.test(views.code) && !SUBSTITUTED_WORD.test(views.code)
+  if (views.nestedCase || views.odd.size > 0) return false
+  if (ESCAPED_BREAK.test(views.code) || SUBSTITUTED_WORD.test(views.code)) return false
+  if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
+  const raw = run.split('\n')
+  return views.code
+    .split('\n')
+    .every((line, n) => !EVALUATED.some(pattern => pattern.test(line)) || CANONICAL_LINES().has(raw[n]?.trim() ?? ''))
 }
 const AS_BASH =
-  'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution and no substitution as a command’s word'
+  'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines'
 
 // --- Reading an if: as GitHub reads it -------------------------------------------------------------------
 
 // What an if: can come to when only some values are known: true, false, or undefined when it turns on a
 // value that isn't (Kleene's logic over GitHub's expressions: && and || return an operand, ! binds tighter
-// than == and !=, == on strings ignores case, and every function but endsWith, startsWith and contains is
-// unknown). GitHub compares values of two types by coercing both to numbers (null and '' to 0, a boolean to
-// 0 or 1, a string to its JSON number or NaN); this reads any such comparison as unknown, so it never says
-// false where GitHub would say true.
+// than == and !=, == on ASCII strings ignores case, and every function but endsWith, startsWith and contains
+// is unknown). An if: is only ever read whole as ${{ … }}: with anything beside it (a space, a block
+// scalar's newline) GitHub reads a string, always true, so any other value is unknown (and DPW-02 refuses
+// it in deploy.yml). && and || return an operand, so one whose value isn't known stays unknown though its
+// truth may be (unknown || 'a' is truthy, of no known value or type), never a made-up true or false.
+// GitHub compares values of two types by coercing both to numbers (null and '' to 0, a boolean to 0 or 1,
+// a string to its JSON number or NaN), and strings by upper-casing them by its own rules; this reads any
+// such comparison, and any string function or comparison with a character outside ASCII, as unknown, so
+// it never says false where GitHub would say true.
 const UNKNOWN = Symbol('unknown')
-type Value = string | number | boolean | null | typeof UNKNOWN
+const TRUTHY_UNKNOWN = Symbol('truthy, value unknown')
+const FALSY_UNKNOWN = Symbol('falsy, value unknown')
+type Value = string | number | boolean | null | typeof UNKNOWN | typeof TRUTHY_UNKNOWN | typeof FALSY_UNKNOWN
 
 function truth(value: Value): boolean | undefined {
   if (value === UNKNOWN) return undefined
+  if (value === TRUTHY_UNKNOWN) return true
+  if (value === FALSY_UNKNOWN) return false
   if (typeof value === 'string') return value !== ''
   if (typeof value === 'number') return value !== 0
   return value === true
 }
 
+// Two strings as GitHub compares them, case ignored, for ASCII alone.
+const ascii = (text: string) => [...text].every(c => c.charCodeAt(0) < 128)
+const folded = (a: string, b: string): readonly [string, string] | undefined =>
+  ascii(a) && ascii(b) ? [a.toUpperCase(), b.toUpperCase()] : undefined
+
 export function evaluateIf(expression: string, known: Readonly<Record<string, string>>): boolean | undefined {
-  const body = expression.trim().replace(/^\$\{\{([\s\S]*)\}\}$/, '$1')
+  const whole = /^\$\{\{([\s\S]*)\}\}$/.exec(expression)
+  if (whole === null) return undefined
+  const body = whole[1] ?? ''
   const tokens = body.match(/'(?:[^']|'')*'|&&|\|\||==|!=|<=|>=|[<>!(),]|[A-Za-z_][\w.*-]*|\d+(?:\.\d+)?|\S/g) ?? []
   let i = 0
   const peek = () => tokens[i]
@@ -1249,7 +1406,7 @@ export function evaluateIf(expression: string, known: Readonly<Record<string, st
       take()
       const right = and()
       const t = truth(left)
-      left = t === true ? left : t === false ? right : truth(right) === true ? true : UNKNOWN
+      left = t === true ? left : t === false ? right : truth(right) === true ? TRUTHY_UNKNOWN : UNKNOWN
     }
     return left
   }
@@ -1259,7 +1416,7 @@ export function evaluateIf(expression: string, known: Readonly<Record<string, st
       take()
       const right = compare()
       const t = truth(left)
-      left = t === false ? left : t === true ? right : truth(right) === false ? false : UNKNOWN
+      left = t === false ? left : t === true ? right : truth(right) === false ? FALSY_UNKNOWN : UNKNOWN
     }
     return left
   }
@@ -1273,14 +1430,24 @@ export function evaluateIf(expression: string, known: Readonly<Record<string, st
     ) {
       take()
       const right = not()
-      if (left === UNKNOWN || right === UNKNOWN || (op !== '==' && op !== '!=') || typeof left !== typeof right) {
+      if (
+        typeof left === 'symbol' ||
+        typeof right === 'symbol' ||
+        (op !== '==' && op !== '!=') ||
+        typeof left !== typeof right
+      ) {
         left = UNKNOWN
         continue
       }
-      const same =
-        typeof left === 'string' && typeof right === 'string'
-          ? left.toLowerCase() === right.toLowerCase()
-          : left === right
+      let same = left === right
+      if (typeof left === 'string' && typeof right === 'string') {
+        const pair = folded(left, right)
+        if (pair === undefined) {
+          left = UNKNOWN
+          continue
+        }
+        same = pair[0] === pair[1]
+      }
       left = op === '==' ? same : !same
     }
     return left
@@ -1314,9 +1481,12 @@ export function evaluateIf(expression: string, known: Readonly<Record<string, st
       take()
       const [a, b] = args
       if (typeof a !== 'string' || typeof b !== 'string') return UNKNOWN
-      if (token === 'endsWith') return a.toLowerCase().endsWith(b.toLowerCase())
-      if (token === 'startsWith') return a.toLowerCase().startsWith(b.toLowerCase())
-      if (token === 'contains') return a.toLowerCase().includes(b.toLowerCase())
+      const pair = folded(a, b)
+      if (pair === undefined) return UNKNOWN
+      const [x, y] = pair
+      if (token === 'endsWith') return x.endsWith(y)
+      if (token === 'startsWith') return x.startsWith(y)
+      if (token === 'contains') return x.includes(y)
       return UNKNOWN
     }
     return Object.hasOwn(known, token) ? (known[token] ?? UNKNOWN) : UNKNOWN
@@ -1360,8 +1530,17 @@ function onIsAsWritten(on: BlockValue | undefined): boolean {
   })
 }
 
+// Every scalar, list item and key a value holds, at any depth.
+function namesIn(value: BlockValue): string[] {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flatMap(item => namesIn(item))
+  return [...(value as ReadonlyMap<string, BlockValue>)].flatMap(([key, each]) => [key, ...namesIn(each)])
+}
+const FORBIDDEN_EVENTS = /\b(?:pull_request_target|workflow_run)\b/
+
 // DPW-01 (C11-D47, C11-D62): deploy.yml starts on a push to main and a person's dispatch with exactly the
-// four inputs, nothing else; no workflow uses pull_request_target or workflow_run; main's ruleset still
+// four inputs, nothing else; no workflow uses pull_request_target or workflow_run, in any spelling its on:
+// can take (read as YAML lines and through blockValue, and with no block scalar under on:); main's ruleset still
 // requires check and migrations and names no deploy.yml job, and no ci.yml job needs one, so the deploy
 // workflow never gates merging and CLAUDE.md's way of adding a required check stays open.
 export function triggerFindings(workflows: Texts, ruleset: string): Finding[] {
@@ -1377,8 +1556,19 @@ export function triggerFindings(workflows: Texts, ruleset: string): Finding[] {
     )
   }
   for (const [path, text] of workflows) {
-    if (yamlLines(text).some(line => /\b(?:pull_request_target|workflow_run)\b/.test(line.text))) {
+    const on = workflowTop(text).get('on') ?? []
+    if (
+      yamlLines(text).some(line => FORBIDDEN_EVENTS.test(line.text)) ||
+      namesIn(blockValue(on)).some(name => FORBIDDEN_EVENTS.test(name))
+    ) {
       found.push(at(path, 'DPW-01', 'uses neither pull_request_target nor workflow_run'))
+    }
+    // A block scalar under on: (on: |-, a key's > value) holds text yamlLines skips, which GitHub reads as
+    // an event's name or a filter.
+    if (
+      on.some(line => !/^\s*#/.test(line) && /^\s*(?:-\s+)?(?:[^\s:#][^:#]*:\s*)?[|>][^\s]*\s*(?:#.*)?$/.test(line))
+    ) {
+      found.push(at(path, 'DPW-01', 'writes on: with no block scalar, so every event it names is read'))
     }
     if (path === DEPLOY) continue
     const own = new Set(workflowJobs(text).map(job => job.id))
@@ -1419,6 +1609,9 @@ const escaped = (text: string) => yamlLines(text).some(line => ESCAPE.test(line.
 
 const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
+// An if: as GitHub reads an expression: a plain scalar that is one ${{ … }} and nothing else (a comment
+// aside), with no ${{ or }} inside it.
+const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:\s+#.*)?$/
 
 const describePermissions = (record: Readonly<Record<string, string>>) =>
   Object.entries(record)
@@ -1428,10 +1621,11 @@ const describePermissions = (record: Readonly<Record<string, string>>) =>
 // DPW-02 (C11-D55): deploy.yml's top-level permissions are contents: read alone; each job's are exactly
 // its own, an id-token in the five environment jobs alone and nowhere else in the file; no write-all,
 // read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, anchor,
-// alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems), and
-// spells nothing with an escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no
-// anchor, alias, tag or flow mapping but {}), so none is read wrong. Every other workflow holds the
-// id-token clause, spells nothing with an escape, and names no environment.
+// alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems), every
+// if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an escape. Every
+// workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow mapping but
+// {}), so none is read wrong. Every other workflow holds the id-token clause, spells nothing with an
+// escape, and names no environment.
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -1479,6 +1673,18 @@ export function permissionFindings(workflows: Texts): Finding[] {
   if (escaped(deploy)) {
     found.push(
       at(DEPLOY, 'DPW-02', 'spells no key or value with an escape, which could name id-token or write-all unseen'),
+    )
+  }
+  // Every if: a plain ${{ … }} and nothing beside it: GitHub reads anything else around the expression (a
+  // space inside quotes, a block scalar's newline) as a string, always true, while the guard would read
+  // the expression alone.
+  if (yaml.some(line => /^\s*(?:-\s+)?if\s*:/.test(line) && !IF_LINE.test(line))) {
+    found.push(
+      at(
+        DEPLOY,
+        'DPW-02',
+        `writes every if: as a plain \${{ … }} alone on its line: quoted, as a block scalar or with text beside it, GitHub reads a string, always true`,
+      ),
     )
   }
   // A folded block scalar or an indentation indicator: GitHub hands bash another text than the guard read.
@@ -2171,8 +2377,10 @@ const SMOKES: Readonly<Record<string, string>> = {
 // the same way, PULL_CHECKS), never from a check run, and runs history.ts prod-gate with the mode
 // (PROD_GATE_CALL); the fast re-checks (FAST_RECHECK_NONPROD and FAST_RECHECK_PROD) come before the
 // credentials and cover a deploy (ancestry, and in prod both digests) and a rollback or restore (the
-// record id), each of those runs pinned whole, so no early exit 0 or forged output passes it; each smoke
-// judges only the read-back its job wrote in this attempt (the job outputs attempt, and the smoke's one
+// record id; in prod every mode's, and a prod deploy's or rollback's approval is held to prod-plan's
+// diff of this attempt, prod-plan outputting its attempt), each of those runs pinned whole, so no early
+// exit 0 or forged output passes it; each smoke judges only the read-back its job wrote in this
+// attempt (the job outputs attempt, and the smoke's one
 // step reading READBACK first refuses another, SMOKE_ATTEMPT); each rollback job needs build, takes this
 // run's digest from build for a deploy and from the gate for a drill-smoke, runs only once its
 // deploy job set services_started, and judges the release that deploy replaced from that job's own
@@ -2247,13 +2455,21 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       step.env.get('RECORD_ID') !== want.record ||
       (id === 'prod' &&
         (step.env.get('BUILD_DIGEST') !== expr('needs.build.outputs.digest') ||
-          step.env.get('NONPROD_DIGEST') !== expr('needs.nonprod.outputs.digest')))
+          step.env.get('NONPROD_DIGEST') !== expr('needs.nonprod.outputs.digest') ||
+          step.env.get('PLAN_ATTEMPT') !== expr('needs.prod-plan.outputs.attempt')))
     ) {
       add(
         id,
         "the fast re-check comes before the credentials and checks a deploy's ancestry (and in prod both digests) and any other mode's record id",
       )
     }
+  }
+  // A prod deploy or rollback is approved against prod-plan's diff of this attempt: prod-plan outputs its
+  // attempt, which prod's fast re-check (pinned above, with PLAN_ATTEMPT) holds to GITHUB_RUN_ATTEMPT, so a
+  // re-run of prod alone, whose prod-plan keeps an earlier attempt's outputs, refuses before the credentials.
+  const planOutputs = blockValue(plan?.job.keys.get('outputs') ?? [])
+  if (!isMap(planOutputs) || planOutputs.size !== 1 || planOutputs.get('attempt') !== expr('github.run_attempt')) {
+    add('prod-plan', "outputs its attempt alone, which prod's fast re-check holds to its own")
   }
   // A smoke judges only a read-back from this attempt: a re-run of it alone (whose deploy job keeps its
   // outputs from an earlier attempt) refuses before smoke.ts runs, so no stale pass is recorded or staged.
@@ -2710,6 +2926,7 @@ const ENV_KEYS = [
   'PREVIOUS',
   'PREVIOUS_COMMIT',
   'PREVIOUS_DIGEST',
+  'PLAN_ATTEMPT',
   'PROFILE_AT',
   'READBACK',
   'RECORD_ID',

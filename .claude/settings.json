@@ -35,6 +35,7 @@
       "Bash(gh api *variables*)",
       "Bash(gh api *oidc*)",
       "Bash(gh api *rulesets*)",
+      "Bash(gh api *Ruleset*)",
       "Bash(gh api *actions/permissions*)",
       "Bash(*protect-environments.sh apply*)",
       "Bash(*protect-main.sh*)",

@@ -1006,7 +1006,8 @@ jobs:
           # goes back to), REPLACED (auto: what the deploy job's own check found running, or none), FIRST (true
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
-          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits.
+          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
+          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -1014,9 +1015,12 @@ jobs:
           #   deployed since, or this release never went live); and the release this run's deploy replaced is
           #   PREVIOUS or a later one (or none), or it outputs rolled=false too (a rollback, or a failed one,
           #   left an older release live after the gate read the records, and PREVIOUS would move it forward).
-          # - rollback and auto: no image in ECR is a later commit's than this run's (a deploy pushes before it
-          #   migrates, so no later commit can have migrated the database since the gate read the floors at this
-          #   commit); otherwise a rollback refuses and auto outputs rolled=false, naming that commit.
+          # - Every mode but restore: no image in ECR is a later commit's than this run's (a deploy pushes before
+          #   it moves Platform, Data and Tasks and migrates, so no later commit can have moved them or migrated
+          #   the database since the gate read the floors at this commit, and no older commit's deploy goes over
+          #   a later one's, which GitHub's queue for a concurrency group doesn't keep in order); otherwise auto
+          #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
+          #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
           #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
           #   only to the release all three services run.
@@ -1052,6 +1056,8 @@ jobs:
               [ "$mode" = deploy ] && [ "$FIRST" = true ] || aws_refuse 'the Services stack holds no release, which only a first deploy may find'
               release=none
             else
+              [ "$status" != ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -1089,19 +1095,24 @@ jobs:
                 ;;
               *) aws_refuse 'the mode is not deploy, rollback, drill, restore or auto' ;;
             esac
-            # A rollback goes back only while no later commit than this run's, at which the gate read the floors,
-            # can have migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is this
-            # run's or an ancestor of it, since a deploy pushes its image before it migrates and nothing else pushes.
-            if [ "$mode" = rollback ] || [ "$mode" = auto ]; then
+            # Nothing moves while a later commit than this run's, at which the gate read the floors, can have moved
+            # the stacks or migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is
+            # this run's or an ancestor of it, since a deploy pushes its image before it moves anything and nothing
+            # else pushes. A restore deploys only the restore stage's own stacks, so it reads no image's commit.
+            if [ "$mode" != restore ]; then
               out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||
                 aws_refuse "ECR's image tags can't be read"
-              jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'type == "array"' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'length > 0' <<<"$out" >/dev/null || [ "$release" = none ] ||
+                aws_refuse 'ECR holds no image, which only a first deploy may find'
               while IFS= read -r commit; do
                 is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit
               done < <(jq -r '[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]' <<<"$out")
               if [ -n "$pushed" ]; then
-                [ "$mode" = auto ] ||
-                  aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)"
+                case "$mode" in
+                  rollback) aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)" ;;
+                  deploy | drill) aws_refuse "a later commit ($pushed) pushed an image, so it may have moved the stacks or migrated the database: dispatch again from main's head (deploy-and-rollback.md)" ;;
+                esac
                 printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
                 echo "aws-check: auto: a later commit ($pushed) pushed an image, so it may have migrated the database, and nothing is rolled back: check the floors at it (deploy-and-rollback.md)" |
                   mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -1176,8 +1187,9 @@ jobs:
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The push (C11-D50, C11-D79): the build's own archive, to a tag of its own, sha-<commit>-<run>-<attempt>,
           # so no push collides, keeping its digest; the pushed digest must be the build's, and ECR must name it
-          # by the new tag. It comes before migrate, so the newest image's commit is at or after any commit that
-          # has migrated the database.
+          # by the new tag. It comes before anything moves, and AWS_CHECK refused this job if any image's commit
+          # isn't this run's or an ancestor of it, so the images' commits stay on one line of main's history and
+          # every commit that has migrated the database is one of them; ECR's push times are never the order.
           REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
           get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask
           run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci-archive:$RUNNER_TEMP/image/image.tar:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -1875,7 +1887,8 @@ jobs:
           # goes back to), REPLACED (auto: what the deploy job's own check found running, or none), FIRST (true
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
-          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits.
+          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
+          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -1883,9 +1896,12 @@ jobs:
           #   deployed since, or this release never went live); and the release this run's deploy replaced is
           #   PREVIOUS or a later one (or none), or it outputs rolled=false too (a rollback, or a failed one,
           #   left an older release live after the gate read the records, and PREVIOUS would move it forward).
-          # - rollback and auto: no image in ECR is a later commit's than this run's (a deploy pushes before it
-          #   migrates, so no later commit can have migrated the database since the gate read the floors at this
-          #   commit); otherwise a rollback refuses and auto outputs rolled=false, naming that commit.
+          # - Every mode but restore: no image in ECR is a later commit's than this run's (a deploy pushes before
+          #   it moves Platform, Data and Tasks and migrates, so no later commit can have moved them or migrated
+          #   the database since the gate read the floors at this commit, and no older commit's deploy goes over
+          #   a later one's, which GitHub's queue for a concurrency group doesn't keep in order); otherwise auto
+          #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
+          #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
           #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
           #   only to the release all three services run.
@@ -1921,6 +1937,8 @@ jobs:
               [ "$mode" = deploy ] && [ "$FIRST" = true ] || aws_refuse 'the Services stack holds no release, which only a first deploy may find'
               release=none
             else
+              [ "$status" != ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -1958,19 +1976,24 @@ jobs:
                 ;;
               *) aws_refuse 'the mode is not deploy, rollback, drill, restore or auto' ;;
             esac
-            # A rollback goes back only while no later commit than this run's, at which the gate read the floors,
-            # can have migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is this
-            # run's or an ancestor of it, since a deploy pushes its image before it migrates and nothing else pushes.
-            if [ "$mode" = rollback ] || [ "$mode" = auto ]; then
+            # Nothing moves while a later commit than this run's, at which the gate read the floors, can have moved
+            # the stacks or migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is
+            # this run's or an ancestor of it, since a deploy pushes its image before it moves anything and nothing
+            # else pushes. A restore deploys only the restore stage's own stacks, so it reads no image's commit.
+            if [ "$mode" != restore ]; then
               out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||
                 aws_refuse "ECR's image tags can't be read"
-              jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'type == "array"' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'length > 0' <<<"$out" >/dev/null || [ "$release" = none ] ||
+                aws_refuse 'ECR holds no image, which only a first deploy may find'
               while IFS= read -r commit; do
                 is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit
               done < <(jq -r '[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]' <<<"$out")
               if [ -n "$pushed" ]; then
-                [ "$mode" = auto ] ||
-                  aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)"
+                case "$mode" in
+                  rollback) aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)" ;;
+                  deploy | drill) aws_refuse "a later commit ($pushed) pushed an image, so it may have moved the stacks or migrated the database: dispatch again from main's head (deploy-and-rollback.md)" ;;
+                esac
                 printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
                 echo "aws-check: auto: a later commit ($pushed) pushed an image, so it may have migrated the database, and nothing is rolled back: check the floors at it (deploy-and-rollback.md)" |
                   mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -2387,7 +2410,7 @@ jobs:
 
   # The prod plan (C11-D51, C11-D55): for a prod deploy once non-prod's smoke passed, or a prod rollback,
   # the diff the approver reads before the prod job's approval. Its role reads prod's templates and
-  # nothing else.
+  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own.
   prod-plan:
     needs: [gate, build, synth, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
@@ -2400,6 +2423,8 @@ jobs:
       contents: read
     env:
       STAGE: prod
+    outputs:
+      attempt: ${{ github.run_attempt }}
     steps:
       - name: Check out the run's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2891,14 +2916,22 @@ jobs:
           MODE: ${{ needs.gate.outputs.mode }}
           TARGET: ${{ needs.gate.outputs.target }}
           RECORD_ID: ${{ needs.prod-gate.outputs.current_prod_id }}
+          PLAN_ATTEMPT: ${{ needs.prod-plan.outputs.attempt }}
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
           NONPROD_DIGEST: ${{ needs.nonprod.outputs.digest }}
         run: |
           set -euo pipefail
-          # The fast re-check (C11-D52), after the approval and before the credentials: prod's newest release
-          # record, read again and checked by its shape. A deploy's commit descends from it (none on a first
-          # deploy) and its image is the one the build made and non-prod deployed in this run; a rollback or
-          # a restore finds the record prod-gate read.
+          # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
+          # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
+          # or of the failed jobs, keeps an earlier attempt's diff and prod-gate's read, so it refuses, and
+          # re-running prod-plan re-runs prod-gate and this job after it. Then prod's newest release record,
+          # read again and checked by its shape, is the one prod-gate read; a deploy's commit descends from
+          # it (none on a first deploy) and its image is the one the build made and non-prod deployed in
+          # this run.
+          if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+            echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
+            exit 1
+          fi
           newest_release() {
             local records
             records=$(gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
@@ -2919,6 +2952,10 @@ jobs:
             jq -c .newest <<<"$records"
           }
           newest=$(newest_release prod)
+          if [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
+            echo "fast re-check: prod's release records changed since prod-gate read them"
+            exit 1
+          fi
           if [ "$MODE" = deploy ] && [ "$TARGET" = prod ]; then
             if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then
               echo "fast re-check: prod's newest release isn't an ancestor of this commit"
@@ -2928,9 +2965,6 @@ jobs:
               echo "fast re-check: the image isn't the one the build made and non-prod deployed"
               exit 1
             fi
-          elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
-            echo "fast re-check: prod's release records changed since prod-gate read them"
-            exit 1
           fi
       - name: The pinned CDK CLI
         run: npm ci --ignore-scripts -w @hearth/infra
@@ -2991,7 +3025,8 @@ jobs:
           # goes back to), REPLACED (auto: what the deploy job's own check found running, or none), FIRST (true
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
-          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits.
+          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
+          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -2999,9 +3034,12 @@ jobs:
           #   deployed since, or this release never went live); and the release this run's deploy replaced is
           #   PREVIOUS or a later one (or none), or it outputs rolled=false too (a rollback, or a failed one,
           #   left an older release live after the gate read the records, and PREVIOUS would move it forward).
-          # - rollback and auto: no image in ECR is a later commit's than this run's (a deploy pushes before it
-          #   migrates, so no later commit can have migrated the database since the gate read the floors at this
-          #   commit); otherwise a rollback refuses and auto outputs rolled=false, naming that commit.
+          # - Every mode but restore: no image in ECR is a later commit's than this run's (a deploy pushes before
+          #   it moves Platform, Data and Tasks and migrates, so no later commit can have moved them or migrated
+          #   the database since the gate read the floors at this commit, and no older commit's deploy goes over
+          #   a later one's, which GitHub's queue for a concurrency group doesn't keep in order); otherwise auto
+          #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
+          #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
           #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
           #   only to the release all three services run.
@@ -3037,6 +3075,8 @@ jobs:
               [ "$mode" = deploy ] && [ "$FIRST" = true ] || aws_refuse 'the Services stack holds no release, which only a first deploy may find'
               release=none
             else
+              [ "$status" != ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -3074,19 +3114,24 @@ jobs:
                 ;;
               *) aws_refuse 'the mode is not deploy, rollback, drill, restore or auto' ;;
             esac
-            # A rollback goes back only while no later commit than this run's, at which the gate read the floors,
-            # can have migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is this
-            # run's or an ancestor of it, since a deploy pushes its image before it migrates and nothing else pushes.
-            if [ "$mode" = rollback ] || [ "$mode" = auto ]; then
+            # Nothing moves while a later commit than this run's, at which the gate read the floors, can have moved
+            # the stacks or migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is
+            # this run's or an ancestor of it, since a deploy pushes its image before it moves anything and nothing
+            # else pushes. A restore deploys only the restore stage's own stacks, so it reads no image's commit.
+            if [ "$mode" != restore ]; then
               out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||
                 aws_refuse "ECR's image tags can't be read"
-              jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'type == "array"' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'length > 0' <<<"$out" >/dev/null || [ "$release" = none ] ||
+                aws_refuse 'ECR holds no image, which only a first deploy may find'
               while IFS= read -r commit; do
                 is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit
               done < <(jq -r '[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]' <<<"$out")
               if [ -n "$pushed" ]; then
-                [ "$mode" = auto ] ||
-                  aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)"
+                case "$mode" in
+                  rollback) aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)" ;;
+                  deploy | drill) aws_refuse "a later commit ($pushed) pushed an image, so it may have moved the stacks or migrated the database: dispatch again from main's head (deploy-and-rollback.md)" ;;
+                esac
                 printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
                 echo "aws-check: auto: a later commit ($pushed) pushed an image, so it may have migrated the database, and nothing is rolled back: check the floors at it (deploy-and-rollback.md)" |
                   mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -3163,8 +3208,9 @@ jobs:
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The push (C11-D50, C11-D79): the build's own archive, to a tag of its own, sha-<commit>-<run>-<attempt>,
           # so no push collides, keeping its digest; the pushed digest must be the build's, and ECR must name it
-          # by the new tag. It comes before migrate, so the newest image's commit is at or after any commit that
-          # has migrated the database.
+          # by the new tag. It comes before anything moves, and AWS_CHECK refused this job if any image's commit
+          # isn't this run's or an ancestor of it, so the images' commits stay on one line of main's history and
+          # every commit that has migrated the database is one of them; ECR's push times are never the order.
           REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
           get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask
           run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci-archive:$RUNNER_TEMP/image/image.tar:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -3356,9 +3402,12 @@ jobs:
           # one call would order them by dependency; each only for a restore stack that exists and has settled.
           # One a failed create left (ROLLBACK_COMPLETE or REVIEW_IN_PROGRESS, nothing billed) or that doesn't
           # exist is skipped, and one still moving refuses, so down works after a failed or partial up and
-          # never creates a stack.
+          # never creates a stack. One whose failed create couldn't roll back (ROLLBACK_FAILED, which may hold
+          # billed resources, and which the CLI would delete and create again) is skipped too, the later stacks
+          # are still taken down, and the step then fails, since that stack waits for tier 2.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          KEPT=''
           for PART in Services Data Platform; do
             if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
               case "$STATUS" in
@@ -3377,6 +3426,11 @@ jobs:
                 echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so it is skipped" | mask | tee -a "$GITHUB_STEP_SUMMARY"
                 continue
                 ;;
+              ROLLBACK_FAILED)
+                echo "restore down: Hearth-$STAGE-$PART is ROLLBACK_FAILED (a failed create whose rollback failed), so it is skipped: it may hold billed resources and waits for tier 2" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                KEPT="$KEPT Hearth-$STAGE-$PART"
+                continue
+                ;;
               *_IN_PROGRESS)
                 echo "restore down: Hearth-$STAGE-$PART is $STATUS: wait for it to settle, then dispatch again" | mask
                 exit 1
@@ -3384,6 +3438,10 @@ jobs:
             esac
             run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/$PART" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
           done
+          if [ -n "$KEPT" ]; then
+            echo "restore down: the restore stage isn't down: tier 2 deletes$KEPT (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Probe
         if: ${{ !(needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down') }}
         run: |
@@ -3870,7 +3928,8 @@ jobs:
           # goes back to), REPLACED (auto: what the deploy job's own check found running, or none), FIRST (true
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
-          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits.
+          #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
+          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -3878,9 +3937,12 @@ jobs:
           #   deployed since, or this release never went live); and the release this run's deploy replaced is
           #   PREVIOUS or a later one (or none), or it outputs rolled=false too (a rollback, or a failed one,
           #   left an older release live after the gate read the records, and PREVIOUS would move it forward).
-          # - rollback and auto: no image in ECR is a later commit's than this run's (a deploy pushes before it
-          #   migrates, so no later commit can have migrated the database since the gate read the floors at this
-          #   commit); otherwise a rollback refuses and auto outputs rolled=false, naming that commit.
+          # - Every mode but restore: no image in ECR is a later commit's than this run's (a deploy pushes before
+          #   it moves Platform, Data and Tasks and migrates, so no later commit can have moved them or migrated
+          #   the database since the gate read the floors at this commit, and no older commit's deploy goes over
+          #   a later one's, which GitHub's queue for a concurrency group doesn't keep in order); otherwise auto
+          #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
+          #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
           #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
           #   only to the release all three services run.
@@ -3916,6 +3978,8 @@ jobs:
               [ "$mode" = deploy ] && [ "$FIRST" = true ] || aws_refuse 'the Services stack holds no release, which only a first deploy may find'
               release=none
             else
+              [ "$status" != ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -3953,19 +4017,24 @@ jobs:
                 ;;
               *) aws_refuse 'the mode is not deploy, rollback, drill, restore or auto' ;;
             esac
-            # A rollback goes back only while no later commit than this run's, at which the gate read the floors,
-            # can have migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is this
-            # run's or an ancestor of it, since a deploy pushes its image before it migrates and nothing else pushes.
-            if [ "$mode" = rollback ] || [ "$mode" = auto ]; then
+            # Nothing moves while a later commit than this run's, at which the gate read the floors, can have moved
+            # the stacks or migrated the database: every image's commit (its tag's, sha-<commit>-<run>-<attempt>) is
+            # this run's or an ancestor of it, since a deploy pushes its image before it moves anything and nothing
+            # else pushes. A restore deploys only the restore stage's own stacks, so it reads no image's commit.
+            if [ "$mode" != restore ]; then
               out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||
                 aws_refuse "ECR's image tags can't be read"
-              jq -e 'type == "array" and length > 0' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'type == "array"' <<<"$out" >/dev/null || aws_refuse "ECR's image tags can't be read"
+              jq -e 'length > 0' <<<"$out" >/dev/null || [ "$release" = none ] ||
+                aws_refuse 'ECR holds no image, which only a first deploy may find'
               while IFS= read -r commit; do
                 is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit
               done < <(jq -r '[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]' <<<"$out")
               if [ -n "$pushed" ]; then
-                [ "$mode" = auto ] ||
-                  aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)"
+                case "$mode" in
+                  rollback) aws_refuse "a later commit ($pushed) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)" ;;
+                  deploy | drill) aws_refuse "a later commit ($pushed) pushed an image, so it may have moved the stacks or migrated the database: dispatch again from main's head (deploy-and-rollback.md)" ;;
+                esac
                 printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
                 echo "aws-check: auto: a later commit ($pushed) pushed an image, so it may have migrated the database, and nothing is rolled back: check the floors at it (deploy-and-rollback.md)" |
                   mask | tee -a "$GITHUB_STEP_SUMMARY"
