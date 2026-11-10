@@ -40,20 +40,26 @@ import {
   DEPLOY,
   DEPLOY_WORDS,
   deployStepFindings,
+  evaluatedLines,
   evaluateIf,
+  FAST_RECHECK_NONPROD,
+  FAST_RECHECK_PROD,
   forbiddenWordFindings,
   functionDefinitions,
   GENERAL_WORDS,
   gateFindings,
   JOB_IDS,
+  MAIN_CI,
   MIGRATE_LINES,
   maskingFindings,
   NET_JQ,
+  NEWEST_RELEASE,
   ONE_OFF,
   OVERRIDES_JQ,
   PREAMBLE,
   PROBE,
   PROBE_LINES,
+  PROD_GATE_CALL,
   PULL_CHECKS,
   permissionFindings,
   prodPathFindings,
@@ -388,6 +394,74 @@ describe('DPW: the guard reads the deploy workflow', () => {
     expect(shellViews('echo a #b').text).toBe('echo a   ')
   })
 
+  // Round 3's SECURITY-01: a canonical text's line is exempt from the arithmetic and name refusal only inside
+  // the text standing whole, which is sound only while each such line evaluates what the text itself sets
+  // (a local, a literal subscript, a count a command prints) or bash's own count of seconds. These are every
+  // such line, so a canonical text given another is a reviewed change here too.
+  it('pins the lines of the canonical texts that bash evaluates as arithmetic or a name', () => {
+    const evaluated = (text: string) => evaluatedLines(text).map(n => text.split('\n')[n]?.trim())
+    expect(evaluated(ASSET_CHECK)).toEqual([
+      `dir=\${queue[0]}`,
+      `queue=("\${queue[@]:1}")`,
+      `dir=\${queue[0]}`,
+      `queue=("\${queue[@]:1}")`,
+      'manifests=$((manifests + 1))',
+      'services=$((services + 1))',
+    ])
+    expect(evaluated(AWS_CHECK)).toEqual([
+      `tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=\${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)`,
+    ])
+    // bash's own SECONDS reads as its count, whatever was assigned to it.
+    expect(evaluated(MAIN_CI)).toEqual(['DEADLINE=$((SECONDS + 30 * 60))'])
+    expect(evaluated(ONE_OFF)).toEqual([
+      `withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))`,
+    ])
+    for (const text of [
+      PREAMBLE,
+      CDK_FOLDER,
+      CLI_CHECK,
+      TASKS_OUTPUTS,
+      PROBE,
+      NEWEST_RELEASE,
+      PULL_CHECKS,
+      PROD_GATE_CALL,
+      FAST_RECHECK_NONPROD,
+      FAST_RECHECK_PROD,
+      SMOKE_ATTEMPT,
+      RESTORE_DOWN,
+    ]) {
+      expect(evaluated(text)).toEqual([])
+    }
+  })
+
+  // Round 3's GUARDS-03: the word after an assignment's value or a redirection's target that holds a
+  // substitution, or a quoted string over two lines, is a command, on one line or after the value's own
+  // lines; a substitution as that word is the substitution-as-a-word shape, never a command named by its
+  // first character.
+  it('reads the command after an assignment or a redirection that holds a substitution', () => {
+    const words = (run: string) => shellCommands(run).map(each => each.word)
+    expect(words('X=$(true) cp a b')).toEqual(['true', 'cp'])
+    expect(words('X="$(true)" cp a b')).toEqual(['true', 'cp'])
+    expect(words('X=a$(true)$(false) cp a b')).toEqual(['true', 'false', 'cp'])
+    expect(words('< <(true) cp a b')).toEqual(['true', 'cp'])
+    expect(words('<$(echo /dev/null) cp a b')).toEqual(['echo', 'cp'])
+    expect(words('X=$(true\n) cp a b')).toEqual(['true', 'cp'])
+    expect(shellCommands('X=$(true\n) cp a b').find(each => each.word === 'cp')).toMatchObject({
+      line: 1,
+      prefixes: [expect.stringMatching(/^X=/)],
+      substituted: false,
+      rest: ' a b',
+    })
+    expect(words('X=$(true) $(echo cp) a b')).toEqual(['true', 'echo'])
+    // A quoted value or target over two lines is one word too.
+    expect(shellCommands("X='a\nb' cp a b").map(each => [each.line, each.word])).toEqual([[1, 'cp']])
+    expect(words('X="a\n$(true)\nb" cp a b')).toEqual(['true', 'cp'])
+    expect(words("< 'a\nb' cp a b")).toEqual(['cp'])
+    // An assignment alone runs nothing itself, and what follows an operator is read as before.
+    expect(words('X=$(true)')).toEqual(['true'])
+    expect(words('X=$(true) || cp a b')).toEqual(['true', 'cp'])
+  })
+
   it("evaluates an if: as GitHub would with some values unknown (Kleene's logic)", () => {
     const bot = { 'github.actor': 'dependabot[bot]' }
     expect(evaluateIf(`\${{ ${BOT_TEST} && x == 'y' }}`, bot)).toBe(false)
@@ -621,6 +695,72 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(
       permissionFindings(plant('      - uses: actions/checkout@', '      -   uses: actions/checkout@', '', CI)),
     ).toEqual(shape(CI))
+  })
+
+  // Round 3's GUARDS-01 and GUARDS-02: a carriage return, NEL, LS or PS is a line break to GitHub's YAML
+  // reader but not to workflow.ts, which splits only at a newline, so a step after one in a comment line,
+  // or a command after one in a run, passed every rule; and a blank but a space or a tab is part of a word
+  // to bash, so a # after one is no comment. Each such character, and every other control or format
+  // character, is refused in every workflow, named by its line and code point, and each plant here passes
+  // every other DPW-02 check.
+  it('finds a line break workflow.ts doesn’t split at, a control or format character or another blank, in any workflow', () => {
+    const CHARACTERS =
+      'a workflow holds only tabs, newlines and printable text: no carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space or a tab'
+    const odd = (path: string, planted: string, marker: string, point: string) => {
+      const at = planted.indexOf(marker)
+      expect(at).toBeGreaterThan(-1)
+      const line = planted.slice(0, at).split('\n').length
+      return [`${path}: DPW-02 line ${line} holds U+${point}, but ${CHARACTERS}`]
+    }
+    const breaks = [
+      ['\r', '000D'],
+      ['\u0085', '0085'],
+      ['\u2028', '2028'],
+      ['\u2029', '2029'],
+    ] as const
+    const services = '      - name: Services are about to change\n'
+    const started = '          echo "services_started=true" >>"$GITHUB_OUTPUT"\n'
+    const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
+    for (const [ch, point] of breaks) {
+      // A local action after the credentials, hidden behind a line break in a comment line.
+      const step = `      # Services next${ch}      - uses: ./.github/actions/hidden\n`
+      const hidden = edited(deployText, services, `${step}${services}`, job('nonprod'))
+      expect(permissionFindings(withText(DEPLOY, hidden)), point).toEqual(odd(DEPLOY, hidden, step, point))
+      // A cp over the CLI's bin, hidden behind one in a run's line.
+      const command = `          echo ok${ch}          ${cp}\n`
+      const run = edited(deployText, started, `${started}${command}`, job('nonprod'))
+      expect(permissionFindings(withText(DEPLOY, run)), point).toEqual(odd(DEPLOY, run, command, point))
+    }
+    // In ci.yml, a checkout that keeps its credential and an id-token, each behind a carriage return.
+    const ciText = workflows.get(CI) ?? ''
+    const checkout = '      - uses: actions/checkout@'
+    const checkoutAt = ciText.slice(ciText.indexOf(checkout)).split('\n')[0] ?? ''
+    const comment = `      # Check out\r${checkoutAt.replace(/@.*/, '@v5')}\n`
+    const hiddenCheckout = edited(ciText, `${checkoutAt}\n`, `${comment}${checkoutAt}\n`)
+    expect(permissionFindings(withText(CI, hiddenCheckout))).toEqual(odd(CI, hiddenCheckout, comment, '000D'))
+    const permissions = 'permissions:\n  contents: read\n'
+    const token = `  # Read\r  "id\\x2Dtoken": write\n`
+    const hiddenToken = edited(ciText, permissions, `${permissions}${token}`)
+    expect(permissionFindings(withText(CI, hiddenToken))).toEqual(odd(CI, hiddenToken, token, '000D'))
+    // Line endings a Windows tool writes, and a byte-order mark.
+    const crlf = ciText.replaceAll('\n', '\r\n')
+    expect(permissionFindings(withText(CI, crlf))).toContain(odd(CI, crlf, '\r', '000D')[0])
+    const bom = `\ufeff${ciText}`
+    expect(permissionFindings(withText(CI, bom))).toContain(odd(CI, bom, '\ufeff', 'FEFF')[0])
+    // A blank bash reads as part of a word, before a #, and other control and format characters.
+    for (const [ch, point] of [
+      ['\u00a0', '00A0'],
+      ['\u000b', '000B'],
+      ['\u000c', '000C'],
+      ['\u2003', '2003'],
+      ['\ufeff', 'FEFF'],
+      ['\u202e', '202E'],
+      ['\u007f', '007F'],
+    ] as const) {
+      const command = `          echo ok${ch}#;${cp}\n`
+      const run = edited(deployText, started, `${started}${command}`, job('nonprod'))
+      expect(permissionFindings(withText(DEPLOY, run)), point).toEqual(odd(DEPLOY, run, command, point))
+    }
   })
 
   // The clause infra.ts's ciSynthProblems held for ci.yml until C0.11 PR 4, with its cases, as they stood.
@@ -1598,6 +1738,60 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     }
   })
 
+  // Round 3's SCRIPTS-03: the fast re-checks' reader, run with bash and jq, ignores what history.ts ignores, a
+  // value that ends in a newline among them (jq's $ matches before a final newline, JavaScript's doesn't),
+  // and names the same newest record.
+  it('reads the newest release record as history.ts does, ignoring a value that ends in a newline', () => {
+    const commit = 'a'.repeat(40)
+    const services = (revision: string) => ({
+      api: `hearth-prod-api:${revision}`,
+      realtime: 'hearth-prod-realtime:3',
+      worker: 'hearth-prod-worker:3',
+    })
+    const record = (id: number, payload: Record<string, unknown> = {}) => ({
+      id,
+      task: 'hearth-release',
+      environment: 'prod',
+      payload: {
+        schema: 1,
+        kind: 'deploy',
+        commit,
+        digest: `sha256:${'1'.repeat(64)}`,
+        migratedCommit: null,
+        services: services('3'),
+        ...payload,
+      },
+    })
+    const records = [
+      record(202),
+      record(303, { commit: `${commit}\n`, services: services('9') }),
+      record(304, { digest: `sha256:${'1'.repeat(64)}\n`, services: services('9') }),
+      record(305, { migratedCommit: `${commit}\n`, services: services('9') }),
+      record(306, { services: services('9\n') }),
+      record(307, { services: { ...services('9'), worker: 'hearth-prod-worker:9\n' } }),
+    ]
+    const result = spawnSync(
+      'bash',
+      ['-c', `set -euo pipefail\ngh() { printf '%s\\n' "$RECORDS"; }\n${NEWEST_RELEASE}\nnewest_release prod`],
+      {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH ?? '', REPO: 'example/hearth', RECORDS: JSON.stringify(records) },
+      },
+    )
+    const parsed = parseReleaseRecords(records, 'prod')
+    expect(parsed.records.map(each => each.id)).toEqual([202])
+    expect(parsed.ignored).toEqual([303, 304, 305, 306, 307])
+    expect({ status: result.status, newest: JSON.parse(result.stdout) }).toEqual({
+      status: 0,
+      newest: { id: 202, commit, revision: 3 },
+    })
+    expect(result.stderr.trim().split('\n')).toEqual(
+      parsed.ignored.map(
+        id => `fast re-check: ignored hearth-release record ${id} in prod: its payload fails validation`,
+      ),
+    )
+  })
+
   // ROLLBACK-02: each deploy job outputs what its AWS_CHECK found running, for its rollback job's auto check.
   it('finds a deploy job that doesn’t output what it replaced', () => {
     const replaced = `      replaced: \${{ steps.aws.outputs.replaced }}\n`
@@ -2244,7 +2438,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', '(( PATH = 1 ))')).toEqual([
       at(
         readBack('nonprod'),
-        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines',
+        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole',
       ),
       at(readBack('nonprod'), LOADER),
     ])
@@ -2333,7 +2527,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // found: by the command it hides, or as a shape the reader doesn't read, or both.
   it('finds a command an escape, a [[ or case argument, a case or a substitution would hide', () => {
     const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines'
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
     const both = [at(readBack('nonprod'), RUNS), at(readBack('nonprod'), AS_BASH)]
     expect(added('nonprod', `echo a\\ #;${cp}`)).toEqual(both)
@@ -2357,7 +2551,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // anything bash evaluates as arithmetic or a name (where a quoted or constructed $( … ) runs) are refused.
   it('finds what a substitution’s ), a parameter expansion, backticks, an ANSI-C string, a here-document, arithmetic or a keyword argument would hide', () => {
     const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines'
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
     const runs = [at(readBack('nonprod'), RUNS)]
     const refused = [at(readBack('nonprod'), AS_BASH)]
@@ -2392,6 +2586,79 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     // A subshell's ) ends a word, so a # after it is a comment, as bash reads it, but one not after a blank
     // is refused all the same.
     expect(added('nonprod', `(true)#;${cp}`)).toEqual(refused)
+  }, 30_000)
+
+  // Round 3: what the reader still let through, each in front of, or holding, a cp over the CLI's bin. A
+  // canonical text's line is exempt only inside the text standing whole (SECURITY-01: a copy of
+  // ASSET_CHECK's manifests=$((manifests + 1)) after a quoted manifests='a[$( … )]' ran the cp); $[ … ],
+  // ${x@P}, a positional parameter's offset and a compound assignment's subscript evaluate a quoted $( … )
+  // as arithmetic or a prompt does (SECURITY-02, GUARDS-05), and so does local given a name it builds; a
+  // blank is a space or a tab, so a # after any other is no comment (GUARDS-02); the word after an
+  // assignment's value or a redirection's target that holds a substitution is a command (GUARDS-03); and a
+  // read-write <> writes (GUARDS-04).
+  it(`finds a canonical line off its text, $[ ], \${x@P}, an offset or subscript, a built name, another blank, a command after a substitution, and <>`, () => {
+    const AS_BASH =
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
+    const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
+    const quoted = `'SECONDS[$(${cp})]'`
+    const runs = [at(readBack('nonprod'), RUNS)]
+    const refused = [at(readBack('nonprod'), AS_BASH)]
+    const lines = (...each: string[]) => each.join('\n          ')
+    for (const line of [
+      lines(`manifests=${quoted}`, 'manifests=$((manifests + 1))'),
+      lines(`services=${quoted}`, 'services=$((services + 1))'),
+      lines(`note='$(${cp})'`, `echo "\${note@P}"`),
+      lines(`note='$(${cp})'`, `echo \${note@P}`),
+      lines(`note=${quoted}`, 'echo "$[note + 1]"'),
+      lines(`note=${quoted}`, 'echo $[note + 1]'),
+      lines(`y=${quoted}`, `: "\${@:y}"`),
+      lines(`y=${quoted}`, `: "\${*:y}"`),
+      lines(`y=${quoted}`, `: "\${1:y}"`),
+      lines(`y=${quoted}`, `: \${@: -y}`),
+      lines(`y=${quoted}`, 'a=([y]=1)'),
+      lines(`y=${quoted}`, 'a+=([y]=1)'),
+      lines(`x=${quoted}`, 'local "$x=1"'),
+      lines(`x='[$(${cp})]'`, 'local a"$x"=1'),
+      'X=$(true) $(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk',
+    ]) {
+      expect(added('nonprod', line), line).toEqual(refused)
+    }
+    // A compound assignment over three lines, whose subscript line also reads as a command of its own.
+    expect(added('nonprod', lines(`y=${quoted}`, 'a=(', '  [y]=1', ')'))).toEqual([...runs, ...refused])
+    for (const blank of ['\u00a0', '\ufeff', '\u2003', '\u000b', '\u000c']) {
+      expect(added('nonprod', `echo ok${blank}#;${cp}`), blank).toEqual(runs)
+    }
+    for (const line of [
+      `X=$(true) ${cp}`,
+      `X="$(true)" ${cp}`,
+      `X=a$(true) ${cp}`,
+      `X=$(true)$(true) ${cp}`,
+      `< <(true) ${cp}`,
+      `<$(echo /dev/null) ${cp}`,
+      lines('X=$(true', `) ${cp}`),
+      lines("X='a", `b' ${cp}`),
+      lines("< 'a", `b' ${cp}`),
+    ]) {
+      expect(added('nonprod', line), line).toEqual(runs)
+    }
+    for (const line of [
+      'cat "$RUNNER_TEMP/assembly/x.js" 1<>node_modules/aws-cdk/bin/cdk',
+      'cat "$RUNNER_TEMP/assembly/x.js" <>node_modules/aws-cdk/bin/cdk',
+      'jq . "$RUNNER_TEMP/assembly/x.json" 2<>node_modules/aws-cdk/bin/cdk',
+    ]) {
+      expect(added('nonprod', line), line).toEqual([at(readBack('nonprod'), WRITES)])
+    }
+    // The same after an assignment that holds a substitution: an aws call outside run and get (DPW-07).
+    expect(
+      maskingFindings(
+        addedBefore(
+          'nonprod',
+          'Read back what runs',
+          "          SERVICE_LIST='[]'\n",
+          '          X=$(true) aws sts get-caller-identity\n',
+        ),
+      ),
+    ).toEqual([`${DEPLOY}: DPW-07 ${readBack('nonprod')}: runs every aws, CDK and skopeo command as run … or $(get …)`])
   }, 30_000)
 
   it('finds a workspace that could stand in for the CLI, and a lockfile entry that isn’t the registry’s', () => {
@@ -2676,7 +2943,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       at('record-nonprod', RECORD),
       at(
         'record-nonprod',
-        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines',
+        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole',
       ),
     ])
   })
@@ -2691,7 +2958,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         addedBefore('record-nonprod', 'Write the record', '          record() {\n', `          ${line}\n`),
       )
     const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines'
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     expect(record(post)).toEqual([at('record-nonprod (Write the record)', WHOLE)])
     expect(record(`echo $(echo)#;${post}`)).toEqual([at('record-nonprod (Write the record)', WHOLE)])
     expect(record(`echo \${x:-a #}; ${post}`)).toEqual([
@@ -2700,6 +2967,45 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     ])
     expect(record(`echo \`${post}\``)).toEqual([
       at('record-nonprod', AS_BASH),
+      at('record-nonprod (Write the record)', WHOLE),
+    ])
+  })
+
+  // Round 3's SECURITY-01, SECURITY-02 and GUARDS-05 in a record job, which holds deployments: write: a
+  // quoted record write run by $[ … ], ${x@P}, a canonical line off its text, an offset or a compound
+  // assignment's subscript, or by local given a flag or a name it builds, is refused; and so is a write
+  // after an assignment that holds a substitution, which the reader now reads.
+  it(`finds a record write that $[ ], \${x@P}, an offset, a subscript, a canonical line or local would run unseen`, () => {
+    const RECORD = 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code'
+    const WHOLE = 'sends a record’s body whole, with --input -'
+    const AS_BASH =
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
+    const post =
+      'gh api -X POST "repos/$REPO/deployments" -f ref=main -f task=hearth-release -f environment=nonprod --silent'
+    const quoted = `'GITHUB_RUN_ATTEMPT[$(${post}; echo 0)]'`
+    const record = (...lines: string[]) =>
+      releaseFindings(
+        addedBefore(
+          'record-nonprod',
+          'Write the record',
+          '          record() {\n',
+          `          ${lines.join('\n          ')}\n`,
+        ),
+      )
+    for (const lines of [
+      [`x=${quoted}`, 'echo "$[x]" >/dev/null'],
+      [`manifests=${quoted}`, 'manifests=$((manifests + 1))'],
+      [`x='$(${post})'`, `echo "\${x@P}" >/dev/null`],
+      [`y=${quoted}`, 'a=([y]=1)'],
+      [`x=${quoted}`, 'local "$x=1"'],
+    ]) {
+      expect(record(...lines), lines.join('; ')).toEqual([at('record-nonprod', AS_BASH)])
+    }
+    expect(record(`y=${quoted}`, `: "\${@:y}"`)).toEqual([at('record-nonprod', RECORD), at('record-nonprod', AS_BASH)])
+    expect(record('local -n r=x')).toEqual([at('record-nonprod', RECORD)])
+    expect(record('local -i n')).toEqual([at('record-nonprod', RECORD)])
+    expect(record(`X=$(true) ${post}`)).toEqual([
+      at('record-nonprod', RECORD),
       at('record-nonprod (Write the record)', WHOLE),
     ])
   })
@@ -3009,7 +3315,38 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
         'aws-check: the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)',
       )
     }
-  })
+    // Round 3's AWS-01: an update whose rollback failed is no settled stack. The CLI can't continue it, so
+    // every mode refuses before anything moves, a restore (which reads prod's Services stack) included.
+    const stuck = stack('UPDATE_ROLLBACK_FAILED', release('B', D.B))
+    const refusal =
+      'aws-check: the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)'
+    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), stack: stuck }).said).toBe(refusal)
+    expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...runsB(), stack: stuck, ecr: all() }).said).toBe(
+      refusal,
+    )
+    expect(awsCheck({ mode: 'drill', release: release('B', D.B), ...runsB(), stack: stuck, ecr: all() }).said).toBe(
+      refusal,
+    )
+    const live = { stack: stack('UPDATE_ROLLBACK_FAILED', release('C', D.C)), services: ONE, running: D.C }
+    expect(
+      awsCheck({ mode: 'auto', release: release('C', D.C), previous: release('B', D.B), ...live, ecr: all() }).said,
+    ).toBe(refusal)
+    for (const restore of ['up', 'down']) {
+      expect(
+        awsCheck({
+          mode: 'restore',
+          stage: 'restore',
+          restore,
+          release: release('B', D.B),
+          stack: stuck,
+          services: 'nocluster',
+          running: D.B,
+          ecr: all(),
+        }).said,
+        restore,
+      ).toBe(refusal)
+    }
+  }, 30_000)
 
   it('refuses a rollback to what runs or to what isn’t strictly older, and a release off main', () => {
     expect(awsCheck({ mode: 'rollback', release: release('A', D.B), ...runsB(), ecr: all() }).said).toBe(

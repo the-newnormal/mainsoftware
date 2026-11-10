@@ -1070,7 +1070,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     },
     treeOf: commitSha => fgit(['rev-parse', `${commitSha}^{tree}`]),
     isAncestor: gitIsAncestor(floorRepo),
-    floorsAllowed: gitFloorsAllowed(floorRepo),
+    floorsAllowed: gitFloorsAllowed(floorRepo, fat(4)),
     ...overrides,
   })
   const floorDispatch = (inputs: Partial<Pick<PlanInput, 'target' | 'mode' | 'release'>>, rest: Partial<PlanInput>) =>
@@ -1085,11 +1085,14 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     })
 
   it('C11-D58: gitFloorsAllowed refuses a release below a floor that the run’s commit holds, and allows one above it', async () => {
-    const allowed = gitFloorsAllowed(floorRepo)
+    const allowed = gitFloorsAllowed(floorRepo, fat(4))
     expect(await allowed(fat(1), fat(4))).toBe(false)
     expect(await allowed(fat(3), fat(4))).toBe(true)
     // Read at f[1], before the floor, nothing is refused: the run's commit decides.
     expect(await allowed(fat(1), fat(1))).toBe(true)
+    // Main is the commit the gate gives (the run's): floors read at a commit that isn't on it are
+    // refused before they are read, so no floors.ts off main is ever imported.
+    await expect(gitFloorsAllowed(floorRepo, fat(3))(fat(1), fat(4))).rejects.toThrow(`${fat(4)} is not on ${fat(3)}`)
   })
 
   it('C11-D58: the gate’s plan reads them for a deploy’s previous releases, a rollback and a drill-smoke’s previous', async () => {
@@ -1152,7 +1155,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
       nonprodDigest: '',
       records: prodRecords,
       isAncestor: gitIsAncestor(floorRepo),
-      floorsAllowed: gitFloorsAllowed(floorRepo),
+      floorsAllowed: gitFloorsAllowed(floorRepo, fat(4)),
     }
     expect(await prodGate({ ...rollback, commit: fat(1), digest: D.a })).toEqual({ ok: false, reason: 'floor-crossed' })
     expect(await prodGate({ ...rollback, commit: fat(3), digest: D.c })).toEqual({
@@ -1515,7 +1518,10 @@ describe('C11-D58, C11-D61: the command line', () => {
     // no commit, so the current releases read as off main.
     expect(await plan({ ...PUSH, checks, repo: scratch })).toEqual(refused('off-main'))
     // A rollback, a drill and a restore print what plan decides for the same input in process.
-    const same = { records: { nonprod: nonprodRecords, prod: prodRecords }, floorsAllowed: gitFloorsAllowed(repo) }
+    const same = {
+      records: { nonprod: nonprodRecords, prod: prodRecords },
+      floorsAllowed: gitFloorsAllowed(repo, at(6)),
+    }
     const runs: Array<[Record<string, string>, PlanInput]> = [
       [{ mode: 'rollback', release: at(4) }, dispatch({ mode: 'rollback', release: at(4) }, same)],
       [

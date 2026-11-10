@@ -198,7 +198,9 @@ export const AWS_CHECK = sh`# What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; T
 # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
 # - No Services stack, or one a failed first create left with no Release, is no release, which only
 #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
-#   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
+#   one whose rollback failed refuses, since it waits for tier 2: a failed create's (ROLLBACK_FAILED),
+#   or an update's (UPDATE_ROLLBACK_FAILED), which the CLI can't continue and would otherwise read as
+#   settled, so a dispatch would move Platform, Data and Tasks and migrate before failing at Services.
 # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
 #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
 #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -249,6 +251,8 @@ aws_check() {
   else
     [ "$status" != ROLLBACK_FAILED ] ||
       aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
+    [ "$status" != UPDATE_ROLLBACK_FAILED ] ||
+      aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
     [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
     release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
   fi
@@ -511,9 +515,10 @@ ${RUN_TASK_MIGRATE}
 one_off_end migrate "$MIGRATE_LINES" "$RUN"`
 
 // The fast re-checks' reader (C11-D52, C11-D58, DPW-08): an environment's newest release record, its
-// payload checked as history.ts checks it, in its order (the api's revision, then the deployment's id),
-// and one line in the log naming each record it ignores (the gate's and prod-gate's summaries name it
-// too, from history.ts's own line).
+// payload checked as history.ts checks it (each pattern held to the whole string by \A and \z, since
+// jq's $ also matches before a final newline, where JavaScript's doesn't), in its order (the api's
+// revision, then the deployment's id), and one line in the log naming each record it ignores (the gate's
+// and prod-gate's summaries name it too, from history.ts's own line).
 export const NEWEST_RELEASE = sh`newest_release() {
   local records
   records=$(gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100" | jq -c --arg environment "$1" '
@@ -523,11 +528,11 @@ export const NEWEST_RELEASE = sh`newest_release() {
           and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
           and .payload.schema == 1
           and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
-          and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
-          and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
-          and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
+          and (.payload.commit | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+          and (.payload.digest | type == "string" and test("\\Asha256:[0-9a-f]{64}\\z"))
+          and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("\\A[0-9a-f]{40}\\z")))
           and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-          and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+          and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z")))}]
     | {ignored: [.[] | select(.valid | not) | .id],
       newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
   jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
@@ -634,11 +639,11 @@ fi`
 export const FAST_RECHECK_PROD = sh`set -euo pipefail
 # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
 # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
-# or of the failed jobs, keeps an earlier attempt's diff and prod-gate's read, so it refuses, and
-# re-running prod-plan re-runs prod-gate and this job after it. Then prod's newest release record,
-# read again and checked by its shape, is the one prod-gate read; a deploy's commit descends from
-# it (none on a first deploy) and its image is the one the build made and non-prod deployed in
-# this run.
+# or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
+# was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
+# Then prod's newest release record, read again and checked by its shape, is the one prod-gate
+# read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
+# build made and non-prod deployed in this run.
 if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
   echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
   exit 1
@@ -881,18 +886,22 @@ const expr = (inner: string) => `\${{ ${inner} }}`
 // its matching brace, and a # starts a comment only where bash's would: at the start of a word, never
 // after a backslash (an escaped blank, or a backslash-newline that joins a word to the next line's) or a
 // substitution's closing ) ($( … ), $(( … )), <( … ) or >( … ), which goes on as part of its word).
-// nestedCase says whether the word case stands inside a substitution or a backtick substitution, whose
-// patterns' ) this reader would take for the substitution's end; odd names what bash might read
-// otherwise than this reader: a comment whose # stands after anything but a blank or a line's start, or
-// inside a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution
-// or another ${, or unquoted, a blank, or with no closing brace. A credentialed run refuses either
-// (DPW-10, DPW-13).
+// A blank is bash's: a space or a tab (a newline ends the line), never another character JavaScript
+// counts as white space (a no-break space, a vertical tab, a form feed, U+FEFF), which bash reads as part
+// of a word, so a # after one is no comment. nestedCase says whether the word case stands inside a
+// substitution or a backtick substitution, whose patterns' ) this reader would take for the
+// substitution's end; odd names what bash might read otherwise than this reader: a comment whose #
+// stands after anything but a blank or a line's start, or inside a substitution; an ANSI-C string but
+// $'\t'; a ${…} holding a quote, a backtick, a substitution, another ${ or a transformation (@ and a
+// letter, as ${x@P}, which expands its value as a prompt and runs a $( … ) in it), or unquoted, a blank,
+// or with no closing brace; and the old arithmetic expansion $[ … ], quoted or not. A credentialed run
+// refuses either (DPW-10, DPW-13).
 export function shellViews(run: string): {
   text: string
   code: string
   quotedLines: ReadonlySet<number>
   nestedCase: boolean
-  odd: ReadonlySet<'comment' | 'ansi-c' | 'brace'>
+  odd: ReadonlySet<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>
 } {
   let text = ''
   let code = ''
@@ -900,10 +909,10 @@ export function shellViews(run: string): {
   const blank = (c: string) => (c === '\n' ? '\n' : ' ')
   // The lines that start inside a quoted string, whose first word is no command.
   const quotedLines = new Set<number>()
-  const odd = new Set<'comment' | 'ansi-c' | 'brace'>()
+  const odd = new Set<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>()
   let line = 0
-  // Whether the next character starts a word: at the start, and after an unescaped blank or ; & | ( ), but
-  // never right after a substitution's closing ).
+  // Whether the next character starts a word: at the start, and after an unescaped blank (a space or a
+  // tab), a newline or ; & | ( ), but never right after a substitution's closing ).
   let boundary = true
   // Whether the character before is a backtick, after which a command starts too.
   let afterTick = false
@@ -933,7 +942,7 @@ export function shellViews(run: string): {
     }
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
-  const BRACE_ODD = /['"`]|\$[({]/
+  const BRACE_ODD = /['"`]|\$[({]|@[A-Za-z]/
   let i = 0
   while (i < run.length) {
     const c = run[i] ?? ''
@@ -960,6 +969,10 @@ export function shellViews(run: string): {
         stack.push({ kind: 'tick' })
         i++
         afterTick = true
+      } else if (c === '$' && next === '[') {
+        odd.add('arithmetic')
+        quoted(c)
+        i++
       } else if (c === '$' && next === '{') {
         const end = run.indexOf('}', i)
         const stop = end < 0 ? run.length : end + 1
@@ -983,7 +996,7 @@ export function shellViews(run: string): {
       // part of a word.
       if (next !== '\n') boundary = false
     } else if (c === '#' && boundary) {
-      if ((i > 0 && !/\s/.test(run[i - 1] ?? '')) || stack.length > 0) odd.add('comment')
+      if ((i > 0 && !/[ \t\n]/.test(run[i - 1] ?? '')) || stack.length > 0) odd.add('comment')
       const end = run.indexOf('\n', i)
       const stop = end < 0 ? run.length : end
       const comment = [...run.slice(i, stop)].map(blank).join('')
@@ -1030,6 +1043,12 @@ export function shellViews(run: string): {
       keep(run.slice(i, end))
       i = end
       boundary = false
+    } else if (c === '$' && next === '[') {
+      // The old arithmetic expansion, which evaluates a variable's value as arithmetic.
+      odd.add('arithmetic')
+      keep(c)
+      i++
+      boundary = false
     } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
       // A substitution ($( … ), $(( … )), <( … ) or >( … )): its frame, whose closing ) goes on as its word.
       keep(c + next)
@@ -1048,7 +1067,7 @@ export function shellViews(run: string): {
       if (frame?.kind === 'paren' && c === '(') frame.depth++
       keep(c)
       i++
-      boundary = /[\s;&|()]/.test(c)
+      boundary = /[ \t\n;&|()]/.test(c)
       if (frame?.kind === 'paren' && c === ')' && --frame.depth === 0) {
         stack.pop()
         boundary = false
@@ -1231,35 +1250,99 @@ const COMMAND = new RegExp(
 // as the substitution's own command alone (DPW-10, DPW-13).
 const SUBSTITUTED_WORD = new RegExp(String.raw`(?:${COMMAND_START})\s*${PREFIXES}\$\((?!\()`, 'm')
 
-export function shellCommands(run: string): ShellCommand[] {
-  const commands: ShellCommand[] = []
-  const views = shellViews(run)
-  commandCode(views.code)
-    .split('\n')
-    .forEach((text, line) => {
-      // A line that starts inside a quoted string starts no command there.
-      const read = views.quotedLines.has(line) ? `)${text}` : text
-      for (const match of read.matchAll(COMMAND)) {
-        const word = match[3] ?? ''
-        const prefixes = (match[2] ?? '').trim().split(/\s+/).filter(Boolean)
-        // An assignment alone (X=$(…)) runs nothing itself, what it substitutes is read after it, and a
-        // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2),
-        // but after a wrapper, whose flag or operand it is (command -p, timeout 5), it is kept, so the
-        // wrapper is seen.
-        if (/^[A-Za-z_]\w*\+?=/.test(word)) continue
-        if (/^[-=\d]/.test(word) && !prefixes.some(prefix => WRAPPERS.includes(prefix))) continue
-        const after = read.slice(match.index + match[0].length)
-        commands.push({
-          line,
-          prefixes,
-          word,
-          substituted: match[1] === '$(',
-          rest: after.slice(0, after.search(/[;|&)]|[$<>]\(|$/)),
-          tail: after.slice(0, after.search(/[;|&]|$/)),
-        })
+// The command code with each outermost substitution ($( … ), $(( … )), <( … ) or >( … ), its newlines
+// included) written as SPAN and underscores to its closing ), and each newline inside a quoted string as
+// an underscore: the same length, so an offset in one is the same in the other, and read as bash reads
+// the words around it. An assignment's value or a redirection's target that holds a substitution or a
+// quoted newline is one word there (X=$( … ) cp, < <( … ) cp, <$( … ) cp, a quoted value over two lines), so the word after
+// it is read as the command it is, which the code view, whose PREFIXES stop at a $( and at a line's end,
+// never reads; and a substitution as a command's word after such a prefix starts with SPAN.
+const SPAN = '\uE000'
+function outerCode(code: string, quotedLines: ReadonlySet<number>): string {
+  const out = code.split('')
+  const open: number[] = []
+  let line = 0
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]
+    if (c === '\n' && quotedLines.has(++line)) out[i] = '_'
+    else if ((c === '$' || c === '<' || c === '>') && code[i + 1] === '(') {
+      open.push(i)
+      i++
+    } else if (c === '(') open.push(-1)
+    else if (c === ')') {
+      const from = open.pop()
+      if (from !== undefined && from >= 0 && open.every(each => each < 0)) {
+        out.fill('_', from, i + 1)
+        out[from] = SPAN
       }
-    })
-  return commands
+    }
+  }
+  return out.join('')
+}
+const OUTER_SUBSTITUTED_WORD = new RegExp(String.raw`(?:${COMMAND_START})\s*${PREFIXES}${SPAN}`, 'm')
+const WORD_AT = /"[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+/y
+
+export function shellCommands(run: string): ShellCommand[] {
+  const views = shellViews(run)
+  const code = commandCode(views.code)
+  const lines = code.split('\n')
+  const starts: number[] = []
+  lines.reduce((at, text) => {
+    starts.push(at)
+    return at + text.length + 1
+  }, 0)
+  // The line an offset of the code stands on, by binary search over the lines' starts.
+  const lineOf = (offset: number) => {
+    let low = 0
+    let high = starts.length - 1
+    while (low < high) {
+      const middle = (low + high + 1) >> 1
+      if ((starts[middle] ?? 0) <= offset) low = middle
+      else high = middle - 1
+    }
+    return low
+  }
+  const found = new Map<number, ShellCommand>()
+  // Each command COMMAND finds in a text that starts at an offset of the code, read as a line starts
+  // (one that starts inside a quoted string starts no command there).
+  const read = (text: string, from: number, outer: boolean) => {
+    const quoted = views.quotedLines.has(lineOf(from))
+    const shown = quoted ? `)${text}` : text
+    for (const match of shown.matchAll(COMMAND)) {
+      const at = from + match.index + match[0].length - (match[3] ?? '').length - (quoted ? 1 : 0)
+      if (found.has(at) || (outer && text[at - from] === SPAN)) continue
+      WORD_AT.lastIndex = at
+      const word = outer ? (WORD_AT.exec(code)?.[0] ?? '') : (match[3] ?? '')
+      const prefixes = (match[2] ?? '').trim().split(/\s+/).filter(Boolean)
+      // An assignment alone (X=$(…)) runs nothing itself, what it substitutes is read after it, and a
+      // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2),
+      // but after a wrapper, whose flag or operand it is (command -p, timeout 5), it is kept, so the
+      // wrapper is seen.
+      if (word === '' || /^[A-Za-z_]\w*\+?=/.test(word)) continue
+      if (/^[-=\d]/.test(word) && !prefixes.some(prefix => WRAPPERS.includes(prefix))) continue
+      const line = lineOf(at)
+      const after = (lines[line] ?? '').slice(at - (starts[line] ?? 0) + word.length)
+      found.set(at, {
+        line,
+        prefixes,
+        word,
+        substituted: !outer && match[1] === '$(',
+        rest: after.slice(0, after.search(/[;|&)]|[$<>]\(|$/)),
+        tail: after.slice(0, after.search(/[;|&]|$/)),
+      })
+    }
+  }
+  for (const [line, text] of lines.entries()) read(text, starts[line] ?? 0, false)
+  // Then the outer reading, a line joined to the next where a substitution or a quoted string goes on
+  // across it, for the commands the first reading never reached (a code with neither reads the same).
+  if (/[$<>]\(/.test(code) || views.quotedLines.size > 0) {
+    let from = 0
+    for (const text of outerCode(code, views.quotedLines).split('\n')) {
+      read(text, from, true)
+      from += text.length + 1
+    }
+  }
+  return [...found.entries()].sort(([a], [b]) => a - b).map(([, command]) => command)
 }
 
 // The functions a run defines, in either of bash's spellings (name () body, or function name body), each
@@ -1303,13 +1386,20 @@ function runLines(
 // # or the end of a line (which joins it to the next, where a [[ or a case would otherwise read as a
 // command's start), no case inside a substitution, no command whose word is a substitution's output, and
 // none of what shellViews names odd (a comment's # after anything but a blank or a line's start, or inside
-// a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution or
-// another ${, or unquoted a blank). No backtick substitution, which the reader reads no command in, and no
-// here-document, whose body it would read as code. Off a canonical text's own lines, nothing bash
-// evaluates as arithmetic or as a name, where a quoted or constructed $( … ) would run unseen (an array's
-// subscript in an arithmetic context, bash 5.2): no (( or $(( )), no [[ … ]] comparing as numbers or
-// asking -v or -R, no [ or test asking -v or -R, no indirect ${!…}, no ${name[…]} but [@] or [*], no
-// ${name:offset} and no assignment to name[…].
+// a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution, another
+// ${ or a transformation such as ${x@P}, or unquoted a blank; and $[ … ]). No backtick substitution, which
+// the reader reads no command in, and no here-document, whose body it would read as code. No local or
+// export of a name it builds (local "$x=1", which bash reads as an array element's assignment and so
+// evaluates its subscript): each name it is given is written out, alone or before its =. Outside every
+// canonical text standing whole in the run (each of whose lines evaluates only what the text sets itself,
+// a local, a literal subscript or a count a command prints, or bash's own SECONDS, which reads as its
+// count whatever was assigned to it), nothing bash evaluates as arithmetic or as a name, where a quoted or
+// constructed $( … ) would run unseen (an array's subscript in an arithmetic context, bash 5.2): no (( or
+// $(( )), no [[ … ]] comparing as numbers or asking -v or -R, no [ or test asking -v or -R, no indirect
+// ${!…}, no ${name[…]} but [@] or [*], no offset of a substring (${name:offset}, ${@:offset},
+// ${*:offset} or ${1:offset}), no assignment to name[…] and no compound assignment naming a subscript
+// (a=([i]=1), a+=([i]=1)). A canonical text's line written anywhere else is held to this like any other,
+// so a copy of ASSET_CHECK's manifests=$((manifests + 1)) after a quoted manifests='a[$( … )]' is refused.
 const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
 const HERE_DOCUMENT = /(?<!<)<<(?!<)/
 const EVALUATED = [
@@ -1318,47 +1408,84 @@ const EVALUATED = [
   /(?:^|[\s;&|(!])(?:\[|test)\s(?:(?!\]).)*(?<![\w-])-[vR](?![\w-])/,
   /\$\{!/,
   /\$\{#?[A-Za-z_]\w*\[(?![@*]\])/,
-  /\$\{[A-Za-z_]\w*(?:\[[@*]\])?:(?![-=?+])/,
+  /\$\{(?:[A-Za-z_]\w*(?:\[[@*]\])?|[@*#?$!-]|\d+):(?![-=?+])/,
   /(?<![\w$])[A-Za-z_]\w*\[[^\]\n]*\]\+?=/,
+  /(?:^|[\s(])\[[^\]\n]*\]\+?=/,
 ]
-// The lines of every canonical text, which a run may hold whatever the reader makes of them.
-const CANONICAL_LINES: () => ReadonlySet<string> = (() => {
-  let lines: ReadonlySet<string> | undefined
-  return () => {
-    lines ??= new Set(
-      [
-        PREAMBLE,
-        CDK_FOLDER,
-        CLI_CHECK,
-        ASSET_CHECK,
-        AWS_CHECK,
-        TASKS_OUTPUTS,
-        ONE_OFF,
-        PROBE,
-        NEWEST_RELEASE,
-        PULL_CHECKS,
-        MAIN_CI,
-        PROD_GATE_CALL,
-        FAST_RECHECK_NONPROD,
-        FAST_RECHECK_PROD,
-        SMOKE_ATTEMPT,
-        RESTORE_DOWN,
-      ].flatMap(text => text.split('\n').map(line => line.trim())),
-    )
-    return lines
+// The canonical texts a run may hold whole, whatever the reader makes of their lines.
+const CANONICAL_TEXTS: () => readonly string[] = () => [
+  PREAMBLE,
+  CDK_FOLDER,
+  CLI_CHECK,
+  ASSET_CHECK,
+  AWS_CHECK,
+  TASKS_OUTPUTS,
+  ONE_OFF,
+  PROBE,
+  NEWEST_RELEASE,
+  PULL_CHECKS,
+  MAIN_CI,
+  PROD_GATE_CALL,
+  FAST_RECHECK_NONPROD,
+  FAST_RECHECK_PROD,
+  SMOKE_ATTEMPT,
+  RESTORE_DOWN,
+]
+// The lines of a run inside a canonical text that stands whole in it, from a line's start to a line's end,
+// wherever it stands.
+function canonicalLines(run: string): ReadonlySet<number> {
+  const lines = new Set<number>()
+  for (const text of CANONICAL_TEXTS()) {
+    for (let at = run.indexOf(text); at >= 0; at = run.indexOf(text, at + 1)) {
+      const end = at + text.length
+      if ((at > 0 && run[at - 1] !== '\n') || (end < run.length && run[end] !== '\n')) continue
+      const first = run.slice(0, at).split('\n').length - 1
+      const count = text.split('\n').length
+      for (let n = first; n < first + count; n++) lines.add(n)
+    }
   }
-})()
+  return lines
+}
+// A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own: TOOL_USES
+// and RECORD_WORDS refuse it).
+const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=.*)?)$/s
+// A command's words in the code view, split at the blanks outside its parentheses.
+function words(text: string): string[] {
+  const found: string[] = []
+  let word = ''
+  let depth = 0
+  for (const c of text) {
+    if (c === '(') depth++
+    if (c === ')') depth = Math.max(0, depth - 1)
+    if (depth === 0 && /[ \t]/.test(c)) {
+      if (word !== '') found.push(word)
+      word = ''
+    } else word += c
+  }
+  if (word !== '') found.push(word)
+  return found
+}
+// The lines of a run, by index, that bash evaluates as arithmetic or a name (EVALUATED, on the code view).
+export function evaluatedLines(run: string): number[] {
+  return shellViews(run)
+    .code.split('\n')
+    .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) ? [n] : []))
+}
 function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
   if (views.nestedCase || views.odd.size > 0) return false
   if (ESCAPED_BREAK.test(views.code) || SUBSTITUTED_WORD.test(views.code)) return false
+  if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
-  const raw = run.split('\n')
-  return views.code
-    .split('\n')
-    .every((line, n) => !EVALUATED.some(pattern => pattern.test(line)) || CANONICAL_LINES().has(raw[n]?.trim() ?? ''))
+  // (Only a run whose code names local or export has one to read.)
+  const names = /\b(?:local|export)\b/.test(views.code)
+    ? shellCommands(run).filter(command => command.word === 'local' || command.word === 'export')
+    : []
+  if (names.some(command => !words(command.tail).every(word => GIVEN_NAME.test(word)))) return false
+  const canonical = canonicalLines(run)
+  return views.code.split('\n').every((line, n) => !EVALUATED.some(pattern => pattern.test(line)) || canonical.has(n))
 }
 const AS_BASH =
-  'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion or # but a comment’s after a blank, and nothing evaluated as arithmetic or a name off a canonical text’s lines'
+  'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
 
 // --- Reading an if: as GitHub reads it -------------------------------------------------------------------
 
@@ -1618,14 +1745,32 @@ const describePermissions = (record: Readonly<Record<string, string>>) =>
     .map(([scope, level]) => `${scope}: ${level}`)
     .join(', ')
 
+// A character the guard would read otherwise than GitHub's YAML reader or bash (DPW-02): a carriage return,
+// which YAML reads as a line break (workflow.ts splits only at a newline, so what follows one, in a comment
+// or a run, would be a step, a key or a command no rule reads); NEL, LS and PS, which YAML 1.1 readers
+// break lines at too; any other control or format character (a vertical tab, a form feed, DEL, U+FEFF,
+// the bidirectional ones); and any blank but a space (a no-break space, U+2003), which JavaScript reads as
+// white space and bash as part of a word, so a # after one is no comment. The first such character a
+// workflow holds, by its line and code point, never the text.
+const UNREAD_CHARACTER = /(?![\t\n])[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u
+const CHARACTERS =
+  'a workflow holds only tabs, newlines and printable text: no carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space or a tab'
+function unreadCharacter(text: string): string | undefined {
+  const match = UNREAD_CHARACTER.exec(text)
+  if (match === null) return undefined
+  const line = text.slice(0, match.index).split('\n').length
+  const point = (match[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
+  return `line ${line} holds U+${point}`
+}
+
 // DPW-02 (C11-D55): deploy.yml's top-level permissions are contents: read alone; each job's are exactly
 // its own, an id-token in the five environment jobs alone and nowhere else in the file; no write-all,
 // read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, anchor,
 // alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems), every
 // if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an escape. Every
 // workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow mapping but
-// {}), so none is read wrong. Every other workflow holds the id-token clause, spells nothing with an
-// escape, and names no environment.
+// {}), so none is read wrong, and holds only tabs, newlines and printable text (unreadCharacter). Every
+// other workflow holds the id-token clause, spells nothing with an escape, and names no environment.
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -1696,6 +1841,12 @@ export function permissionFindings(workflows: Texts): Finding[] {
         'writes every block scalar literal (|, |- or |+), never folded (>) or with an indentation indicator',
       ),
     )
+  }
+  // Every workflow holds only tabs, newlines and printable text, read before anything else, so nothing
+  // after a line break workflow.ts doesn't split at, or a blank bash doesn't, passes unread.
+  for (const [path, text] of workflows) {
+    const odd = unreadCharacter(text)
+    if (odd !== undefined) found.push(at(path, 'DPW-02', `${odd}, but ${CHARACTERS}`))
   }
   // Every workflow is in the shape workflow.ts reads, so no step, key or value is read wrong or passes
   // unread (a step's keys at another indent, a run continued on the next line, a key given twice).
@@ -2832,8 +2983,9 @@ const LOADER_ASSIGNMENT = assigns(
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
 // What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff (DIFF, set
 // by its one line) and /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk,
-// say) is rewritten.
-const REDIRECTION = /(?<![<>&])(?:\d+|&)?>>?\|?\s*(\(|[^\s;|()<>]+)/g
+// say) is rewritten. A write is any redirection that opens its target for writing: >, >>, >|, &>, a
+// descriptor's (2>) and the read-write <> (1<>file, which rewrites the file in place).
+const REDIRECTION = /(?<![<>&])(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
 const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|DIFF)")$/
 const DIFF_LINE = 'DIFF="$RUNNER_TEMP/diff.txt"'
 // The canonical texts that define functions, and the lines on which a credentialed run sets a variable by
@@ -3279,7 +3431,7 @@ function ghWrites(call: string): boolean {
 const NAMES_DEPLOYMENTS = /\/deployments(?![\w-])/
 // What a record job runs beside its deployments: write (DPW-13): bash's own, its step's functions, jq and
 // gh api, in one step with no action, so no checkout and no repository code runs where records can be
-// written.
+// written; local with no flag (no -n or -i, either of which evaluates a value it is later given).
 const RECORD_JOBS = ['record-nonprod', 'record-prod']
 const RECORD_WORDS = [
   '[',
@@ -3343,7 +3495,8 @@ export function releaseFindings(workflows: Texts): Finding[] {
         command =>
           command.prefixes.some(prefix => WRAPPERS.includes(prefix)) ||
           !(RECORD_WORDS.includes(command.word) || own.has(command.word)) ||
-          (command.word === 'gh' && !/^\s+api\s/.test(command.rest)),
+          (command.word === 'gh' && !/^\s+api\s/.test(command.rest)) ||
+          (command.word === 'local' && !NO_FLAG(command)),
       )
     ) {
       add(id, 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code')

@@ -929,11 +929,11 @@ jobs:
                     and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
                     and .payload.schema == 1
                     and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
-                    and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
-                    and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
-                    and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
+                    and (.payload.commit | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+                    and (.payload.digest | type == "string" and test("\\Asha256:[0-9a-f]{64}\\z"))
+                    and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("\\A[0-9a-f]{40}\\z")))
                     and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z")))}]
               | {ignored: [.[] | select(.valid | not) | .id],
                 newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
             jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
@@ -1007,7 +1007,9 @@ jobs:
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
           #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
-          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
+          #   one whose rollback failed refuses, since it waits for tier 2: a failed create's (ROLLBACK_FAILED),
+          #   or an update's (UPDATE_ROLLBACK_FAILED), which the CLI can't continue and would otherwise read as
+          #   settled, so a dispatch would move Platform, Data and Tasks and migrate before failing at Services.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -1058,6 +1060,8 @@ jobs:
             else
               [ "$status" != ROLLBACK_FAILED ] ||
                 aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
+              [ "$status" != UPDATE_ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -1888,7 +1892,9 @@ jobs:
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
           #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
-          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
+          #   one whose rollback failed refuses, since it waits for tier 2: a failed create's (ROLLBACK_FAILED),
+          #   or an update's (UPDATE_ROLLBACK_FAILED), which the CLI can't continue and would otherwise read as
+          #   settled, so a dispatch would move Platform, Data and Tasks and migrate before failing at Services.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -1939,6 +1945,8 @@ jobs:
             else
               [ "$status" != ROLLBACK_FAILED ] ||
                 aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
+              [ "$status" != UPDATE_ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -2334,8 +2342,8 @@ jobs:
           node infra/scripts/deploy/smoke.ts "${STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"
 
   # The record (C11-D61): no checkout and no repository code while it holds deployments: write; gh
-  # api and jq alone. A person may re-run it after a failed write; it writes from the first attempt's
-  # results.
+  # api and jq alone. A person may re-run it after a failed write; it writes from the results of the jobs
+  # it needs, as the latest attempt each of them ran in left them.
   record-nonprod:
     needs: [gate, nonprod, smoke-nonprod, rollback-nonprod, resmoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.nonprod == 'true' && needs.gate.outputs.mode != 'drill-break' }}
@@ -2387,13 +2395,13 @@ jobs:
           }
           release_payload() {
             if ! [[ "$2:$3" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]] ||
-              ! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$"))' <<<"$4" >/dev/null; then
+              ! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z"))' <<<"$4" >/dev/null; then
               echo 'record: the release or its services are not of their shapes' >&2
               exit 1
             fi
             jq -n --arg kind "$1" --arg commit "$2" --arg digest "$3" --arg migrated "$MIGRATED" --argjson services "$4" '{schema: 1, kind: $kind, commit: $commit, digest: $digest, migratedCommit: (if $migrated == "" then null else $migrated end), services: $services}'
           }
-          MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("^[0-9a-f]{40}$")) then .commit else "" end')
+          MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("\\A[0-9a-f]{40}\\z")) then .commit else "" end')
           if [ "$SMOKE" = success ] && [ "$MODE" != drill-smoke ]; then
             KIND=deploy
             if [ "$MODE" = rollback ]; then KIND=rollback; fi
@@ -2923,11 +2931,11 @@ jobs:
           set -euo pipefail
           # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
           # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
-          # or of the failed jobs, keeps an earlier attempt's diff and prod-gate's read, so it refuses, and
-          # re-running prod-plan re-runs prod-gate and this job after it. Then prod's newest release record,
-          # read again and checked by its shape, is the one prod-gate read; a deploy's commit descends from
-          # it (none on a first deploy) and its image is the one the build made and non-prod deployed in
-          # this run.
+          # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
+          # was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
+          # Then prod's newest release record, read again and checked by its shape, is the one prod-gate
+          # read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
+          # build made and non-prod deployed in this run.
           if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
             echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
             exit 1
@@ -2941,11 +2949,11 @@ jobs:
                     and (.payload | keys) == ["commit", "digest", "kind", "migratedCommit", "schema", "services"]
                     and .payload.schema == 1
                     and (.payload.kind | IN("deploy", "rollback", "pipeline-rollback"))
-                    and (.payload.commit | type == "string" and test("^[0-9a-f]{40}$"))
-                    and (.payload.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
-                    and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("^[0-9a-f]{40}$")))
+                    and (.payload.commit | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+                    and (.payload.digest | type == "string" and test("\\Asha256:[0-9a-f]{64}\\z"))
+                    and (.payload.migratedCommit == null or (.payload.migratedCommit | type == "string" and test("\\A[0-9a-f]{40}\\z")))
                     and (.payload.services | type == "object" and keys == ["api", "realtime", "worker"])
-                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$")))}]
+                    and all(.payload.services | to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z")))}]
               | {ignored: [.[] | select(.valid | not) | .id],
                 newest: ([.[] | select(.valid) | {id, commit: .payload.commit, revision: (.payload.services.api | split(":")[1] | tonumber)}] | sort_by(.revision, .id) | last)}') || return
             jq -r --arg environment "$1" '.ignored[] | "fast re-check: ignored hearth-release record \(.) in \($environment): its payload fails validation"' <<<"$records" >&2 || return
@@ -3026,7 +3034,9 @@ jobs:
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
           #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
-          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
+          #   one whose rollback failed refuses, since it waits for tier 2: a failed create's (ROLLBACK_FAILED),
+          #   or an update's (UPDATE_ROLLBACK_FAILED), which the CLI can't continue and would otherwise read as
+          #   settled, so a dispatch would move Platform, Data and Tasks and migrate before failing at Services.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -3077,6 +3087,8 @@ jobs:
             else
               [ "$status" != ROLLBACK_FAILED ] ||
                 aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
+              [ "$status" != UPDATE_ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -3929,7 +3941,9 @@ jobs:
           # when the gate found no release record) and, for a restore, RESTORE (up or down) from the environment.
           # - No Services stack, or one a failed first create left with no Release, is no release, which only
           #   a first deploy may find. A stack still moving, or a service with more than one deployment, waits;
-          #   one whose failed create couldn't roll back (ROLLBACK_FAILED) refuses, since it waits for tier 2.
+          #   one whose rollback failed refuses, since it waits for tier 2: a failed create's (ROLLBACK_FAILED),
+          #   or an update's (UPDATE_ROLLBACK_FAILED), which the CLI can't continue and would otherwise read as
+          #   settled, so a dispatch would move Platform, Data and Tasks and migrate before failing at Services.
           # - deploy: what runs is on main at this run's commit. rollback: the target's digest isn't the one
           #   running and its commit is strictly older. drill and restore=up: what runs is the release the gate
           #   read (restore=down deploys only the restore stage's own stacks, so it compares no release). auto:
@@ -3980,6 +3994,8 @@ jobs:
             else
               [ "$status" != ROLLBACK_FAILED ] ||
                 aws_refuse "the Services stack is ROLLBACK_FAILED (a failed create whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
+              [ "$status" != UPDATE_ROLLBACK_FAILED ] ||
+                aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"
               [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
               release_shape "$release" || aws_refuse "the Services stack's Release output is malformed"
             fi
@@ -4377,8 +4393,8 @@ jobs:
           node infra/scripts/deploy/smoke.ts "${STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"
 
   # The record (C11-D61): no checkout and no repository code while it holds deployments: write; gh
-  # api and jq alone. A person may re-run it after a failed write; it writes from the first attempt's
-  # results.
+  # api and jq alone. A person may re-run it after a failed write; it writes from the results of the jobs
+  # it needs, as the latest attempt each of them ran in left them.
   record-prod:
     needs: [gate, prod, smoke-prod, rollback-prod, resmoke-prod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.prod == 'true' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.prod.result == 'success' || needs.prod.result == 'failure') }}
@@ -4432,13 +4448,13 @@ jobs:
           }
           release_payload() {
             if ! [[ "$2:$3" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]] ||
-              ! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("^hearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}$"))' <<<"$4" >/dev/null; then
+              ! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z"))' <<<"$4" >/dev/null; then
               echo 'record: the release or its services are not of their shapes' >&2
               exit 1
             fi
             jq -n --arg kind "$1" --arg commit "$2" --arg digest "$3" --arg migrated "$MIGRATED" --argjson services "$4" '{schema: 1, kind: $kind, commit: $commit, digest: $digest, migratedCommit: (if $migrated == "" then null else $migrated end), services: $services}'
           }
-          MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("^[0-9a-f]{40}$")) then .commit else "" end')
+          MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("\\A[0-9a-f]{40}\\z")) then .commit else "" end')
           # A restore's record is its own task, hearth-restore, so prod's release history never sees it.
           if [ "$TARGET" = restore ]; then
             if [ "$SMOKE" = success ]; then

@@ -1,10 +1,11 @@
 // The rollback floors check's cases (C11-D58; TECH-SPEC T24 item 22): the rule on its own, the
 // floors' shape, and the command line in a scratch git repository with fictional migrations and a
-// floors.ts of its own in the real one's shape. CI's runner gives git no identity, so every commit
+// floors.ts of its own in the real one's shape, whose origin/main is c4, as a pulled clone's is, and a
+// branch commit off it that main never merged. CI's runner gives git no identity, so every commit
 // here names its own (an address built from parts, IG-01). It holds what the floors check must
 // decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -73,6 +74,8 @@ beforeAll(() => {
     },
     'contract z',
   )
+  // A pulled clone's remote-tracking main.
+  run(['update-ref', 'refs/remotes/origin/main', c.c4])
 })
 
 afterAll(() => {
@@ -202,7 +205,8 @@ describe('C11-D58: the rollback floors check', () => {
     await expect(checkFloors({ target: c.c1, floorsAt: c.c1, repo })).resolves.toEqual([])
     const bare = commit({ 'infra/src/release/floors.ts': 'export const FLOORS = [{ migration: "x" }]\n' }, 'bad floors')
     try {
-      expect(await cli(['--target', c.c1, '--floors-at', bare])).toEqual({
+      // bare is on main past origin/main, so it is named as main's head.
+      expect(await cli(['--target', c.c1, '--floors-at', bare, '--main', bare])).toEqual({
         code: 2,
         lines: ['floors-check: FLOORS is malformed'],
       })
@@ -230,17 +234,90 @@ describe('C11-D58: the rollback floors check', () => {
         { cwd: orphan },
       )
       const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: orphan, encoding: 'utf8' }).trim()
-      let out = ''
-      const code = await main(['--target', head, '--repo', orphan], { write: text => (out += text), cwd: repo })
-      expect([code, out]).toEqual([2, `floors-check: ${head} has no infra/src/release/floors.ts\n`])
+      const inOrphan = async (argv: readonly string[]) => {
+        let out = ''
+        const code = await main([...argv, '--repo', orphan], { write: text => (out += text), cwd: repo })
+        return [code, out]
+      }
+      // A clone with no origin/main is named, rather than read as main.
+      expect(await inOrphan(['--target', head])).toEqual([2, 'floors-check: origin/main is not in this clone\n'])
+      expect(await inOrphan(['--target', head, '--main', head])).toEqual([
+        2,
+        `floors-check: ${head} has no infra/src/release/floors.ts\n`,
+      ])
     } finally {
       rmSync(orphan, { recursive: true, force: true })
     }
   })
 
+  it('C11-D58: refuses a --target or --floors-at off main before reading anything at it, so a branch’s floors.ts never runs', async () => {
+    // A branch commit off main's head, as a forged migration or release record could name: its
+    // floors.ts writes a marker when imported, and allows everything.
+    const marks = mkdtempSync(join(tmpdir(), 'hearth-floors-marks-'))
+    const marker = join(marks, 'ran')
+    run(['checkout', '-q', '-b', 'side'])
+    const side = commit(
+      {
+        'db/migrations/0019_side.sql': 'select 1;\n',
+        'infra/src/release/floors.ts': [
+          "import { writeFileSync } from 'node:fs'",
+          `writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+          'export const FLOORS = []',
+          '',
+        ].join('\n'),
+      },
+      'side',
+    )
+    run(['checkout', '-q', 'main'])
+    const offMain = (name: string) => ({ code: 2, lines: [`floors-check: ${name} is not on origin/main`] })
+    try {
+      expect(await cli(['--target', c.c2, '--floors-at', side])).toEqual(offMain(side))
+      expect(await cli(['--target', side, '--floors-at', c.c4])).toEqual(offMain(side))
+      await expect(checkFloors({ target: c.c2, floorsAt: side, repo })).rejects.toThrow(FloorsError)
+      // A branch and a tag named origin/main, which a short name's lookup would take first, don't stand
+      // in for the remote-tracking ref.
+      run(['branch', 'origin/main', side])
+      run(['tag', 'origin/main', side])
+      try {
+        expect(await cli(['--target', c.c2, '--floors-at', side])).toEqual(offMain(side))
+      } finally {
+        run(['branch', '-q', '-D', 'origin/main'])
+        run(['tag', '-d', 'origin/main'])
+      }
+      // The working copy at the branch commit: HEAD is off main too.
+      run(['-c', 'advice.detachedHead=false', 'checkout', '-q', side])
+      try {
+        expect(await cli(['--target', c.c2])).toEqual(offMain('HEAD'))
+      } finally {
+        run(['checkout', '-q', 'main'])
+      }
+      // A main older than the floors commit refuses it as well; --main must be a commit or origin/main.
+      expect(await cli(['--target', c.c2, '--floors-at', c.c4, '--main', c.c3])).toEqual({
+        code: 2,
+        lines: [`floors-check: ${c.c4} is not on ${c.c3}`],
+      })
+      expect(await cli(['--target', c.c2, '--main', 'main'])).toEqual({
+        code: 2,
+        lines: ['floors-check: --main is not a commit or origin/main'],
+      })
+      expect(existsSync(marker)).toBe(false)
+      // Named as main, the branch commit's floors.ts is read, and runs: the marker shows what the
+      // refusals above kept from running.
+      expect(await cli(['--target', c.c2, '--floors-at', side, '--main', side])).toEqual({
+        code: 0,
+        lines: ['floors-check: allowed'],
+      })
+      expect(existsSync(marker)).toBe(true)
+    } finally {
+      run(['branch', '-q', '-D', 'side'])
+      rmSync(marks, { recursive: true, force: true })
+    }
+  })
+
   it('C11-D58: the repository’s own FLOORS, read at HEAD, parses (empty today)', async () => {
     expect(parseFloors(FLOORS)).toEqual(FLOORS)
+    // CI's checkout holds no origin/main, so HEAD is named as main.
     const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
-    await expect(checkFloors({ target: head, repo: ROOT })).resolves.toEqual([])
+    await expect(checkFloors({ target: head, main: head, repo: ROOT })).resolves.toEqual([])
   })
 })

@@ -4,10 +4,18 @@
 // workflow's gate and prod-gate, which hold no credentials and run no npm ci, and in a person's clone
 // for break-glass's incident rollback, so it imports no npm package (IG-08): Node's built-ins, and
 // floors.ts for its type alone. The floors are read at a named commit (`git show`, into a temporary
-// file it imports), never from the working copy, which can predate the floor that refuses. Removing a
-// check here permits what removing a floor would, so it is on the owner's-read list (C11-D74).
+// file it imports), never from the working copy, which can predate the floor that refuses. Both
+// commits must be on main (main's head or an ancestor of it), checked before anything is read at
+// either: the release and migration records a person's choice of commit draws on are data that
+// anything with Deployments write can add, a branch's workflow included, so a commit off main is
+// refused and no floors.ts main never reviewed is imported, in the gate or in the break-glass shell.
+// Main is the clone's `refs/remotes/origin/main` by default, read by that full name so no branch or tag
+// called origin/main stands in for it, or the commit --main names (the gate gives the run's own).
+// Removing a check here permits what removing a floor would, so it is on the owner's-read list
+// (C11-D74).
 //
-//   node infra/scripts/deploy/floors-check.ts --target <commit> [--floors-at <commit or HEAD>] [--repo <dir>]
+//   node infra/scripts/deploy/floors-check.ts --target <commit> [--floors-at <commit or HEAD>]
+//     [--main <commit or origin/main>] [--repo <dir>]
 //
 // prints `floors-check: allowed` and exits 0; or `floors-check: refused <migration> (<why>)`, one line
 // for each floor crossed, and exits 1; or one line naming what is wrong with the input and exits 2.
@@ -25,6 +33,9 @@ export class FloorsError extends Error {}
 
 const MIGRATION = /^[0-9]{4}_[a-z0-9_]+\.sql$/
 const COMMIT = /^[0-9a-f]{40}$/
+// The default main: the clone's remote-tracking branch, by its full ref name.
+export const ORIGIN_MAIN = 'origin/main'
+const ORIGIN_MAIN_REF = 'refs/remotes/origin/main'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -70,6 +81,27 @@ export function resolveCommit(name: string, repo: string): string {
   }
 }
 
+// Main's head in the clone: a full commit as given, or origin/main read as refs/remotes/origin/main
+// alone (a branch or tag named origin/main would win a short name's lookup).
+export function resolveMain(name: string, repo: string): string {
+  if (name !== ORIGIN_MAIN) return resolveCommit(name, repo)
+  try {
+    return git(repo, ['rev-parse', '--verify', '--quiet', `${ORIGIN_MAIN_REF}^{commit}`]).trim()
+  } catch {
+    throw new FloorsError(`${ORIGIN_MAIN} is not in this clone`)
+  }
+}
+
+// Whether a commit is main's head or an ancestor of it, in the clone.
+export function isOnMain(commit: string, mainCommit: string, repo: string): boolean {
+  try {
+    git(repo, ['merge-base', '--is-ancestor', commit, mainCommit])
+    return true
+  } catch {
+    return false
+  }
+}
+
 // FLOORS as the commit has it: floors.ts read by `git show` into a temporary folder, imported from
 // there (it imports nothing), and the folder removed whatever happens.
 export async function floorsAt(commit: string, repo: string): Promise<Floor[]> {
@@ -102,11 +134,27 @@ export function migrationsAt(commit: string, repo: string): Set<string> {
 }
 
 // The floors a rollback to `target` crosses, reading the floors and their migrations at `floorsAt`
-// (HEAD by default). The target must be a full commit, so a branch or tag name never stands in for it.
-export async function checkFloors(input: { target: string; floorsAt?: string; repo: string }): Promise<Floor[]> {
+// (HEAD by default). The target must be a full commit, so a branch or tag name never stands in for it,
+// and both must be on main (origin/main by default), checked before anything is read at either.
+export async function checkFloors(input: {
+  target: string
+  floorsAt?: string
+  main?: string
+  repo: string
+}): Promise<Floor[]> {
   if (!COMMIT.test(input.target)) throw new FloorsError('--target is not a commit')
+  const mainName = input.main ?? ORIGIN_MAIN
+  if (mainName !== ORIGIN_MAIN && !COMMIT.test(mainName)) throw new FloorsError('--main is not a commit or origin/main')
   const target = resolveCommit(input.target, input.repo)
-  const at = resolveCommit(input.floorsAt ?? 'HEAD', input.repo)
+  const atName = input.floorsAt ?? 'HEAD'
+  const at = resolveCommit(atName, input.repo)
+  const mainCommit = resolveMain(mainName, input.repo)
+  for (const [name, commit] of [
+    [input.target, target],
+    [atName, at],
+  ] as const) {
+    if (!isOnMain(commit, mainCommit, input.repo)) throw new FloorsError(`${name} is not on ${mainName}`)
+  }
   const floors = await floorsAt(at, input.repo)
   return crossedFloors(floors, migrationsAt(at, input.repo), migrationsAt(target, input.repo))
 }
@@ -140,14 +188,19 @@ const defaultIo: Io = { write: text => process.stdout.write(text), cwd: process.
 // it didn't expect is `floors-check: failed` and 1, so no error message or stack reaches a log.
 export async function main(argv: readonly string[], io: Io = defaultIo): Promise<0 | 1 | 2> {
   try {
-    const flags = readFlags(argv, ['target', 'floors-at', 'repo'])
+    const flags = readFlags(argv, ['target', 'floors-at', 'main', 'repo'])
     const target = flags.get('target')
     if (target === undefined) throw new FloorsError('--target is missing')
     const floorsAtFlag = flags.get('floors-at')
     if (floorsAtFlag !== undefined && floorsAtFlag !== 'HEAD' && !COMMIT.test(floorsAtFlag)) {
       throw new FloorsError('--floors-at is not a commit')
     }
-    const crossed = await checkFloors({ target, floorsAt: floorsAtFlag, repo: flags.get('repo') ?? io.cwd })
+    const crossed = await checkFloors({
+      target,
+      floorsAt: floorsAtFlag,
+      main: flags.get('main'),
+      repo: flags.get('repo') ?? io.cwd,
+    })
     if (crossed.length === 0) {
       io.write('floors-check: allowed\n')
       return 0

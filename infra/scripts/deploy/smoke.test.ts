@@ -1,7 +1,8 @@
 // The smoke's cases, SMK-T01 to SMK-T08 (C11-D54; TECH-SPEC T24 items 16, 20 and 28): each check on
-// recorded answers, the read-back's validation, --profile-at in a scratch git repository, and the whole
-// command against a local TLS server with a certificate made for the test, so the network code runs
-// too, its body limit and its timeout among it. Commits are made by git or built as repeats, and an
+// recorded answers, the read-back's validation, --profile-at in a scratch git repository, the command
+// line for each stage (the host, origin and profile each --env maps to), and the whole command against
+// a local TLS server with a certificate made for the test, so the network code runs too, its body limit
+// and its timeout among it. Commits are made by git or built as repeats, and an
 // ARN, account id or address is built from parts at run time (IG-01). It holds what the smoke must
 // decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
@@ -42,6 +43,8 @@ const EARLIER = `sha256:${'c'.repeat(64)}`
 const RELEASE = `${'a'.repeat(40)}:${DIGEST}`
 const HOST = originHost('nonprod') ?? ''
 const APP_ORIGIN = `https://${appHost('nonprod') ?? ''}`
+const PROD_HOST = originHost('prod') ?? ''
+const PROD_ORIGIN = `https://${appHost('prod') ?? ''}`
 const MARKER = 'MARKER-7f3a9'
 
 // A good non-prod read-back: api 1 task, realtime 2 in two AZs, worker 1, both target groups healthy.
@@ -87,6 +90,52 @@ const service = (value: ReadBack, role: string) => {
 
 const verdictOf = (value: ReadBack, env: 'nonprod' | 'prod' | 'restore' = 'nonprod', restore?: 'up' | 'down') =>
   smk06(value, RELEASE, PROFILES[env], env, restore)
+
+// The restore stage brought up: every service at the restore profile's count, every task running the
+// release, with no load balancer or target group (the probe ran).
+function restoreUpReadBack(): ReadBack {
+  const counts = PROFILES.restore.services
+  return changed(v => {
+    v.env = 'restore'
+    v.probe = 'ran'
+    v.targetGroups = []
+    v.loadBalancer = null
+    for (const s of v.services) {
+      const n = counts[s.role].count
+      s.desired = n
+      s.running = n
+      s.deployments = [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: n, running: n, failed: 0 }]
+      s.tasks = Array.from({ length: n }, () => ({
+        az: 'ap-southeast-1a',
+        last: 'RUNNING',
+        health: 'UNKNOWN',
+        digest: DIGEST,
+      }))
+    }
+  })
+}
+
+// A good prod read-back: each service at prod's count, its tasks across two AZs, the target groups
+// healthy.
+function prodReadBack(): ReadBack {
+  const counts = PROFILES.prod.services
+  return changed(v => {
+    v.env = 'prod'
+    for (const s of v.services) {
+      const n = counts[s.role].count
+      s.desired = n
+      s.running = n
+      s.deployments = [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: n, running: n, failed: 0 }]
+      s.tasks = Array.from({ length: n }, (_, i) => ({
+        az: i % 2 === 0 ? 'ap-southeast-1a' : 'ap-southeast-1b',
+        last: 'RUNNING',
+        health: 'HEALTHY',
+        digest: DIGEST,
+      }))
+    }
+    for (const group of v.targetGroups) group.healthy = counts[group.role].count
+  })
+}
 
 const TLS_GOOD: TlsAnswer = { authorized: true, protocol: 'TLSv1.3', altNames: `DNS:${HOST}` }
 
@@ -284,24 +333,7 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
 
   it('SMK-T06: the restore stage’s services half, up at the profile’s counts and down at none', () => {
     const counts = PROFILES.restore.services
-    const restoreUp = changed(v => {
-      v.env = 'restore'
-      v.probe = 'ran'
-      v.targetGroups = []
-      v.loadBalancer = null
-      for (const s of v.services) {
-        const n = counts[s.role].count
-        s.desired = n
-        s.running = n
-        s.deployments = [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: n, running: n, failed: 0 }]
-        s.tasks = Array.from({ length: n }, () => ({
-          az: 'ap-southeast-1a',
-          last: 'RUNNING',
-          health: 'UNKNOWN',
-          digest: DIGEST,
-        }))
-      }
-    })
+    const restoreUp = restoreUpReadBack()
     expect(verdictOf(restoreUp, 'restore', 'up')).toEqual({ pass: true })
     // The api one above the profile's count in every field, every task running on the digest: the
     // restore stage runs at the profile's counts, not at whatever its service asks for.
@@ -394,17 +426,23 @@ describe('SMK-T07 (SMK-07, C11-D42, T24 item 16): the load balancer’s settings
   })
 })
 
-// A transport answering from a table, and recording what it was asked.
+// A transport answering from a table, and recording what it was asked and of which host (`tls <host>`
+// or `http <host>`, in order).
 function fakeTransport(answers: { tls: TlsAnswer | 'no-answer'; http: (request: HttpRequest) => RawAnswer }) {
   const asked: HttpRequest[] = []
+  const hosts: string[] = []
   const transport: Transport = {
-    tls: async () => answers.tls,
-    http: async (_host, request) => {
+    tls: async host => {
+      hosts.push(`tls ${host}`)
+      return answers.tls
+    },
+    http: async (host, request) => {
+      hosts.push(`http ${host}`)
       asked.push(request)
       return answers.http(request)
     },
   }
-  return { transport, asked }
+  return { transport, asked, hosts }
 }
 
 const bytes = (text: string) => new TextEncoder().encode(text)
@@ -424,6 +462,10 @@ let repo = ''
 let scratch = ''
 let before = ''
 let after = ''
+// Commits whose prod smsProvider differs from non-prod's, each way round, whatever the committed
+// profiles.ts sets: prod unset with non-prod on twilio, and prod on twilio with non-prod unset.
+let prodUnset = ''
+let prodTwilio = ''
 
 function git(args: readonly string[]): string {
   return execFileSync(
@@ -450,6 +492,16 @@ beforeAll(() => {
   writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(nonprodSms, "$1'twilio',"))
   git(['commit', '-q', '-am', 'flip'])
   after = git(['rev-parse', 'HEAD'])
+  const prodSms = /(\n {2}prod: \{\n(?: {4}.*\n)*? {4}smsProvider: )[^,\n]*,/
+  if (!prodSms.test(source)) throw new Error("profiles.ts no longer gives prod's smsProvider a line")
+  const both = (nonprod: string, prod: string) =>
+    source.replace(nonprodSms, `$1${nonprod},`).replace(prodSms, `$1${prod},`)
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), both("'twilio'", 'undefined'))
+  git(['commit', '-q', '--allow-empty', '-am', 'prod unset'])
+  prodUnset = git(['rev-parse', 'HEAD'])
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), both('undefined', "'twilio'"))
+  git(['commit', '-q', '--allow-empty', '-am', 'prod on twilio'])
+  prodTwilio = git(['rev-parse', 'HEAD'])
 })
 
 afterAll(() => {
@@ -546,6 +598,70 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     ])
     expect(invalidPhone.asked[0]?.body).toBe('{"phone":"x"}')
     expect(invalidPhone.asked[2]?.headers.upgrade).toBe('websocket')
+  })
+
+  it('SMK-T08: --env prod asks prod’s load balancer with prod’s origin, judges SMK-02 by prod’s smsProvider, and prints all seven', async () => {
+    const readback = writeReadBack(prodReadBack(), 'prod.json')
+    // The api as prod's would answer: sign-in from prod's own origin answered as given, any other 403.
+    const prodAnswers = (signIn: RawAnswer) =>
+      fakeTransport({
+        tls: { ...TLS_GOOD, altNames: `DNS:${PROD_HOST}` },
+        http: request => {
+          if (request.path === '/api/auth/otp/request') {
+            return request.headers.origin === PROD_ORIGIN ? signIn : { status: 403, body: bytes(MARKER) }
+          }
+          return request.path === '/ws' ? { status: 403 } : { status: 404 }
+        },
+      })
+    const unavailable = { status: 503, body: bytes(JSON.stringify({ error: 'unavailable' })) }
+    const invalidPhone = { status: 400, body: bytes(JSON.stringify({ error: 'invalid_phone' })) }
+    const prod = (commit: string) => [
+      ...['--env', 'prod', '--release', RELEASE, '--readback', readback],
+      ...['--profile-at', commit, '--repo', repo],
+    ]
+    const sevenPass = ['SMK-01', 'SMK-02', 'SMK-03', 'SMK-04', 'SMK-05', 'SMK-06', 'SMK-07'].map(id => `${id} pass\n`)
+    // Prod unset while non-prod is on twilio: 503 unavailable passes and 400 fails.
+    const unset = prodAnswers(unavailable)
+    expect(await cli(prod(prodUnset), unset.transport)).toEqual({ code: 0, out: sevenPass.join('') })
+    expect(unset.hosts).toEqual([`tls ${PROD_HOST}`, ...Array.from({ length: 5 }, () => `http ${PROD_HOST}`)])
+    expect(unset.asked.map(request => [request.method, request.path, request.headers.origin ?? '-'])).toEqual([
+      ['POST', '/api/auth/otp/request', PROD_ORIGIN],
+      ['POST', '/api/auth/otp/request', 'https://example.invalid'],
+      ['GET', '/ws', 'https://example.invalid'],
+      ['GET', '/health', '-'],
+      ['GET', '/', '-'],
+    ])
+    const unsetTwilio = await cli(prod(prodUnset), prodAnswers(invalidPhone).transport)
+    expect(unsetTwilio.code).toBe(1)
+    expect(unsetTwilio.out.split('\n')).toContain('SMK-02 fail status-400')
+    // Prod on twilio while non-prod is unset: 400 invalid_phone passes and 503 fails.
+    expect(await cli(prod(prodTwilio), prodAnswers(invalidPhone).transport)).toEqual({
+      code: 0,
+      out: sevenPass.join(''),
+    })
+    const twilioUnavailable = await cli(prod(prodTwilio), prodAnswers(unavailable).transport)
+    expect(twilioUnavailable.code).toBe(1)
+    expect(twilioUnavailable.out.split('\n')).toContain('SMK-02 fail status-503')
+    // Non-prod's host and origin are never prod's.
+    expect(PROD_HOST).not.toBe(HOST)
+    expect(PROD_ORIGIN).not.toBe(APP_ORIGIN)
+  })
+
+  it('SMK-T08: --env restore --restore up judges SMK-06 alone at the restore profile’s counts, and asks nothing', async () => {
+    const up = writeReadBack(restoreUpReadBack(), 'restore-up.json')
+    const unreachable = fakeTransport({ tls: 'no-answer', http: () => 'no-answer' })
+    const restore = (half: 'up' | 'down') => [
+      ...['--env', 'restore', '--restore', half, '--release', RELEASE, '--readback', up],
+      ...['--profile-at', before, '--repo', repo],
+    ]
+    expect(await cli(restore('up'), unreachable.transport)).toEqual({ code: 0, out: 'SMK-06 pass\n' })
+    expect(unreachable.hosts).toEqual([])
+    // The same read-back judged as down fails: its tasks still run.
+    expect(await cli(restore('down'), unreachable.transport)).toEqual({
+      code: 1,
+      out: 'SMK-06 fail readback-api-running\n',
+    })
+    expect(unreachable.hosts).toEqual([])
   })
 
   it('SMK-T08: with answers whose bodies hold a marker, nothing the smoke prints holds it', async () => {

@@ -698,10 +698,11 @@ function gitTreeOf(repo: string): (commit: string) => string | undefined {
 }
 
 // Whether a rollback to the target crosses no floor, the floors and their migrations read at floorsAt.
+// Both must be on main, whose head is the run's commit here (floors-check.ts refuses either off it).
 export const gitFloorsAllowed =
-  (repo: string) =>
+  (repo: string, main: string) =>
   async (target: string, floorsAt: string): Promise<boolean> =>
-    (await checkFloors({ target, floorsAt, repo })).length === 0
+    (await checkFloors({ target, floorsAt, main, repo })).length === 0
 
 // The ECS pages break-glass saves (break-glass.md's incident rollback, step 2): for each role,
 // <role>-deployments-<n>.json, each `{ next, deployments: [[finishedAt, revisionArn], …] }` with only
@@ -875,7 +876,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
             : undefined,
         treeOf: gitTreeOf(repo),
         isAncestor: gitIsAncestor(repo),
-        floorsAllowed: gitFloorsAllowed(repo),
+        floorsAllowed: gitFloorsAllowed(repo, required(flags, 'sha')),
         domains: io.domains ?? Object.values(DOMAINS),
       })
       if (!result.ok) return refuse(io, result.reason)
@@ -907,7 +908,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         nonprodDigest: required(flags, 'nonprod-digest'),
         records: releaseRecordsIn(io, required(flags, 'records'), 'prod'),
         isAncestor: gitIsAncestor(repo),
-        floorsAllowed: gitFloorsAllowed(repo),
+        floorsAllowed: gitFloorsAllowed(repo, required(flags, 'sha')),
       })
       if (!result.ok) return refuse(io, result.reason)
       io.write(`current_prod_id=${result.value.current_prod_id}\n`)

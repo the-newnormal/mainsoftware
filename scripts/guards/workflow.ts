@@ -11,9 +11,13 @@
 // indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
 // lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, so
 // literalProblems() names each block scalar folded (>) or given an indentation indicator, which YAML
-// reads otherwise. The deploy-workflow guard refuses every line shapeProblems() names in every
-// workflow, every one literalProblems() names in deploy.yml, a double-quoted scalar holding an escape
-// in every workflow, and in deploy.yml any flow mapping and quoted item too (DPW-02). That guard
+// reads otherwise. It splits a file into lines only at a newline, so a carriage return, NEL, LS or PS,
+// which YAML readers break lines at too, would hide what follows it on its line from every rule: the
+// deploy-workflow guard refuses any of them, and any other control or format character or blank but a
+// space or a tab, in every workflow before anything else reads it. It also refuses every line
+// shapeProblems() names in every workflow, every one literalProblems() names in deploy.yml, a
+// double-quoted scalar holding an escape in every workflow, and in deploy.yml any flow mapping and
+// quoted item too (DPW-02). That guard
 // (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this file is on
 // the owner's-read list (C11-D74).
 
