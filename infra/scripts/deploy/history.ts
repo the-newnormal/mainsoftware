@@ -16,7 +16,9 @@
 // saved deployments (choose-ecs), and checks a choice (validate). It imports no npm package (IG-08):
 // the gate and prod-gate run it without npm ci. It prints commits, digests, family:revision, ids and
 // reason codes, never an ARN or an address. It decides which rollbacks are safe, so it is on the
-// owner's-read list (C11-D74).
+// owner's-read list (C11-D74). A rebuild of one commit holds the same code under a new digest (the image
+// isn't reproducible), so the release that ran before the current one is found by its commit: every
+// build of the current commit counts as the current release.
 //
 //   node infra/scripts/deploy/history.ts plan --event <e> --ref <r> --actor <a> --triggering-actor <a>
 //     --sha <commit> --target <t> --mode <m> --release <commit or ''> --restore <r> --records <dir>
@@ -27,21 +29,23 @@
 //   node infra/scripts/deploy/history.ts choose --env <env> --records <file> --current <commit>:<digest>
 //   node infra/scripts/deploy/history.ts validate --env <env> --records <file> --current <commit>:<digest>
 //     --target <commit> [--repo <dir>]
-//   node infra/scripts/deploy/history.ts choose-ecs --pages <dir> --current-digest <digest>
+//   node infra/scripts/deploy/history.ts choose-ecs --pages <dir> --current-digest <digest>,…
 //     [--drill <family:revision>,…]
 //   node infra/scripts/deploy/history.ts migrated --records <file> [--env <env>]
 //
 // plan and prod-gate print key=value lines for $GITHUB_OUTPUT; the others print `commit <40 hex>`,
 // `digest sha256:<64 hex>` and `<role> <family:revision>` lines (migrated: `commit <40 hex>` or `none`).
-// A refusal is one line, `history: refused <code>: <why>`, and exit 1; input it can't use is one line
-// naming it, and exit 2. An ignored record is one line on stderr. The records folder holds what the
-// gate saves, one `gh api` answer a file: release-nonprod.json, release-prod.json (and
-// migrated-nonprod.json, migrated-prod.json and restore-prod.json, which plan doesn't read).
+// choose-ecs takes every digest ECR tags with the current commit (`sha-<commit>-*`), the running one
+// among them. A refusal is one line, `history: refused <code>: <why>`, and exit 1; input it can't use
+// (a commit choose or validate needs that the clone lacks among it) is one line naming it, and exit 2.
+// An ignored record is one line on stderr. The records folder holds what the gate saves, one `gh api`
+// answer a file: release-nonprod.json, release-prod.json (and migrated-nonprod.json, migrated-prod.json
+// and restore-prod.json, which plan doesn't read).
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DOMAINS, isPlaceholderDomain } from '../../src/config/profiles.ts'
-import { checkFloors, FloorsError, readFlags } from './floors-check.ts'
+import { checkFloors, FloorsError, readFlags, resolveCommit } from './floors-check.ts'
 
 export const RECORD_ENVIRONMENTS = ['nonprod', 'prod'] as const
 export type RecordEnvironment = (typeof RECORD_ENVIRONMENTS)[number]
@@ -250,6 +254,8 @@ export const REFUSALS = {
   'bad-restore': 'restore is not none, up or down',
   'bad-release': 'release is not a 40-hex commit',
   'drill-not-nonprod': 'a drill runs on nonprod alone',
+  'drill-not-forward':
+    "non-prod's newest release is not a forward deploy of the run's commit: deploy it to non-prod first",
   'restore-misnamed': 'restore up or down goes with target restore and mode deploy, and only then',
   'release-unexpected': 'release is given only for a rollback',
   'release-missing': 'a rollback needs a release',
@@ -280,18 +286,25 @@ export type Outcome<T> = { ok: true; value: T } | { ok: false; reason: Refusal }
 const ok = <T>(value: T): Outcome<T> => ({ ok: true, value })
 const no = <T = never>(reason: Refusal): Outcome<T> => ({ ok: false, reason })
 
+// The index of the current release's oldest record: the oldest of any build of its commit (or of a
+// record naming its digest under another commit, which only a forged record would), or -1 for none.
+const firstOfCurrent = (records: readonly ReleaseRecord[], release: Release) =>
+  records.findIndex(record => record.commit === release.commit || record.digest === release.digest)
+
 // The release to go back to while GitHub can be read (break-glass's incident rollback, and the drill's
 // previous release): the one that ran before the current release first did, which is the record just
-// before the oldest record with the current digest, never simply the one before the newest (after R1,
-// R2, R3 and a rollback to R2 the records read R1 R2 R3 R2, and the one before the newest is R3). When
-// the current release has no record (its smoke failed and its rollback didn't run, or its record
-// failed to write), the newest record, which must be strictly older than the current commit.
+// before the oldest record of the current commit, never simply the one before the newest (after R1, R2,
+// R3 and a rollback to R2 the records read R1 R2 R3 R2, and the one before the newest is R3), and never
+// an earlier build of the current commit (after R1 and two builds of R2 the records read R1 R2 R2, and
+// the record before the newest build is the same code). When the current commit has no record (its
+// smoke failed and its rollback didn't run, or its record failed to write), the newest record, which
+// must be strictly older than the current commit.
 export function chooseFromRecords(
   records: readonly ReleaseRecord[],
   release: Release,
   isAncestor: IsAncestor,
 ): Outcome<ReleaseRecord> {
-  const first = records.findIndex(record => record.digest === release.digest)
+  const first = firstOfCurrent(records, release)
   if (first === -1) {
     const newest = current(records)
     if (newest === undefined) return no('no-earlier-release')
@@ -323,7 +336,7 @@ export function recordedTarget(
 
 // The incident procedure's check of a chosen release against the current one (read from the Services
 // stack's Release output): recorded, not the running digest, not first recorded after the current
-// release's first record (when that has one), and strictly older than the current commit.
+// release's first record (its commit's, when that has one), and strictly older than the current commit.
 export function validateTarget(
   records: readonly ReleaseRecord[],
   release: Release,
@@ -333,7 +346,7 @@ export function validateTarget(
   const record = newestOf(records, targetCommit)
   if (record === undefined) return no('not-recorded')
   if (record.digest === release.digest) return no('same-digest')
-  const currentFirst = records.findIndex(each => each.digest === release.digest)
+  const currentFirst = firstOfCurrent(records, release)
   const targetFirst = records.findIndex(each => each.digest === record.digest)
   if (currentFirst !== -1 && targetFirst > currentFirst) return no('recorded-after-current')
   return strictlyOlder(targetCommit, release.commit, isAncestor) ? ok(record) : no('not-an-ancestor')
@@ -357,15 +370,17 @@ export function familyRevision(taskDefinition: string, role: ServiceRole): strin
 }
 
 // The release to go back to while GitHub is down, from each service's saved ECS deployments: the
-// newest successful deployment that finished before the oldest one whose image is the current
-// digest, never simply the newest whose image isn't current (a release CloudFormation rolled back can
-// leave one service with a successful deployment of it after the current release's first). All three
-// services must come to the same digest, and none to a task definition the caller marks as a drill's
-// (LOG_LEVEL drill). Past ECS's 90 days the oldest listed deployment of the current digest can be a
-// later return to it, so the person then checks the choice is strictly older (validate, or git).
+// newest successful deployment that finished before the oldest one whose image is the current release,
+// never simply the newest whose image isn't current (a release CloudFormation rolled back can leave one
+// service with a successful deployment of it after the current release's first). ECS knows digests,
+// not commits, so the current release is every digest ECR tags with the current commit, the one that
+// runs among them: an earlier build of the same commit is the same code, as chooseFromRecords has it.
+// All three services must come to the same digest, and none to a task definition the caller marks as a
+// drill's (LOG_LEVEL drill). Past ECS's 90 days the oldest listed deployment of the current release can
+// be a later return to it, so the person then checks the choice is strictly older (validate, or git).
 export function chooseFromEcs(
   pages: Readonly<Record<ServiceRole, EcsHistory>>,
-  currentDigest: string,
+  currentDigests: ReadonlySet<string>,
   drill: ReadonlySet<string> = new Set(),
 ): Outcome<{ digest: string; services: Record<ServiceRole, string> }> {
   const chosen: Partial<Record<ServiceRole, { digest: string; taskDefinition: string }>> = {}
@@ -379,7 +394,7 @@ export function chooseFromEcs(
         return { finishedAt: deployment.finishedAt, digest: revision.digest, taskDefinition: revision.taskDefinition }
       })
       .sort((a, b) => a.finishedAt - b.finishedAt)
-    const firstCurrent = history.find(entry => entry.digest === currentDigest)
+    const firstCurrent = history.find(entry => currentDigests.has(entry.digest))
     if (firstCurrent === undefined) return no('none-qualifies')
     const before = history.filter(entry => entry.finishedAt < firstCurrent.finishedAt).at(-1)
     if (before === undefined) return no('none-qualifies')
@@ -497,9 +512,12 @@ function readInputs(input: PlanInput): Outcome<{ target: Target; mode: Mode; rel
 // each environment's current release, the release to deploy, and each deployed environment's previous
 // release with whether its automatic rollback may run (above every floor at the run's commit). Every
 // commit it outputs is on main at the run's commit (an ancestor of it), so no code off main is checked
-// out or run, whatever a record names. A deploy's previous release is the one its environment runs,
-// which may be an earlier build of the run's own commit (a dispatch after a rejected approval); a
-// drill-smoke's is the one that ran before that and must be strictly older.
+// out or run, whatever a record names. An environment's current release here is its newest release
+// record when the gate read it, which is what runs unless a release went live unrecorded or another run
+// deployed since; only the deploy job, reading AWS, can see that (AWS_CHECK). A deploy's previous
+// release is that current release, which may be an earlier build of the run's own commit (a dispatch
+// after a rejected approval); a drill-smoke's is the one that ran before the current commit first did,
+// and must be strictly older.
 export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
   if (input.event !== 'push' && input.event !== 'workflow_dispatch') return no('bad-event')
   if (input.ref !== 'refs/heads/main') return no('not-main')
@@ -552,7 +570,7 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
     if (tree === undefined || tree !== checks.headTree) return no('pr-tree-differs')
     if (checks.check !== 'success' || checks.migrations !== 'success') return no('pr-checks-failed')
     outputs.commit = sha
-    // Each deployed environment's previous release is the one it runs now (none on its first deploy),
+    // Each deployed environment's previous release is its newest record (none on its first deploy),
     // which may be this very commit's earlier build; its automatic rollback runs only above every floor.
     for (const env of RECORD_ENVIRONMENTS) {
       const previous = currents[env]
@@ -581,10 +599,18 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
   outputs.commit = running.commit
   outputs.digest = running.digest
   if (mode === 'drill-smoke') {
+    // Its deploy path deploys Platform, Data and Tasks from the release's own assembly, so the release
+    // must be the one a forward deploy left them at: a deploy of the run's commit, main's head. After a
+    // rollback (which deploys Tasks and Services alone), or a forward deploy that moved Platform and
+    // Data and then failed with no record, they are newer than non-prod's newest record, and the drill
+    // would take them back.
+    if (running.kind !== 'deploy' || running.commit !== sha) return no('drill-not-forward')
     const chosen = chooseFromRecords(input.records.nonprod, running, isAncestor)
     if (!chosen.ok) return chosen
     const previous = chosen.value
     if (!isAncestor(previous.commit, sha)) return no('off-main')
+    // The chooser never takes a build of the running commit, so an ancestor of the run's commit is
+    // strictly older than it; this keeps the rule whatever the chooser becomes.
     if (!strictlyOlder(previous.commit, running.commit, isAncestor)) return no('previous-not-older')
     if (!(await input.floorsAllowed(previous.commit, sha))) return no('floor-crossed')
     outputs.previous_nonprod_commit = previous.commit
@@ -671,7 +697,8 @@ function gitTreeOf(repo: string): (commit: string) => string | undefined {
   }
 }
 
-const gitFloorsAllowed =
+// Whether a rollback to the target crosses no floor, the floors and their migrations read at floorsAt.
+export const gitFloorsAllowed =
   (repo: string) =>
   async (target: string, floorsAt: string): Promise<boolean> =>
     (await checkFloors({ target, floorsAt, repo })).length === 0
@@ -745,6 +772,8 @@ export interface Io {
   warn: (text: string) => unknown
   readText: (path: string) => string
   cwd: string
+  // The domains plan checks for a placeholder: the committed DOMAINS unless a test gives others.
+  domains?: readonly string[]
 }
 
 const defaultIo: Io = {
@@ -847,7 +876,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         treeOf: gitTreeOf(repo),
         isAncestor: gitIsAncestor(repo),
         floorsAllowed: gitFloorsAllowed(repo),
-        domains: Object.values(DOMAINS),
+        domains: io.domains ?? Object.values(DOMAINS),
       })
       if (!result.ok) return refuse(io, result.reason)
       for (const key of PLAN_OUTPUTS) io.write(`${key}=${result.value[key]}\n`)
@@ -894,7 +923,11 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
       const parsed = parseReleaseRecords(readJson(io, required(flags, 'records'), '--records'), env)
       warnIgnored(io, 'hearth-release', env, parsed.ignored)
       const release = releaseFlag(flags, 'current')
-      const isAncestor = gitIsAncestor(flags.get('repo') ?? io.cwd)
+      const repo = flags.get('repo') ?? io.cwd
+      // A commit the clone lacks would read as not an ancestor; it is named instead, so a clone behind
+      // main is never taken for a release that isn't older.
+      resolveCommit(release.commit, repo)
+      const isAncestor = gitIsAncestor(repo)
       let target: string
       if (command === 'choose') {
         const chosen = chooseFromRecords(parsed.records, release, isAncestor)
@@ -904,6 +937,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         target = required(flags, 'target')
         if (!COMMIT.test(target)) throw new HistoryInputError('--target is not a commit')
       }
+      resolveCommit(target, repo)
       const checked = validateTarget(parsed.records, release, target, isAncestor)
       if (!checked.ok) return refuse(io, checked.reason)
       printRelease(io, checked.value)
@@ -911,8 +945,10 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
     }
     case 'choose-ecs': {
       const flags = readFlags(rest, ['pages', 'current-digest', 'drill'])
-      const digest = required(flags, 'current-digest')
-      if (!DIGEST.test(digest)) throw new HistoryInputError('--current-digest is not a digest')
+      const digests = new Set(required(flags, 'current-digest').split(','))
+      if ([...digests].some(digest => !DIGEST.test(digest))) {
+        throw new HistoryInputError('--current-digest is not a list of digests')
+      }
       const drillText = flags.get('drill') ?? ''
       const drill = new Set(drillText === '' ? [] : drillText.split(','))
       if ([...drill].some(entry => !/^hearth-[a-z]+-(?:api|realtime|worker):[1-9][0-9]{0,5}$/.test(entry))) {
@@ -920,7 +956,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
       }
       const folder = required(flags, 'pages')
       if (!existsSync(folder)) throw new HistoryInputError("--pages can't be read")
-      const chosen = chooseFromEcs(readEcsPages(folder, io.readText), digest, drill)
+      const chosen = chooseFromEcs(readEcsPages(folder, io.readText), digests, drill)
       if (!chosen.ok) return refuse(io, chosen.reason)
       printRelease(io, chosen.value)
       return 0

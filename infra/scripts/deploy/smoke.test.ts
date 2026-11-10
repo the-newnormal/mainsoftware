@@ -207,12 +207,41 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
         }),
         'readback-api-targets',
       ],
+      // Every target healthy, and one more in another state (one draining or still registering).
+      [
+        changed(v => {
+          const [group] = v.targetGroups
+          if (group !== undefined) group.other = 1
+        }),
+        'readback-api-targets',
+      ],
       [
         changed(v => {
           const [task] = service(v, 'api').tasks
           if (task !== undefined) task.last = 'PENDING'
         }),
         'readback-api-tasks',
+      ],
+      // Two tasks running and one listed: a task on another digest could hide in the one not read.
+      [
+        changed(v => {
+          const worker = service(v, 'worker')
+          worker.desired = 2
+          worker.running = 2
+          worker.deployments = [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: 2, running: 2, failed: 0 }]
+        }),
+        'readback-worker-tasks',
+      ],
+      // A service scaled to nothing outside the restore stage taken down.
+      [
+        changed(v => {
+          const worker = service(v, 'worker')
+          worker.desired = 0
+          worker.running = 0
+          worker.deployments = [{ status: 'PRIMARY', rollout: 'COMPLETED', desired: 0, running: 0, failed: 0 }]
+          worker.tasks = []
+        }),
+        'readback-worker-running',
       ],
       [changed(v => v.services.pop()), 'readback-services'],
       [changed(v => Object.assign(v, { release: `${'a'.repeat(40)}:${EARLIER}` })), 'readback-release'],

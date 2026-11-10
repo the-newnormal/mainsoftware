@@ -3,15 +3,19 @@
 // both as text and parsed into its keys. It reads only the shape this repo's workflows are written in
 // (two-space indents: top-level keys at column 0, job ids at two, a job's keys at four, its steps at
 // six, a step's keys at eight and their mapping entries at ten, a block scalar's content deeper),
-// block mappings, block sequences, flow sequences of scalars and block scalars, so a test that uses it
-// first checks it found the jobs and steps it expects, and a reformatted file fails the test rather
-// than passing unread. What it can't read: a flow mapping ({…}, kept as its raw text), an anchor or
-// alias, a key quoted with escapes, a value continued on the next line (a plain or quoted scalar, or
-// a flow sequence, over two lines), a key given twice, and any other indent; shapeProblems() names
-// each line in none of the shapes it reads. The deploy-workflow guard refuses every such line in
-// every workflow, and a flow mapping, an anchor or alias, a quoted key and the id-token and write-all
-// words where it reads them (DPW-02). That guard (scripts/guards/deploy-workflow.ts) reads the deploy
-// workflow through this file, so this file is on the owner's-read list (C11-D74).
+// block mappings, block sequences, flow sequences of scalars, the empty flow mapping {} and block
+// scalars, so a test that uses it first checks it found the jobs and steps it expects, and a
+// reformatted file fails the test rather than passing unread. What it can't read: a flow mapping with
+// anything in it, an anchor, an alias or a tag (&, *, !), a quoted key, a value continued on the next
+// line (a plain or quoted scalar, or a flow sequence, over two lines), a key given twice, and any other
+// indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
+// lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, so
+// literalProblems() names each block scalar folded (>) or given an indentation indicator, which YAML
+// reads otherwise. The deploy-workflow guard refuses every line shapeProblems() names in every
+// workflow, every one literalProblems() names in deploy.yml, a double-quoted scalar holding an escape
+// in every workflow, and in deploy.yml any flow mapping and quoted item too (DPW-02). That guard
+// (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this file is on
+// the owner's-read list (C11-D74).
 
 // One job: its id, its runner, its timeout in minutes, and its steps, each as its own lines with
 // the indent and the step's leading "- " taken off (so `run: npm test`, or `uses: …` then `with:`
@@ -112,7 +116,11 @@ export function workflowTop(text: string): Map<string, string[]> {
 
 const indentOf = (line: string) => line.length - line.trimStart().length
 const isBlankOrComment = (line: string) => line.trim() === '' || /^\s*#/.test(line)
-const BLOCK_SCALAR = /^[|>][+-]?\d*\s*(?:#.*)?$/
+// A block scalar's indicator: literal (|) or folded (>), with a chomping indicator (+ or -) and an
+// indentation indicator (1 to 9) in either order, then an optional comment.
+const BLOCK_SCALAR = /^[|>](?:[+-][1-9]?|[1-9][+-]?)?\s*(?:#.*)?$/
+// The block scalars this reader reads as YAML does: literal, with no indentation indicator.
+const LITERAL_SCALAR = /^\|[+-]?\s*(?:#.*)?$/
 
 // A scalar as written after its key: a quoted one unquoted (a single-quoted '' read as ', a
 // double-quoted one's escapes left as written), a plain one with its comment cut off.
@@ -345,7 +353,7 @@ export function parsedSteps(job: WorkflowJob): WorkflowStep[] {
       let value: string
       if (BLOCK_SCALAR.test(inline)) value = blockScalar(body, 8).text
       else if (inline === '' && (name === 'with' || name === 'env')) value = body.join('\n')
-      else value = name === 'uses' ? inline.replace(/\s+#.*$/, '') : scalarValue(inline)
+      else value = scalarValue(inline)
       if (name === 'with') withEntries = stepMapping(body)
       if (name === 'env') envEntries = stepMapping(body)
       if (!keys.has(name)) keys.set(name, value)
@@ -394,13 +402,28 @@ export function yamlLines(text: string): Array<{ index: number; text: string }> 
   return found
 }
 
+// The lines (by index) whose key's value is a block scalar other than a literal one with no indentation
+// indicator: folded (>), whose lines YAML joins, or with an indentation indicator, which sets an indent
+// this reader doesn't take (DPW-02 refuses each in deploy.yml, whose runs it reads as bash).
+export function literalProblems(text: string): number[] {
+  return yamlLines(text).flatMap(({ index, text: line }) => {
+    const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
+    return BLOCK_SCALAR.test(value) && !LITERAL_SCALAR.test(value) ? [index] : []
+  })
+}
+
+// A value that starts with a node property (an anchor &, an alias *, a tag !), which this reader would
+// read as plain text.
+const NODE_PROPERTY = /^[&*!]/
+
 // The lines (by index) in none of the shapes this reader reads, so a check can refuse a file it would
 // otherwise read wrong (DPW-02). Each YAML line (yamlLines) sits two spaces inside the key that opens
 // it, at the indent of the mapping or sequence it belongs to: a key (`name:` or `name: value`, the
 // name a plain word, given once in its mapping) or a sequence item (`- value`, or `- name:` starting a
-// mapping whose keys sit two spaces in). A value after its key is whole on its line: a block scalar's
-// indicator, a plain scalar no line below continues (anything deeper under it is refused), a quoted
-// scalar closed on the line, or a flow sequence or mapping closed on the line with nothing nested.
+// mapping whose keys sit two spaces in). A value after its key is whole on its line, and starts with
+// no anchor, alias or tag: a block scalar's indicator, a plain scalar no line below continues (anything
+// deeper under it is refused), a quoted scalar closed on the line, a flow sequence closed on the line
+// whose items are scalars, or the empty flow mapping {}.
 export function shapeProblems(text: string): number[] {
   const problems: number[] = []
   const open: Array<{ indent: number; kind: 'map' | 'list' | undefined; keys: Set<string> }> = [
@@ -435,15 +458,19 @@ export function shapeProblems(text: string): number[] {
       open.push({ indent: (item ? indent + 2 : indent) + 2, kind: undefined, keys: new Set() })
       continue
     }
+    const flow = /^\[([^[\]{}]*)\]\s*(?:#.*)?$/.exec(value)
     const whole =
-      BLOCK_SCALAR.test(value) ||
-      (value.startsWith("'")
-        ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
-        : value.startsWith('"')
-          ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
-          : value.startsWith('[') || value.startsWith('{')
-            ? /^(?:\[[^[\]{}]*\]|\{[^[\]{}]*\})\s*(?:#.*)?$/.test(value)
-            : true)
+      !NODE_PROPERTY.test(value) &&
+      (BLOCK_SCALAR.test(value) ||
+        (value.startsWith("'")
+          ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
+          : value.startsWith('"')
+            ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
+            : value.startsWith('[')
+              ? flow !== null && (flow[1] ?? '').split(',').every(each => !NODE_PROPERTY.test(each.trim()))
+              : value.startsWith('{')
+                ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
+                : true))
     if (!whole) problems.push(index)
   }
   return problems

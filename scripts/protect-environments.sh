@@ -25,10 +25,11 @@
 # and oidc.json), so a test can run the comparison on fixtures and a repo admin can check answers
 # saved before.
 #
-# apply is a repo admin's, run in their own terminal, never by a coding agent or CI: it refuses while
-# any of the markers the Owner bootstrap script refuses is set (AGENT_MARKERS below, kept equal to
-# scripts/owner-bootstrap/target.ts's by the deploy-workflow guard), and the deny rules in
-# .claude/settings.json name it. It needs the gh CLI logged in as a repo admin (Administration
+# apply is a repo admin's, run as the separate operating-system user that holds their gh login (never
+# the user Claude Code runs as: docs/runbooks/aws-account-set-up.md step E.4), never by a coding agent
+# or CI: it refuses while any of the markers the Owner bootstrap script refuses is set (AGENT_MARKERS
+# below, kept equal to scripts/owner-bootstrap/target.ts's by the deploy-workflow guard), and the deny
+# rules in .claude/settings.json name it. It needs the gh CLI logged in as a repo admin (Administration
 # write). A file that asks for reviewers needs PROD_REVIEWERS, the reviewers' GitHub logins,
 # comma-separated, set for the one command: logins are given at run time and never committed, since
 # the repository is public. For each environment it sets the wait timer, self-review, reviewers
@@ -192,7 +193,7 @@ apply() {
   local marker name want count people body policies id policy_name type has_main
   for marker in "${AGENT_MARKERS[@]}"; do
     if [[ -v $marker ]]; then
-      echo "protect-environments: refused while $marker is set: a repo admin runs apply in their own terminal, never a coding agent or CI" >&2
+      echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
       exit 1
     fi
   done

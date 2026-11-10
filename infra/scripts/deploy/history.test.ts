@@ -1,21 +1,24 @@
 // The release history's cases (C11-D58, C11-D61; TECH-SPEC T24 items 22 and 23): the records'
-// validation and order, both incident-rollback rules and their parity, a target's validation, the
-// gate's plan mode by mode, prod-gate, the migration record, and what the command line prints. The
-// commits are real ones in a scratch git repository (main, and a branch off it), so ancestry is git's
-// own answer; every ARN, account id and address is built from parts at run time (IG-01). It holds what
-// the history must decide, so it is on the owner's-read list (C11-D74).
+// validation and order, both incident-rollback rules and their parity (rebuilds of one commit
+// included), a target's validation, the gate's plan mode by mode, prod-gate, the floors read through
+// git at the run's commit, the migration record, and what the command line prints, plan's lines past
+// DOMAINS among them. The commits are real ones in scratch git repositories (main, a branch off it, and
+// a second main whose floor lies between two releases), so ancestry and the floors are git's own
+// answers; every ARN, account id and address is built from parts at run time (IG-01). It holds what the
+// history must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { REGION } from '../../src/config/profiles.ts'
+import { DOMAINS, isPlaceholderDomain, REGION } from '../../src/config/profiles.ts'
 import {
   chooseFromEcs,
   chooseFromRecords,
   current,
   type EcsHistory,
+  gitFloorsAllowed,
   gitIsAncestor,
   type IsAncestor,
   main,
@@ -152,6 +155,15 @@ function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
     ...overrides,
   }
 }
+
+// Non-prod's records once a forward deploy of the run's commit (m[6]) has passed, as a drill-smoke needs.
+const atHead = () =>
+  records(
+    'nonprod',
+    deployment(101, 'nonprod', at(4), D.d, 1),
+    deployment(102, 'nonprod', at(5), D.e, 2),
+    deployment(103, 'nonprod', at(6), D.f, 3),
+  )
 
 const dispatch = (
   inputs: Partial<Pick<PlanInput, 'target' | 'mode' | 'release' | 'restore'>>,
@@ -312,13 +324,17 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from the reco
     const unrecorded = chooseFromRecords(history, { commit: r[3] ?? '', digest: D.d }, isAncestor)
     expect(unrecorded.ok && unrecorded.value.commit).toBe(at(3))
     // ...refused when the newest record isn't strictly older than the live commit.
-    expect(chooseFromRecords(history, { commit: at(2), digest: D.f }, isAncestor)).toEqual({
+    expect(chooseFromRecords(history, { commit: at(0), digest: D.f }, isAncestor)).toEqual({
       ok: false,
       reason: 'not-an-ancestor',
     })
+    // A live build of a recorded commit with no record of its own is that commit's release: the
+    // record before the commit first ran (R1 for R2), nothing for R1.
+    const liveBuild = chooseFromRecords(history, { commit: at(2), digest: D.f }, isAncestor)
+    expect(liveBuild.ok && liveBuild.value.commit).toBe(at(1))
     expect(chooseFromRecords(history, { commit: at(1), digest: D.f }, isAncestor)).toEqual({
       ok: false,
-      reason: 'not-an-ancestor',
+      reason: 'no-earlier-release',
     })
   })
 
@@ -333,6 +349,40 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from the reco
     expect(outOfOrder.map(record => record.commit)).toEqual([at(1), at(2), at(3)])
     const chosen = chooseFromRecords(outOfOrder, { commit: at(3), digest: D.c }, isAncestor)
     expect(chosen.ok && chosen.value.commit).toBe(at(2))
+  })
+
+  it('C11-D58: skips an earlier build of the current commit, recorded or live with no record', () => {
+    // R1, then two builds of R2 (a dispatch after a rejected approval rebuilds main's head under a new
+    // digest): the release before R2 first ran is R1, never R2's earlier build.
+    const rebuilt = records(
+      'prod',
+      deployment(1, 'prod', at(1), D.a, 1),
+      deployment(2, 'prod', at(2), D.b, 2),
+      deployment(3, 'prod', at(2), D.c, 3),
+    )
+    const fromRebuild = chooseFromRecords(rebuilt, { commit: at(2), digest: D.c }, isAncestor)
+    expect(fromRebuild.ok && fromRebuild.value).toMatchObject({ commit: at(1), digest: D.a })
+    // A third build of R2 live with no record (its smoke failed and its rollback didn't run): R1 too.
+    const unrecorded = chooseFromRecords(rebuilt, { commit: at(2), digest: D.d }, isAncestor)
+    expect(unrecorded.ok && unrecorded.value.commit).toBe(at(1))
+    // A rollback to R1 between the builds changes nothing: R2 first ran after R1.
+    const between = [
+      ...rebuilt.slice(0, 2),
+      ...records('prod', deployment(4, 'prod', at(1), D.a, 4, 'rollback'), deployment(5, 'prod', at(2), D.e, 5)),
+    ]
+    const fromBetween = chooseFromRecords(between, { commit: at(2), digest: D.e }, isAncestor)
+    expect(fromBetween.ok && fromBetween.value.commit).toBe(at(1))
+    // Only builds of one commit: nothing ran before it.
+    expect(chooseFromRecords(rebuilt.slice(1), { commit: at(2), digest: D.c }, isAncestor)).toEqual({
+      ok: false,
+      reason: 'no-earlier-release',
+    })
+    // The choice passes validation, where the earlier build would read as the release that runs.
+    expect(validateTarget(rebuilt, { commit: at(2), digest: D.c }, at(1), isAncestor)).toMatchObject({ ok: true })
+    expect(validateTarget(rebuilt, { commit: at(2), digest: D.c }, at(2), isAncestor)).toEqual({
+      ok: false,
+      reason: 'same-digest',
+    })
   })
 })
 
@@ -356,8 +406,13 @@ describe('C11-D58, T24 item 22: checking a target against the records', () => {
       ok: false,
       reason: 'recorded-after-current',
     })
-    // Live with no record (D.f): R3, recorded, but not strictly older than a live m2.
+    // A build of m2 live with no record (D.f): R3 was first recorded after m2 first ran.
     expect(validateTarget(h, { commit: at(2), digest: D.f }, at(3), isAncestor)).toEqual({
+      ok: false,
+      reason: 'recorded-after-current',
+    })
+    // m0 live with no record of its commit: R3, recorded, but not strictly older than it.
+    expect(validateTarget(h, { commit: at(0), digest: D.f }, at(3), isAncestor)).toEqual({
       ok: false,
       reason: 'not-an-ancestor',
     })
@@ -432,7 +487,7 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
         [20, D.c, 3],
       ]),
     }
-    expect(chooseFromEcs(pages, D.c)).toEqual({
+    expect(chooseFromEcs(pages, new Set([D.c]))).toEqual({
       ok: true,
       value: {
         digest: D.b,
@@ -441,7 +496,24 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
     })
     // The pages come in no promised order.
     const shuffled = { ...pages, api: { ...pages.api, deployments: [...pages.api.deployments].reverse() } }
-    expect(chooseFromEcs(shuffled, D.c)).toEqual(chooseFromEcs(pages, D.c))
+    expect(chooseFromEcs(shuffled, new Set([D.c]))).toEqual(chooseFromEcs(pages, new Set([D.c])))
+  })
+
+  it('C11-D58: counts every build of the current commit as the current release', () => {
+    // R1, then two builds of R2 (D.b, then D.c, which runs): with both of R2's digests given, the
+    // deployment before R2 first ran, R1; with the running one alone, R2's earlier build.
+    const pages = sameForAll([
+      [10, D.a, 1],
+      [20, D.b, 2],
+      [30, D.c, 3],
+    ])
+    const both = chooseFromEcs(pages, new Set([D.b, D.c]))
+    expect(both.ok && both.value).toEqual({
+      digest: D.a,
+      services: { api: 'hearth-prod-api:1', realtime: 'hearth-prod-realtime:1', worker: 'hearth-prod-worker:1' },
+    })
+    const runningAlone = chooseFromEcs(pages, new Set([D.c]))
+    expect(runningAlone.ok && runningAlone.value.digest).toBe(D.b)
   })
 
   it('C11-D58: refuses services that disagree, nothing before the current release’s first, and a drill’s revision', () => {
@@ -455,18 +527,19 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
         [20, D.c, 3],
       ]),
     }
-    expect(chooseFromEcs(disagree, D.c)).toEqual({ ok: false, reason: 'services-disagree' })
-    expect(chooseFromEcs(sameForAll([[20, D.c, 3]]), D.c)).toEqual({ ok: false, reason: 'none-qualifies' })
-    expect(chooseFromEcs(sameForAll([[20, D.b, 2]]), D.c)).toEqual({ ok: false, reason: 'none-qualifies' })
+    const c = new Set([D.c])
+    expect(chooseFromEcs(disagree, c)).toEqual({ ok: false, reason: 'services-disagree' })
+    expect(chooseFromEcs(sameForAll([[20, D.c, 3]]), c)).toEqual({ ok: false, reason: 'none-qualifies' })
+    expect(chooseFromEcs(sameForAll([[20, D.b, 2]]), c)).toEqual({ ok: false, reason: 'none-qualifies' })
     const pages = sameForAll([
       [10, D.b, 2],
       [20, D.c, 3],
     ])
-    expect(chooseFromEcs(pages, D.c, new Set(['hearth-prod-realtime:2']))).toEqual({
+    expect(chooseFromEcs(pages, c, new Set(['hearth-prod-realtime:2']))).toEqual({
       ok: false,
       reason: 'drill-revision',
     })
-    expect(chooseFromEcs(pages, D.c, new Set(['hearth-prod-realtime:3']))).toMatchObject({ ok: true })
+    expect(chooseFromEcs(pages, c, new Set(['hearth-prod-realtime:3']))).toMatchObject({ ok: true })
   })
 })
 
@@ -489,7 +562,29 @@ describe('C11-D58, T24 item 22: both incident-rollback rules choose the same rel
       [50, D.c, 5],
     ])
     const fromRecords = chooseFromRecords(history, { commit: at(3), digest: D.c }, isAncestor)
-    const fromEcs = chooseFromEcs(pages, D.c)
+    const fromEcs = chooseFromEcs(pages, new Set([D.c]))
+    expect(fromRecords.ok && fromRecords.value.digest).toBe(D.b)
+    expect(fromEcs.ok && fromEcs.value.digest).toBe(D.b)
+    expect(fromRecords.ok && fromEcs.ok && fromRecords.value.services).toEqual(fromEcs.ok && fromEcs.value.services)
+  })
+
+  it('C11-D58: parity after two builds of the current commit, every build of it given to the ECS rule', () => {
+    // R1 and R2 deployed, then R3 twice (a dispatch after a rejected approval), the second build running.
+    const history = records(
+      'prod',
+      deployment(1, 'prod', at(1), D.a, 1),
+      deployment(2, 'prod', at(2), D.b, 2),
+      deployment(3, 'prod', at(3), D.c, 3),
+      deployment(4, 'prod', at(3), D.d, 4),
+    )
+    const pages = sameForAll([
+      [10, D.a, 1],
+      [20, D.b, 2],
+      [30, D.c, 3],
+      [40, D.d, 4],
+    ])
+    const fromRecords = chooseFromRecords(history, { commit: at(3), digest: D.d }, isAncestor)
+    const fromEcs = chooseFromEcs(pages, new Set([D.c, D.d]))
     expect(fromRecords.ok && fromRecords.value.digest).toBe(D.b)
     expect(fromEcs.ok && fromEcs.value.digest).toBe(D.b)
     expect(fromRecords.ok && fromEcs.ok && fromRecords.value.services).toEqual(fromEcs.ok && fromEcs.value.services)
@@ -502,7 +597,7 @@ describe('C11-D58, T24 item 22: both incident-rollback rules choose the same rel
       [30, D.c, 3],
       [40, D.b, 4],
     ])
-    const chosen = chooseFromEcs(pages, D.b)
+    const chosen = chooseFromEcs(pages, new Set([D.b]))
     expect(chosen.ok && chosen.value.digest).toBe(D.c)
     expect(strictlyOlder(at(3), at(2), isAncestor)).toBe(false)
     // Read against R3's record (R2's own records past the newest 100), validate refuses it by ancestry.
@@ -626,7 +721,7 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     )
   })
 
-  it('C11-D59: drill-break runs non-prod’s current release; drill-smoke adds the release before it as the previous', async () => {
+  it('C11-D59: drill-break runs non-prod’s current release; drill-smoke, after a forward deploy of the run’s commit, adds the release before it as the previous', async () => {
     expect(await outputsOf(dispatch({ mode: 'drill-break' }))).toMatchObject({
       mode: 'drill-break',
       commit: at(5),
@@ -637,27 +732,61 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       previous_nonprod_commit: '',
       rollback_nonprod: 'false',
     })
-    expect(await outputsOf(dispatch({ mode: 'drill-smoke' }))).toMatchObject({
+    const head = { nonprod: atHead(), prod: [] }
+    expect(await outputsOf(dispatch({ mode: 'drill-smoke' }, { records: head }))).toMatchObject({
       mode: 'drill-smoke',
-      commit: at(5),
-      digest: D.e,
-      previous_nonprod_commit: at(4),
-      previous_nonprod_digest: D.d,
+      commit: at(6),
+      digest: D.f,
+      previous_nonprod_commit: at(5),
+      previous_nonprod_digest: D.e,
       rollback_nonprod: 'true',
     })
-    // The drill's previous is chooseFromRecords' choice: after a rollback to R2, the release before R2.
-    const rolledBack = records(
+    // The drill's previous is chooseFromRecords' choice: after two builds of the run's commit, the
+    // release before its first, never its earlier build.
+    const rebuilt = records(
       'nonprod',
-      deployment(1, 'nonprod', at(1), D.a, 1),
-      deployment(2, 'nonprod', at(2), D.b, 2),
-      deployment(3, 'nonprod', at(3), D.c, 3),
-      deployment(4, 'nonprod', at(2), D.b, 4, 'rollback'),
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+      deployment(103, 'nonprod', at(6), D.c, 3),
+      deployment(104, 'nonprod', at(6), D.f, 4),
     )
-    const input = dispatch({ mode: 'drill-smoke' }, { records: { nonprod: rolledBack, prod: [] } })
-    expect(await outputsOf(input)).toMatchObject({ commit: at(2), previous_nonprod_commit: at(1) })
-    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { floorsAllowed: () => false }))).toBe('floor-crossed')
-    const single = { nonprod: records('nonprod', deployment(1, 'nonprod', at(1), D.a, 1)), prod: [] }
+    expect(
+      await outputsOf(dispatch({ mode: 'drill-smoke' }, { records: { nonprod: rebuilt, prod: [] } })),
+    ).toMatchObject({
+      commit: at(6),
+      digest: D.f,
+      previous_nonprod_commit: at(5),
+      previous_nonprod_digest: D.e,
+    })
+    // Its deploy path deploys Platform and Data from the release's assembly, so it runs only where a
+    // forward deploy of the run's commit left them: refused while non-prod's newest record is a rollback
+    // (a person's to an older commit, or the pipeline's back to an earlier build) or a forward deploy of
+    // an older commit (one of the run's commit may have moved them and failed with no record).
+    const afterRollback = records(
+      'nonprod',
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(6), D.f, 2),
+      deployment(103, 'nonprod', at(4), D.d, 3, 'rollback'),
+    )
+    const afterPipelineRollback = records(
+      'nonprod',
+      deployment(101, 'nonprod', at(5), D.e, 1),
+      deployment(102, 'nonprod', at(6), D.f, 2),
+      deployment(103, 'nonprod', at(6), D.f, 3, 'pipeline-rollback'),
+    )
+    for (const nonprod of [afterRollback, afterPipelineRollback]) {
+      expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: { nonprod, prod: [] } }))).toBe(
+        'drill-not-forward',
+      )
+    }
+    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }))).toBe('drill-not-forward')
+    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: head, floorsAllowed: () => false }))).toBe(
+      'floor-crossed',
+    )
+    const single = { nonprod: records('nonprod', deployment(1, 'nonprod', at(6), D.f, 1)), prod: [] }
     expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: single }))).toBe('no-earlier-release')
+    const onlyRebuilds = { nonprod: rebuilt.slice(2), prod: [] }
+    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: onlyRebuilds }))).toBe('no-earlier-release')
     expect(await refusalOf(dispatch({ mode: 'drill-break' }, { records: { nonprod: [], prod: [] } }))).toBe(
       'no-release',
     )
@@ -764,16 +893,15 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     )
     expect(await refusalOf(dispatch({ mode: 'rollback', release: branch }))).toBe('off-main')
     // As a drill-smoke's previous release.
-    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: recordedBranch }))).toBe('off-main')
-    // A previous release that isn't strictly older than its current one.
-    const backwards = records(
-      'nonprod',
-      deployment(101, 'nonprod', at(5), D.e, 1),
-      deployment(102, 'nonprod', at(4), D.d, 2),
-    )
-    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: { nonprod: backwards, prod } }))).toBe(
-      'previous-not-older',
-    )
+    const branchThenHead = {
+      nonprod: records(
+        'nonprod',
+        deployment(108, 'nonprod', branch, D.e, 1),
+        deployment(111, 'nonprod', at(6), D.f, 3),
+      ),
+      prod,
+    }
+    expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: branchThenHead }))).toBe('off-main')
   })
 })
 
@@ -855,6 +983,169 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
   })
 })
 
+// The floors through git, never a stand-in (C11-D58, T24 item 22): a second main whose f[2] adds a
+// contracting migration and its floor, so a release at f[1] lies below it and one at f[3] above it,
+// with f[4] the run's commit. f[1]'s own floors.ts names no floor, so floors read at the target, or a
+// call that swaps the target and the run's commit, would allow what the run's commit refuses.
+describe('C11-D58, T24 item 22: the floors read through git at the run’s commit', () => {
+  let floorRepo = ''
+  const f: string[] = []
+  const fat = (i: number) => f[i] ?? ''
+  const fgit = (args: readonly string[]) => git(args, floorRepo)
+  const step = (name: string, files: Record<string, string>) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(floorRepo, path, '..'), { recursive: true })
+      writeFileSync(join(floorRepo, path), text)
+    }
+    fgit(['add', '-A'])
+    fgit(['commit', '-q', '-m', name])
+    return fgit(['rev-parse', 'HEAD'])
+  }
+  const floorsSource = (floors: ReadonlyArray<{ migration: string; why: string }>) =>
+    `export const FLOORS = ${JSON.stringify(floors)}\n`
+
+  beforeAll(() => {
+    floorRepo = mkdtempSync(join(tmpdir(), 'hearth-history-floors-'))
+    fgit(['init', '-q', '-b', 'main'])
+    f.push(
+      step('f0', { 'db/migrations/0015_base.sql': 'select 1;\n', 'infra/src/release/floors.ts': floorsSource([]) }),
+      step('f1', { 'f1.txt': 'f1\n' }),
+      step('f2', {
+        'db/migrations/0016_drop_y.sql': 'select 1;\n',
+        'infra/src/release/floors.ts': floorsSource([{ migration: '0016_drop_y.sql', why: 'drops y' }]),
+      }),
+      step('f3', { 'f3.txt': 'f3\n' }),
+      step('f4', { 'f4.txt': 'f4\n' }),
+    )
+  })
+
+  afterAll(() => {
+    if (floorRepo !== '') rmSync(floorRepo, { recursive: true, force: true })
+  })
+
+  // A plan input for the run at f[4], every answer git's in the floors repository.
+  const floorInput = (overrides: Partial<PlanInput> = {}): PlanInput => ({
+    ...planInput(),
+    sha: fat(4),
+    checks: {
+      pull: 8,
+      base: 'main',
+      mergeCommit: fat(4),
+      headTree: fgit(['rev-parse', `${fat(4)}^{tree}`]),
+      check: 'success',
+      migrations: 'success',
+    },
+    treeOf: commitSha => fgit(['rev-parse', `${commitSha}^{tree}`]),
+    isAncestor: gitIsAncestor(floorRepo),
+    floorsAllowed: gitFloorsAllowed(floorRepo),
+    ...overrides,
+  })
+  const floorDispatch = (inputs: Partial<Pick<PlanInput, 'target' | 'mode' | 'release'>>, rest: Partial<PlanInput>) =>
+    floorInput({
+      event: 'workflow_dispatch',
+      target: 'nonprod',
+      mode: 'deploy',
+      release: '',
+      restore: 'none',
+      ...inputs,
+      ...rest,
+    })
+
+  it('C11-D58: gitFloorsAllowed refuses a release below a floor that the run’s commit holds, and allows one above it', async () => {
+    const allowed = gitFloorsAllowed(floorRepo)
+    expect(await allowed(fat(1), fat(4))).toBe(false)
+    expect(await allowed(fat(3), fat(4))).toBe(true)
+    // Read at f[1], before the floor, nothing is refused: the run's commit decides.
+    expect(await allowed(fat(1), fat(1))).toBe(true)
+  })
+
+  it('C11-D58: the gate’s plan reads them for a deploy’s previous releases, a rollback and a drill-smoke’s previous', async () => {
+    // A deploy: non-prod's previous (f[3]) above the floor, prod's (f[1]) below it.
+    const deploy = floorInput({
+      records: {
+        nonprod: records('nonprod', deployment(301, 'nonprod', fat(3), D.c, 1)),
+        prod: records('prod', deployment(401, 'prod', fat(1), D.a, 1)),
+      },
+    })
+    expect(await outputsOf(deploy)).toMatchObject({
+      previous_nonprod_commit: fat(3),
+      rollback_nonprod: 'true',
+      previous_prod_commit: fat(1),
+      rollback_prod: 'false',
+    })
+    // A rollback to f[1] crosses the floor; one to f[3] doesn't.
+    const recorded = {
+      nonprod: records(
+        'nonprod',
+        deployment(301, 'nonprod', fat(1), D.a, 1),
+        deployment(302, 'nonprod', fat(3), D.c, 2),
+        deployment(303, 'nonprod', fat(4), D.d, 3),
+      ),
+      prod: [],
+    }
+    expect(await refusalOf(floorDispatch({ mode: 'rollback', release: fat(1) }, { records: recorded }))).toBe(
+      'floor-crossed',
+    )
+    expect(await refusalOf(floorDispatch({ mode: 'rollback', release: fat(3) }, { records: recorded }))).toBe('allowed')
+    // A drill-smoke whose previous release is f[1] crosses it; one whose previous is f[3] doesn't.
+    const below = {
+      nonprod: records(
+        'nonprod',
+        deployment(301, 'nonprod', fat(1), D.a, 1),
+        deployment(303, 'nonprod', fat(4), D.d, 3),
+      ),
+      prod: [],
+    }
+    expect(await refusalOf(floorDispatch({ mode: 'drill-smoke' }, { records: below }))).toBe('floor-crossed')
+    expect(await outputsOf(floorDispatch({ mode: 'drill-smoke' }, { records: recorded }))).toMatchObject({
+      previous_nonprod_commit: fat(3),
+      rollback_nonprod: 'true',
+    })
+  })
+
+  it('C11-D58: prod-gate reads them for a rollback, in process and from the command line', async () => {
+    const prodRecords = records(
+      'prod',
+      deployment(401, 'prod', fat(1), D.a, 1),
+      deployment(402, 'prod', fat(3), D.c, 2),
+      deployment(403, 'prod', fat(4), D.d, 3),
+    )
+    const rollback = {
+      mode: 'rollback',
+      target: 'prod',
+      sha: fat(4),
+      recordId: '403',
+      buildDigest: '',
+      nonprodDigest: '',
+      records: prodRecords,
+      isAncestor: gitIsAncestor(floorRepo),
+      floorsAllowed: gitFloorsAllowed(floorRepo),
+    }
+    expect(await prodGate({ ...rollback, commit: fat(1), digest: D.a })).toEqual({ ok: false, reason: 'floor-crossed' })
+    expect(await prodGate({ ...rollback, commit: fat(3), digest: D.c })).toEqual({
+      ok: true,
+      value: { current_prod_id: '403' },
+    })
+    const folder = join(scratch, 'floor-records')
+    writeJson(join(folder, 'release-prod.json'), [
+      deployment(401, 'prod', fat(1), D.a, 1),
+      deployment(402, 'prod', fat(3), D.c, 2),
+      deployment(403, 'prod', fat(4), D.d, 3),
+    ])
+    const gate = (commitSha: string, digest: string) => [
+      'prod-gate',
+      ...['--mode', 'rollback', '--target', 'prod', '--sha', fat(4), '--commit', commitSha, '--digest', digest],
+      ...['--record-id', '403', '--build-digest', '', '--nonprod-digest', '', '--records', folder, '--repo', floorRepo],
+    ]
+    expect(await cli(gate(fat(1), D.a))).toEqual({
+      code: 1,
+      out: [`history: refused floor-crossed: ${REFUSALS['floor-crossed']}`],
+      err: [],
+    })
+    expect(await cli(gate(fat(3), D.c))).toEqual({ code: 0, out: ['current_prod_id=403'], err: [] })
+  })
+})
+
 describe('C11-D61, T24 item 23: the commit the database was migrated by', () => {
   it('C11-D61: none with no migration record, the newest commit otherwise', () => {
     expect(migrated([])).toBe('none')
@@ -867,8 +1158,12 @@ describe('C11-D61, T24 item 23: the commit the database was migrated by', () => 
   })
 })
 
-// The command line in process, against files in the scratch folder: its stdout and stderr lines.
-async function cli(argv: readonly string[]): Promise<{ code: number; out: string[]; err: string[] }> {
+// The command line in process, against files in the scratch folder: its stdout and stderr lines. plan
+// checks the committed DOMAINS unless domains are given.
+async function cli(
+  argv: readonly string[],
+  domains?: readonly string[],
+): Promise<{ code: number; out: string[]; err: string[] }> {
   let out = ''
   let err = ''
   const code = await main(argv, {
@@ -876,6 +1171,7 @@ async function cli(argv: readonly string[]): Promise<{ code: number; out: string
     warn: text => (err += text),
     readText: path => readFileSync(path, 'utf8'),
     cwd: repo,
+    ...(domains === undefined ? {} : { domains }),
   })
   const lines = (text: string) => text.split('\n').filter(line => line !== '')
   return { code, out: lines(out), err: lines(err) }
@@ -886,6 +1182,46 @@ function writeJson(path: string, value: unknown): string {
   writeFileSync(path, JSON.stringify(value))
   return path
 }
+
+// What the gate saves for plan in the scratch folder: non-prod at m[6] after m[4] and m[5], prod at m[4]
+// after m[3], and the pull request checks of m[6]; and the plan command line for one run of it, a
+// dispatch to non-prod unless the fields say otherwise.
+function planFiles() {
+  const folder = join(scratch, 'plan-records')
+  writeJson(join(folder, 'release-nonprod.json'), [
+    deployment(101, 'nonprod', at(4), D.d, 1),
+    deployment(102, 'nonprod', at(5), D.e, 2),
+    deployment(103, 'nonprod', at(6), D.f, 3),
+  ])
+  writeJson(join(folder, 'release-prod.json'), [
+    deployment(201, 'prod', at(3), D.c, 1),
+    deployment(202, 'prod', at(4), D.d, 2),
+  ])
+  const checks = writeJson(join(scratch, 'plan-checks.json'), GOOD_CHECKS())
+  return { folder, checks }
+}
+
+function planArgs(folder: string, fields: Record<string, string> = {}): string[] {
+  const all: Record<string, string> = {
+    event: 'workflow_dispatch',
+    ref: 'refs/heads/main',
+    actor: 'a-person',
+    'triggering-actor': 'a-person',
+    sha: at(6),
+    target: 'nonprod',
+    mode: 'deploy',
+    release: '',
+    restore: 'none',
+    records: folder,
+    ...fields,
+  }
+  return ['plan', ...Object.entries(all).flatMap(([name, value]) => [`--${name}`, value])]
+}
+
+const PUSH = { event: 'push', target: '', mode: '', release: '', restore: '' }
+
+// The lines plan prints for an input, every output in order.
+const planLines = (outputs: Record<string, string>) => PLAN_OUTPUTS.map(key => `${key}=${outputs[key] ?? ''}`)
 
 describe('C11-D58, C11-D61: the command line', () => {
   it('C11-D58: each subcommand prints its lines, and refuses or names bad input in one line', async () => {
@@ -905,10 +1241,12 @@ describe('C11-D58, C11-D61: the command line', () => {
       ...['--event', 'push', '--ref', 'refs/heads/main', '--actor', 'a-person', '--triggering-actor', 'a-person'],
       ...['--sha', at(6), '--target', '', '--mode', '', '--release', '', '--restore', '', '--records', folder],
     ]
-    // The repository still holds DOMAINS's placeholders, so a real plan stops there.
+    // With the committed DOMAINS: refused while they hold a placeholder, and once they hold the owner's
+    // names, refused for want of the pull request checks this run didn't save.
+    const refusal = Object.values(DOMAINS).some(isPlaceholderDomain) ? 'domains-placeholder' : 'pr-not-found'
     expect(await cli(push)).toEqual({
       code: 1,
-      out: [`history: refused domains-placeholder: ${REFUSALS['domains-placeholder']}`],
+      out: [`history: refused ${refusal}: ${REFUSALS[refusal]}`],
       err: ['history: ignored hearth-release record 103 in nonprod: its payload fails validation'],
     })
     expect(await cli(['migrated', '--records', empty])).toEqual({ code: 0, out: ['none'], err: [] })
@@ -967,6 +1305,148 @@ describe('C11-D58, C11-D61: the command line', () => {
       code: 2,
       out: ['history: --colour is not an option'],
     })
+  })
+
+  it('C11-D58: choose and validate name a commit the clone lacks, never reading it as a release that isn’t older', async () => {
+    // A clone behind main: the current release's commit, a target or a chosen record's commit isn't in it.
+    const missing = 'e'.repeat(40)
+    const file = writeJson(join(scratch, 'behind', 'release-nonprod.json'), [
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+    ])
+    const notInClone = { code: 2, out: [`history: ${missing} is not in this clone`], err: [] }
+    const ask = (command: string, current: string, ...rest: string[]) =>
+      cli([command, '--env', 'nonprod', '--records', file, '--current', current, ...rest])
+    expect(await ask('choose', `${missing}:${D.f}`)).toEqual(notInClone)
+    expect(await ask('validate', `${missing}:${D.f}`, '--target', at(4))).toEqual(notInClone)
+    expect(await ask('validate', `${at(5)}:${D.e}`, '--target', missing)).toEqual(notInClone)
+    const chosenMissing = writeJson(join(scratch, 'behind', 'release-chosen.json'), [
+      deployment(101, 'nonprod', missing, D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+    ])
+    expect(
+      await cli(['choose', '--env', 'nonprod', '--records', chosenMissing, '--current', `${at(5)}:${D.e}`]),
+    ).toEqual(notInClone)
+    // In the clone, the same choice and check pass.
+    expect((await ask('choose', `${at(5)}:${D.e}`)).out[0]).toBe(`commit ${at(4)}`)
+    expect((await ask('validate', `${at(5)}:${D.e}`, '--target', at(4))).code).toBe(0)
+  })
+
+  it('C11-D58: choose-ecs takes every digest of the current commit', async () => {
+    const pages = join(scratch, 'pages-rebuilt')
+    // R1, then two builds of R2 (D.b, then D.c, which runs).
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.a, 1],
+      [20, D.b, 2],
+      [30, D.c, 3],
+    ]
+    for (const role of ['api', 'realtime', 'worker']) {
+      writeJson(join(pages, `${role}-deployments-1.json`), {
+        next: null,
+        deployments: entries.map(([when], i) => [new Date(when * minute).toISOString(), revisionArn(role, i + 1)]),
+      })
+      writeJson(
+        join(pages, `${role}-revisions-1.json`),
+        entries.map(([, digest, revision], i) => [revisionArn(role, i + 1), taskDefinitionArn(role, revision), digest]),
+      )
+    }
+    expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', `${D.b},${D.c}`])).toEqual({
+      code: 0,
+      out: [`digest ${D.a}`, 'api hearth-prod-api:1', 'realtime hearth-prod-realtime:1', 'worker hearth-prod-worker:1'],
+      err: [],
+    })
+    for (const bad of ['', `${D.b},`, `${D.b},sha256:x`]) {
+      expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', bad])).toEqual({
+        code: 2,
+        out: ['history: --current-digest is not a list of digests'],
+        err: [],
+      })
+    }
+  })
+
+  it('C11-D49, C11-D58: plan’s command line past DOMAINS: every flag, the checks file, git’s trees, ancestry and floors, and every line it prints', async () => {
+    const { folder, checks } = planFiles()
+    const plan = (fields: Record<string, string>) => cli(planArgs(folder, fields), DOMAINS_OK)
+    const nonprodRecords = records(
+      'nonprod',
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+      deployment(103, 'nonprod', at(6), D.f, 3),
+    )
+    const prodRecords = records('prod', deployment(201, 'prod', at(3), D.c, 1), deployment(202, 'prod', at(4), D.d, 2))
+    // A push with its pull request's checks: every line, as the gate writes them to its outputs.
+    const push = await plan({ ...PUSH, checks })
+    expect(push).toEqual({
+      code: 0,
+      out: planLines({
+        mode: 'deploy',
+        target: 'prod',
+        restore: 'none',
+        commit: at(6),
+        digest: '',
+        build: 'true',
+        nonprod: 'true',
+        prod: 'true',
+        current_nonprod: `${at(6)}:${D.f}`,
+        current_nonprod_id: '103',
+        current_prod: `${at(4)}:${D.d}`,
+        current_prod_id: '202',
+        previous_nonprod_commit: at(6),
+        previous_nonprod_digest: D.f,
+        previous_prod_commit: at(4),
+        previous_prod_digest: D.d,
+        rollback_nonprod: 'true',
+        rollback_prod: 'true',
+        first_nonprod: 'false',
+        first_prod: 'false',
+      }),
+      err: [],
+    })
+    // The gate's own check of each line.
+    expect(push.out.filter(line => !/^[a-z_]+=[0-9a-z:._-]*$/.test(line))).toEqual([])
+    // Each flag reaches its input: no checks file, a head tree git doesn't give the commit, and a bot that
+    // re-ran a person's run are each refused.
+    const refused = (reason: keyof typeof REFUSALS) => ({
+      code: 1,
+      out: [`history: refused ${reason}: ${REFUSALS[reason]}`],
+      err: [],
+    })
+    expect(await plan({ ...PUSH, checks: join(scratch, 'no-checks.json') })).toEqual(refused('pr-not-found'))
+    const otherTree = writeJson(join(scratch, 'plan-checks-tree.json'), {
+      ...GOOD_CHECKS(),
+      headTree: git(['rev-parse', `${at(5)}^{tree}`]),
+    })
+    expect(await plan({ ...PUSH, checks: otherTree })).toEqual(refused('pr-tree-differs'))
+    expect(await plan({ ...PUSH, checks, 'triggering-actor': 'github-actions[bot]' })).toEqual(refused('bot-actor'))
+    expect(await plan({ mode: 'rollback', release: branch })).toEqual(refused('off-main'))
+    // A rollback, a drill and a restore print what plan decides for the same input in process.
+    const same = { records: { nonprod: nonprodRecords, prod: prodRecords }, floorsAllowed: gitFloorsAllowed(repo) }
+    const runs: Array<[Record<string, string>, PlanInput]> = [
+      [{ mode: 'rollback', release: at(4) }, dispatch({ mode: 'rollback', release: at(4) }, same)],
+      [
+        { target: 'prod', mode: 'rollback', release: at(3) },
+        dispatch({ target: 'prod', mode: 'rollback', release: at(3) }, same),
+      ],
+      [{ mode: 'drill-break' }, dispatch({ mode: 'drill-break' }, same)],
+      [{ mode: 'drill-smoke' }, dispatch({ mode: 'drill-smoke' }, same)],
+      [{ target: 'restore', restore: 'up' }, dispatch({ target: 'restore', restore: 'up' }, same)],
+      [{ target: 'restore', restore: 'down' }, dispatch({ target: 'restore', restore: 'down' }, same)],
+    ]
+    for (const [fields, input] of runs) {
+      expect(await plan(fields), JSON.stringify(fields)).toEqual({
+        code: 0,
+        out: planLines(await outputsOf(input)),
+        err: [],
+      })
+    }
+    expect((await plan({ mode: 'drill-smoke' })).out).toEqual(
+      expect.arrayContaining([
+        `commit=${at(6)}`,
+        `previous_nonprod_commit=${at(5)}`,
+        `previous_nonprod_digest=${D.e}`,
+        'rollback_nonprod=true',
+      ]),
+    )
   })
 
   it('C11-D58: choose-ecs reads break-glass’s saved pages, every page to the one whose next is null', async () => {
@@ -1071,21 +1551,23 @@ describe('C11-D58, C11-D61: the command line', () => {
     }
     expect(printed).toContain('current_prod_id=202')
     // The plan's lines in every mode, as the command prints them once DOMAINS holds real names.
-    const inputs = [
-      planInput(),
-      dispatch({}),
-      dispatch({ mode: 'rollback', release: at(4) }),
-      dispatch({ target: 'prod', mode: 'rollback', release: at(3) }),
-      dispatch({ mode: 'drill-break' }),
-      dispatch({ mode: 'drill-smoke' }),
-      dispatch({ target: 'restore', restore: 'up' }),
-      dispatch({ target: 'restore', restore: 'down' }),
+    const plans = planFiles()
+    const modes: Array<Record<string, string>> = [
+      { ...PUSH, checks: plans.checks },
+      { checks: plans.checks },
+      { mode: 'rollback', release: at(4) },
+      { target: 'prod', mode: 'rollback', release: at(3) },
+      { mode: 'drill-break' },
+      { mode: 'drill-smoke' },
+      { target: 'restore', restore: 'up' },
+      { target: 'restore', restore: 'down' },
     ]
-    for (const input of inputs) {
-      const outputs = await outputsOf(input)
-      printed.push(...PLAN_OUTPUTS.map(key => `${key}=${outputs[key]}`))
+    for (const fields of modes) {
+      const { code, out, err } = await cli(planArgs(plans.folder, fields), DOMAINS_OK)
+      expect(code, JSON.stringify(fields)).toBe(0)
+      printed.push(...out, ...err)
     }
-    expect(printed.length).toBeGreaterThan(runs.length + inputs.length * PLAN_OUTPUTS.length)
+    expect(printed.length).toBeGreaterThan(runs.length + modes.length * PLAN_OUTPUTS.length)
     const stripped = printed.map(line => line.replace(/sha256:[0-9a-f]{64}/g, '').replace(/\b[0-9a-f]{40}\b/g, ''))
     expect(
       stripped.filter(line => /arn:/i.test(line) || /\d{12}/.test(line) || /\b\d{1,3}(?:\.\d{1,3}){3}\b/.test(line)),

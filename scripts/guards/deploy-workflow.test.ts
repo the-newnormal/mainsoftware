@@ -6,7 +6,8 @@
 // AWS_CHECK runs with bash and jq against planted AWS answers and a real git, ASSET_CHECK against
 // planted copies of the workload's own assembly, protect-environments.sh check --from against planted
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
-// repository, and nothing names an account, a login or an address.
+// repository, and nothing names an account, a login or an address. Last, `.claude/settings.json`'s deny
+// rules are read for a `:*` anywhere but at a Bash rule's end (C11-D77), which Claude Code reads literally.
 // This file and deploy-workflow.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -53,6 +54,7 @@ import {
   PREAMBLE,
   PROBE,
   PROBE_LINES,
+  PULL_CHECKS,
   permissionFindings,
   prodPathFindings,
   RESTORE_DOWN,
@@ -61,6 +63,7 @@ import {
   RUN_TASK_PROBE,
   releaseFindings,
   SKOPEO_COPY,
+  SMOKE_ATTEMPT,
   shellCommands,
   shellViews,
   TARGETS_QUERY,
@@ -352,6 +355,39 @@ describe('DPW: the guard reads the deploy workflow', () => {
     ])
   })
 
+  // GUARDS-01: each way the reader once read past what bash runs; bash runs cp in every one.
+  it('reads a # after an escape, a [[ or case as an argument and a case inside a substitution as bash does', () => {
+    const read = (run: string) => shellCommands(run).map(command => [...command.prefixes, command.word].join(' '))
+    expect(read('echo a\\ #;cp a b')).toEqual(['echo', 'cp'])
+    // The line a backslash-newline continues starts no comment (its # is read as a word, which no rule allows).
+    expect(read('echo ok\\\n#;cp a b')).toEqual(['echo', '#', 'cp'])
+    expect(read('echo [[ ; cp a b ; echo ]]')).toEqual(['echo', 'cp', 'echo'])
+    expect(read('echo \\\n[[ ; cp a b ; ]]')).toContain('cp')
+    expect(read('X=$(echo case in\ncp a b)')).toEqual(['echo', 'cp'])
+    expect(read('echo case in\ncp a b')).toEqual(['echo', 'cp'])
+    // A real test and case still read as bash reads them: their operands and patterns are no commands.
+    expect(read('if [[ "$a" == x ]]; then cp a b; fi\ncase "$b" in\n  cp) jq . ;;\nesac')).toEqual([
+      '[[',
+      'cp',
+      'fi',
+      'case',
+      'jq',
+      'esac',
+    ])
+    // A case on one line, several items on a line, and a case in an unquoted substitution are read too.
+    expect(read('case x in x) cp a b;; esac')).toEqual(['case', 'cp', 'esac'])
+    expect(read('case x in\n  x) :;; true) cp a b;;\nesac')).toEqual(['case', ':', 'cp', 'esac'])
+    expect(read('X=$(\ncase x in x) cp a b;; esac)')).toEqual(['case', 'cp', 'esac'])
+    expect(shellViews('X=$(\ncase x in x) cp a b;; esac)').nestedCase).toBe(false)
+    // A case inside a quoted substitution or backticks is a shape the reader can't follow (its pattern's )
+    // would close the substitution), which shellViews says.
+    expect(shellViews('X="$(case x in x) cp a b;; esac)"').nestedCase).toBe(true)
+    expect(shellViews('X=`case x in x) cp a b;; esac`').nestedCase).toBe(true)
+    expect(shellViews('case "$(readlink -f x)" in\n  y) ;;\nesac').nestedCase).toBe(false)
+    expect(shellViews('echo a\\ #b').text).toBe('echo a\\ #b')
+    expect(shellViews('echo a #b').text).toBe('echo a   ')
+  })
+
   it("evaluates an if: as GitHub would with some values unknown (Kleene's logic)", () => {
     const bot = { 'github.actor': 'dependabot[bot]' }
     expect(evaluateIf(`\${{ ${BOT_TEST} && x == 'y' }}`, bot)).toBe(false)
@@ -363,6 +399,15 @@ describe('DPW: the guard reads the deploy workflow', () => {
     expect(evaluateIf(condition, mode('deploy'))).toBeUndefined()
     expect(evaluateIf(`\${{ needs.gate.outputs.mode != 'rollback' }}`, mode('drill-smoke'))).toBe(true)
     expect(evaluateIf(`\${{ needs.x.outputs.y != '' && z }}`, { 'needs.x.outputs.y': '' })).toBe(false)
+    // GUARDS-02: GitHub coerces values of two types to numbers before == or != (null == 0, '0' == false and
+    // '' == 0 are true there) and binds ! tighter than ==, so none of these may read as false.
+    for (const term of ['null == 0', "'0' == false", "'' == 0", "!'0' == '0'", 'x == 0', "!x == '0'", "'abc' != 0"]) {
+      expect(evaluateIf(`\${{ ${term} }}`, { x: '' }), term).not.toBe(false)
+      expect(evaluateIf(`\${{ ${BOT_TEST} && y || ${term} }}`, { ...bot, x: '' }), term).not.toBe(false)
+    }
+    expect(evaluateIf(`\${{ !'' == true }}`, {})).toBe(true)
+    expect(evaluateIf(`\${{ 'a' == 'A' && null == null && 1 == 1 && !(true == false) }}`, {})).toBe(true)
+    expect(evaluateIf(`\${{ 'a' == 'b' == false }}`, {})).toBe(true)
   })
 })
 
@@ -428,6 +473,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(permissionFindings(plant(READ_ONLY, '    permissions: { contents: read }\n', job('build')))).toEqual([
       `${DEPLOY}: DPW-02 build: its permissions are exactly contents: read`,
       `${DEPLOY}: DPW-02 is written in block mappings: no flow mapping, anchor, alias or quoted key`,
+      `${DEPLOY}: DPW-02 ${SHAPE}`,
     ])
     const check = '  check:\n    needs: [secrets, audit]\n'
     expect(permissionFindings(plant(check, `${check}    permissions: write-all\n`, '', CI))).toEqual([
@@ -525,7 +571,10 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(ci('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n')).toEqual(
       idToken,
     )
-    expect(ci(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual(idToken)
+    expect(ci(check, `${check}    permissions: { contents: read, id-token: write }\n`)).toEqual([
+      `${CI}: DPW-02 ${SHAPE}`,
+      ...idToken,
+    ])
     // A quoted key is also a shape workflow.ts doesn't read.
     const shape = `${CI}: DPW-02 ${SHAPE}`
     expect(ci(check, `${check}    permissions:\n      contents: read\n      'id-token': write\n`)).toEqual([
@@ -540,9 +589,54 @@ describe('DPW-02 (C11-D55): permissions', () => {
         '  secrets:\n    permissions:\n      id-token: write\n    uses: ./.github/workflows/secrets.yml\n',
       ),
     ).toEqual(idToken)
-    expect(ci(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual(escaped)
+    expect(ci(check, `${check}    permissions: { "id\\x2Dtoken": write }\n`)).toEqual([shape, ...escaped])
     expect(ci(check, `${check}    permissions:\n      "id\\u002Dtoken": write\n`)).toEqual([shape, ...escaped])
     expect(ci(check, `${check}    permissions: "write\\x2Dall"\n`)).toEqual(escaped)
+  })
+
+  // GUARDS-03: an anchor, alias, tag or flow mapping (but {}) in any workflow is a shape workflow.ts reads
+  // wrong, and an escape anywhere could spell a word a rule looks for: each would have hidden a checkout from
+  // DPW-11, pull_request_target from DPW-01, an id-token from this case or a group from DPW-05.
+  it('finds an anchor, alias, tag or flow mapping in any workflow, and an escape anywhere on a YAML line', () => {
+    const shape = (path: string) => `${path}: DPW-02 ${SHAPE}`
+    const escaped = `${CI}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`
+    const checkout = '      - uses: actions/checkout@v5\n'
+    const secrets = '.github/workflows/secrets.yml'
+    expect(permissionFindings(plant(checkout, `      - { uses: actions/checkout@v5 }\n${checkout}`, '', CI))).toEqual([
+      shape(CI),
+    ])
+    expect(
+      permissionFindings(plant(checkout, `      - { uses: actions/checkout@v5 }\n${checkout}`, '', secrets)),
+    ).toEqual([shape(secrets)])
+    expect(permissionFindings(plant(checkout, '      - uses: &co actions/checkout@v5\n', '', CI))).toEqual([shape(CI)])
+    expect(permissionFindings(plant('name: ci\n', 'name: !!str ci\n', '', CI))).toEqual([shape(CI)])
+    const check = '  check:\n    needs: [secrets, audit]\n'
+    expect(
+      permissionFindings(plant(check, '  check:\n    concurrency: *g\n    needs: [secrets, audit]\n', '', CI)),
+    ).toEqual([shape(CI)])
+    expect(permissionFindings(plant('name: ci\n', 'name: &k "id\\x2Dtoken"\n', '', CI))).toEqual([shape(CI), escaped])
+    // An escape in a flow sequence's item, a sequence item or a value after an anchor, not only after a key.
+    expect(
+      permissionFindings(
+        plant('on:\n  pull_request: {}\n', 'on: [push, "pull_request\\x5Ftarget"]\nx:\n  pull_request: {}\n', '', CI),
+      ),
+    ).toEqual([escaped])
+    expect(permissionFindings(plant('    branches: [main]\n', '    branches:\n      - "ma\\x69n"\n', '', CI))).toEqual([
+      escaped,
+    ])
+    // The empty flow mapping ci.yml's pull_request: {} uses still reads.
+    expect(permissionFindings(plant('  pull_request: {}\n', '  pull_request: { }\n', '', CI))).toEqual([])
+  })
+
+  // GUARDS-05: a folded block scalar's lines are joined by YAML, and an indentation indicator sets an indent
+  // the reader doesn't take, so GitHub would hand bash another text than the one the guard read.
+  it('finds a block scalar in deploy.yml that isn’t literal', () => {
+    const LITERAL = `${DEPLOY}: DPW-02 writes every block scalar literal (|, |- or |+), never folded (>) or with an indentation indicator`
+    const mark = `        id: mark\n        if: \${{ needs.gate.outputs.mode != 'drill-break' }}\n        run: |\n`
+    const as = (indicator: string) =>
+      permissionFindings(plant(mark, mark.replace('run: |\n', `run: ${indicator}\n`), job('nonprod')))
+    for (const indicator of ['>', '>-', '|2', '|2-', '|-2']) expect(as(indicator), indicator).toEqual([LITERAL])
+    for (const indicator of ['|-', '|+', '| # a comment']) expect(as(indicator), indicator).toEqual([])
   })
 
   it('holds the repository', () => {
@@ -860,6 +954,45 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
     ).toEqual([at('rollback-prod', CLI_IF)])
   })
 
+  // ROLLBACK-04, ROLLBACK-01, ROLLBACK-07: down skips a stack a failed create left whatever it reads, a
+  // rollback checks ECR's newest image, and prod's AWS_CHECK knows which way a restore goes.
+  it('finds restore=down, the newest-image check or a restore’s direction taken out', () => {
+    expect(
+      find(
+        '    ROLLBACK_COMPLETE | REVIEW_IN_PROGRESS)\n',
+        '    ROLLBACK_COMPLETE)\n',
+        '      - name: Take the restore stage down\n',
+      ),
+    ).toEqual([at('prod', DOWN)])
+    expect(
+      find('  if [ "$mode" = rollback ] || [ "$mode" = auto ]; then\n', '  if false; then\n', job('rollback-nonprod')),
+    ).toEqual([at('rollback-nonprod', AWS)])
+    const first = `          FIRST: \${{ needs.gate.outputs.first_prod }}\n`
+    expect(find(`          RESTORE: \${{ needs.gate.outputs.restore }}\n${first}`, first, job('prod'))).toEqual([
+      at('prod', AWS),
+    ])
+  })
+
+  // ROLLBACK-02: the pipeline's rollback judges what its deploy replaced, read by that deploy's AWS_CHECK.
+  it('finds a rollback that can’t see what its deploy replaced', () => {
+    expect(find(`          REPLACED: \${{ needs.nonprod.outputs.replaced }}\n`, '', job('rollback-nonprod'))).toEqual([
+      at('rollback-nonprod', AWS),
+    ])
+    expect(
+      find(
+        `          REPLACED: \${{ needs.prod.outputs.replaced }}\n`,
+        `          REPLACED: \${{ needs.nonprod.outputs.replaced }}\n`,
+        job('rollback-prod'),
+      ),
+    ).toEqual([at('rollback-prod', AWS)])
+    expect(find(`  if [ "\${REPLACED:-}" != none ] &&\n`, '  if false &&\n', job('rollback-prod'))).toEqual([
+      at('rollback-prod', AWS),
+    ])
+    expect(
+      find('    deploy | drill) echo "replaced=$release"', '    deploy) echo "replaced=$release"', job('nonprod')),
+    ).toEqual([at('nonprod', AWS)])
+  })
+
   it('holds the repository', () => {
     expect(deployStepFindings(workflows)).toEqual([])
   })
@@ -983,6 +1116,34 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     ]) {
       expect(added(line)).toEqual([at(readBack, 'runs every aws, CDK and skopeo command as run … or $(get …)')])
     }
+  })
+
+  // SECURITY-04: jq's env and $ENV inside a quoted program, a /proc file and an AWS_ variable's expansion print
+  // the credentials in a credentialed run, though no unquoted env word stands there.
+  it('finds what prints the credentials from inside quoted text in a credentialed run', () => {
+    const PRINTS =
+      'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+    for (const line of [
+      "jq -n 'env' >/dev/null",
+      'jq -n "env" >/dev/null',
+      `jq -n '$ENV' | mask | tee -a "$GITHUB_STEP_SUMMARY"`,
+      "jq -rn 'env.AWS_SESSION_TOKEN' | mask",
+      'cat /proc/self/environ | mask',
+      'echo "$AWS_SESSION_TOKEN" | mask',
+    ]) {
+      expect(added(line), line).toEqual([at(readBack, PRINTS)])
+    }
+    // env as an object's key prints nothing, and a job with no credentials is no concern of this rule.
+    expect(added("jq -n '{env: 1}' >/dev/null")).toEqual([])
+    expect(
+      maskingFindings(
+        plant(
+          `          printf '%s' "$READBACK"`,
+          `          jq -n 'env' >/dev/null\n          printf '%s' "$READBACK"`,
+          job('smoke-nonprod'),
+        ),
+      ),
+    ).toEqual([])
   })
 
   it('holds the repository', () => {
@@ -1150,10 +1311,107 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     ).toEqual([
       at('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs"),
     ])
+    // SECURITY-01: a run chosen without its head repository and branch could be another fork's.
+    expect(
+      prodPathFindings(
+        plant(
+          ' and ($pull.head.repo.id | type == "number") and .head_repository.id == $pull.head.repo.id and .head_branch == $pull.head.ref',
+          '',
+          job('gate'),
+        ),
+      ),
+    ).toEqual([
+      at('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs"),
+    ])
+  })
+
+  // ACTIONS-01: a smoke re-run on its own keeps its job's outputs from an earlier attempt, so it would judge
+  // a read-back of what ran then: each smoke refuses one from another attempt.
+  it('finds a smoke that could judge a read-back from another attempt', () => {
+    const stale = (smoke: string, source: string) =>
+      at(
+        smoke,
+        `judges only the read-back ${source} wrote in this attempt: ${source} outputs attempt, and the smoke refuses first unless it is GITHUB_RUN_ATTEMPT`,
+      )
+    const output = `      attempt: \${{ github.run_attempt }}\n`
+    expect(prodPathFindings(plant(output, '', job('nonprod')))).toEqual([stale('smoke-nonprod', 'nonprod')])
+    expect(prodPathFindings(plant(output, '', job('rollback-prod')))).toEqual([stale('resmoke-prod', 'rollback-prod')])
+    expect(
+      prodPathFindings(
+        plant(
+          `          ATTEMPT: \${{ needs.prod.outputs.attempt }}\n`,
+          `          ATTEMPT: \${{ github.run_attempt }}\n`,
+          job('smoke-prod'),
+        ),
+      ),
+    ).toEqual([stale('smoke-prod', 'prod')])
+    const check = `${indent(SMOKE_ATTEMPT, 10)}\n`
+    expect(prodPathFindings(plant(check, '', job('resmoke-nonprod')))).toEqual([
+      stale('resmoke-nonprod', 'rollback-nonprod'),
+    ])
+    // The check after smoke.ts has judged, or in a step of its own beside it, comes too late.
+    const smokeLine = '          node infra/scripts/deploy/smoke.ts '
+    const moved = edited(
+      edited(deployText, check, '', job('smoke-nonprod')),
+      smokeLine,
+      `${check}${smokeLine}`,
+      job('smoke-nonprod'),
+    )
+    expect(prodPathFindings(withText(DEPLOY, moved))).toEqual([stale('smoke-nonprod', 'nonprod')])
+    expect(prodPathFindings(copiedStep('smoke-prod', 'Smoke', 'smoke-prod', 'Smoke'))).toEqual([
+      stale('smoke-prod', 'prod'),
+    ])
+  })
+
+  // ROLLBACK-02: each deploy job outputs what its AWS_CHECK found running, for its rollback job's auto check.
+  it('finds a deploy job that doesn’t output what it replaced', () => {
+    const replaced = `      replaced: \${{ steps.aws.outputs.replaced }}\n`
+    expect(prodPathFindings(plant(replaced, '', job('nonprod')))).toEqual([
+      at('nonprod', "outputs replaced from its AWS_CHECK step, for rollback-nonprod's auto check"),
+    ])
+    expect(
+      prodPathFindings(plant(replaced, `      replaced: \${{ steps.release.outputs.release }}\n`, job('prod'))),
+    ).toEqual([at('prod', "outputs replaced from its AWS_CHECK step, for rollback-prod's auto check")])
   })
 
   it('holds the repository', () => {
     expect(prodPathFindings(workflows)).toEqual([])
+  })
+
+  // SECURITY-01: the gate's choice among ci.yml's runs on the pull request's head, run with bash and jq.
+  it('chooses the pull request’s own run, never another fork’s newer one at the same commit', () => {
+    const line = PULL_CHECKS.split('\n').find(each => each.startsWith('RUN_ID=')) ?? ''
+    expect(line).not.toBe('')
+    const head = 'a'.repeat(40)
+    const run = (id: number, repo: number | null, branch: string, sha = head, path = '.github/workflows/ci.yml') => ({
+      id,
+      path,
+      head_sha: sha,
+      head_branch: branch,
+      head_repository: repo === null ? null : { id: repo },
+    })
+    const choose = (pull: unknown, runs: unknown[]) =>
+      execFileSync('bash', ['-c', `set -euo pipefail\n${line}\nprintf '%s' "$RUN_ID"`], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HEAD: head,
+          PULL: JSON.stringify(pull),
+          RUNS: JSON.stringify({ workflow_runs: runs }),
+        },
+      })
+    const own = { number: 7, head: { sha: head, ref: 'feature', repo: { id: 11 } } }
+    const runs = [
+      run(100, 11, 'feature'),
+      run(105, 99, 'feature'),
+      run(106, 11, 'another'),
+      run(107, 11, 'feature', 'b'.repeat(40)),
+      run(108, 11, 'feature', head, '.github/workflows/other.yml'),
+    ]
+    expect(choose(own, runs)).toBe('100')
+    expect(choose(own, [...runs, run(101, 11, 'feature')])).toBe('101')
+    // A merged pull request whose head repository is gone matches no run, so its checks read as missing.
+    expect(choose({ ...own, head: { ...own.head, repo: null } }, [...runs, run(109, null, 'feature')])).toBe('')
   })
 })
 
@@ -1213,6 +1471,16 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(gate(plant(" && needs.prod-plan.result == 'success')", ')', job('prod-gate')))).toEqual([
       at('prod-gate', 'its if: runs it only once gate and prod-plan succeeded'),
     ])
+    // GUARDS-02: a term GitHub reads as true by its coercion or its precedence lets a bot, a drill and a failed
+    // prod-gate through.
+    const prodIf = "&& (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') }}\n"
+    for (const term of ['null == 0', "'0' == false", "!'0' == '0'"]) {
+      expect(gate(plant(prodIf, prodIf.replace(' }}', ` || ${term} }}`), job('prod'))), term).toEqual([
+        at('prod', BOT),
+        at('prod', 'its if: admits no drill: drills are non-prod’s alone'),
+        at('prod', 'its if: runs it only once synth and prod-gate succeeded'),
+      ])
+    }
   })
 
   it('finds each planted breakage in the environment files and the script', () => {
@@ -1761,6 +2029,28 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ).toEqual([at('nonprod (What runs)', ENV)])
   })
 
+  // GUARDS-01: each shape that once hid a command from the reader, here the CLI overwritten by a file of the
+  // synth's artifact (which a job running repository code made), planted in a credentialed step. Each is
+  // found: by the command it hides, or as a shape the reader doesn't read, or both.
+  it('finds a command an escape, a [[ or case argument, a case or a substitution would hide', () => {
+    const AS_BASH =
+      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution and no substitution as a command’s word'
+    const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
+    const both = [at(readBack('nonprod'), RUNS), at(readBack('nonprod'), AS_BASH)]
+    expect(added('nonprod', `echo a\\ #;${cp}`)).toEqual(both)
+    expect(added('nonprod', `echo ok\\\n          #;${cp}`)).toEqual(both)
+    expect(added('nonprod', `X="$(case x in x) ${cp};; esac)"`)).toEqual(both)
+    expect(added('nonprod', `echo [[ ; ${cp} ; echo ]]`)).toEqual([at(readBack('nonprod'), RUNS)])
+    expect(added('nonprod', `X=$(echo case in\n          ${cp})`)).toEqual([at(readBack('nonprod'), RUNS)])
+    expect(added('nonprod', `case x in x) ${cp};; esac`)).toEqual([at(readBack('nonprod'), RUNS)])
+    expect(added('nonprod', `case x in\n            x) :;; true) ${cp};;\n          esac`)).toEqual([
+      at(readBack('nonprod'), RUNS),
+    ])
+    expect(added('nonprod', '$(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk')).toEqual([
+      at(readBack('nonprod'), AS_BASH),
+    ])
+  })
+
   it('finds a workspace that could stand in for the CLI, and a lockfile entry that isn’t the registry’s', () => {
     const planted = (path: string, manifest: unknown) =>
       credentialedCodeFindings(workflows, new Map([...manifests, [path, JSON.stringify(manifest)]]), lockfile)
@@ -1807,6 +2097,14 @@ describe('DPW-11 (C11-D48): every checkout leaves no credential behind', () => {
     expect(checkoutFindings(plant('          persist-credentials: false\n', '', '', CI))).toEqual([
       `${CI}: DPW-11 audit (step 1): actions/checkout has persist-credentials: false`,
     ])
+    // GUARDS-03: the action quoted, or named in another letter case, which GitHub resolves alike.
+    const step = '      - uses: actions/checkout@v5\n        with:\n          persist-credentials: false\n'
+    for (const uses of ['"actions/checkout@v5"', "'actions/checkout@v5'", 'Actions/Checkout@v5']) {
+      expect(
+        checkoutFindings(plant(step, `      - uses: ${uses}\n        with:\n          fetch-depth: 1\n`, '', CI)),
+        uses,
+      ).toEqual([`${CI}: DPW-11 audit (step 1): actions/checkout has persist-credentials: false`])
+    }
   })
 
   it('holds the repository', () => {
@@ -2026,6 +2324,18 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          ./scripts/x.sh\n'),
       ),
     ).toEqual([at('record-prod', RECORD)])
+    // GUARDS-01: an escaped blank before # once hid what follows it from the reader.
+    expect(
+      releaseFindings(
+        addedBefore('record-nonprod', 'Write the record', '          record() {\n', '          echo a\\ #;node x\n'),
+      ),
+    ).toEqual([
+      at('record-nonprod', RECORD),
+      at(
+        'record-nonprod',
+        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution and no substitution as a command’s word',
+      ),
+    ])
   })
 
   it('holds the repository', () => {
@@ -2039,6 +2349,16 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
     'runs ASSET_CHECK on each folder it downloaded, with the release it deploys, after its downloads and before the credentials action'
 
   it('finds each planted breakage in the workflow', () => {
+    // GUARDS-02: null == 0 is true on GitHub, so this download would run with empty artifact-ids.
+    const download = `        if: \${{ needs.synth.outputs.assembly != '' }}\n`
+    expect(
+      assetCheckFindings(plant(download, download.replace(" != '' }}", " != '' || null == 0 }}"), job('nonprod'))),
+    ).toEqual([
+      at(
+        'nonprod (Download the assembly)',
+        'downloads only with an if: that requires its artifact-ids to be non-empty',
+      ),
+    ])
     expect(assetCheckFindings(movedStep('nonprod', 'Check the assembly', 'What runs'))).toEqual([
       at('nonprod', CHECKED),
     ])
@@ -2098,7 +2418,7 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
 describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answers', () => {
   let repo = ''
   let scratch = ''
-  const c: Record<'A' | 'B' | 'C' | 'X', string> = { A: '', B: '', C: '', X: '' }
+  const c: Record<'A' | 'B' | 'C' | 'X' | 'L', string> = { A: '', B: '', C: '', X: '', L: '' }
   const email = ['test', 'example.invalid'].join('@')
   const git = (args: readonly string[]) =>
     execFileSync(
@@ -2123,6 +2443,10 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     git(['checkout', '-q', '-b', 'side', c.A])
     git(['commit', '-q', '--allow-empty', '-m', 'X'])
     c.X = git(['rev-parse', 'HEAD'])
+    // L, a later commit than the run's (C), whose run pushed an image after this run's gate read the floors.
+    git(['checkout', '-q', '-b', 'later', c.C])
+    git(['commit', '-q', '--allow-empty', '-m', 'L'])
+    c.L = git(['rev-parse', 'HEAD'])
     git(['checkout', '-q', 'main'])
   })
   afterAll(() => {
@@ -2131,7 +2455,7 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
 
   const digest = (n: number) => `sha256:${String(n).padStart(64, '0')}`
   const D = { A: digest(1), B: digest(2), C: digest(3), D: digest(4) }
-  const release = (commit: 'A' | 'B' | 'C' | 'X', d: string) => `${c[commit]}:${d}`
+  const release = (commit: 'A' | 'B' | 'C' | 'X' | 'L', d: string) => `${c[commit]}:${d}`
   const stack = (status: string, value: string | null) => JSON.stringify([status, value])
   const ONE = JSON.stringify({ services: ['td-api', 'td-realtime', 'td-worker'], counts: [1, 1, 1] })
   const TWO = JSON.stringify({ services: ['td-api', 'td-api-2', 'td-realtime', 'td-worker'], counts: [2, 1, 1] })
@@ -2144,12 +2468,17 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     stage?: string
     release: string
     previous?: string
+    // auto: what the deploy job's own check found running (REPLACED), the previous release unless named.
+    replaced?: string
     first?: boolean
     stack: string
     services: string
     running: string
     drift?: string
     ecr?: string
+    // The commits of ECR's images, by their tags (A, B and C unless named), or ECR's raw answer.
+    pushed?: ReadonlyArray<'A' | 'B' | 'C' | 'X' | 'L'> | { raw: string }
+    restore?: string
   }
   // The stand-in aws: a stack named Hearth-restore-* never exists, so a restore reads prod's alone.
   const STUB = `aws() {
@@ -2169,6 +2498,7 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     'ecs describe-task-definition')
       if [ "$4" = td-worker ] && [ -n "$DRIFT" ]; then echo "registry.invalid/hearth-server@$DRIFT"; else echo "registry.invalid/hearth-server@$RUNNING"; fi ;;
     'ecr describe-images')
+      if [ "$5" = --query ]; then printf '%s\\n' "$PUSHED"; return; fi
       jq -e --arg d "\${6#imageDigest=}" '.[$d]' <<<"$ECR" || { echo 'An error occurred (ImageNotFoundException)' >&2; return 254; } ;;
     *) echo "unexpected aws $*" >&2; return 99 ;;
   esac
@@ -2190,12 +2520,18 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
         STAGE: a.stage ?? 'nonprod',
         RELEASE: a.release,
         PREVIOUS: a.previous ?? '',
+        REPLACED: a.replaced ?? a.previous ?? '',
         FIRST: String(a.first ?? false),
         STACK: a.stack,
         SERVICES: a.services,
         RUNNING: a.running,
         DRIFT: a.drift ?? '',
         ECR: a.ecr ?? '{}',
+        PUSHED:
+          a.pushed !== undefined && 'raw' in a.pushed
+            ? a.pushed.raw
+            : JSON.stringify([...(a.pushed ?? ['A', 'B', 'C']).map(commit => `sha-${c[commit]}-12-1`), 'other']),
+        ...(a.restore === undefined ? {} : { RESTORE: a.restore }),
       },
     })
     // A refusal is aws_check's one line on stdout (the stand-in's own errors go to stderr).
@@ -2321,12 +2657,91 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     expect(readFileSync(join(scratch, 'output'), 'utf8')).toBe('go=false\nrolled=false\n')
   })
 
+  // ROLLBACK-02: the gate's previous release is the newest record when it read them; a rollback that landed
+  // since, or a failed one, can leave an older release live, which the deploy then replaced. Going back to
+  // the previous release would then move forward past it, so auto goes on only when the release the deploy
+  // replaced is the previous one or a later one (or none, on a first deploy).
+  it('rolls nothing back when the deploy replaced a release older than the previous one', () => {
+    const live = { stack: stack('UPDATE_COMPLETE', release('C', D.C)), services: ONE, running: D.C }
+    const auto = (replaced: string) =>
+      awsCheck({ mode: 'auto', release: release('C', D.C), previous: release('B', D.B), replaced, ...live, ecr: all() })
+    // Replaced older than the previous release (a rollback landed in between), off main, empty or malformed.
+    for (const replaced of [release('A', D.A), release('X', D.A), '', 'nope']) {
+      const stopped = auto(replaced)
+      expect(stopped.verdict, replaced).toBe('rolled-false')
+      expect(stopped.said, replaced).toContain(
+        `not the previous release (${release('B', D.B)}) or a later one (a rollback, or a failed one, left an older release live after the gate read the records), so nothing is rolled back: dispatch mode=rollback (deploy-and-rollback.md)`,
+      )
+      expect(readFileSync(join(scratch, 'output'), 'utf8')).toBe('go=false\nrolled=false\n')
+    }
+    expect(auto(release('A', D.A)).said).toContain(`this run's deploy replaced ${release('A', D.A)}, not`)
+    expect(auto('').said).toContain("this run's deploy replaced a release it never named, not")
+    // The previous release itself, an earlier build of its commit, a later release (a re-run's own), or none.
+    for (const replaced of [release('B', D.B), release('B', D.D), release('C', D.C), 'none']) {
+      expect(auto(replaced).verdict, replaced).toBe('pass')
+    }
+  })
+
+  it('outputs what a deploy or a drill replaced, for the rollback job', () => {
+    const outputs = () => readFileSync(join(scratch, 'output'), 'utf8')
+    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB() }).verdict).toBe('pass')
+    expect(outputs()).toBe(`go=true\nreplaced=${release('B', D.B)}\n`)
+    const none = { stack: 'none', services: 'nocluster', running: D.B }
+    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), first: true, ...none }).verdict).toBe('pass')
+    expect(outputs()).toBe('go=true\nreplaced=none\n')
+    expect(awsCheck({ mode: 'drill', release: release('B', D.B), ...runsB(), ecr: all() }).verdict).toBe('pass')
+    expect(outputs()).toBe(`go=true\nreplaced=${release('B', D.B)}\n`)
+    expect(awsCheck({ mode: 'rollback', release: release('A', D.A), ...runsB(), ecr: all() }).verdict).toBe('pass')
+    expect(outputs()).toBe('go=true\n')
+  })
+
+  // ROLLBACK-01: a later run can push, migrate past a floor the gate never read, then fail with Release
+  // unchanged; a rollback then goes back only while every image in ECR is of this run's commit or older.
+  it('rolls nothing back, and refuses a rollback, once a later commit than the run’s has pushed an image', () => {
+    const live = { stack: stack('UPDATE_COMPLETE', release('C', D.C)), services: ONE, running: D.C }
+    const auto = (pushed: Answers['pushed']) =>
+      awsCheck({ mode: 'auto', release: release('C', D.C), previous: release('B', D.B), ...live, ecr: all(), pushed })
+    for (const later of ['L', 'X'] as const) {
+      const stopped = auto(['A', later, 'B', 'C'])
+      expect(stopped.verdict).toBe('rolled-false')
+      expect(stopped.said).toContain(`aws-check: auto: a later commit (${c[later]}) pushed an image`)
+      expect(readFileSync(join(scratch, 'output'), 'utf8')).toBe('go=false\nrolled=false\n')
+    }
+    expect(auto(['A', 'B', 'C']).verdict).toBe('pass')
+    expect(auto(['B']).verdict).toBe('pass')
+    const rollback = (pushed: Answers['pushed']) =>
+      awsCheck({ mode: 'rollback', release: release('A', D.A), ...runsB(), ecr: all(), pushed })
+    expect(rollback(['A', 'B', 'C', 'L']).said).toBe(
+      `aws-check: a later commit (${c.L}) pushed an image, so it may have migrated the database: check the floors at it (deploy-and-rollback.md)`,
+    )
+    expect(rollback(['A', 'B']).verdict).toBe('pass')
+    // ECR's answer that isn't a list of tags can't be read, and nothing moves.
+    for (const raw of ['null', '[]', '"sha"', '{}']) {
+      expect(rollback({ raw }).said, raw).toBe("aws-check: ECR's image tags can't be read")
+      expect(auto({ raw }).verdict, raw).toBe('refused')
+    }
+  })
+
   it('reads prod’s Release for a restore, never the restore stage’s own stacks', () => {
     const restore = { mode: 'restore' as const, stage: 'restore', services: 'nocluster', running: D.B, ecr: all() }
-    expect(
-      awsCheck({ ...restore, release: release('B', D.B), stack: stack('UPDATE_COMPLETE', release('C', D.C)) }).said,
-    ).toBe('aws-check: what runs is not the release the gate read')
+    const elsewhere = stack('UPDATE_COMPLETE', release('C', D.C))
+    for (const up of [undefined, 'up']) {
+      expect(awsCheck({ ...restore, restore: up, release: release('B', D.B), stack: elsewhere }).said).toBe(
+        'aws-check: what runs is not the release the gate read',
+      )
+    }
     expect(awsCheck({ ...restore, release: release('B', D.B), stack: 'none' }).verdict).toBe('refused')
+    // ROLLBACK-07: down takes only the restore stage's own stacks down, so it compares no release of
+    // prod's, but still waits while prod's Services stack moves.
+    expect(awsCheck({ ...restore, restore: 'down', release: release('B', D.B), stack: elsewhere }).verdict).toBe('pass')
+    expect(
+      awsCheck({
+        ...restore,
+        restore: 'down',
+        release: release('B', D.B),
+        stack: stack('UPDATE_IN_PROGRESS', release('C', D.C)),
+      }).said,
+    ).toBe('aws-check: a deployment is in progress: wait for it to settle, then dispatch again')
   })
 
   it('refuses a recorded digest ECR doesn’t hold under its own commit’s tag', () => {
@@ -2339,6 +2754,133 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     expect(
       awsCheck({ mode: 'auto', release: release('C', D.C), previous: release('B', D.D), ...live, ecr: all() }).said,
     ).toBe("aws-check: ECR holds no image of the previous release under its commit's tag")
+  })
+})
+
+// restore=down (C11-D45; T24 item 18) and the prod job's read-back after it, each step's run taken from
+// deploy.yml and run with bash and jq against a stand-in aws and CLI (ROLLBACK-04): down skips a restore
+// stack a failed create left (ROLLBACK_COMPLETE or REVIEW_IN_PROGRESS) and refuses one still moving, and
+// the read-back reads a Services stack so left as the release it was given, never as a refusal.
+describe('DPW-06 (C11-D45): restore=down and its read-back against planted AWS answers', () => {
+  let scratch = ''
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw06-down-'))
+    const bin = join(scratch, 'workspace', 'node_modules', 'aws-cdk', 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    writeFileSync(join(bin, 'cdk'), '#!/bin/bash\necho "$1 $4" >>"$CDK_LOG"\n', { mode: 0o755 })
+  })
+  afterAll(() => {
+    if (scratch !== '') rmSync(scratch, { recursive: true, force: true })
+  })
+  const runOf = (name: string) => {
+    const prod = workflowJobs(deployText).find(each => each.id === 'prod')
+    const run = (prod === undefined ? [] : parsedSteps(prod)).find(step => step.name === name)?.run
+    if (run === undefined) throw new Error(`no step ${name} in prod`)
+    return run
+  }
+  const RELEASE = `${'c'.repeat(40)}:sha256:${'0'.repeat(64)}`
+  // The stand-in aws: STATUS_<Part> is each restore stack's status (none: it doesn't exist), SERVICES_STACK
+  // the Services stack's status and Release as the read-back asks, and the restore cluster is gone.
+  const STUB = `aws() {
+  case "$1 $2" in
+    'cloudformation describe-stacks')
+      local part=\${4##*-} value
+      if [[ "$6" == *StackStatus,* ]]; then value=$SERVICES_STACK; else value=$(eval "printf '%s' \\"\\\${STATUS_$part}\\"") ; fi
+      if [ "$value" = none ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id $4 does not exist" >&2
+        return 254
+      fi
+      printf '%s\\n' "$value" ;;
+    'ecs describe-services')
+      echo 'An error occurred (ClusterNotFoundException) when calling the DescribeServices operation: Cluster not found.' >&2
+      return 254 ;;
+    *) echo "unexpected aws $*" >&2; return 99 ;;
+  esac
+}`
+  function step(name: string, env: Record<string, string>) {
+    const output = join(scratch, 'output')
+    const log = join(scratch, 'cdk.log')
+    writeFileSync(output, '')
+    writeFileSync(log, '')
+    const result = spawnSync('bash', ['-c', `${STUB}\n${runOf(name)}`], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: scratch,
+        TMPDIR: scratch,
+        GITHUB_WORKSPACE: join(scratch, 'workspace'),
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: join(scratch, 'summary'),
+        RUNNER_TEMP: scratch,
+        CDK_LOG: log,
+        STAGE: 'restore',
+        RELEASE,
+        MODE: 'deploy',
+        RESTORE: 'down',
+        STATUS_Services: 'UPDATE_COMPLETE',
+        STATUS_Data: 'UPDATE_COMPLETE',
+        STATUS_Platform: 'UPDATE_COMPLETE',
+        SERVICES_STACK: JSON.stringify(['UPDATE_COMPLETE', RELEASE]),
+        ...env,
+      },
+    })
+    return {
+      status: result.status,
+      said: result.stdout.trim().split('\n').at(-1) ?? '',
+      deployed: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
+      output: readFileSync(output, 'utf8'),
+    }
+  }
+  const down = (env: Record<string, string>) => step('Take the restore stage down', env)
+  const readBack = (env: Record<string, string>) => step('Read back what runs', env)
+
+  it('takes each settled stack down in order, and skips one a failed create left or that doesn’t exist', () => {
+    expect(down({}).deployed).toEqual(['deploy restore/Services', 'deploy restore/Data', 'deploy restore/Platform'])
+    for (const left of ['ROLLBACK_COMPLETE', 'REVIEW_IN_PROGRESS', 'none']) {
+      const after = down({ STATUS_Services: left })
+      expect(after.status, left).toBe(0)
+      expect(after.deployed, left).toEqual(['deploy restore/Data', 'deploy restore/Platform'])
+    }
+    expect(down({ STATUS_Data: 'REVIEW_IN_PROGRESS', STATUS_Platform: 'ROLLBACK_COMPLETE' }).deployed).toEqual([
+      'deploy restore/Services',
+    ])
+    const moving = down({ STATUS_Data: 'UPDATE_IN_PROGRESS' })
+    expect(moving.status).toBe(1)
+    expect(moving.said).toBe(
+      'restore down: Hearth-restore-Data is UPDATE_IN_PROGRESS: wait for it to settle, then dispatch again',
+    )
+    expect(moving.deployed).toEqual(['deploy restore/Services'])
+  })
+
+  it('reads a restore Services stack a failed create left as the release down was given, and nothing else', () => {
+    for (const left of [
+      JSON.stringify(['ROLLBACK_COMPLETE', null]),
+      JSON.stringify(['REVIEW_IN_PROGRESS', null]),
+      'none',
+    ]) {
+      const after = readBack({ SERVICES_STACK: left })
+      expect(after.status, left).toBe(0)
+      expect(after.output, left).toContain(`deployed=${RELEASE}\n`)
+      expect(after.output, left).toContain('services={}\n')
+    }
+    const other = `${'d'.repeat(40)}:sha256:${'1'.repeat(64)}`
+    expect(readBack({ SERVICES_STACK: JSON.stringify(['UPDATE_COMPLETE', other]) }).output).toContain(
+      `deployed=${other}\n`,
+    )
+    // A stack with no Release is a refusal anywhere but restore=down, and a malformed one is a refusal always.
+    const refused = "read-back: Hearth-restore-Services' Release isn't <commit>:<digest>"
+    expect(readBack({ RESTORE: 'up', SERVICES_STACK: JSON.stringify(['ROLLBACK_COMPLETE', null]) })).toMatchObject({
+      status: 1,
+      said: refused,
+    })
+    expect(readBack({ SERVICES_STACK: JSON.stringify(['UPDATE_COMPLETE', null]) })).toMatchObject({
+      status: 1,
+      said: refused,
+    })
+    expect(readBack({ SERVICES_STACK: JSON.stringify(['ROLLBACK_COMPLETE', 'None']) })).toMatchObject({
+      status: 1,
+      said: refused,
+    })
   })
 })
 
@@ -2610,5 +3152,34 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       expect(migrate.test(line), line).toBe(true)
     }
     expect(migrate.test('migrate: failed 0015_x: password authentication failed')).toBe(false)
+  })
+})
+
+// The deny rules (C11-D77; T24 item 21; review RULES-01). Claude Code reads a `:*` as a prefix wildcard only
+// at a Bash rule's end; anywhere else its colon is a literal character, so `Bash(gh api:*dispatches*)`
+// would match no real command and refuse nothing. A rule with text after a wildcard is written with a
+// space, `Bash(gh api *dispatches*)`. This reads the committed settings and refuses a `:*` elsewhere.
+describe('C11-D77: the deny rules in .claude/settings.json', () => {
+  const midRule = (deny: readonly string[]) =>
+    deny.filter(rule => /^Bash\(.*\)$/s.test(rule) && rule.slice(5, -1).replace(/:\*$/, '').includes(':*'))
+
+  it('finds a :* anywhere but at a Bash rule’s end', () => {
+    expect(
+      midRule([
+        'Bash(gh api:*pending_deployments*)',
+        'Bash(gh run rerun:*)',
+        'Bash(gh api *dispatches*)',
+        'Bash(*scripts/x.sh apply*)',
+        'Bash(a:*b:*)',
+        'mcp__github__actions_run_trigger',
+      ]),
+    ).toEqual(['Bash(gh api:*pending_deployments*)', 'Bash(a:*b:*)'])
+  })
+
+  it('holds the repository', () => {
+    const settings = JSON.parse(readRepoFile('.claude/settings.json')) as { permissions?: { deny?: unknown } }
+    const deny = settings.permissions?.deny
+    expect(Array.isArray(deny) && deny.length > 0 && deny.every(rule => typeof rule === 'string')).toBe(true)
+    expect(midRule(deny as string[])).toEqual([])
   })
 })
