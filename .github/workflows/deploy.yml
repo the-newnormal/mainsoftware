@@ -1294,7 +1294,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -1474,7 +1474,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -2137,7 +2137,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -3323,7 +3323,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -3520,7 +3520,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -4186,7 +4186,7 @@ jobs:
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
             if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
               shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             fi
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"

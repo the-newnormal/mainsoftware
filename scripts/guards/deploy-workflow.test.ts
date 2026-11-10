@@ -24,6 +24,7 @@ import {
   actionPinFindings,
   assetCheckFindings,
   BOT_TEST,
+  CANONICAL_BY_NAME,
   CDK_DEPLOY_DOWN,
   CDK_DEPLOY_DRILL,
   CDK_DEPLOY_FORWARD,
@@ -34,6 +35,7 @@ import {
   CDK_FOLDER,
   CI,
   CLI_CHECK,
+  canonicalTextFindings,
   checkoutFindings,
   credentialedCodeFindings,
   credentialJobFindings,
@@ -47,6 +49,7 @@ import {
   forbiddenWordFindings,
   functionDefinitions,
   GENERAL_WORDS,
+  GUARD,
   gateFindings,
   JOB_IDS,
   MAIN_CI,
@@ -56,6 +59,7 @@ import {
   NEWEST_RELEASE,
   ONE_OFF,
   OVERRIDES_JQ,
+  outsideEvaluations,
   PREAMBLE,
   PROBE,
   PROBE_LINES,
@@ -67,6 +71,7 @@ import {
   RULESET,
   RUN_TASK_MIGRATE,
   RUN_TASK_PROBE,
+  readShell,
   releaseFindings,
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
@@ -169,6 +174,13 @@ function addedBefore(jobId: string, stepName: string, line: string, added: strin
 // DPW-02's finding for a file workflow.ts would read wrong.
 const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
+
+// The findings for a run's own lines (every line outside a canonical text standing whole): one the table
+// doesn't name, at its line (DPW-07, DPW-10, DPW-13), and a command not held to its uses (DPW-10, DPW-13).
+const AS_BASH =
+  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
+const HELD =
+  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
 
 const indent = (text: string, n: number) =>
   text
@@ -394,10 +406,11 @@ describe('DPW: the guard reads the deploy workflow', () => {
     expect(shellViews('echo a #b').text).toBe('echo a   ')
   })
 
-  // Round 3's SECURITY-01: a canonical text's line is exempt from the arithmetic and name refusal only inside
-  // the text standing whole, which is sound only while each such line evaluates what the text itself sets
-  // (a local, a literal subscript, a count a command prints) or bash's own count of seconds. These are every
-  // such line, so a canonical text given another is a reviewed change here too.
+  // Round 3's SECURITY-01: a canonical text is accepted whole, which is sound only while each of its lines
+  // that bash evaluates as arithmetic or a name evaluates what the text itself sets (a local, a literal
+  // subscript) or bash's own count of seconds (outsideEvaluations() holds that). These are every such line,
+  // so a canonical text given another is a reviewed change here too; ONE_OFF's count of withheld lines is
+  // jq's now, so it evaluates no command's output.
   it('pins the lines of the canonical texts that bash evaluates as arithmetic or a name', () => {
     const evaluated = (text: string) => evaluatedLines(text).map(n => text.split('\n')[n]?.trim())
     expect(evaluated(ASSET_CHECK)).toEqual([
@@ -413,14 +426,12 @@ describe('DPW: the guard reads the deploy workflow', () => {
     ])
     // bash's own SECONDS reads as its count, whatever was assigned to it.
     expect(evaluated(MAIN_CI)).toEqual(['DEADLINE=$((SECONDS + 30 * 60))'])
-    expect(evaluated(ONE_OFF)).toEqual([
-      `withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))`,
-    ])
     for (const text of [
       PREAMBLE,
       CDK_FOLDER,
       CLI_CHECK,
       TASKS_OUTPUTS,
+      ONE_OFF,
       PROBE,
       NEWEST_RELEASE,
       PULL_CHECKS,
@@ -823,7 +834,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
       permissionFindings(
         plant('on:\n  pull_request: {}\n', 'on: [push, "pull_request\\x5Ftarget"]\nx:\n  pull_request: {}\n', '', CI),
       ),
-    ).toEqual([escaped])
+    ).toEqual([shape(CI), escaped])
     expect(permissionFindings(plant('    branches: [main]\n', '    branches:\n      - "ma\\x69n"\n', '', CI))).toEqual([
       escaped,
     ])
@@ -854,6 +865,42 @@ describe('DPW-02 (C11-D55): permissions', () => {
     ] as const) {
       expect(permissionFindings(plant(from, to, after)), to).toContain(`${DEPLOY}: DPW-02 ${IF}`)
     }
+  })
+
+  // Round 4: a plain value starting with an indicator YAML reads as structure, a flow item YAML reads as a
+  // mapping or as one item where the reader splits two, and an indentation indicator, each in any workflow.
+  // Each would hand GitHub another value than the one the reader holds (needs: [secrets, "audit,x"] is two
+  // jobs to YAML, three to the reader).
+  it('finds a value or flow item YAML reads as structure, and an indentation indicator, in any workflow', () => {
+    const shape = [`${CI}: DPW-02 ${SHAPE}`]
+    const ci = (from: string, to: string) => permissionFindings(plant(from, to, '', CI))
+    const branches = '    branches: [main]\n'
+    const needs = '    needs: [secrets, audit]\n'
+    for (const to of [
+      '    branches:\n      - - main\n',
+      '    branches:\n      - ? main\n',
+      '    branches:\n      - : main\n',
+      '    branches: [? main]\n',
+      '    branches: [main: x]\n',
+      '    branches: [main, x:]\n',
+      '    branches: [main, ma#in]\n',
+      '    branches: [main, ]\n',
+    ]) {
+      expect(ci(branches, to), to).toEqual(shape)
+    }
+    expect(ci(needs, '    needs: [secrets, "audit,x"]\n')).toEqual(shape)
+    expect(ci(needs, "    needs: [secrets, 'audit,x']\n")).toEqual(shape)
+    expect(ci(needs, '    needs: [secrets, "audit]\n')).toEqual(shape)
+    // Quoted items whole, and plain ones holding a : with no blank after it, still read.
+    expect(ci(needs, `    needs: [secrets, "audit", 'audit']\n`)).toEqual([])
+    expect(ci(branches, '    branches: [main, a:b]\n')).toEqual([])
+    // An indentation indicator in ci.yml, though its folded scalars stay.
+    const audit = '      - run: npm audit signatures\n'
+    const INDICATOR = `${CI}: DPW-02 gives no block scalar an indentation indicator, which sets an indent workflow.ts doesn’t take`
+    for (const indicator of ['|2', '|2-', '|-2', '>1', '>-2']) {
+      expect(ci(audit, `      - run: ${indicator}\n          npm audit signatures\n`), indicator).toEqual([INDICATOR])
+    }
+    expect(ci(audit, '      - run: >-\n          npm audit signatures\n')).toEqual([])
   })
 
   it('finds a block scalar in deploy.yml that isn’t literal', () => {
@@ -1395,6 +1442,21 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       ),
     ).toEqual([])
   }, 30_000)
+
+  // Round 4: a job that holds no credential and writes no record runs repository code by design, but its runs
+  // are read through SHELL_TABLE too, so what DPW-07 reads in them (env, set -x, a summary written past mask) is
+  // read as bash runs it, and a form the table doesn't name is refused at its line (17, where the plant stands).
+  it('refuses a form SHELL_TABLE doesn’t name in every other job, and reads env by any path', () => {
+    const plan = (line: string) =>
+      maskingFindings(
+        addedBefore('gate', 'Plan', `          printf '%s\\n' "$PLAN" >>"$GITHUB_OUTPUT"\n`, `          ${line}\n`),
+      )
+    for (const line of ['eval "$x"', 'source x', 'echo "$(<x)"', `echo "\${x/a/b}"`, 'echo a |& cat', 'echo a{b,c}']) {
+      expect(plan(line), line).toEqual([at('gate (Plan), line 17', AS_BASH)])
+    }
+    expect(plan('/usr/bin/env')).toEqual([at('gate (Plan)', TRACE)])
+    expect(plan('( printenv )')).toEqual([at('gate (Plan), line 17', AS_BASH), at('gate (Plan)', TRACE)])
+  })
 
   it('holds the repository', () => {
     expect(maskingFindings(workflows)).toEqual([])
@@ -2260,6 +2322,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const CLI =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively'
   const readBack = (id: string) => `${id} (Read back what runs)`
+  // A planted line refused by the table, at its line in the read-back's run (16, where added() plants), and a
+  // command it reads that isn't held to its uses.
+  const refused = (id: string, line = 16) => at(`${readBack(id)}, line ${line}`, AS_BASH)
+  const held = (id: string) => at(readBack(id), HELD)
   const added = (id: string, line: string) =>
     credentialedCodeFindings(
       addedBefore(id, 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${line}\n`),
@@ -2271,31 +2337,38 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const services = '      - name: Deploy Services\n'
 
   it('finds each planted breakage in a credentialed job', () => {
-    expect(added('nonprod', 'npm run synth -w @hearth/infra')).toEqual([at(readBack('nonprod'), RUNS)])
+    const runsHeld = [at(readBack('nonprod'), RUNS), held('nonprod')]
+    expect(added('nonprod', 'npm run synth -w @hearth/infra')).toEqual(runsHeld)
     expect(added('prod', 'node infra/scripts/deploy/history.ts migrated --records x')).toEqual([
       at(readBack('prod'), RUNS),
+      held('prod'),
     ])
-    expect(added('nonprod', 'bash scripts/x.sh')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', 'npx cdk deploy')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', 'docker load -i x.tar')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', 'X=$(curl -s x)')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', './scripts/x.ts')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', '"$TOOL" x')).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', 'jq() { :; }')).toEqual([at(readBack('nonprod'), DEFINES)])
+    expect(added('nonprod', 'bash scripts/x.sh')).toEqual(runsHeld)
+    expect(added('nonprod', 'npx cdk deploy')).toEqual(runsHeld)
+    expect(added('nonprod', 'docker load -i x.tar')).toEqual(runsHeld)
+    expect(added('nonprod', 'X=$(curl -s x)')).toEqual(runsHeld)
+    expect(added('nonprod', './scripts/x.ts')).toEqual(runsHeld)
+    expect(added('nonprod', '"$TOOL" x')).toEqual([at(readBack('nonprod'), RUNS), refused('nonprod')])
+    expect(added('nonprod', 'jq() { :; }')).toEqual([refused('nonprod'), at(readBack('nonprod'), DEFINES)])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --no-rollback', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
+      at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --hotswap', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
+      at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --all', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
+      at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --role-arn x', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
+      at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('run "$CDK" deploy --app', 'run "$CDK" destroy --app', services)).toEqual([
       at('nonprod (Deploy Services)', REFUSED),
+      at('nonprod (Deploy Services)', HELD),
       at('nonprod (Deploy Services)', CLI),
     ])
     expect(
@@ -2304,11 +2377,19 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         'run "$CDK" rollback --orphan x --app',
         '      - name: Roll back to the target\n',
       ),
-    ).toEqual([at('nonprod (Roll back to the target)', REFUSED), at('nonprod (Roll back to the target)', CLI)])
-    expect(find('--no-lookups ', '', services)).toEqual([at('nonprod (Deploy Services)', CLI)])
+    ).toEqual([
+      at('nonprod (Roll back to the target)', REFUSED),
+      at('nonprod (Roll back to the target)', HELD),
+      at('nonprod (Roll back to the target)', CLI),
+    ])
+    expect(find('--no-lookups ', '', services)).toEqual([
+      at('nonprod (Deploy Services)', HELD),
+      at('nonprod (Deploy Services)', CLI),
+    ])
+    // A change of folder, cd, is a builtin the table refuses outside a canonical text.
     expect(
       find(`          ${CDK_FOLDER}\n`, `          ${CDK_FOLDER}\n          cd "$GITHUB_WORKSPACE/infra"\n`, services),
-    ).toEqual([at('nonprod (Deploy Services)', CLI)])
+    ).toEqual([at('nonprod (Deploy Services), line 13', AS_BASH), at('nonprod (Deploy Services)', CLI)])
     expect(find('ASSEMBLY="$RUNNER_TEMP/assembly"', 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"', services)).toEqual([
       at('nonprod (Deploy Services)', CLI),
     ])
@@ -2323,7 +2404,9 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         'nonprod (What runs)',
         'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk',
       ),
-      // The preamble changed is no preamble, so its mask, run and get are functions of the run's own.
+      // The preamble changed is no preamble, so its lines are the run's own, the table refusing the first
+      // function the table doesn't name, and its mask, run and get are functions of the run's own.
+      at('nonprod (What runs), line 4', AS_BASH),
       at('nonprod (What runs)', DEFINES),
     ])
     expect(
@@ -2345,24 +2428,37 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // variable set that chooses what a later command runs: each with the credentials in hand.
   it('finds a tool handed a program, a file rewritten and a variable that chooses what runs', () => {
     const runs = [at(readBack('nonprod'), RUNS)]
-    expect(added('nonprod', 'find . -name x -exec node {} \\;')).toEqual(runs)
-    expect(added('nonprod', 'find . -name x -execdir true {} +')).toEqual(runs)
-    expect(added('nonprod', "trap 'npx cdk deploy' EXIT")).toEqual(runs)
-    expect(added('nonprod', "echo | sed -e '1e node x.js'")).toEqual(runs)
-    expect(added('nonprod', 'sort --compress-program=node x')).toEqual(runs)
-    expect(added('nonprod', "git -c alias.x='!node y.js' x")).toEqual(runs)
-    expect(added('nonprod', 'gh extension exec x')).toEqual(runs)
-    expect(added('nonprod', 'X=node; echo $X')).toEqual(runs)
-    expect(added('nonprod', 'mapfile -C cb -c 1 X <"$RUNNER_TEMP/x"')).toEqual([...runs, at(readBack('nonprod'), SETS)])
+    const runsRefused = [...runs, refused('nonprod')]
+    const runsHeld = [...runs, held('nonprod')]
+    expect(added('nonprod', 'find . -name x -exec node {} \\;')).toEqual(runsRefused)
+    expect(added('nonprod', 'find . -name x -execdir true {} +')).toEqual(runsRefused)
+    expect(added('nonprod', "trap 'npx cdk deploy' EXIT")).toEqual(runsRefused)
+    expect(added('nonprod', "echo | sed -e '1e node x.js'")).toEqual(runsRefused)
+    expect(added('nonprod', 'sort --compress-program=node x')).toEqual(runsHeld)
+    expect(added('nonprod', "git -c alias.x='!node y.js' x")).toEqual(runsHeld)
+    expect(added('nonprod', 'gh extension exec x')).toEqual(runsHeld)
+    expect(added('nonprod', 'X=node; echo $X')).toEqual(runsRefused)
+    expect(added('nonprod', 'mapfile -C cb -c 1 X <"$RUNNER_TEMP/x"')).toEqual([
+      ...runsRefused,
+      at(readBack('nonprod'), SETS),
+    ])
     expect(added('nonprod', 'cat "$RUNNER_TEMP/assembly/x" > node_modules/aws-cdk/bin/cdk')).toEqual([
+      refused('nonprod'),
       at(readBack('nonprod'), WRITES),
     ])
     expect(added('nonprod', 'echo "BASH_ENV=$RUNNER_TEMP/x" >> "$GITHUB_ENV"')).toEqual([
+      refused('nonprod'),
       at(readBack('nonprod'), WRITES),
       at(readBack('nonprod'), LOADER),
     ])
-    expect(added('nonprod', 'export PATH="$RUNNER_TEMP/assembly:$PATH"')).toEqual([at(readBack('nonprod'), LOADER)])
-    expect(added('nonprod', 'HOME="$RUNNER_TEMP/assembly"')).toEqual([at(readBack('nonprod'), LOADER)])
+    expect(added('nonprod', 'export PATH="$RUNNER_TEMP/assembly:$PATH"')).toEqual([
+      refused('nonprod'),
+      at(readBack('nonprod'), LOADER),
+    ])
+    expect(added('nonprod', 'HOME="$RUNNER_TEMP/assembly"')).toEqual([
+      refused('nonprod'),
+      at(readBack('nonprod'), LOADER),
+    ])
   }, 30_000)
 
   // A program run through a wrapper or after a redirection, a function out of its step or its canonical
@@ -2370,31 +2466,38 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // arithmetic or default assignment: each with the credentials in hand.
   it('finds a wrapper, a redirection first, a function of its own and a tool that writes the file the CLI runs', () => {
     const runs = [at(readBack('nonprod'), RUNS)]
+    // A builtin the table refuses (command, exec, time, builtin, set but -euo pipefail, local given a flag) or a
+    // redirection before a command's word is refused as written; a program it reads is held to its uses.
     for (const line of [
       'command -p ./scripts/x.sh',
       'exec -a name ./scripts/x.sh',
       'time -p ./scripts/x.sh',
-      'nohup -- ./scripts/x.sh',
-      'timeout -s KILL 5 ./scripts/x.sh',
       "command -p awk 'BEGIN{system(1)}'",
       'builtin echo x',
-      'sudo -E true',
-      'xargs -0 true',
-      'env -0',
       '>/dev/null ./scripts/x.sh',
       '</dev/null cp "$RUNNER_TEMP/assembly/x" node_modules/aws-cdk/bin/cdk',
-      'uniq "$RUNNER_TEMP/assembly/x" node_modules/aws-cdk/bin/cdk',
-      'run aws s3 cp s3://x/y node_modules/aws-cdk/bin/cdk',
       'set -- ./scripts/x.sh; "$@"',
       'local -n ref=PATH',
     ]) {
-      expect(added('nonprod', line)).toEqual(runs)
+      expect(added('nonprod', line), line).toEqual([...runs, refused('nonprod')])
+    }
+    for (const line of [
+      'nohup -- ./scripts/x.sh',
+      'timeout -s KILL 5 ./scripts/x.sh',
+      'sudo -E true',
+      'xargs -0 true',
+      'env -0',
+      'uniq "$RUNNER_TEMP/assembly/x" node_modules/aws-cdk/bin/cdk',
+      'run aws s3 cp s3://x/y node_modules/aws-cdk/bin/cdk',
+    ]) {
+      expect(added('nonprod', line), line).toEqual([...runs, held('nonprod')])
     }
     expect(added('nonprod', 'cp() { command cp "$@"; }\n          cp a node_modules/aws-cdk/bin/cdk')).toEqual([
       ...runs,
+      refused('nonprod'),
       at(readBack('nonprod'), DEFINES),
     ])
-    expect(added('nonprod', 'function jq { :; }')).toEqual([at(readBack('nonprod'), DEFINES)])
+    expect(added('nonprod', 'function jq { :; }')).toEqual([refused('nonprod'), at(readBack('nonprod'), DEFINES)])
     // A function defined in one step and called in another, where bash no longer has it.
     const readBackStep = stepText(deployText, 'nonprod', 'Read back what runs')
     const recheckStep = stepText(deployText, 'nonprod', 'The fast re-check')
@@ -2412,6 +2515,8 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     )
     expect(credentialedCodeFindings(withText(DEPLOY, crossed), manifests, lockfile)).toEqual([
       at('nonprod (The fast re-check)', RUNS),
+      at('nonprod (The fast re-check)', HELD),
+      refused('nonprod'),
       at(readBack('nonprod'), DEFINES),
     ])
   }, 30_000)
@@ -2419,29 +2524,22 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // A variable that chooses what runs, or which assembly the CLI deploys, set by printf -v, read, mapfile,
   // for, an arithmetic or a default assignment, or by NAME= where it may not be.
   it('finds a variable that chooses what runs set otherwise than by NAME=, and one set where it may not be', () => {
-    for (const line of [
-      "printf -v PATH '%s' x",
-      'read -r PATH <<<"x"',
-      'for PATH in x; do jq -n 1; done',
-      'mapfile -t PATH < <(jq -n 1)',
-    ]) {
-      expect(added('nonprod', line)).toEqual([at(readBack('nonprod'), SETS)])
+    // Each is refused by the table too: printf -v, read, a for loop or mapfile naming one of bash's own
+    // variables (and jq given no program it reads).
+    for (const line of ["printf -v PATH '%s' x", 'read -r PATH <<<"x"', 'for PATH in x; do jq -n 1; done']) {
+      expect(added('nonprod', line), line).toEqual([refused('nonprod'), at(readBack('nonprod'), SETS)])
     }
-    for (const line of [
-      'GITHUB_OUTPUT=node_modules/aws-cdk/bin/cdk',
-      'export TMPDIR="$GITHUB_WORKSPACE"',
-      `: "\${RUNNER_TEMP:=x}"`,
-    ]) {
-      expect(added('nonprod', line)).toEqual([at(readBack('nonprod'), LOADER)])
+    expect(added('nonprod', 'mapfile -t PATH < <(jq -n 1)')).toEqual([
+      refused('nonprod'),
+      held('nonprod'),
+      at(readBack('nonprod'), SETS),
+    ])
+    expect(added('nonprod', 'GITHUB_OUTPUT=node_modules/aws-cdk/bin/cdk')).toEqual([at(readBack('nonprod'), LOADER)])
+    for (const line of ['export TMPDIR="$GITHUB_WORKSPACE"', `: "\${RUNNER_TEMP:=x}"`]) {
+      expect(added('nonprod', line), line).toEqual([refused('nonprod'), at(readBack('nonprod'), LOADER)])
     }
     // An arithmetic one is refused for its arithmetic too, off a canonical text's lines.
-    expect(added('nonprod', '(( PATH = 1 ))')).toEqual([
-      at(
-        readBack('nonprod'),
-        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole',
-      ),
-      at(readBack('nonprod'), LOADER),
-    ])
+    expect(added('nonprod', '(( PATH = 1 ))')).toEqual([refused('nonprod'), at(readBack('nonprod'), LOADER)])
     // The assembly the CLI deploys, chosen otherwise than by its one line.
     const deployServices = (line: string, added: string) =>
       credentialedCodeFindings(addedBefore('nonprod', 'Deploy Services', line, added), manifests, lockfile)
@@ -2450,13 +2548,18 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       at('nonprod (Deploy Services)', LOADER),
     ])
     expect(deployServices(assembly, "          printf -v RUNNER_TEMP '%s' x\n")).toEqual([
+      at('nonprod (Deploy Services), line 11', AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
     const folder = `          ${CDK_FOLDER}\n`
     expect(deployServices(folder, '          read -r ASSEMBLY <<<"x"\n')).toEqual([
+      at('nonprod (Deploy Services), line 12', AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
-    expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([at('nonprod (Deploy Services)', CLI)])
+    expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([
+      at('nonprod (Deploy Services), line 12', AS_BASH),
+      at('nonprod (Deploy Services)', CLI),
+    ])
     expect(find('DIFF="$RUNNER_TEMP/diff.txt"', 'DIFF=node_modules/aws-cdk/bin/cdk', job('prod-plan'))).toEqual([
       at('prod-plan (Diff)', WRITES),
     ])
@@ -2524,23 +2627,25 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
 
   // GUARDS-01: each shape that once hid a command from the reader, here the CLI overwritten by a file of the
   // synth's artifact (which a job running repository code made), planted in a credentialed step. Each is
-  // found: by the command it hides, or as a shape the reader doesn't read, or both.
+  // found: by the command it hides (the regex reader, kept as a second layer, finds most), and by the table,
+  // which names none of these shapes (an unquoted backslash, a # but a comment's, [[ or a case's subject
+  // unquoted, a case inside a substitution or a substitution as a command's word), at its line.
   it('finds a command an escape, a [[ or case argument, a case or a substitution would hide', () => {
-    const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
-    const both = [at(readBack('nonprod'), RUNS), at(readBack('nonprod'), AS_BASH)]
-    expect(added('nonprod', `echo a\\ #;${cp}`)).toEqual(both)
-    expect(added('nonprod', `echo ok\\\n          #;${cp}`)).toEqual(both)
-    expect(added('nonprod', `X="$(case x in x) ${cp};; esac)"`)).toEqual(both)
-    expect(added('nonprod', `echo [[ ; ${cp} ; echo ]]`)).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', `X=$(echo case in\n          ${cp})`)).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', `case x in x) ${cp};; esac`)).toEqual([at(readBack('nonprod'), RUNS)])
-    expect(added('nonprod', `case x in\n            x) :;; true) ${cp};;\n          esac`)).toEqual([
-      at(readBack('nonprod'), RUNS),
-    ])
+    const both = [at(readBack('nonprod'), RUNS), refused('nonprod')]
+    for (const line of [
+      `echo a\\ #;${cp}`,
+      `echo ok\\\n          #;${cp}`,
+      `X="$(case x in x) ${cp};; esac)"`,
+      `echo [[ ; ${cp} ; echo ]]`,
+      `X=$(echo case in\n          ${cp})`,
+      `case x in x) ${cp};; esac`,
+      `case x in\n            x) :;; true) ${cp};;\n          esac`,
+    ]) {
+      expect(added('nonprod', line), line).toEqual(both)
+    }
     expect(added('nonprod', '$(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk')).toEqual([
-      at(readBack('nonprod'), AS_BASH),
+      refused('nonprod'),
     ])
   }, 30_000)
 
@@ -2550,23 +2655,20 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // with an escaped quote, a keyword that is an argument; a backtick substitution, a here-document and
   // anything bash evaluates as arithmetic or a name (where a quoted or constructed $( … ) runs) are refused.
   it('finds what a substitution’s ), a parameter expansion, backticks, an ANSI-C string, a here-document, arithmetic or a keyword argument would hide', () => {
-    const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
-    const runs = [at(readBack('nonprod'), RUNS)]
-    const refused = [at(readBack('nonprod'), AS_BASH)]
-    const both = [...runs, ...refused]
+    const only = [refused('nonprod')]
+    const both = [at(readBack('nonprod'), RUNS), refused('nonprod')]
     const indented = (lines: string) => lines.split('\n').join('\n          ')
     for (const line of [`echo $(true)#;${cp}`, `echo <(true)#;${cp}`, `echo >(true)#;${cp}`]) {
-      expect(added('nonprod', line), line).toEqual(runs)
+      expect(added('nonprod', line), line).toEqual(both)
     }
     // An arithmetic expansion is refused off a canonical line anyway.
     expect(added('nonprod', `echo $((1))#;${cp}`)).toEqual(both)
     expect(added('nonprod', `echo \${x:-a #}; ${cp}`)).toEqual(both)
     expect(added('nonprod', `echo $'\\''; ${cp} #'`)).toEqual(both)
-    expect(added('nonprod', `echo \`${cp}\``)).toEqual(refused)
+    expect(added('nonprod', `echo \`${cp}\``)).toEqual(only)
     expect(added('nonprod', indented(`cat <<true >/dev/null\n'\ntrue\n${cp}\ncat <<true >/dev/null\n'\ntrue`))).toEqual(
-      refused,
+      only,
     )
     for (const line of [
       `[ -v 'a[$(${cp})]' ]`,
@@ -2576,16 +2678,16 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       "x=$(printf 'a[%s(cp a b)]' '$'); [[ $x -eq 1 ]]",
       '[[ -v $x ]]',
     ]) {
-      expect(added('nonprod', line), line).toEqual(refused)
+      expect(added('nonprod', line), line).toEqual(only)
     }
     for (const line of [`echo "\${a['$(${cp})']}"`, `echo "\${!x}"`, 'b[$x]=1']) {
       expect(added('nonprod', line), line).toEqual(both)
     }
-    expect(added('nonprod', indented(`X=$(echo then case x in x\n${cp}\n)`))).toEqual(runs)
-    expect(added('nonprod', indented(`(\necho do case x in x\n${cp}\n)`))).toEqual(runs)
-    // A subshell's ) ends a word, so a # after it is a comment, as bash reads it, but one not after a blank
-    // is refused all the same.
-    expect(added('nonprod', `(true)#;${cp}`)).toEqual(refused)
+    expect(added('nonprod', indented(`X=$(echo then case x in x\n${cp}\n)`))).toEqual(both)
+    expect(added('nonprod', indented(`(\necho do case x in x\n${cp}\n)`))).toEqual(both)
+    // A subshell's ) ends a word, so a # after it is a comment, as bash reads it, but the table names no
+    // subshell, and no # but a comment's after a blank.
+    expect(added('nonprod', `(true)#;${cp}`)).toEqual(only)
   }, 30_000)
 
   // Round 3: what the reader still let through, each in front of, or holding, a cp over the CLI's bin. A
@@ -2597,13 +2699,11 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   // assignment's value or a redirection's target that holds a substitution is a command (GUARDS-03); and a
   // read-write <> writes (GUARDS-04).
   it(`finds a canonical line off its text, $[ ], \${x@P}, an offset or subscript, a built name, another blank, a command after a substitution, and <>`, () => {
-    const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
     const quoted = `'SECONDS[$(${cp})]'`
     const runs = [at(readBack('nonprod'), RUNS)]
-    const refused = [at(readBack('nonprod'), AS_BASH)]
     const lines = (...each: string[]) => each.join('\n          ')
+    // Each is refused by the table at its second line, the one holding what it doesn't name.
     for (const line of [
       lines(`manifests=${quoted}`, 'manifests=$((manifests + 1))'),
       lines(`services=${quoted}`, 'services=$((services + 1))'),
@@ -2619,14 +2719,16 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       lines(`y=${quoted}`, 'a+=([y]=1)'),
       lines(`x=${quoted}`, 'local "$x=1"'),
       lines(`x='[$(${cp})]'`, 'local a"$x"=1'),
-      'X=$(true) $(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk',
     ]) {
-      expect(added('nonprod', line), line).toEqual(refused)
+      expect(added('nonprod', line), line).toEqual([refused('nonprod', 17)])
     }
+    expect(added('nonprod', 'X=$(true) $(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk')).toEqual([
+      refused('nonprod'),
+    ])
     // A compound assignment over three lines, whose subscript line also reads as a command of its own.
-    expect(added('nonprod', lines(`y=${quoted}`, 'a=(', '  [y]=1', ')'))).toEqual([...runs, ...refused])
+    expect(added('nonprod', lines(`y=${quoted}`, 'a=(', '  [y]=1', ')'))).toEqual([...runs, refused('nonprod', 17)])
     for (const blank of ['\u00a0', '\ufeff', '\u2003', '\u000b', '\u000c']) {
-      expect(added('nonprod', `echo ok${blank}#;${cp}`), blank).toEqual(runs)
+      expect(added('nonprod', `echo ok${blank}#;${cp}`), blank).toEqual([...runs, refused('nonprod')])
     }
     for (const line of [
       `X=$(true) ${cp}`,
@@ -2636,17 +2738,19 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       `< <(true) ${cp}`,
       `<$(echo /dev/null) ${cp}`,
       lines('X=$(true', `) ${cp}`),
-      lines("X='a", `b' ${cp}`),
       lines("< 'a", `b' ${cp}`),
     ]) {
-      expect(added('nonprod', line), line).toEqual(runs)
+      expect(added('nonprod', line), line).toEqual([...runs, refused('nonprod')])
     }
+    // A quoted value over two lines and a command after it is shell the table reads: cp, with an assignment
+    // before it, is held to no use.
+    expect(added('nonprod', lines("X='a", `b' ${cp}`))).toEqual([...runs, held('nonprod')])
     for (const line of [
       'cat "$RUNNER_TEMP/assembly/x.js" 1<>node_modules/aws-cdk/bin/cdk',
       'cat "$RUNNER_TEMP/assembly/x.js" <>node_modules/aws-cdk/bin/cdk',
       'jq . "$RUNNER_TEMP/assembly/x.json" 2<>node_modules/aws-cdk/bin/cdk',
     ]) {
-      expect(added('nonprod', line), line).toEqual([at(readBack('nonprod'), WRITES)])
+      expect(added('nonprod', line), line).toEqual([refused('nonprod'), at(readBack('nonprod'), WRITES)])
     }
     // The same after an assignment that holds a substitution: an aws call outside run and get (DPW-07).
     expect(
@@ -2685,6 +2789,246 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(withEntry({ ...entry, resolved: 'https://registry.example.invalid/aws-cdk.tgz' })).toEqual([LOCK])
     expect(withEntry({ ...entry, version: '0.0.1' })).toEqual([LOCK])
   }, 30_000)
+
+  // Round 4: a run's own lines (each outside a canonical text standing whole) are read through SHELL_TABLE, an
+  // allowlist, so a form it doesn't name is refused at its line, whatever it is, and no round has to find it
+  // first. Every run of deploy.yml is read so, and the committed ones pass.
+  it('reads every run of deploy.yml through SHELL_TABLE, and the committed runs pass', () => {
+    let runs = 0
+    for (const each of workflowJobs(deployText)) {
+      for (const [index, step] of parsedSteps(each).entries()) {
+        if (step.run === undefined) continue
+        runs++
+        expect(readShell(step.run).refused, `${each.id} (${step.name ?? index + 1})`).toBeUndefined()
+      }
+    }
+    expect(runs).toBeGreaterThan(80)
+  })
+
+  // One plant for each form SHELL_TABLE doesn't name, each in a credentialed run and refused at its line (16,
+  // where added() plants), most of which the reader before round 4 passed. Some are also found by the rule
+  // that names what they do (RUNS, WRITES, SETS, DEFINES, LOADER).
+  it('refuses at its line each form SHELL_TABLE doesn’t name, in a credentialed run', () => {
+    const forms: Readonly<Record<string, readonly string[]>> = {
+      expansion: [
+        `echo "\${x:1}"`,
+        `echo "\${x/a/b}"`,
+        `echo "\${x%%/*}"`,
+        `echo "\${!x}"`,
+        `echo "\${x@P}"`,
+        'echo "$[x]"',
+        'echo "$@"',
+        'echo "$*"',
+        'echo "$$"',
+        'echo "$10"',
+        `echo "\${#x}"`,
+        `echo "\${x:-y}"`,
+        'echo $x',
+        'echo ~/x',
+        'echo *',
+        'echo a{b,c}',
+        'echo `true`',
+        'echo "$(<x)"',
+      ],
+      redirection: ['cat a <>x', 'echo a >| x', 'echo a &> x', 'echo a 3>x', 'cat 0<&3', 'echo a >&-', 'cat < x'],
+      quoting: ["echo $'a'", 'echo "\\$x"', 'echo a\\ b', 'echo $"x"', "echo 'a\tb'"],
+      keyword: [
+        'while true; do break; done',
+        'until true; do break; done',
+        'select x in a; do break; done',
+        'function f { :; }',
+        'time true',
+        '[[ -v x ]]',
+        '(( x ))',
+        'coproc true',
+      ],
+      operator: ['echo a & wait', 'echo a |& cat', 'case x in x) echo;& esac', '( echo a )', 'echo a;# c'],
+      character: ['echo a%b', 'echo a+b', 'echo a,b', 'echo a^b', 'echo a?b', 'echo é'],
+      assignment: ['IFS=x', 'PATH=/x', 'BASH_ENV=x', 'a[1]=x', 'x+=1'],
+      builtin: [
+        'eval "$x"',
+        'exec true',
+        'source x',
+        '. x',
+        'trap "x" EXIT',
+        'alias x=y',
+        'enable -n echo',
+        'let x=1',
+        'shopt -s extglob',
+        'builtin echo',
+        'command true',
+        'set -x',
+        'set +e',
+        'declare -n x=y',
+        'declare -i x',
+        'export -f x',
+        'readonly x',
+        'read -e x',
+        'mapfile -C x -t A < <(true)',
+        'printf -v x y',
+        'local x=$1',
+        'local -n x=y',
+        'cd /',
+        'test -v x',
+        ': x',
+        'unset x',
+        'return',
+        'shift',
+      ],
+      function: ['f() { :; }', 'mask() { cat; }'],
+    }
+    for (const [form, lines] of Object.entries(forms)) {
+      for (const line of lines) expect(added('nonprod', line), `${form}: ${line}`).toContain(refused('nonprod'))
+    }
+    // And the shapes rounds 1 to 3 found one by one, each now refused because the table names none of it.
+    const cp = 'cp "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk'
+    for (const line of [
+      `echo a\\ #;${cp}`,
+      `echo $(true)#;${cp}`,
+      `echo \${x:-a #}; ${cp}`,
+      `echo $'\\''; ${cp} #'`,
+      `X=$(true) ${cp}`,
+      `< <(true) ${cp}`,
+      'cat a 1<>node_modules/aws-cdk/bin/cdk',
+    ]) {
+      expect(added('nonprod', line), line).toContain(refused('nonprod'))
+    }
+    const lines = (...each: string[]) => each.join('\n          ')
+    for (const line of [
+      lines('cat <<true >/dev/null', "'", 'true', cp, 'cat <<true >/dev/null', "'", 'true'),
+      lines(`manifests='a[$(${cp})]'`, 'manifests=$((manifests + 1))'),
+      lines(`note='$(${cp})'`, `echo "\${note@P}"`),
+      lines(`y='a[$(${cp})]'`, `: "\${@:y}"`),
+      lines(`y='a[$(${cp})]'`, 'a=([y]=1)'),
+    ]) {
+      expect(added('nonprod', line), line).toContain(
+        line.startsWith('cat') ? refused('nonprod') : refused('nonprod', 17),
+      )
+    }
+  }, 30_000)
+
+  // A stretch of a run's own lines closes all it opens before a canonical text or the run's end, so no
+  // canonical text can stand inside a quote, a compound command, a continued line or a here-document.
+  it('refuses a stretch left open, before a canonical text or at the run’s end', () => {
+    for (const open of [
+      "echo '",
+      'x="',
+      'if true; then',
+      '{',
+      'echo a \\',
+      'echo a |',
+      'echo a &&',
+      '$(',
+      'cat <<E',
+      'case x in',
+    ]) {
+      expect(readShell(`${open}\n${PREAMBLE}\n`).refused?.line, open).toBe(0)
+    }
+    expect(readShell('{\necho a').refused?.line).toBe(1)
+    expect(readShell(`${PREAMBLE}\necho ok`).refused).toBeUndefined()
+    expect(readShell(`echo ok\n${PREAMBLE}`).refused).toBeUndefined()
+  })
+
+  // Round 4: each command a credentialed run's own lines read is held to the flags and arguments the
+  // workflow uses (GLUE_USES), where one could run code, read a file the guard can't see or write a file.
+  it('holds each command of a credentialed run to the flags and arguments the workflow uses', () => {
+    for (const line of [
+      'X=1 jq -n .',
+      'jq -f x',
+      'jq --from-file x',
+      "jq -n --rawfile a x '.'",
+      "jq -n --slurpfile a x '.'",
+      "jq -L x -n '.'",
+      "jq -n --args '.' a",
+      "jq '.' x",
+      "jq -n 'input_filename'",
+      "jq -n '$__prog_args'",
+      "jq -n '$ENV'",
+      "jq -n 'env'",
+      "jq -n 'input'",
+      `jq -n 'import "x" as y; .'`,
+      `jq -n 'include "x"; .'`,
+      "jq -n '@sh'",
+      `jq -n '"\\(1)"'`,
+      "jq -n '$y'",
+      "jq -n '. # c'",
+      'gh api repos/x/y',
+      'gh api -X DELETE "repos/$REPO/deployments/1"',
+      'gh api -H x "repos/$REPO/deployments"',
+      'gh api -F a=@x "repos/$REPO/deployments"',
+      'gh api --input x "repos/$REPO/deployments"',
+      'cat x',
+      'head -n 1 x',
+      'tee x',
+      'wc -l',
+      'mask x',
+      'run aws sts get-caller-identity --endpoint-url x',
+      'run aws sts get-caller-identity --profile x',
+      'run aws ecs describe-services --cli-input-json x',
+      'run aws ecs describe-services --cluster file://x',
+      'run skopeo inspect x',
+      'npm ci',
+    ]) {
+      expect(added('nonprod', line), line).toContain(held('nonprod'))
+    }
+    // A redirection to or from a file but the step's own is no form the table names.
+    for (const line of ['echo a > x', 'echo a >> /tmp/x', 'echo a > "$RUNNER_TEMP/x"', 'echo a 2>x']) {
+      expect(added('nonprod', line), line).toContain(refused('nonprod'))
+    }
+  }, 30_000)
+
+  // Round 4: a canonical text stands whole, so what it evaluates (arithmetic, a subscript, an offset, a name
+  // or a prompt) is only what it sets itself, from a literal or arithmetic over such values; and it closes
+  // all it opens, so the run's own lines after it are read from a clean start.
+  it('holds each canonical text to evaluating only what it sets itself, and to closing all it opens', () => {
+    expect(canonicalTextFindings()).toEqual([])
+    const evaluates = (name: string, line: number) =>
+      `${GUARD}: DPW-10 ${name}, line ${line}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`
+    for (const [text, line] of [
+      ['n=$((m + 1))', 1],
+      ['x=$1\necho $((x + 1))', 2],
+      ['x=0\nread -r x\necho $((x + 1))', 3],
+      [`echo "\${a[$i]}"`, 1],
+      ['echo $(( $(jq length <<<"$x") ))', 1],
+      ['[[ "$x" -gt 1 ]]', 1],
+      [`echo "\${x@P}"`, 1],
+      [`echo "\${!x}"`, 1],
+      [`echo "\${x:$y}"`, 1],
+      ['a=([$y]=1)', 1],
+      ['x=1\necho $(( x + $1 ))', 2],
+    ] as const) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(evaluates('X', line))
+    }
+    // (Off a canonical text's own lines, any evaluation is also no shape readsAsBash() reads, so these are
+    // asked of outsideEvaluations() alone.)
+    for (const text of [
+      'n=0\nn=$((n + 1))',
+      `echo "\${a[0]}"`,
+      `for kind in a b; do printf -v "\${kind^^}_X" %s 1; done`,
+    ]) {
+      expect(outsideEvaluations(text), text).toEqual([])
+    }
+    expect(canonicalTextFindings({ X: 'echo `true`' })).toEqual([
+      `${GUARD}: DPW-10 X: is written in the shell shellViews() reads`,
+    ])
+    // ONE_OFF's count of withheld lines once took jq's count of the log into arithmetic.
+    const withheld = /^ *withheld=.*$/m.exec(ONE_OFF)?.[0] ?? ''
+    expect(withheld).toContain('jq --argjson shown')
+    const before = withheld.replace(
+      /withheld=.*/,
+      () => `withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))`,
+    )
+    const line = ONE_OFF.split('\n').indexOf(withheld) + 1
+    expect(canonicalTextFindings({ ONE_OFF: ONE_OFF.replace(withheld, () => before) })).toContain(
+      evaluates('ONE_OFF', line),
+    )
+    // Each closes all it opens: bash parses it alone, and its last line continues nothing.
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) {
+      const parsed = spawnSync('bash', ['-n'], { input: text, encoding: 'utf8' })
+      expect([parsed.status, parsed.stderr], name).toEqual([0, ''])
+      expect(text, name).not.toMatch(/(?:\\|&&|\|\||\|)\s*$/)
+    }
+  })
 
   it('holds the repository', () => {
     expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
@@ -2758,6 +3102,19 @@ describe('DPW-12 (C11-D63, C11-D64): words no workflow needs', () => {
         ),
       ).toEqual([`${CI}: DPW-12 names ${word}`])
       expect(forbiddenWordFindings(plant('jobs:\n', `# ${word}\njobs:\n`, '', CI))).toEqual([])
+      // Round 4: a line starting with # inside a run is bash's, and inside a quoted string no comment at all,
+      // so only a YAML comment is stripped.
+      expect(
+        forbiddenWordFindings(
+          plant(
+            '      - run: npm audit signatures\n',
+            `      - run: npm audit signatures\n      - run: |\n          x="\n          # ${word}\n          "\n          eval "\${x//#/}"\n`,
+            '',
+            CI,
+          ),
+        ),
+        word,
+      ).toEqual([`${CI}: DPW-12 names ${word}`])
     }
   })
 
@@ -2877,7 +3234,10 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         'id=$(gh api -X POST "repos/$REPO/deployments" -f ref=main -f payload="$2" --jq .id)',
         job('record-nonprod'),
       ),
-    ).toEqual([at('record-nonprod (Write the record)', 'sends a record’s body whole, with --input -')])
+    ).toEqual([
+      at('record-nonprod (Write the record)', HELD),
+      at('record-nonprod (Write the record)', 'sends a record’s body whole, with --input -'),
+    ])
     const end = '          one_off_end migrate "$MIGRATE_LINES" "$RUN"\n'
     const last = `          echo "migrate: recorded $COMMIT as the commit nonprod's database was migrated by" | mask | tee -a "$GITHUB_STEP_SUMMARY"\n`
     expect(
@@ -2928,24 +3288,19 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       releaseFindings(
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          node scripts/x.ts\n'),
       ),
-    ).toEqual([at('record-prod', RECORD)])
+    ).toEqual([at('record-prod', RECORD), at('record-prod (Write the record)', HELD)])
     expect(
       releaseFindings(
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          ./scripts/x.sh\n'),
       ),
-    ).toEqual([at('record-prod', RECORD)])
-    // GUARDS-01: an escaped blank before # once hid what follows it from the reader.
+    ).toEqual([at('record-prod', RECORD), at('record-prod (Write the record)', HELD)])
+    // GUARDS-01: an escaped blank before # once hid what follows it from the reader; the table names no
+    // unquoted backslash, and refuses it at its line (9, where the plant stands in the run).
     expect(
       releaseFindings(
         addedBefore('record-nonprod', 'Write the record', '          record() {\n', '          echo a\\ #;node x\n'),
       ),
-    ).toEqual([
-      at('record-nonprod', RECORD),
-      at(
-        'record-nonprod',
-        'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole',
-      ),
-    ])
+    ).toEqual([at('record-nonprod', RECORD), at('record-nonprod (Write the record), line 9', AS_BASH)])
   })
 
   // Round 2's GUARDS-01 and GUARDS-02: a record job's write hidden after a substitution's ), inside a ${…}
@@ -2957,18 +3312,14 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       releaseFindings(
         addedBefore('record-nonprod', 'Write the record', '          record() {\n', `          ${line}\n`),
       )
-    const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
-    expect(record(post)).toEqual([at('record-nonprod (Write the record)', WHOLE)])
-    expect(record(`echo $(echo)#;${post}`)).toEqual([at('record-nonprod (Write the record)', WHOLE)])
-    expect(record(`echo \${x:-a #}; ${post}`)).toEqual([
-      at('record-nonprod', AS_BASH),
+    const refused = at('record-nonprod (Write the record), line 9', AS_BASH)
+    expect(record(post)).toEqual([
+      at('record-nonprod (Write the record)', HELD),
       at('record-nonprod (Write the record)', WHOLE),
     ])
-    expect(record(`echo \`${post}\``)).toEqual([
-      at('record-nonprod', AS_BASH),
-      at('record-nonprod (Write the record)', WHOLE),
-    ])
+    expect(record(`echo $(echo)#;${post}`)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
+    expect(record(`echo \${x:-a #}; ${post}`)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
+    expect(record(`echo \`${post}\``)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
   })
 
   // Round 3's SECURITY-01, SECURITY-02 and GUARDS-05 in a record job, which holds deployments: write: a
@@ -2978,8 +3329,6 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
   it(`finds a record write that $[ ], \${x@P}, an offset, a subscript, a canonical line or local would run unseen`, () => {
     const RECORD = 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code'
     const WHOLE = 'sends a record’s body whole, with --input -'
-    const AS_BASH =
-      'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
     const post =
       'gh api -X POST "repos/$REPO/deployments" -f ref=main -f task=hearth-release -f environment=nonprod --silent'
     const quoted = `'GITHUB_RUN_ATTEMPT[$(${post}; echo 0)]'`
@@ -2999,15 +3348,59 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       [`y=${quoted}`, 'a=([y]=1)'],
       [`x=${quoted}`, 'local "$x=1"'],
     ]) {
-      expect(record(...lines), lines.join('; ')).toEqual([at('record-nonprod', AS_BASH)])
+      expect(record(...lines), lines.join('; ')).toEqual([at('record-nonprod (Write the record), line 10', AS_BASH)])
     }
-    expect(record(`y=${quoted}`, `: "\${@:y}"`)).toEqual([at('record-nonprod', RECORD), at('record-nonprod', AS_BASH)])
-    expect(record('local -n r=x')).toEqual([at('record-nonprod', RECORD)])
-    expect(record('local -i n')).toEqual([at('record-nonprod', RECORD)])
+    expect(record(`y=${quoted}`, `: "\${@:y}"`)).toEqual([
+      at('record-nonprod', RECORD),
+      at('record-nonprod (Write the record), line 10', AS_BASH),
+    ])
+    const refused = at('record-nonprod (Write the record), line 9', AS_BASH)
+    expect(record('local -n r=x')).toEqual([at('record-nonprod', RECORD), refused])
+    expect(record('local -i n')).toEqual([at('record-nonprod', RECORD), refused])
     expect(record(`X=$(true) ${post}`)).toEqual([
       at('record-nonprod', RECORD),
+      refused,
       at('record-nonprod (Write the record)', WHOLE),
     ])
+  })
+
+  // Round 4 in a record job: a form SHELL_TABLE doesn't name is refused at its line (9, where the plant
+  // stands), and each command is held to the flags and arguments the workflow uses (GLUE_USES).
+  it('refuses a form SHELL_TABLE doesn’t name and holds each command, in a record job', () => {
+    const where = 'record-nonprod (Write the record)'
+    const record = (line: string) =>
+      releaseFindings(
+        addedBefore('record-nonprod', 'Write the record', '          record() {\n', `          ${line}\n`),
+      )
+    for (const line of [
+      `echo "\${x/a/b}"`,
+      'echo "$(<x)"',
+      'cat 0<&3',
+      'echo "\\$x"',
+      'while true; do break; done',
+      'echo a |& cat',
+      'echo a%b',
+      'IFS=x',
+      'eval "$x"',
+      'set +e',
+      'f() { :; }',
+      'echo a > "$RUNNER_TEMP/x"',
+    ]) {
+      expect(record(line), line).toContain(at(`${where}, line 9`, AS_BASH))
+    }
+    for (const line of [
+      'X=1 jq -n .',
+      'jq -f x',
+      "jq -n --rawfile a x '.'",
+      "jq -n 'input_filename'",
+      "jq -n '$__prog_args'",
+      'gh api repos/x/y',
+      'gh api -X DELETE "repos/$REPO/deployments/1"',
+      'gh api -H x "repos/$REPO/deployments"',
+      'tee x',
+    ]) {
+      expect(record(line), line).toContain(at(where, HELD))
+    }
   })
 
   it('holds the repository', () => {

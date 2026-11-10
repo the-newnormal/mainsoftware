@@ -7,17 +7,21 @@
 // scalars, so a test that uses it first checks it found the jobs and steps it expects, and a
 // reformatted file fails the test rather than passing unread. What it can't read: a flow mapping with
 // anything in it, an anchor, an alias or a tag (&, *, !), a quoted key, a value continued on the next
-// line (a plain or quoted scalar, or a flow sequence, over two lines), a key given twice, and any other
+// line (a plain or quoted scalar, or a flow sequence, over two lines), a key given twice, a plain value
+// YAML reads as structure (starting with -, ? or : and a blank), a flow item YAML reads otherwise than
+// split at its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other
 // indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
 // lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, so
 // literalProblems() names each block scalar folded (>) or given an indentation indicator, which YAML
-// reads otherwise. It splits a file into lines only at a newline, so a carriage return, NEL, LS or PS,
+// reads otherwise, and indicatorProblems() each given an indentation indicator alone. commentLines()
+// names the YAML comment lines, never a line starting with # inside a block scalar, which is the
+// scalar's. It splits a file into lines only at a newline, so a carriage return, NEL, LS or PS,
 // which YAML readers break lines at too, would hide what follows it on its line from every rule: the
 // deploy-workflow guard refuses any of them, and any other control or format character or blank but a
 // space or a tab, in every workflow before anything else reads it. It also refuses every line
-// shapeProblems() names in every workflow, every one literalProblems() names in deploy.yml, a
-// double-quoted scalar holding an escape in every workflow, and in deploy.yml any flow mapping and
-// quoted item too (DPW-02). That guard
+// shapeProblems() names in every workflow, every one literalProblems() names in deploy.yml and every one
+// indicatorProblems() names in every other, a double-quoted scalar holding an escape in every workflow,
+// and in deploy.yml any flow mapping and quoted item too (DPW-02). That guard
 // (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this file is on
 // the owner's-read list (C11-D74).
 
@@ -378,32 +382,53 @@ export function parsedSteps(job: WorkflowJob): WorkflowStep[] {
   })
 }
 
-// The lines of a workflow that are YAML rather than a block scalar's content or a comment, each with
-// its index, for the checks of the file's own shape. A block scalar's content is read as blockScalar()
-// reads it: the lines past its key, ending at the first indented less than its first line.
-export function yamlLines(text: string): Array<{ index: number; text: string }> {
-  const found: Array<{ index: number; text: string }> = []
+// What each line of a workflow is to YAML: a YAML line, a comment, a block scalar's content or blank. A
+// block scalar's content is read as blockScalar() reads it: the lines past its key, ending at the first
+// indented less than its first line, so a line starting with # inside it is content (bash's to read, and
+// in a quoted string or a here-document no comment at all), never a YAML comment.
+type LineKind = 'yaml' | 'comment' | 'content' | 'blank'
+function lineKinds(text: string): LineKind[] {
+  const kinds: LineKind[] = []
   let blockKey: number | undefined
   let blockIndent: number | undefined
-  text.split('\n').forEach((line, index) => {
-    if (line.trim() === '') return
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') {
+      kinds.push('blank')
+      continue
+    }
     if (blockKey !== undefined) {
       const indent = indentOf(line)
       if (indent > blockKey && (blockIndent === undefined || indent >= blockIndent)) {
         blockIndent ??= indent
-        return
+        kinds.push('content')
+        continue
       }
       blockKey = undefined
       blockIndent = undefined
     }
-    if (/^\s*#/.test(line)) return
-    found.push({ index, text: line })
+    if (/^\s*#/.test(line)) {
+      kinds.push('comment')
+      continue
+    }
+    kinds.push('yaml')
     const key = KEY_LINE.exec(line)
     if (key && BLOCK_SCALAR.test((key[3] ?? '').trim())) {
       blockKey = /^\s*-\s/.test(line) ? indentOf(line) + 2 : indentOf(line)
     }
-  })
-  return found
+  }
+  return kinds
+}
+
+// The lines of a workflow that are YAML rather than a block scalar's content or a comment, each with
+// its index, for the checks of the file's own shape.
+export function yamlLines(text: string): Array<{ index: number; text: string }> {
+  const lines = text.split('\n')
+  return lineKinds(text).flatMap((kind, index) => (kind === 'yaml' ? [{ index, text: lines[index] ?? '' }] : []))
+}
+
+// The lines (by index) that are YAML comments: outside every block scalar's content (lineKinds).
+export function commentLines(text: string): number[] {
+  return lineKinds(text).flatMap((kind, index) => (kind === 'comment' ? [index] : []))
 }
 
 // The lines (by index) whose key's value is a block scalar other than a literal one with no indentation
@@ -416,9 +441,55 @@ export function literalProblems(text: string): number[] {
   })
 }
 
+// The lines (by index) whose key's value is a block scalar with an indentation indicator (|2, >-1), whose
+// content YAML takes at an indent this reader doesn't, so a line YAML reads as content would be read
+// here as YAML or the other way round (DPW-02 refuses each in every workflow; a folded one, which no rule
+// outside deploy.yml reads as bash, stays allowed there).
+export function indicatorProblems(text: string): number[] {
+  return yamlLines(text).flatMap(({ index, text: line }) => {
+    const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
+    return BLOCK_SCALAR.test(value) && /^[|>][+-]?[1-9]/.test(value) ? [index] : []
+  })
+}
+
 // A value that starts with a node property (an anchor &, an alias *, a tag !), which this reader would
 // read as plain text.
 const NODE_PROPERTY = /^[&*!]/
+// A plain value that starts with an indicator YAML reads as structure, not text: - and a blank (a nested
+// sequence), ? and a blank (a complex key) or : and a blank (an empty key).
+const STRUCTURE = /^[-?:](?:\s|$)/
+
+// Whether a flow sequence's items, between its brackets, are read here as YAML reads them: split at each
+// comma outside quotes (a comma inside a quoted item would split it here, so none may hold one), each item
+// a quoted scalar whole or a plain one starting with no node property or indicator and holding no : with a
+// blank or at its end (YAML reads that item as a mapping) and no #.
+function flowItemsRead(inner: string): boolean {
+  if (inner.trim() === '') return true
+  const items: string[] = []
+  let item = ''
+  let quote: string | undefined
+  for (const c of inner) {
+    if (quote !== undefined) {
+      if (c === ',') return false
+      if (c === quote) quote = undefined
+      item += c
+    } else if (c === ',') {
+      items.push(item)
+      item = ''
+    } else {
+      if ((c === '"' || c === "'") && item.trim() === '') quote = c
+      item += c
+    }
+  }
+  if (quote !== undefined) return false
+  items.push(item)
+  return items.every(each => {
+    const text = each.trim()
+    if (text.startsWith('"')) return /^"[^"\\]*"$/.test(text)
+    if (text.startsWith("'")) return /^'(?:[^']|'')*'$/.test(text)
+    return text !== '' && !NODE_PROPERTY.test(text) && !STRUCTURE.test(text) && !/:(?:\s|$)|#/.test(text)
+  })
+}
 
 // The lines (by index) in none of the shapes this reader reads, so a check can refuse a file it would
 // otherwise read wrong (DPW-02). Each YAML line (yamlLines) sits two spaces inside the key that opens
@@ -426,8 +497,9 @@ const NODE_PROPERTY = /^[&*!]/
 // name a plain word, given once in its mapping) or a sequence item (`- value`, or `- name:` starting a
 // mapping whose keys sit two spaces in). A value after its key is whole on its line, and starts with
 // no anchor, alias or tag: a block scalar's indicator, a plain scalar no line below continues (anything
-// deeper under it is refused), a quoted scalar closed on the line, a flow sequence closed on the line
-// whose items are scalars, or the empty flow mapping {}.
+// deeper under it is refused) and that starts with no indicator YAML reads as structure (STRUCTURE), a
+// quoted scalar closed on the line, a flow sequence closed on the line whose items are scalars read as
+// YAML reads them (flowItemsRead), or the empty flow mapping {}.
 export function shapeProblems(text: string): number[] {
   const problems: number[] = []
   const open: Array<{ indent: number; kind: 'map' | 'list' | undefined; keys: Set<string> }> = [
@@ -471,10 +543,10 @@ export function shapeProblems(text: string): number[] {
           : value.startsWith('"')
             ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
             : value.startsWith('[')
-              ? flow !== null && (flow[1] ?? '').split(',').every(each => !NODE_PROPERTY.test(each.trim()))
+              ? flow !== null && flowItemsRead(flow[1] ?? '')
               : value.startsWith('{')
                 ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
-                : true))
+                : !STRUCTURE.test(value)))
     if (!whole) problems.push(index)
   }
   return problems

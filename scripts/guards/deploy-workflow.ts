@@ -12,19 +12,30 @@
 // unseen. A shell text here is a raw template in which a backtick is written \` and a dollar-brace $\{,
 // the one way it differs from the workflow's own text.
 //
-// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and each run
-// step through shellViews() and shellCommands() below, which set aside what bash reads as data
-// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns)
-// and read through what comes before a command (an assignment, a redirection, a wrapper such as exec,
-// command or env), so a word a rule forbids as a command is found where bash would run it and not where
-// it is a jq path, a message or a URL; the words no credentialed job may name at all (an interpreter's,
-// say) are found anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any
-// value it doesn't know could let a bot, a drill or a failed job through. This file decides who and
-// what may deploy, so it is on the owner's-read list (C11-D74).
+// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02). Each run is
+// read twice. Its own lines, every line outside a canonical text standing whole, are read by readShell()
+// through SHELL_TABLE, an allowlist of the shell forms the workflow uses (blanks, word characters, quoting,
+// expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions,
+// assignments and builtins as it holds them), so any form the table doesn't name is refused at its line
+// (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
+// review has to find it first; each command it reads in a credentialed or record job is held to the flags
+// and arguments the workflow uses (GLUE_USES). A canonical text is read whole, so it is held instead to
+// bash's own reading of it (readsAsBash()) and to evaluating only what it sets itself
+// (outsideEvaluations()). Beside that, the regex reader shellViews() and shellCommands() still reads
+// every run as a second layer that only ever adds a command: it sets aside what bash reads as data
+// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns) and
+// reads through what comes before a command (an assignment, a redirection, a wrapper such as exec, command
+// or env), so a word a rule forbids as a command is found where bash would run it and not where it is a
+// jq path, a message or a URL; the words no credentialed job may name at all (an interpreter's, say) are
+// found anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any value it
+// doesn't know could let a bot, a drill or a failed job through. This file decides who and what may
+// deploy, so it is on the owner's-read list (C11-D74).
 import {
   type BlockValue,
   blockValue,
+  commentLines,
   concurrencyOf,
+  indicatorProblems,
   jobConcurrency,
   jobEnvironment,
   jobNeeds,
@@ -433,7 +444,7 @@ one_off_end() {
   ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
   if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --query 'events[].message' --output json); then
     shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-    withheld=$(($(jq length <<<"$log") - $(printf '%s' "$shown" | grep -c '^' || true)))
+    withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
   fi
   if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
   echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -895,14 +906,33 @@ const expr = (inner: string) => `\${{ ${inner} }}`
 // $'\t'; a ${…} holding a quote, a backtick, a substitution, another ${ or a transformation (@ and a
 // letter, as ${x@P}, which expands its value as a prompt and runs a $( … ) in it), or unquoted, a blank,
 // or with no closing brace; and the old arithmetic expansion $[ … ], quoted or not. A credentialed run
-// refuses either (DPW-10, DPW-13).
-export function shellViews(run: string): {
-  text: string
-  code: string
-  quotedLines: ReadonlySet<number>
-  nestedCase: boolean
-  odd: ReadonlySet<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>
-} {
+// refuses either (DPW-10, DPW-13). The views depend on the run's text alone, so each text's are read once
+// and kept (keptByText), every rule reading the same ones.
+interface ShellViews {
+  readonly text: string
+  readonly code: string
+  readonly quotedLines: ReadonlySet<number>
+  readonly nestedCase: boolean
+  readonly odd: ReadonlySet<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>
+}
+// A reader whose answer depends on a run's text alone, kept per text so each rule reading the same run
+// reads it once (at most 4096 texts, then the store starts again).
+function keptByText<T>(read: (run: string) => T): (run: string) => T {
+  const store = new Map<string, T>()
+  return run => {
+    const kept = store.get(run)
+    if (kept !== undefined) return kept
+    if (store.size >= 4096) store.clear()
+    const value = read(run)
+    store.set(run, value)
+    return value
+  }
+}
+const VIEWS = keptByText(readViews)
+export function shellViews(run: string): ShellViews {
+  return VIEWS(run)
+}
+function readViews(run: string): ShellViews {
   let text = ''
   let code = ''
   const stack: Array<{ kind: 'double' } | { kind: 'paren'; depth: number } | { kind: 'tick' }> = []
@@ -1282,7 +1312,12 @@ function outerCode(code: string, quotedLines: ReadonlySet<number>): string {
 const OUTER_SUBSTITUTED_WORD = new RegExp(String.raw`(?:${COMMAND_START})\s*${PREFIXES}${SPAN}`, 'm')
 const WORD_AT = /"[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+/y
 
+// Read once per run's text (keptByText), each caller given its own copy of the list.
+const COMMANDS = keptByText(readCommands)
 export function shellCommands(run: string): ShellCommand[] {
+  return [...COMMANDS(run)]
+}
+function readCommands(run: string): ShellCommand[] {
   const views = shellViews(run)
   const code = commandCode(views.code)
   const lines = code.split('\n')
@@ -1352,7 +1387,12 @@ const DEFINITION = new RegExp(
   String.raw`(?:^|[\s;&|(){}])(?:function\s+(${FUNCTION_NAME})|(${FUNCTION_NAME})\s*\(\s*\))`,
   'g',
 )
+// Read once per run's text (keptByText), each caller given its own copy of the list.
+const DEFINITIONS = keptByText(readDefinitions)
 export function functionDefinitions(run: string): Array<{ name: string; line: number }> {
+  return [...DEFINITIONS(run)]
+}
+function readDefinitions(run: string): Array<{ name: string; line: number }> {
   const found: Array<{ name: string; line: number }> = []
   commandCode(shellViews(run).code)
     .split('\n')
@@ -1382,38 +1422,11 @@ function runLines(
   return run.split('\n').map((raw, index) => ({ index, raw, text: text[index] ?? '', code: code[index] ?? '' }))
 }
 
-// Whether a run is written as the reader reads bash (DPW-10, DPW-13): no unquoted backslash before a blank, a
-// # or the end of a line (which joins it to the next, where a [[ or a case would otherwise read as a
-// command's start), no case inside a substitution, no command whose word is a substitution's output, and
-// none of what shellViews names odd (a comment's # after anything but a blank or a line's start, or inside
-// a substitution; an ANSI-C string but $'\t'; a ${…} holding a quote, a backtick, a substitution, another
-// ${ or a transformation such as ${x@P}, or unquoted a blank; and $[ … ]). No backtick substitution, which
-// the reader reads no command in, and no here-document, whose body it would read as code. No local or
-// export of a name it builds (local "$x=1", which bash reads as an array element's assignment and so
-// evaluates its subscript): each name it is given is written out, alone or before its =. Outside every
-// canonical text standing whole in the run (each of whose lines evaluates only what the text sets itself,
-// a local, a literal subscript or a count a command prints, or bash's own SECONDS, which reads as its
-// count whatever was assigned to it), nothing bash evaluates as arithmetic or as a name, where a quoted or
-// constructed $( … ) would run unseen (an array's subscript in an arithmetic context, bash 5.2): no (( or
-// $(( )), no [[ … ]] comparing as numbers or asking -v or -R, no [ or test asking -v or -R, no indirect
-// ${!…}, no ${name[…]} but [@] or [*], no offset of a substring (${name:offset}, ${@:offset},
-// ${*:offset} or ${1:offset}), no assignment to name[…] and no compound assignment naming a subscript
-// (a=([i]=1), a+=([i]=1)). A canonical text's line written anywhere else is held to this like any other,
-// so a copy of ASSET_CHECK's manifests=$((manifests + 1)) after a quoted manifests='a[$( … )]' is refused.
-const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
-const HERE_DOCUMENT = /(?<!<)<<(?!<)/
-const EVALUATED = [
-  /\(\(/,
-  /\[\[(?:(?!\]\]).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])/,
-  /(?:^|[\s;&|(!])(?:\[|test)\s(?:(?!\]).)*(?<![\w-])-[vR](?![\w-])/,
-  /\$\{!/,
-  /\$\{#?[A-Za-z_]\w*\[(?![@*]\])/,
-  /\$\{(?:[A-Za-z_]\w*(?:\[[@*]\])?|[@*#?$!-]|\d+):(?![-=?+])/,
-  /(?<![\w$])[A-Za-z_]\w*\[[^\]\n]*\]\+?=/,
-  /(?:^|[\s(])\[[^\]\n]*\]\+?=/,
-]
-// The canonical texts a run may hold whole, whatever the reader makes of their lines.
-const CANONICAL_TEXTS: () => readonly string[] = () => [
+// The canonical texts, which a run may hold whole: each read by shellViews() and shellCommands(), written in
+// the shell they read (readsAsBash()) and evaluating only what it sets itself (outsideEvaluations()), both
+// held by the tests; a run's own lines, every line outside a canonical text standing whole, are read by
+// SHELL_TABLE alone (readShell()).
+export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   PREAMBLE,
   CDK_FOLDER,
   CLI_CHECK,
@@ -1430,24 +1443,54 @@ const CANONICAL_TEXTS: () => readonly string[] = () => [
   FAST_RECHECK_PROD,
   SMOKE_ATTEMPT,
   RESTORE_DOWN,
-]
-// The lines of a run inside a canonical text that stands whole in it, from a line's start to a line's end,
-// wherever it stands.
-function canonicalLines(run: string): ReadonlySet<number> {
-  const lines = new Set<number>()
+})
+const CANONICAL_TEXTS = (): readonly string[] => Object.values(CANONICAL_BY_NAME())
+// Each canonical text standing whole in a run, from a line's start to a line's end, with its first line, but
+// one inside another that stands there too.
+function canonicalPlaces(run: string): Array<{ text: string; first: number; count: number }> {
+  const places: Array<{ text: string; first: number; count: number }> = []
   for (const text of CANONICAL_TEXTS()) {
     for (let at = run.indexOf(text); at >= 0; at = run.indexOf(text, at + 1)) {
       const end = at + text.length
       if ((at > 0 && run[at - 1] !== '\n') || (end < run.length && run[end] !== '\n')) continue
-      const first = run.slice(0, at).split('\n').length - 1
-      const count = text.split('\n').length
-      for (let n = first; n < first + count; n++) lines.add(n)
+      places.push({ text, first: run.slice(0, at).split('\n').length - 1, count: text.split('\n').length })
     }
   }
+  return places.filter(
+    place =>
+      !places.some(
+        other =>
+          other !== place &&
+          other.count > place.count &&
+          other.first <= place.first &&
+          other.first + other.count >= place.first + place.count,
+      ),
+  )
+}
+// The lines of a run inside a canonical text that stands whole in it.
+function canonicalLines(run: string): ReadonlySet<number> {
+  const lines = new Set<number>()
+  for (const { first, count } of canonicalPlaces(run)) for (let n = first; n < first + count; n++) lines.add(n)
   return lines
 }
-// A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own: TOOL_USES
-// and RECORD_WORDS refuse it).
+
+// What bash evaluates as arithmetic or a name, on the code view: (( or $(( )), a [[ … ]] comparing as numbers
+// or asking -v or -R, a [ or test asking -v or -R, an indirect ${!…}, a ${name[…]} but [@] or [*], an offset
+// of a substring (${name:offset}, ${@:offset}, ${*:offset} or ${1:offset}), an assignment to name[…] and a
+// compound assignment naming a subscript (a=([i]=1)). The tests pin each canonical text's lines that hold one.
+const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
+const HERE_DOCUMENT = /(?<!<)<<(?!<)/
+const EVALUATED = [
+  /\(\(/,
+  /\[\[(?:(?!\]\]).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])/,
+  /(?:^|[\s;&|(!])(?:\[|test)\s(?:(?!\]).)*(?<![\w-])-[vR](?![\w-])/,
+  /\$\{!/,
+  /\$\{#?[A-Za-z_]\w*\[(?![@*]\])/,
+  /\$\{(?:[A-Za-z_]\w*(?:\[[@*]\])?|[@*#?$!-]|\d+):(?![-=?+])/,
+  /(?<![\w$])[A-Za-z_]\w*\[[^\]\n]*\]\+?=/,
+  /(?:^|[\s(])\[[^\]\n]*\]\+?=/,
+]
+// A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own).
 const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=.*)?)$/s
 // A command's words in the code view, split at the blanks outside its parentheses.
 function words(text: string): string[] {
@@ -1465,18 +1508,24 @@ function words(text: string): string[] {
   if (word !== '') found.push(word)
   return found
 }
-// The lines of a run, by index, that bash evaluates as arithmetic or a name (EVALUATED, on the code view).
+// The lines of a text, by index, that bash evaluates as arithmetic or a name (EVALUATED, on the code view).
 export function evaluatedLines(run: string): number[] {
   return shellViews(run)
     .code.split('\n')
     .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) ? [n] : []))
 }
-function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
+// Whether a canonical text is written in the shell shellViews() and shellCommands() read, so the rules read its
+// commands as bash runs them: no unquoted backslash before a blank, a # or a line's end, no case inside a
+// substitution, no command whose word is a substitution's output, none of what shellViews() names odd, no
+// backtick substitution, no here-document, no local or export of a name it builds, and, outside a canonical
+// text standing whole in it, nothing EVALUATED names (a canonical text's own are held by
+// outsideEvaluations()).
+export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
   if (views.nestedCase || views.odd.size > 0) return false
   if (ESCAPED_BREAK.test(views.code) || SUBSTITUTED_WORD.test(views.code)) return false
   if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
-  // (Only a run whose code names local or export has one to read.)
+  // (Only a text whose code names local or export has one to read.)
   const names = /\b(?:local|export)\b/.test(views.code)
     ? shellCommands(run).filter(command => command.word === 'local' || command.word === 'export')
     : []
@@ -1484,8 +1533,944 @@ function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellVi
   const canonical = canonicalLines(run)
   return views.code.split('\n').every((line, n) => !EVALUATED.some(pattern => pattern.test(line)) || canonical.has(n))
 }
+
+// The lines of a canonical text at which bash evaluates, as arithmetic, a subscript, an offset, a name or a
+// prompt, a value from outside the text. Every name the text evaluates must be bash's own SECONDS (whose value
+// read is always its count of seconds, whatever was assigned to it) or assigned within the text before its
+// first evaluation, every assignment of it a literal number, a for loop over literal words, a local with no
+// value, or arithmetic over such names; and nothing else is evaluated: no $( … ), quote, escape or
+// positional parameter inside arithmetic or a subscript, no $[ … ], ${!…} or ${…@…}, no let, no declare,
+// typeset or local given -i, -n or -A, no [[ … ]] comparing as numbers, and no -v or -R. A name printf -v
+// sets is built only from such names. So no value from a step's env, an output, an artifact's file or a
+// run's own lines is ever evaluated inside a canonical text.
+const OUTSIDE = /\$\(|[`'"\\]|\$[0-9@*#?$!-]|\$\{(?![A-Za-z_]\w*\})/
+const REFUSED_EVALUATION =
+  /\$\[|\$\{!|\$\{[^}\n]*@[A-Za-z]|(?<![\w-])(?:let|declare|typeset)(?![\w-])|(?<![\w-])local\s+-[A-Za-z]*[inA]/g
+export function outsideEvaluations(text: string): number[] {
+  const views = shellViews(text)
+  const code = views.code
+  const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
+  const sites: Array<{ at: number; names: readonly string[] | undefined }> = []
+  const namesIn = (expression: string) =>
+    [...expression.matchAll(/(?<![\w$])\$?\{?([A-Za-z_]\w*)/g)].map(match => match[1] ?? '')
+  // An arithmetic expression as written: its names, or none to allow when it holds anything bash expands
+  // first but $NAME and ${NAME}.
+  const arithmetic = (at: number, expression: string) =>
+    sites.push({ at, names: OUTSIDE.test(expression) ? undefined : namesIn(expression) })
+  // The text inside the parentheses that open at an offset of the text, to the ) that closes them.
+  const inside = (open: number) => {
+    let depth = 0
+    for (let end = open; end < text.length; end++) {
+      if (text[end] === '(') depth++
+      else if (text[end] === ')' && --depth === 0) return text.slice(open + 1, end)
+    }
+    return text.slice(open + 1)
+  }
+  // A value as written from an offset of the text: $(( … )) whole, or up to a blank or a ;.
+  const valueAt = (from: number) =>
+    text.startsWith('$((', from) ? `$(${inside(from + 1)})` : (/^[^\s;]*/.exec(text.slice(from))?.[0] ?? '')
+  for (const match of code.matchAll(/\$?\(\(/g)) {
+    const open = match.index + match[0].length - 2
+    arithmetic(match.index, inside(open).slice(1, -1))
+  }
+  for (const match of code.matchAll(REFUSED_EVALUATION)) sites.push({ at: match.index, names: undefined })
+  // $[ … ] in double quotes too, which the code view writes as quoted text.
+  for (const match of views.text.matchAll(/\$\[/g)) sites.push({ at: match.index, names: undefined })
+  let offset = 0
+  for (const line of code.split('\n')) {
+    if (EVALUATED.slice(1, 3).some(pattern => pattern.test(line))) sites.push({ at: offset, names: undefined })
+    offset += line.length + 1
+  }
+  // A ${…}'s subscript, offset and length, an assignment's subscript and printf -v's name.
+  for (const match of code.matchAll(/\$\{#?([A-Za-z_]\w*|[0-9@*])(?:\[([^\]\n]*)\])?(?::(?![-=?+])([^}\n]*))?\}/g)) {
+    const [, name, subscript, range] = match
+    if (subscript !== undefined && subscript !== '@' && subscript !== '*') arithmetic(match.index, subscript)
+    if (range !== undefined) arithmetic(match.index, range.replace(':', ' '))
+    if (range !== undefined && !/^[A-Za-z_]/.test(name ?? '')) sites.push({ at: match.index, names: undefined })
+  }
+  for (const match of code.matchAll(/(?<![\w$])[A-Za-z_]\w*\[([^\]\n]*)\]\+?=|(?:^|[\s(])\[([^\]\n]*)\]\+?=/gm)) {
+    arithmetic(match.index, match[1] ?? match[2] ?? '')
+  }
+  for (const match of code.matchAll(/(?<![\w-])printf\s+-v\s+/g)) {
+    const name = valueAt(match.index + match[0].length)
+    const outside = /\[|\$\(|`|\$[0-9@*#?$!-]/.test(name)
+    sites.push({
+      at: match.index,
+      names: outside ? undefined : [...name.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(each => each[1] ?? ''),
+    })
+  }
+  // Each assignment of a name, by its offset in the code and its value as written ('' for a local with none or
+  // a for loop over literal words; $ for one that read, mapfile, printf -v or another for loop sets).
+  const assignments = (name: string): Array<{ at: number; value: string }> => {
+    const found: Array<{ at: number; value: string }> = []
+    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}\+?=`, 'g'))) {
+      found.push({ at: match.index, value: valueAt(match.index + match[0].length) })
+    }
+    const local = String.raw`(?<![\w-])local\s[^;\n]*?(?<![\w$=-])${name}(?![\w=])`
+    for (const match of code.matchAll(new RegExp(local, 'g'))) found.push({ at: match.index, value: '' })
+    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w-])for\s+${name}\s+in\s+([^;\n]*)`, 'g'))) {
+      found.push({ at: match.index, value: /^[\w\s-]+$/.test(match[1] ?? '') ? '' : '$' })
+    }
+    const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^;\n|]*(?<![\w$])${name}(?!\w)`
+    for (const match of code.matchAll(new RegExp(setters, 'g'))) found.push({ at: match.index, value: '$' })
+    const printf = String.raw`(?<![\w-])printf\s+-v\s+"?${name}(?![\w])`
+    for (const match of code.matchAll(new RegExp(printf, 'g'))) found.push({ at: match.index, value: '$' })
+    return found
+  }
+  const allowed = (name: string, at: number, seen: ReadonlySet<string>): boolean => {
+    const all = assignments(name)
+    if (name === 'SECONDS') return all.length === 0
+    if (!all.some(each => each.at < at)) return false
+    return all.every(({ value }) => {
+      if (value === '' || /^[0-9]+$/.test(value)) return true
+      const nested = /^\$\(\((.*)\)\)$/s.exec(value)?.[1]
+      if (nested === undefined || OUTSIDE.test(nested)) return false
+      return namesIn(nested).every(each => seen.has(each) || allowed(each, at, new Set([...seen, each])))
+    })
+  }
+  const lines = new Set<number>()
+  for (const { at, names } of sites) {
+    if (names === undefined || !names.every(name => allowed(name, at, new Set([name])))) lines.add(lineOf(at))
+  }
+  return [...lines].sort((a, b) => a - b)
+}
+
+export const GUARD = 'scripts/guards/deploy-workflow.ts'
+// DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
+// shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
+// and evaluates nothing from outside it (outsideEvaluations()), each line that does named. The guard's own
+// texts never change while it runs, so their findings are read once (CANONICAL_FOUND).
+let CANONICAL_FOUND: readonly Finding[] | undefined
+export function canonicalTextFindings(texts?: Readonly<Record<string, string>>): Finding[] {
+  if (texts === undefined) {
+    CANONICAL_FOUND ??= canonicalTextFindings(CANONICAL_BY_NAME())
+    return [...CANONICAL_FOUND]
+  }
+  const found: Finding[] = []
+  for (const [name, text] of Object.entries(texts)) {
+    if (!readsAsBash(text)) found.push(`${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`)
+    for (const line of outsideEvaluations(text)) {
+      found.push(
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`,
+      )
+    }
+  }
+  return found
+}
+
+// --- Reading a run's own lines through a table (DPW-07, DPW-10, DPW-13) ------------------------------------
+
+// The shell a run of deploy.yml may hold outside its canonical texts, entry by entry, each with what bash
+// 5.2 does with it. readShell() reads a run's own lines (every line outside a canonical text standing
+// whole) by this table alone, and refuses the first thing it doesn't name: a character, a quoting form, an
+// expansion, a substitution, an operator, a redirection, a keyword, a test, a pattern, a function or an
+// assignment of another shape. The canonical texts are fixed here, read by shellViews() and
+// shellCommands(), and evaluate only what each sets itself (outsideEvaluations()).
+export const SHELL_TABLE = {
+  // A blank, between words: a space or a tab. bash splits words at these alone (a newline ends a command),
+  // so a no-break space, a form feed or any other character is part of a word, and is refused here.
+  blank: /^[ \t]$/,
+  // A comment: bash discards a # and the rest of its line where a word starts. Read only at a line's start
+  // or after a blank, and never inside a substitution, whose ) it would hide.
+  comment: '#',
+  // An unquoted word's characters: bash reads each as itself, with no expansion, glob (*, ?, [), brace
+  // ({, }), tilde (~), quote or escape among them.
+  wordCharacter: /^[A-Za-z0-9_./:=@-]$/,
+  // A command's word: a builtin's, a function's, a program's name or path, of these characters alone (no
+  // =, so no word bash reads as an assignment, NAME+=VALUE, stands as a command).
+  commandCharacter: /^[A-Za-z0-9_./-]$/,
+  // A single-quoted string: bash reads everything up to the next ' as itself, over lines too. Printable
+  // ASCII only.
+  singleQuoted: /^'[\x20-\x26\x28-\x7e\n]*'/,
+  // A double-quoted string: bash reads each printable ASCII character but $, `, " and \ as itself, and in it
+  // only the expansions and substitutions below. No backslash, backtick or line break.
+  doubleQuotedCharacter: /^[\x20-\x21\x23\x25-\x5b\x5d-\x5f\x61-\x7e]$/,
+  // The expansions, each to a value bash then uses as data (no word splitting or glob in double quotes or
+  // an assignment's value), in double quotes unless said otherwise.
+  expansions: [
+    // $NAME: the variable's value, its name every letter, digit and _ that follows.
+    { form: /^\$[A-Za-z_][A-Za-z0-9_]*/, where: 'quoted or value' },
+    // ${NAME}: the same, braced.
+    { form: /^\$\{[A-Za-z_][A-Za-z0-9_]*\}/, where: 'quoted' },
+    // $1 to $9: a function's arguments, each one digit, no digit after it.
+    { form: /^\$[1-9](?![0-9])/, where: 'quoted' },
+    // ${NAME##*/}: the value with everything up to its last / taken off, a literal pattern.
+    { form: /^\$\{[A-Za-z_][A-Za-z0-9_]*##\*\/\}/, where: 'quoted or value' },
+    // ${#NAME[@]}: how many elements the array holds.
+    { form: /^\$\{#[A-Za-z_][A-Za-z0-9_]*\[@\]\}/, where: 'quoted' },
+    // "${NAME[@]}": each element as a word of its own, the whole double-quoted word.
+    { form: /^\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}/, where: 'whole' },
+    // $?: the last command's status, an assignment's whole value.
+    { form: /^\$\?/, where: 'whole value' },
+  ],
+  // A command substitution, $( … ): bash runs the pipeline inside, read by this table (simple commands
+  // joined by |, on one line but inside quotes, no comment) and puts its output in place; in double quotes
+  // or as an assignment's value.
+  substitution: '$(',
+  // A process substitution, < <( … ): bash runs the pipeline inside and hands its output as a file; only
+  // as mapfile -t NAME's input.
+  processSubstitution: '< <(',
+  // The operators: | pipes a command's output into the next; && and || run the next only if the last
+  // succeeded or failed; ; ends a command; ;; ends a case item; ! at a pipeline's start, before a blank,
+  // negates its status. A line break may follow |, && and ||.
+  operators: ['|', '&&', '||', ';', ';;', '!'],
+  // The redirections, each straight before its target: > writes a file anew, >> appends to it, < and 2>
+  // read it or write the errors to it, <<< hands a double-quoted word as the input, 2>&1 sends the errors
+  // where the output goes and >&2 the output where the errors go. A target is double-quoted or a word.
+  redirections: ['2>&1', '>&2', '<<<', '>>', '2>', '>', '<'],
+  // The keywords, each where a command starts: if … then … elif … else … fi; for NAME in WORDS; do … done
+  // over literal or double-quoted words; case "WORD" in PATTERN) … ;; esac; { … }, a group run in this
+  // shell, its { before a blank and its } where a command starts.
+  keywords: ['if', 'then', 'elif', 'else', 'fi', 'for', 'in', 'do', 'done', 'case', 'esac', '{', '}'],
+  // A test, [[ "WORD" =~ REGEX ]], && joining more than one: bash matches the double-quoted word against
+  // the regular expression, with no word splitting or glob, and evaluates nothing. The expression is of
+  // these characters, a $ only at its end and a | only inside parentheses.
+  regex: /^\^?(?:[A-Za-z0-9[\]{},:+-]|\((?:[A-Za-z0-9[\]{},:+|-])+\))+\$?$/,
+  // A case pattern: the word's characters, *, which bash matches against anything, and single-quoted
+  // strings; | between alternatives, ) after the last.
+  casePattern: /^(?:[A-Za-z0-9_./:=@-]|\*|'[\x20-\x26\x28-\x7e]*')+$/,
+  // A function definition, NAME() { at a line's start and its } where a command starts: bash keeps the
+  // body to run when the name is a command. Only these names, which shadow no builtin or tool.
+  functions: ['record', 'release_payload'],
+  // An assignment where a command starts, NAME=VALUE: bash sets the variable, the value neither split nor
+  // globbed; before a command's word, for that command alone. The value: the word's characters, quoted
+  // strings, $NAME, ${NAME##*/}, $? whole, or $( … ). NAME=( … ) sets an array to its literal or
+  // double-quoted words, none of them a [subscript]=.
+  assignment: /^[A-Za-z_][A-Za-z0-9_]*=/,
+  // bash's own variables (and the loaders'), which change how it or what it runs reads: no assignment,
+  // local, for or mapfile names one.
+  bashVariables:
+    /^(?:BASH\w*|COMP_\w+|LC_\w+|HIST\w*|READLINE_\w+|PS[0-4]|MAIL\w*|LD_\w+|IFS|PATH|HOME|ENV|CDPATH|SHELLOPTS|POSIXLY_CORRECT|GLOBIGNORE|GLOBSORT|EXECIGNORE|FIGNORE|FUNCNEST|PROMPT_COMMAND|PROMPT_DIRTRIM|TMPDIR|TIMEFORMAT|TMOUT|LANG|LANGUAGE|SECONDS|RANDOM|SRANDOM|LINENO|OPTIND|OPTARG|OPTERR|REPLY|MAPFILE|PIPESTATUS|FUNCNAME|DIRSTACK|GROUPS|EUID|UID|PPID|PWD|OLDPWD|SHELL|SHLVL|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|IGNOREEOF|INPUTRC|INSIDE_EMACS|EMACS|COLUMNS|LINES|CHILD_MAX|COPROC|EPOCHREALTIME|EPOCHSECONDS|HOSTFILE|FCEDIT|BASHOPTS)$/,
+  // The builtins a run's own lines may run, each held to what they give it; bash runs these itself.
+  builtins: {
+    // echo prints its words; never a first word that reads as a flag.
+    echo: (args: readonly ShellWord[]) => args.length > 0 && !(args[0]?.value ?? '').startsWith('-'),
+    // exit ends the step with a status: a number, or one expansion's value.
+    exit: (args: readonly ShellWord[]) =>
+      args.length === 1 && (/^[0-9]+$/.test(args[0]?.value ?? '') || /^"\$[A-Za-z_]\w*"$/.test(args[0]?.raw ?? '')),
+    // continue starts a loop's next round.
+    continue: (args: readonly ShellWord[]) => args.length === 0,
+    // set sets the shell's options: only -euo pipefail.
+    set: (args: readonly ShellWord[]) => args.map(arg => arg.raw).join(' ') === '-euo pipefail',
+    // [ compares two words, =, != or -gt (a number bash reads as digits, never evaluated), and nothing else
+    // (never -v, which evaluates a subscript).
+    '[': (args: readonly ShellWord[]) =>
+      args.length === 4 &&
+      ['=', '!=', '-gt'].includes(args[1]?.raw ?? '') &&
+      args[3]?.raw === ']' &&
+      [args[0], args[2]].every(arg => arg !== undefined && (arg.quoted || !arg.raw.startsWith('-'))),
+    // local declares a function's variables by their names alone.
+    local: (args: readonly ShellWord[]) =>
+      args.length > 0 && args.every(arg => /^[A-Za-z_]\w*$/.test(arg.raw) && !SHELL_TABLE.bashVariables.test(arg.raw)),
+    // mapfile -t NAME reads its input's lines into an array (its input a process substitution).
+    mapfile: (args: readonly ShellWord[]) =>
+      args.length === 2 &&
+      args[0]?.raw === '-t' &&
+      /^[A-Za-z_]\w*$/.test(args[1]?.raw ?? '') &&
+      !SHELL_TABLE.bashVariables.test(args[1]?.raw ?? ''),
+    // printf prints one word by a fixed format, '%s' or '%s\n' (never -v, which sets a variable by name).
+    printf: (args: readonly ShellWord[]) =>
+      args.length === 2 && (args[0]?.raw === "'%s'" || args[0]?.raw === "'%s\\n'"),
+  } as Readonly<Record<string, (args: readonly ShellWord[]) => boolean>>,
+  // Every other builtin and keyword bash has, each of which changes how the shell reads or what it runs
+  // (eval, source, ., trap, alias, shopt, enable, builtin, command, exec, let, declare, read, cd, …).
+  refused: [
+    '.',
+    ':',
+    'alias',
+    'bg',
+    'bind',
+    'break',
+    'builtin',
+    'caller',
+    'cd',
+    'command',
+    'compgen',
+    'complete',
+    'compopt',
+    'coproc',
+    'declare',
+    'dirs',
+    'disown',
+    'enable',
+    'eval',
+    'exec',
+    'export',
+    'false',
+    'fc',
+    'fg',
+    'function',
+    'getopts',
+    'hash',
+    'help',
+    'history',
+    'jobs',
+    'kill',
+    'let',
+    'logout',
+    'popd',
+    'pushd',
+    'pwd',
+    'read',
+    'readarray',
+    'readonly',
+    'return',
+    'select',
+    'shift',
+    'shopt',
+    'source',
+    'suspend',
+    'test',
+    'time',
+    'times',
+    'trap',
+    'true',
+    'type',
+    'typeset',
+    'ulimit',
+    'umask',
+    'unalias',
+    'unset',
+    'until',
+    'wait',
+    'while',
+    '[[',
+    ']]',
+    '!',
+    'then',
+    'elif',
+    'else',
+    'fi',
+    'in',
+    'do',
+    'done',
+    'esac',
+    'case',
+    'if',
+    'for',
+    '{',
+    '}',
+  ],
+} as const
+
+// A word as the table reads it: as written, its value when it expands nothing (quotes taken off), whether
+// it holds a quote, and the names it expands.
+export interface ShellWord {
+  raw: string
+  value: string | undefined
+  quoted: boolean
+  expands: readonly string[]
+}
+
+// A command a run's own lines run, as the table reads it: its line in the run, its name (the command's word,
+// or if, for, case, { or [[ for a compound one; none for assignments alone), the assignments before it, its
+// words and redirections, whether it is the first command of a substitution, and its place in its pipeline.
+export interface GlueCommand {
+  line: number
+  name: string | undefined
+  assignments: ReadonlyArray<{ name: string; raw: string; value: ShellWord }>
+  args: readonly ShellWord[]
+  redirections: ReadonlyArray<{ op: string; target: ShellWord | undefined }>
+  substituted: boolean
+  inSubstitution: boolean
+  previous: string | undefined
+  raw: string
+}
+
+export interface ShellRead {
+  // The first thing the table doesn't name, by its line in the run and what it is.
+  refused: { line: number; what: string } | undefined
+  commands: GlueCommand[]
+  functions: Array<{ name: string; line: number }>
+}
+
+class Refusal extends Error {
+  readonly at: number
+  readonly what: string
+  constructor(at: number, what: string) {
+    super(what)
+    this.at = at
+    this.what = what
+  }
+}
+
+const NAME_AT = /^[A-Za-z_][A-Za-z0-9_]*/
+const RESERVED_END = /^(?:then|elif|else|fi|do|done|esac|\})(?=[ \t\n;|&<>)]|$)/
+const COMPOUND = /^(?:if|for|case|\{|\[\[)(?=[ \t\n]|$)/
+
+class ShellReader {
+  readonly commands: GlueCommand[] = []
+  readonly functions: Array<{ name: string; line: number }> = []
+  private i = 0
+  private readonly breaks: number[] = []
+  private readonly s: string
+  private readonly offset: number
+
+  constructor(s: string, offset: number) {
+    this.s = s
+    this.offset = offset
+    for (let at = 0; at < s.length; at++) if (s[at] === '\n') this.breaks.push(at)
+  }
+
+  lineAt(at: number): number {
+    let low = 0
+    let high = this.breaks.length
+    while (low < high) {
+      const middle = (low + high) >> 1
+      if ((this.breaks[middle] ?? 0) < at) low = middle + 1
+      else high = middle
+    }
+    return this.offset + low
+  }
+
+  private refuse(what: string, at = this.i): never {
+    throw new Refusal(at, what)
+  }
+  private peek(n = 0): string {
+    return this.s[this.i + n] ?? ''
+  }
+  private rest(): string {
+    return this.s.slice(this.i, this.i + 200)
+  }
+  private starts(text: string): boolean {
+    return this.s.startsWith(text, this.i)
+  }
+  private blanks(): void {
+    while (SHELL_TABLE.blank.test(this.peek())) this.i++
+  }
+  // A # where a word may start is a comment after a blank or at a line's start, and refused elsewhere.
+  private comment(): boolean {
+    if (this.peek() !== SHELL_TABLE.comment) return false
+    const before = this.s[this.i - 1]
+    if (this.i > 0 && before !== '\n' && !SHELL_TABLE.blank.test(before ?? '')) this.refuse('a # that is no comment')
+    const end = this.s.indexOf('\n', this.i)
+    this.i = end < 0 ? this.s.length : end
+    return true
+  }
+  // Blanks, comments and line breaks.
+  private linebreak(): void {
+    for (;;) {
+      this.blanks()
+      if (this.comment()) continue
+      if (this.peek() === '\n') {
+        this.i++
+        continue
+      }
+      return
+    }
+  }
+
+  read(): void {
+    this.list(['EOF'], true)
+  }
+
+  // A list of and-or lists, each ended by ; or a line break, up to one of its ends: a keyword where a
+  // command starts, ;; or the run's end. It returns the end it found.
+  private list(ends: readonly string[], top = false): string {
+    let count = 0
+    for (;;) {
+      this.linebreak()
+      if (this.i >= this.s.length) {
+        if (ends.includes('EOF')) return 'EOF'
+        this.refuse('a compound command its lines leave open')
+      }
+      const reserved = RESERVED_END.exec(this.rest())?.[0]
+      const end = reserved ?? (this.starts(';;') ? ';;' : undefined)
+      if (end !== undefined) {
+        if (!ends.includes(end)) this.refuse('a keyword or operator where the table reads none')
+        if (count === 0) this.refuse('an empty list')
+        return end
+      }
+      if (top && this.atDefinition()) this.definition()
+      else this.andOr()
+      count++
+      this.blanks()
+      this.comment()
+      if (this.peek() === ';' && this.peek(1) !== ';') {
+        this.i++
+        continue
+      }
+      if (this.peek() === '\n' || this.i >= this.s.length || this.starts(';;')) continue
+      this.refuse('an operator the table does not name')
+    }
+  }
+
+  private andOr(): void {
+    this.pipeline()
+    for (;;) {
+      this.blanks()
+      if (this.starts('&&') || this.starts('||')) {
+        this.i += 2
+        this.linebreak()
+        this.pipeline()
+        continue
+      }
+      return
+    }
+  }
+
+  private pipeline(): void {
+    this.blanks()
+    if (this.peek() === '!' && SHELL_TABLE.blank.test(this.peek(1))) {
+      this.i++
+      this.blanks()
+    }
+    let previous: string | undefined
+    for (;;) {
+      previous = this.command(previous)
+      this.blanks()
+      if (this.peek() === '|' && this.peek(1) !== '|') {
+        if (this.peek(1) === '&') this.refuse('an operator the table does not name')
+        this.i++
+        this.linebreak()
+        continue
+      }
+      return
+    }
+  }
+
+  private emit(command: Omit<GlueCommand, 'raw'>, from: number): void {
+    this.commands.push({ ...command, raw: this.s.slice(from, this.i).trim() })
+  }
+
+  // A command where one starts: a compound one by its keyword, or a simple one. Its name, for the next
+  // command of its pipeline.
+  private command(previous: string | undefined): string {
+    this.blanks()
+    const from = this.i
+    const keyword = COMPOUND.exec(this.rest())?.[0]
+    if (keyword === undefined) return this.simple({ previous, inSubstitution: false, first: false })
+    const line = this.lineAt(from)
+    const base = { line, assignments: [], args: [], substituted: false, inSubstitution: false, previous }
+    if (keyword === 'if') {
+      this.i += 2
+      this.expect(this.list(['then']), 'then')
+      let end = this.list(['elif', 'else', 'fi'])
+      while (end === 'elif') {
+        this.i += 4
+        this.expect(this.list(['then']), 'then')
+        end = this.list(['elif', 'else', 'fi'])
+      }
+      if (end === 'else') {
+        this.i += 4
+        this.list(['fi'])
+      }
+      this.i += 2
+      this.emit({ ...base, name: 'if', redirections: [] }, from)
+    } else if (keyword === 'for') {
+      this.i += 3
+      this.blanks()
+      const name = NAME_AT.exec(this.rest())?.[0] ?? this.refuse('a for loop the table does not read')
+      if (SHELL_TABLE.bashVariables.test(name)) this.refuse("an assignment to one of bash's own variables")
+      this.i += name.length
+      if (!/^[ \t]+in[ \t]/.test(this.rest())) this.refuse('a for loop the table does not read')
+      this.blanks()
+      this.i += 2
+      const words: ShellWord[] = []
+      for (;;) {
+        this.blanks()
+        if (this.peek() === ';') break
+        const word = this.word('for')
+        words.push(word)
+      }
+      if (words.length === 0) this.refuse('a for loop the table does not read')
+      this.i++
+      this.blanks()
+      if (!/^do(?=[ \t\n])/.test(this.rest())) this.refuse('a for loop the table does not read')
+      this.i += 2
+      this.list(['done'])
+      this.i += 4
+      this.emit({ ...base, name: 'for', args: words, redirections: [] }, from)
+    } else if (keyword === 'case') {
+      this.i += 4
+      this.blanks()
+      const subject = this.word('subject')
+      this.blanks()
+      if (!/^in(?=[ \t\n])/.test(this.rest())) this.refuse('a case the table does not read')
+      this.i += 2
+      for (;;) {
+        this.linebreak()
+        if (/^esac(?=[ \t\n;|&)]|$)/.test(this.rest())) break
+        for (;;) {
+          const pattern = this.word('pattern')
+          if (!SHELL_TABLE.casePattern.test(pattern.raw)) this.refuse('a case pattern the table does not name')
+          this.blanks()
+          if (this.peek() === ')') break
+          if (this.peek() !== '|') this.refuse('a case pattern the table does not name')
+          this.i++
+          this.blanks()
+        }
+        this.i++
+        this.list([';;'])
+        this.i += 2
+      }
+      this.i += 4
+      this.emit({ ...base, name: 'case', args: [subject], redirections: [] }, from)
+    } else if (keyword === '{') {
+      this.i++
+      this.list(['}'])
+      this.i++
+      const redirections = this.redirections()
+      this.emit({ ...base, name: '{', redirections }, from)
+    } else {
+      this.i += 2
+      const args: ShellWord[] = []
+      for (;;) {
+        this.blanks()
+        args.push(this.word('test'))
+        this.blanks()
+        if (!this.starts('=~ ')) this.refuse('a [[ test the table does not name')
+        this.i += 3
+        this.blanks()
+        const start = this.i
+        while (this.i < this.s.length && !/[ \t\n]/.test(this.peek())) this.i++
+        const regex = this.s.slice(start, this.i)
+        if (!SHELL_TABLE.regex.test(regex)) this.refuse('a regular expression the table does not name', start)
+        this.blanks()
+        if (this.starts(']]')) {
+          this.i += 2
+          break
+        }
+        if (!this.starts('&& ')) this.refuse('a [[ test the table does not name')
+        this.i += 2
+      }
+      this.emit({ ...base, name: '[[', args, redirections: [] }, from)
+    }
+    if (!/^(?:[ \t\n;|&]|$)/.test(this.rest())) this.refuse('a compound command the table does not read')
+    return keyword
+  }
+
+  private expect(found: string, want: string): void {
+    if (found !== want) this.refuse('a compound command the table does not read')
+    this.i += want.length
+  }
+
+  private atDefinition(): boolean {
+    return (this.i === 0 || this.s[this.i - 1] === '\n') && /^[A-Za-z_]\w*\(\) \{\n/.test(this.rest())
+  }
+  private definition(): void {
+    const name = NAME_AT.exec(this.rest())?.[0] ?? ''
+    if (!(SHELL_TABLE.functions as readonly string[]).includes(name)) {
+      this.refuse('a function the table does not name')
+    }
+    this.functions.push({ name, line: this.lineAt(this.i) })
+    this.i += name.length + 4
+    this.list(['}'])
+    this.i++
+  }
+
+  // A redirection's op and target where one starts, or undefined.
+  private redirection(): { op: string; target: ShellWord | undefined } | undefined {
+    const c = this.peek()
+    if (!(c === '<' || c === '>' || (/[0-9]/.test(c) && /^[0-9]+[<>]/.test(this.rest())) || this.starts('&>'))) {
+      return undefined
+    }
+    if (this.starts('< <(')) {
+      this.i += 4
+      return { op: SHELL_TABLE.processSubstitution, target: undefined }
+    }
+    const op = SHELL_TABLE.redirections.find(each => this.starts(each))
+    if (op === undefined || (op === '>' && /^>[|&]/.test(this.rest())) || (op === '<' && /^<[<>&]/.test(this.rest()))) {
+      this.refuse('a redirection the table does not name')
+    }
+    this.i += op.length
+    if (op === '2>&1' || op === '>&2') {
+      if (!/^(?:[ \t\n;|&)]|$)/.test(this.rest())) this.refuse('a redirection the table does not name')
+      return { op, target: undefined }
+    }
+    if (op === '<<<' && this.peek() !== '"') this.refuse('a redirection the table does not name')
+    const target = this.word('target')
+    return { op, target }
+  }
+
+  private redirections(): Array<{ op: string; target: ShellWord | undefined }> {
+    const found: Array<{ op: string; target: ShellWord | undefined }> = []
+    for (;;) {
+      this.blanks()
+      const redirection = this.redirection()
+      if (redirection === undefined) return found
+      if (redirection.op === SHELL_TABLE.processSubstitution)
+        this.refuse('a process substitution the table does not name')
+      found.push(redirection)
+    }
+  }
+
+  private atCommandEnd(inSubstitution: boolean): boolean {
+    const c = this.peek()
+    return (
+      this.i >= this.s.length ||
+      c === ';' ||
+      c === '\n' ||
+      c === '|' ||
+      c === '&' ||
+      (inSubstitution && c === ')') ||
+      (c === '#' && SHELL_TABLE.blank.test(this.s[this.i - 1] ?? ''))
+    )
+  }
+
+  // A simple command: its assignments, its word, then its words and redirections. Its name.
+  private simple(at: { previous: string | undefined; inSubstitution: boolean; first: boolean }): string {
+    this.blanks()
+    const from = this.i
+    const line = this.lineAt(from)
+    const assignments: Array<{ name: string; raw: string; value: ShellWord }> = []
+    while (SHELL_TABLE.assignment.test(this.rest())) {
+      const start = this.i
+      const name = NAME_AT.exec(this.rest())?.[0] ?? ''
+      if (SHELL_TABLE.bashVariables.test(name)) this.refuse("an assignment to one of bash's own variables")
+      this.i += name.length + 1
+      const value = this.peek() === '(' ? this.array() : this.word('value')
+      assignments.push({ name, raw: this.s.slice(start, this.i), value })
+      this.blanks()
+    }
+    const base = { line, assignments, substituted: at.first, inSubstitution: at.inSubstitution, previous: at.previous }
+    if (this.atCommandEnd(at.inSubstitution)) {
+      if (assignments.length === 0) this.refuse('a command the table does not read')
+      this.emit({ ...base, name: undefined, args: [], redirections: [] }, from)
+      return '='
+    }
+    const start = this.i
+    let name: string
+    if (this.starts('[ ')) {
+      name = '['
+      this.i++
+    } else {
+      while (SHELL_TABLE.commandCharacter.test(this.peek())) this.i++
+      name = this.s.slice(start, this.i)
+      if (name === '' || !/^(?:[ \t\n;|&<>)]|$)/.test(this.rest()))
+        this.refuse("a command's word the table does not read")
+    }
+    if ((SHELL_TABLE.refused as readonly string[]).includes(name)) this.refuse('a builtin or keyword the table refuses')
+    const args: ShellWord[] = []
+    const redirections: Array<{ op: string; target: ShellWord | undefined }> = []
+    for (;;) {
+      this.blanks()
+      if (this.atCommandEnd(at.inSubstitution)) break
+      const redirection = this.redirection()
+      if (redirection !== undefined) {
+        if (redirection.op === SHELL_TABLE.processSubstitution) {
+          if (name !== 'mapfile' || at.inSubstitution) this.refuse('a process substitution the table does not name')
+          this.substitution()
+        }
+        redirections.push(redirection)
+        continue
+      }
+      args.push(this.word(name === '[' ? 'test-arg' : 'arg'))
+    }
+    const hold = SHELL_TABLE.builtins[name]
+    if (hold !== undefined && !hold(args)) this.refuse('a builtin given what the table does not name', start)
+    if (name === 'mapfile' && redirections.map(each => each.op).join() !== SHELL_TABLE.processSubstitution) {
+      this.refuse('a builtin given what the table does not name', start)
+    }
+    this.emit({ ...base, name, args, redirections }, from)
+    return name
+  }
+
+  // An array's literal or double-quoted words, NAME=( … ), on one line.
+  private array(): ShellWord {
+    const start = this.i
+    this.i++
+    for (;;) {
+      this.blanks()
+      if (this.peek() === ')') break
+      this.word('element')
+    }
+    this.i++
+    return { raw: this.s.slice(start, this.i), value: undefined, quoted: true, expands: [] }
+  }
+
+  // A substitution's pipeline, after its opening, to its ).
+  private substitution(): void {
+    let previous: string | undefined
+    let first = true
+    for (;;) {
+      this.blanks()
+      previous = this.simple({ previous, inSubstitution: true, first })
+      first = false
+      this.blanks()
+      if (this.peek() === '|' && this.peek(1) !== '|' && this.peek(1) !== '&') {
+        this.i++
+        continue
+      }
+      break
+    }
+    if (this.peek() !== ')') this.refuse('a substitution the table does not read')
+    this.i++
+  }
+
+  // A word in one of its places: its parts, each a quoted string, the word's characters or (in an
+  // assignment's value) an expansion or a substitution, up to a blank or an operator.
+  private word(
+    place: 'arg' | 'test-arg' | 'value' | 'target' | 'subject' | 'pattern' | 'for' | 'element' | 'test',
+  ): ShellWord {
+    const start = this.i
+    let value: string | undefined = ''
+    let quoted = false
+    const expands: string[] = []
+    const add = (text: string | undefined) => {
+      value = value === undefined || text === undefined ? undefined : value + text
+    }
+    for (;;) {
+      const c = this.peek()
+      if (this.i >= this.s.length || /[ \t\n;|&<>()]/.test(c)) break
+      if (place === 'pattern' && c === '*') {
+        this.i++
+        add(c)
+      } else if (place === 'test-arg' && c === ']' && this.i === start && /^\](?:[ \t\n;|&]|$)/.test(this.rest())) {
+        this.i++
+        add(c)
+      } else if (place === 'test-arg' && this.i === start && /^!=[ \t]/.test(this.rest())) {
+        this.i += 2
+        add('!=')
+      } else if (SHELL_TABLE.wordCharacter.test(c)) {
+        this.i++
+        add(c)
+      } else if (c === "'") {
+        const found = SHELL_TABLE.singleQuoted.exec(this.s.slice(this.i))?.[0]
+        if (found === undefined) this.refuse('a single-quoted string the table does not read')
+        if (place === 'pattern' && found.includes('\n')) this.refuse('a case pattern the table does not name')
+        this.i += found.length
+        quoted = true
+        add(found.slice(1, -1))
+      } else if (c === '"') {
+        quoted = true
+        const inner = this.double(start)
+        expands.push(...inner.expands)
+        add(inner.value)
+      } else if (c === '$' && place === 'value') {
+        const found = this.expansion('value', start)
+        expands.push(...found)
+        add(undefined)
+      } else {
+        this.refuse('a character or form the table does not name')
+      }
+    }
+    if (this.i === start) this.refuse('a word the table does not read')
+    const raw = this.s.slice(start, this.i)
+    if (place === 'subject' && !/^"[^"]*"$/.test(raw)) this.refuse('a case the table does not read', start)
+    if (place === 'test' && !/^"[^"]*"$/.test(raw)) this.refuse('a [[ test the table does not name', start)
+    if (place === 'target' && !(/^"[^"]*"$/.test(raw) || raw === '/dev/null')) {
+      this.refuse('a redirection the table does not name', start)
+    }
+    if ((place === 'for' || place === 'element') && raw.includes("'"))
+      this.refuse('a word the table does not read', start)
+    return { raw, value, quoted, expands }
+  }
+
+  // A double-quoted string from its opening quote: its value (undefined when it expands anything) and the
+  // names it expands.
+  private double(wordStart: number): { value: string | undefined; expands: string[] } {
+    const open = this.i
+    this.i++
+    let value: string | undefined = ''
+    const expands: string[] = []
+    for (;;) {
+      const c = this.peek()
+      if (this.i >= this.s.length) this.refuse('a double-quoted string its lines leave open', open)
+      if (c === '"') {
+        this.i++
+        return { value, expands }
+      }
+      if (c === '$') {
+        const whole = open === wordStart
+        expands.push(...this.expansion(whole ? 'quoted-start' : 'quoted', open))
+        value = undefined
+        continue
+      }
+      if (!SHELL_TABLE.doubleQuotedCharacter.test(c))
+        this.refuse('a character in double quotes the table does not name')
+      this.i++
+      if (value !== undefined) value += c
+    }
+  }
+
+  // An expansion or a substitution at a $, in double quotes or as an assignment's value; the names it
+  // expands.
+  private expansion(place: 'value' | 'quoted' | 'quoted-start', open: number): string[] {
+    const text = this.rest()
+    if (text.startsWith('$(') && !text.startsWith('$((')) {
+      this.i += 2
+      this.substitution()
+      return []
+    }
+    for (const { form, where } of SHELL_TABLE.expansions) {
+      const found = form.exec(text)?.[0]
+      if (found === undefined) continue
+      if (where === 'whole value') {
+        if (place !== 'value' || this.i !== open || !/^(?:[ \t\n;|&)]|$)/.test(this.s.slice(this.i + found.length))) {
+          continue
+        }
+      } else if (where === 'whole') {
+        if (place !== 'quoted-start' || this.s[this.i + found.length] !== '"') continue
+      } else if (where === 'quoted' && place === 'value') continue
+      this.i += found.length
+      const name = /[A-Za-z_][A-Za-z0-9_]*|[1-9?]/.exec(found)?.[0] ?? ''
+      return [name]
+    }
+    return this.refuse('an expansion the table does not name')
+  }
+}
+
+// A run's own lines read by the table, each stretch between its canonical texts from the top, since each
+// canonical text ends where bash would start a command and each stretch must close everything it opens.
+export function readShell(run: string): ShellRead {
+  const lines = run.split('\n')
+  const canonical = canonicalLines(run)
+  const read: ShellRead = { refused: undefined, commands: [], functions: [] }
+  for (let from = 0; from < lines.length; ) {
+    if (canonical.has(from)) {
+      from++
+      continue
+    }
+    let to = from
+    while (to < lines.length && !canonical.has(to)) to++
+    const reader = new ShellReader(lines.slice(from, to).join('\n'), from)
+    try {
+      reader.read()
+    } catch (error) {
+      if (!(error instanceof Refusal)) throw error
+      read.refused ??= { line: reader.lineAt(error.at), what: error.what }
+    }
+    read.commands.push(...reader.commands)
+    read.functions.push(...reader.functions)
+    from = to
+  }
+  return read
+}
+
+// A run's own command as the rules read every command (ShellCommand): run and get read through to the
+// program they run, its words written out as they stand.
+function asShellCommand(command: GlueCommand): ShellCommand[] {
+  if (command.name === undefined) return []
+  const [first, ...rest] = command.args
+  const wrapped = (command.name === 'run' || command.name === 'get') && first !== undefined
+  const args = (wrapped ? rest : command.args).map(arg => ` ${arg.raw}`).join('')
+  return [
+    {
+      line: command.line,
+      prefixes: [...command.assignments.map(each => each.raw), ...(wrapped ? [command.name] : [])],
+      word: wrapped ? first.raw : command.name,
+      substituted: command.substituted,
+      rest: args,
+      tail: args + command.redirections.map(each => ` ${each.op}${each.target?.raw ?? ''}`).join(''),
+    },
+  ]
+}
+// The commands of a run as the rules read them: its own lines' by the table, exactly, and every line's by
+// shellCommands(), the regex reader, as a second layer that only ever adds a command (each canonical text is
+// written in the shell it reads); and the functions it defines, likewise.
+export function commandsOf(run: string, read: ShellRead = readShell(run)): ShellCommand[] {
+  return [...shellCommands(run), ...read.commands.flatMap(asShellCommand)]
+}
+export function definitionsOf(run: string, read: ShellRead = readShell(run)): Array<{ name: string; line: number }> {
+  return [...functionDefinitions(run), ...read.functions]
+}
+// A run's first line the table refuses, as a finding's place: its job, its step and its line, counted from
+// the run's first line as 1.
+const refusedAt = (where: string, read: ShellRead) =>
+  read.refused === undefined ? undefined : `${where}, line ${read.refused.line + 1}`
 const AS_BASH =
-  'is written in the shell the guard reads: no unquoted backslash before a blank, a # or a line’s end, no case inside a substitution, no substitution as a command’s word, no backtick substitution, here-document, ANSI-C string but a tab’s, unreadable parameter expansion, $[ or # but a comment’s after a blank, no name local or export is given that it builds, and nothing evaluated as arithmetic or a name outside a canonical text standing whole'
+  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 
 // --- Reading an if: as GitHub reads it -------------------------------------------------------------------
 
@@ -1770,7 +2755,8 @@ function unreadCharacter(text: string): string | undefined {
 // if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an escape. Every
 // workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow mapping but
 // {}), so none is read wrong, and holds only tabs, newlines and printable text (unreadCharacter). Every
-// other workflow holds the id-token clause, spells nothing with an escape, and names no environment.
+// other workflow holds the id-token clause, spells nothing with an escape, names no environment, and gives
+// no block scalar an indentation indicator (indicatorProblems).
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -1863,6 +2849,15 @@ export function permissionFindings(workflows: Texts): Finding[] {
     }
     if (yamlLines(text).some(line => /^\s*(?:-\s+)?environment\s*:/.test(line.text))) {
       found.push(at(path, 'DPW-02', 'names no environment'))
+    }
+    if (indicatorProblems(text).length > 0) {
+      found.push(
+        at(
+          path,
+          'DPW-02',
+          'gives no block scalar an indentation indicator, which sets an indent workflow.ts doesn’t take',
+        ),
+      )
     }
   }
   return found
@@ -2400,8 +3395,20 @@ export function maskingFindings(workflows: Texts): Finding[] {
       const run = step.run
       if (run.includes('${{')) add(where, 'takes inputs and outputs through env:, never an expression in its run')
       const lines = runLines(run)
-      const commands = shellCommands(run)
+      const read = readShell(run)
+      const commands = commandsOf(run, read)
+      // A run of a job that neither holds credentials nor writes records is read by the table here, the
+      // others' by DPW-10 and DPW-13.
+      const refused = refusedAt(where, read)
+      if (refused !== undefined && !credentialed && !RECORD_JOBS.includes(id)) add(refused, AS_BASH)
+      // env or printenv, by name or path, as a command or a word handed to one.
+      const printsEnvironment = read.commands.some(
+        command =>
+          /(?:^|\/)(?:env|printenv)$/.test(command.name ?? '') ||
+          command.args.some(arg => !arg.quoted && /(?:^|\/)(?:env|printenv)$/.test(arg.value ?? '')),
+      )
       if (
+        printsEnvironment ||
         lines.some(line => TRACE.test(line.code) || ENV_WORD.test(line.code)) ||
         commands.some(
           command =>
@@ -2441,6 +3448,13 @@ export function maskingFindings(workflows: Texts): Finding[] {
       }
       if (!credentialed) return
       if (
+        read.commands.some(command =>
+          [
+            ...command.args,
+            ...command.assignments.map(each => each.value),
+            ...command.redirections.flatMap(each => each.target ?? []),
+          ].some(word => word.expands.some(name => name.startsWith('AWS_'))),
+        ) ||
         lines.some(
           line => CREDENTIAL_READ.test(line.text) || (/env|ENV/.test(line.text) && QUOTED_ENV.test(quotedText(line))),
         )
@@ -2455,7 +3469,7 @@ export function maskingFindings(workflows: Texts): Finding[] {
         add(where, 'a run after the credentials action starts with the preamble')
       }
       if (
-        functionDefinitions(run).some(
+        definitionsOf(run, read).some(
           each => FILTER_FUNCTIONS.includes(each.name) && !(preambled && each.line < PREAMBLE_LINES),
         ) ||
         commands.some(
@@ -2469,6 +3483,23 @@ export function maskingFindings(workflows: Texts): Finding[] {
           where,
           'defines mask, run and get only in its preamble, and no later definition, alias or unset changes them',
         )
+      }
+      // A run's own write to the summary is >> from mask, or tee -a straight after mask, in a pipeline after
+      // what it filters; the summary named in no other word.
+      const summary = (word: ShellWord | undefined) => word?.raw.includes('GITHUB_STEP_SUMMARY') === true
+      if (
+        read.commands.some(command => {
+          const toSummary = command.redirections.filter(each => summary(each.target))
+          const teed = command.name === 'tee' && command.args.some(summary)
+          return (
+            toSummary.some(each => each.op !== '>>' || command.name !== 'mask' || command.previous === undefined) ||
+            (teed && command.previous !== 'mask') ||
+            (!teed && command.args.some(summary)) ||
+            command.assignments.some(each => summary(each.value))
+          )
+        })
+      ) {
+        add(where, 'writes the job summary only through mask')
       }
       for (const line of lines) {
         // Each write to the summary on its own: piped through mask straight into it.
@@ -2967,6 +3998,204 @@ const TOOL_USES: Readonly<Record<string, (command: ShellCommand, raw: string) =>
   local: NO_FLAG,
   export: NO_FLAG,
 }
+
+// What each command a credentialed or record job's own lines run (read by the table) may be given: the flags
+// and arguments those lines use, so none runs code, reads a file the guard can't see or writes one (DPW-10,
+// DPW-13). A command no entry names, with no function of its run's by that name, is refused; so is any
+// assignment before a command's word, a write to a file but the outputs, the summary, prod-plan's diff and
+// /dev/null, and a read of a file but the diff.
+const argText = (args: readonly ShellWord[]) => args.map(arg => arg.raw).join(' ')
+// jq's flags the lines use: -e (status by the output), -n (no input), -c (one line), -r (raw strings), and
+// --arg and --argjson NAME VALUE, which bind a value to $NAME; never -f, --from-file, --rawfile,
+// --slurpfile, -L, --args or --jsonargs, which read a file or take a program from elsewhere.
+const JQ_FLAGS = ['-e', '-n', '-c', '-r', '-nc', '-ec']
+// The words a jq program in those lines calls, besides a key and a function it defines itself: none reads a
+// file, the environment (env, $ENV) or the program's own arguments, and none imports or includes a module.
+const JQ_WORDS = [
+  'all',
+  'and',
+  'as',
+  'ascii_downcase',
+  'contains',
+  'else',
+  'end',
+  'endswith',
+  'false',
+  'first',
+  'if',
+  'index',
+  'keys',
+  'length',
+  'map',
+  'not',
+  'null',
+  'or',
+  'select',
+  'split',
+  'test',
+  'then',
+  'to_entries',
+  'tonumber',
+  'tostring',
+  'type',
+]
+// Whether a jq program holds only strings with no interpolation, fields, keys, its own definitions, the
+// variables bound to it (given, or by as or a definition's parameters) and JQ_WORDS: no comment, format (@sh)
+// or other word.
+export function jqProgramIsHeld(program: string, given: readonly string[]): boolean {
+  const bound = new Set(given)
+  for (const match of program.matchAll(/\bas\s+\$([A-Za-z_]\w*)/g)) bound.add(match[1] ?? '')
+  const defined = new Set<string>()
+  for (const match of program.matchAll(/\bdef\s+([A-Za-z_]\w*)(?:\(([^)]*)\))?\s*:/g)) {
+    defined.add(match[1] ?? '')
+    for (const parameter of (match[2] ?? '').matchAll(/\$([A-Za-z_]\w*)/g)) bound.add(parameter[1] ?? '')
+  }
+  let previous = ''
+  for (let i = 0; i < program.length; ) {
+    const rest = program.slice(i)
+    const c = program[i] ?? ''
+    const token =
+      /^\s+/.exec(rest)?.[0] ??
+      /^"(?:[^"\\]|\\[^(])*"/.exec(rest)?.[0] ??
+      /^\$[A-Za-z_]\w*/.exec(rest)?.[0] ??
+      /^\.[A-Za-z_]\w*/.exec(rest)?.[0] ??
+      /^[A-Za-z_]\w*/.exec(rest)?.[0] ??
+      (/^[^"#@$\sA-Za-z_]/.test(c) ? c : undefined)
+    if (token === undefined) return false
+    i += token.length
+    if (/^\s/.test(token)) continue
+    if (token.startsWith('$') && !bound.has(token.slice(1))) return false
+    if (/^[A-Za-z_]/.test(token)) {
+      const key = (previous === '{' || previous === ',') && /^\s*:/.test(program.slice(i))
+      if (!(key || previous === 'def' || defined.has(token) || token === 'def' || JQ_WORDS.includes(token))) {
+        return false
+      }
+    }
+    previous = token
+  }
+  return true
+}
+// jq given its flags, then one program (single-quoted, or . alone) and no file to read.
+function jqIsHeld(args: readonly ShellWord[]): boolean {
+  const given: string[] = []
+  let i = 0
+  for (; i < args.length; i++) {
+    const raw = args[i]?.raw ?? ''
+    if (JQ_FLAGS.includes(raw)) continue
+    if (raw !== '--arg' && raw !== '--argjson') break
+    const name = args[i + 1]?.raw ?? ''
+    if (!/^[A-Za-z_]\w*$/.test(name) || args[i + 2] === undefined) return false
+    given.push(name)
+    i += 2
+  }
+  const program = args[i]
+  if (program === undefined || i !== args.length - 1) return false
+  return program.raw === '.' || (program.raw.startsWith("'") && jqProgramIsHeld(program.value ?? '', given))
+}
+// gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
+// migration record read with a held program.
+const GH_CALLS = [
+  /^api -X POST "repos\/\$REPO\/deployments" --input - --jq \.id$/,
+  /^api -X POST "repos\/\$REPO\/deployments\/\$(?:ID|id)\/statuses" --input - --silent$/,
+]
+const GH_MIGRATED = 'api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq'
+function ghIsHeld(args: readonly ShellWord[]): boolean {
+  if (GH_CALLS.some(call => call.test(argText(args)))) return true
+  const program = args[args.length - 1]
+  return (
+    argText(args.slice(0, -1)) === GH_MIGRATED &&
+    program !== undefined &&
+    program.raw.startsWith("'") &&
+    jqProgramIsHeld(program.value ?? '', [])
+  )
+}
+// aws only through run or get, as the calls the lines make (AWS_CALLS), each option one they use with its
+// values, none of them a file:// or fileb:// the CLI would read; never --endpoint-url, --cli-input-json,
+// --profile, --ca-bundle or another that reads a file or sends the request elsewhere.
+const AWS_OPTIONS = [
+  '--region',
+  '--repository-name',
+  '--image-ids',
+  '--query',
+  '--output',
+  '--cluster',
+  '--task-definition',
+  '--launch-type',
+  '--platform-version',
+  '--count',
+  '--network-configuration',
+  '--propagate-tags',
+  '--started-by',
+  '--client-token',
+  '--services',
+  '--stack-name',
+  '--service-name',
+  '--desired-status',
+  '--tasks',
+  '--names',
+  '--target-group-arn',
+  '--load-balancer-arn',
+]
+function awsIsHeld(args: readonly ShellWord[]): boolean {
+  if (!AWS_CALLS.test(` ${argText(args)}`)) return false
+  let option = ''
+  return args.slice(2).every(arg => {
+    if (arg.raw.startsWith('-')) {
+      option = arg.raw
+      return AWS_OPTIONS.includes(arg.raw)
+    }
+    return option !== '' && !/^["']?(?:file|fileb|https?):/i.test(arg.raw)
+  })
+}
+// The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
+// the password by get, its errors to the filter).
+const CLI_LINES = [
+  CDK_DEPLOY_FORWARD,
+  CDK_DEPLOY_SERVICES,
+  CDK_DEPLOY_ROLLBACK,
+  CDK_DEPLOY_DOWN,
+  CDK_DIFF_PROD,
+  CDK_DIFF_ROLLBACK,
+]
+const SKOPEO_LOGIN_COMMAND = 'skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1'
+const wrapped = (command: GlueCommand) => {
+  const program = command.args[0]?.raw
+  const rest = command.args.slice(1)
+  if (program === 'aws') return awsIsHeld(rest)
+  if (program === '"$CDK"') return command.name === 'run' && CLI_LINES.includes(command.raw)
+  if (program === 'skopeo') return command.name === 'run' && command.raw === SKOPEO_COPY
+  return false
+}
+const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
+  jq: ({ args }) => jqIsHeld(args),
+  gh: ({ args }) => ghIsHeld(args),
+  // The step's own files: the pushed digest and prod-plan's diff.
+  cat: ({ args }) => argText(args) === '"$RUNNER_TEMP/pushed"' || argText(args) === '"$DIFF"',
+  head: ({ args }) => argText(args) === '-c 921600 "$DIFF"',
+  wc: ({ args }) => argText(args) === '-c',
+  tee: ({ args }) => argText(args) === '-a "$GITHUB_STEP_SUMMARY"',
+  mask: ({ args }) => args.length === 0,
+  run: wrapped,
+  get: wrapped,
+  skopeo: ({ raw, previous }) => raw === SKOPEO_LOGIN_COMMAND && previous === 'get',
+  npm: ({ raw }) => raw === INSTALL,
+}
+// The commands the table holds itself, and the compound ones.
+const TABLE_HELD = [...Object.keys(SHELL_TABLE.builtins), 'if', 'for', 'case', '{', '[[']
+// Whether a command a credentialed or record job's own lines run is held to its uses.
+function glueIsHeld(command: GlueCommand, own: ReadonlySet<string>): boolean {
+  const name = command.name
+  const redirections = command.redirections.every(({ op, target }) =>
+    op === '<' ? target?.raw === '"$DIFF"' : op.startsWith('<') || op.includes('&') || WRITABLE.test(target?.raw ?? ''),
+  )
+  if (name === undefined) return redirections
+  if (!redirections || command.assignments.length > 0) return false
+  const use = GLUE_USES[name]
+  if (use !== undefined) return use(command)
+  return TABLE_HELD.includes(name) || own.has(name)
+}
+const HELD =
+  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
 // the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
@@ -2977,9 +4206,9 @@ const RUNNER_WORDS =
 // output is written, which no credentialed run sets (but CDK_FOLDER's fresh HOME): PATH and the shell's
 // own, the loaders', npm's, git's and gh's, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT,
 // GITHUB_WORKSPACE, …); and the files that set a later step's environment or path.
-const LOADER_ASSIGNMENT = assigns(
-  String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+`,
-)
+const LOADER_NAMES = String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+`
+const LOADER_ASSIGNMENT = assigns(LOADER_NAMES)
+const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
 // What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff (DIFF, set
 // by its one line) and /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk,
@@ -3168,7 +4397,7 @@ function cliLineIsSafe(line: string): boolean {
 // repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
 // registry's at infra's pin.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
-  const found = new Set<Finding>()
+  const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
   shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
   for (const { id, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
@@ -3189,8 +4418,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (step.uses !== undefined && !ALLOWED_USES.test(step.uses)) {
         add(where, 'uses only checkout, download-artifact and the credentials action')
       }
-      const commands = shellCommands(run)
-      const own = new Set(functionDefinitions(run).map(each => each.name))
+      const read = readShell(run)
+      const commands = commandsOf(run, read)
+      const own = new Set(definitionsOf(run, read).map(each => each.name))
       const raw = (command: ShellCommand) => lines[command.line]?.raw.trim() ?? ''
       const wrong = commands.some(command => {
         const word = command.word
@@ -3212,8 +4442,11 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
           'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run',
         )
       }
-      if (!readsAsBash(run, views)) add(where, AS_BASH)
-      if (!definitionsAreCanonical(run)) {
+      // Its own lines are read by the table, each command held to its uses.
+      const refused = refusedAt(where, read)
+      if (refused !== undefined) add(refused, AS_BASH)
+      if (read.commands.some(command => !glueIsHeld(command, own))) add(where, HELD)
+      if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
           'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does',
@@ -3236,6 +4469,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         add(where, "writes no file but its outputs, its summary, prod-plan's diff and /dev/null")
       }
       if (
+        read.commands.some(command => command.assignments.some(each => LOADER_NAME.test(each.name))) ||
         lines.some(
           line => STEP_FILES.test(line.text) || (LOADER_ASSIGNMENT.test(line.code) && line.raw.trim() !== CDK_FOLDER),
         )
@@ -3367,8 +4601,9 @@ const wordIn = (text: string, word: string) =>
   new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}(?![\\w-])`, 'i').test(text)
 
 // DPW-12 (C11-D63, C11-D64): deploy.yml, comments included, names none of DEPLOY_WORDS anywhere, even inside
-// a longer word (check-owner-bootstrap, x-get-secret-value); every other workflow, comments stripped,
-// none of GENERAL_WORDS as a word.
+// a longer word (check-owner-bootstrap, x-get-secret-value); every other workflow, its YAML comments
+// stripped (commentLines: a line starting with # inside a run is bash's, and in a quoted string or a
+// here-document no comment at all), none of GENERAL_WORDS as a word.
 export function forbiddenWordFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   for (const [path, text] of workflows) {
@@ -3378,9 +4613,10 @@ export function forbiddenWordFindings(workflows: Texts): Finding[] {
       }
       continue
     }
+    const comments = new Set(commentLines(text))
     const read = text
       .split('\n')
-      .filter(line => !/^\s*#/.test(line))
+      .filter((_, index) => !comments.has(index))
       .join('\n')
     for (const word of GENERAL_WORDS) if (wordIn(read, word)) found.push(at(path, 'DPW-12', `names ${word}`))
   }
@@ -3486,12 +4722,13 @@ export function releaseFindings(workflows: Texts): Finding[] {
   for (const id of RECORD_JOBS) {
     const steps = jobs.get(id)?.steps ?? []
     const run = steps[0]?.run ?? ''
-    const own = new Set(functionDefinitions(run).map(each => each.name))
+    const read = readShell(run)
+    const own = new Set(definitionsOf(run, read).map(each => each.name))
     if (
       steps.length !== 1 ||
       steps[0]?.uses !== undefined ||
       runLines(run).some(line => RUNNER_WORDS.test(line.text)) ||
-      shellCommands(run).some(
+      commandsOf(run, read).some(
         command =>
           command.prefixes.some(prefix => WRAPPERS.includes(prefix)) ||
           !(RECORD_WORDS.includes(command.word) || own.has(command.word)) ||
@@ -3501,7 +4738,11 @@ export function releaseFindings(workflows: Texts): Finding[] {
     ) {
       add(id, 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code')
     }
-    if (!readsAsBash(run)) add(id, AS_BASH)
+    // Its own lines are read by the table, each command held to its uses.
+    const where = steps[0] === undefined ? id : `${id} (${label(steps[0], 0)})`
+    const refused = refusedAt(where, read)
+    if (refused !== undefined) add(refused, AS_BASH)
+    if (read.commands.some(command => !glueIsHeld(command, own))) add(where, HELD)
   }
   for (const { id, steps } of jobs.values()) {
     steps.forEach((step, index) => {
