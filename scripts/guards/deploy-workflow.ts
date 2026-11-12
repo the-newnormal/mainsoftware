@@ -162,11 +162,23 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
 # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
 # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-# tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-# otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-# templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-# asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-# folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+# tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+# its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+# placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+# isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+# folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+# object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+# with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+# deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+# its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+# it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+# tag, parameter or other property: none is in a template or the approver's diff), or an asset
+# manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+# stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+# handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+# names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+# object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+# symbolic link.
 # The release check then requires every Services template's Release output to be the release this
 # job deploys, and every container image in the Tasks and Services templates to be the server image
 # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -202,6 +214,8 @@ check_assembly() {
       asset_refuse 'a manifest has missing context, which the CLI would look up'
     jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'an artifact type is not one a workload synth writes'
+    jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-deploy-role-$\{AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-$\{AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-lookup-role-$\{AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+      asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
     jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -226,6 +240,12 @@ check_assembly() {
           *) asset_refuse 'an asset path leaves the assembly' ;;
         esac
       done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+      jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-$\{AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+      while IFS=$'\t' read -r path key; do
+        [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+        [ "$(sha256sum <"$dir/$path")" = "$\{key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+      done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
       manifests=$((manifests + 1))
     done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
     stackfiles=()
@@ -4188,13 +4208,15 @@ const EXPANDS_ITS_OWN =
 
 // The secrets context and the job's token as GitHub reads them (actions/runner looks a context's name and a
 // property up ignoring case): secrets by property (secrets.NAME, a name captured) or by index (secrets['NAME'])
-// or whole (toJSON(secrets)), in any letter case; github.token or github['token'] in any case; and, in an
-// expression, the github context whole (toJSON(github), which holds the token). Only the workflow's own
-// spelling of a name its job may use passes (secrets.AWS_ACCOUNT_ID), and github.token only as a GH_TOKEN env
-// value, whose step env STEP_ENVS pins; any other spelling is refused, so an action's input, which no rule
-// pins by value, can't name a secret or the token another way.
+// or whole (toJSON(secrets)), in any letter case; github.token or github['token'] in any case, and the
+// github context's values by its object filter (github.*, every value of the context, the token first,
+// which join(), toJSON() or an index then hand on); and, in an expression, the github context whole
+// (toJSON(github), which holds the token). Only the workflow's own spelling of a name its job may use passes
+// (secrets.AWS_ACCOUNT_ID), and github.token only as a GH_TOKEN env value, whose step env STEP_ENVS pins; any
+// other spelling is refused, so an action's input, which no rule pins by value, can't name a secret or the
+// token another way.
 const SECRETS_NAMED = /\bsecrets\b(?:\s*\.\s*(\w+)\b(?!\s*[.[(]))?/gi
-const JOB_TOKEN = /\bgithub\s*(?:\.\s*token\b|\[)/i
+const JOB_TOKEN = /\bgithub\s*(?:\.\s*(?:token\b|\*)|\[)/i
 const GITHUB_CONTEXT = /\bgithub\b(\s*[.[])?/gi
 const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
 
@@ -4204,12 +4226,12 @@ const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
 // in a credentialed run no jq program's env or $ENV, /proc file or AWS_ variable's expansion; no ${{ }}
 // inside a run (inputs and outputs come through env:); secrets, in any letter case or form, names only the
 // role and the account id, as secrets.NAME, in the five environment jobs, and never GITHUB_TOKEN; github.token
-// only as a GH_TOKEN env value, and the github context never whole; in each environment job the account id is masked
-// before the credentials action, every run after it starts with the preamble, whose mask, run and get no
-// later definition, alias or unset changes, every aws, CDK and skopeo command is run … or $(get …), get
-// only ever first in a $( … ), whose output is kept (the registry login alone piped into skopeo login,
-// then the filter), each write to the job summary goes through mask, the credentials action takes
-// exactly its seven inputs, and no AWS_ variable or ROLE_TO_ASSUME is set.
+// only as a GH_TOKEN env value, and the github context never whole, nor its values by github.*; in each
+// environment job the account id is masked before the credentials action, every run after it starts with
+// the preamble, whose mask, run and get no later definition, alias or unset changes, every aws, CDK and
+// skopeo command is run … or $(get …), get only ever first in a $( … ), whose output is kept (the registry
+// login alone piped into skopeo login, then the filter), each write to the job summary goes through mask,
+// the credentials action takes exactly its seven inputs, and no AWS_ variable or ROLE_TO_ASSUME is set.
 export function maskingFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -4878,8 +4900,8 @@ const BASH_OWN = [
   'continue',
 ]
 // The tools a credentialed run uses, with aws and skopeo: each only reads the files it is named (tee, sort,
-// mktemp and find are held to their uses below), so none, as uniq or cp would, rewrites a file the CLI
-// then runs.
+// mktemp, find and sha256sum are held to their uses below), so none, as uniq or cp would, rewrites a file
+// the CLI then runs.
 const TOOLS = [
   'jq',
   'gh',
@@ -4895,13 +4917,14 @@ const TOOLS = [
   'readlink',
   'realpath',
   'find',
+  'sha256sum',
   'aws',
   'skopeo',
 ]
 // The tools that could run another program or write a file, held to the one use each job makes of them:
 // git only to ask whether one commit is an ancestor of another, gh only as gh api, sed only as the
-// preamble's mask, find only in ASSET_CHECK's and CLI_CHECK's searches for a symbolic link, sort only with
-// its plain flags,
+// preamble's mask, find only in ASSET_CHECK's and CLI_CHECK's searches for a symbolic link, sha256sum only
+// in ASSET_CHECK's hash of a file asset's bytes from its input, sort only with its plain flags,
 // tee only appending to the summary, mapfile with no callback, aws only for the reads and one-offs the
 // workflow makes (no s3 cp, which would write a file), skopeo only as the registry login and the push,
 // set only as set -euo pipefail (no set --, which would hand "$@" a program), and local
@@ -4910,6 +4933,7 @@ const TOOLS = [
 const MASK_LINE = PREAMBLE.split('\n').find(line => line.startsWith('mask()')) ?? ''
 const FIND_LINE = ASSET_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
 const CLI_FIND_LINE = CLI_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
+const KEY_HASH_LINE = ASSET_CHECK.split('\n').find(line => line.includes('sha256sum ')) ?? ''
 // The tools CLI_FETCH alone runs, each only on its own line of that text and only in a run that is CLI_FETCH
 // whole: mkdir makes the CLI's folder, curl fetches the registry's tarball by its fixed URL (the one network
 // call a credentialed run makes outside aws, gh and skopeo), openssl and base64 hash it, and tar unpacks it
@@ -4931,6 +4955,7 @@ const TOOL_USES: Readonly<Record<string, (command: ShellCommand, raw: string) =>
   gh: ({ rest }) => /^\s+api\s/.test(rest),
   sed: (_, raw) => raw === MASK_LINE.trim(),
   find: (_, raw) => raw === FIND_LINE.trim() || raw === CLI_FIND_LINE.trim(),
+  sha256sum: (_, raw) => raw === KEY_HASH_LINE.trim(),
   sort: ({ rest }) => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
   tee: ({ rest }) => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
   mapfile: ({ rest }) => !/(?:^|\s)-[A-Za-z]*C/.test(rest),

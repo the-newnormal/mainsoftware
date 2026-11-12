@@ -360,11 +360,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -400,6 +412,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -424,6 +438,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -508,11 +528,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -548,6 +580,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -572,6 +606,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -657,11 +697,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -697,6 +749,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -721,6 +775,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -851,11 +911,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -891,6 +963,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -915,6 +989,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -1801,11 +1881,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -1841,6 +1933,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -1865,6 +1959,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -2565,11 +2665,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -2605,6 +2717,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -2629,6 +2743,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -2938,11 +3058,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -2978,6 +3110,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -3002,6 +3136,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()
@@ -3929,11 +4069,23 @@ jobs:
           # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
           # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
-          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
-          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
-          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
-          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
-          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
+          # symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -3969,6 +4121,8 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
@@ -3993,6 +4147,12 @@ jobs:
                     *) asset_refuse 'an asset path leaves the assembly' ;;
                   esac
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
               stackfiles=()

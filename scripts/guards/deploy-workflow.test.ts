@@ -1515,6 +1515,13 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       'toJSON(github)',
       'toJSON(GitHub)',
       "format('{0}', github)",
+      // Round 5's second attack (YAML-A2-01): the object filter hands on every value of the github context,
+      // the token first, so fromJSON(toJSON(github.*))[0] is the token itself.
+      'github.*',
+      'GitHub . *',
+      'toJSON(github.*)',
+      "join(github.*, ' ')",
+      'fromJSON(toJSON(github.*))[0]',
     ]) {
       expect(upload(inner), inner).toEqual([at('synth', TOKEN)])
     }
@@ -1531,6 +1538,8 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       expect(checkout(inner), inner).toEqual([at('nonprod', NONPROD)])
     }
     expect(checkout('GitHub.Token')).toEqual([at('nonprod', TOKEN)])
+    expect(checkout("join(github.*, ' ')")).toEqual([at('nonprod', TOKEN)])
+    expect(checkout('fromJSON(toJSON(github.*))[0]')).toEqual([at('nonprod', TOKEN)])
   })
 
   // The preamble's filter undone after it, env in any use, and a wrapper or a redirection before aws: each
@@ -2719,6 +2728,9 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', "trap 'npx cdk deploy' EXIT")).toEqual(runsRefused)
     expect(added('nonprod', "echo | sed -e '1e node x.js'")).toEqual(runsRefused)
     expect(added('nonprod', 'sort --compress-program=node x')).toEqual(runsHeld)
+    // sha256sum only on ASSET_CHECK's line that hashes a file asset from its input (round 5, attack 2).
+    expect(added('nonprod', 'sha256sum -c "$RUNNER_TEMP/x"')).toEqual(runsHeld)
+    expect(added('nonprod', 'X=$(sha256sum <"$RUNNER_TEMP/x")')).toEqual(runsHeld)
     expect(added('nonprod', "git -c alias.x='!node y.js' x")).toEqual(runsHeld)
     expect(added('nonprod', 'gh extension exec x')).toEqual(runsHeld)
     expect(added('nonprod', 'X=node; echo $X')).toEqual(runsRefused)
@@ -5489,8 +5501,36 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   const TEMPLATE = refused(
     "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile",
   )
+  const DESTINATION = refused(
+    "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder",
+  )
+  const KEY = refused("a file asset's key isn't the sha256 of its bytes")
+  const FACTS = refused(
+    "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property",
+  )
   const nonprod = (dir: string) => join(dir, 'assembly-nonprod')
   const prod = (dir: string) => join(dir, 'assembly-prod')
+  type Entry = { source: Record<string, unknown>; destinations: Record<string, Record<string, unknown>> }
+  const entries = (json: Record<string, unknown>) => Object.values((json.files ?? {}) as Record<string, Entry>)
+  const keyOf = (path: string) => `${createHash('sha256').update(readFileSync(path)).digest('hex')}.json`
+  const BUCKET = `cdk-hearthapp-assets-\${AWS::AccountId}-ap-southeast-1`
+  // Re-keys a stack's template asset after a plant edits its template, as the synth would (the key is the
+  // sha256 of the template's bytes), so the check reaches the rule the plant is for.
+  const rekey = (folder: string, part: string) => {
+    const template = named(folder, part, '.template.json')
+    const file = template.slice(folder.length + 1)
+    const key = keyOf(template)
+    edit(named(folder, part, '.assets.json'), json => {
+      for (const entry of entries(json))
+        if (entry.source.path === file)
+          for (const destination of Object.values(entry.destinations)) destination.objectKey = key
+    })
+    edit(join(folder, 'manifest.json'), json => {
+      for (const artifact of Object.values(artifacts(json)))
+        if (artifact.properties?.templateFile === file)
+          artifact.properties.stackTemplateAssetObjectUrl = `s3://${BUCKET}/${key}`
+    })
+  }
 
   it('passes the real layout: a root manifest, three nested assemblies and the root asset folder', () => {
     expect(readdirSync(source)).toEqual(
@@ -5591,8 +5631,6 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
           )
             change(artifact)
       })
-    type Entry = { source: Record<string, unknown>; destinations: Record<string, Record<string, unknown>> }
-    const entries = (json: Record<string, unknown>) => Object.values((json.files ?? {}) as Record<string, Entry>)
     const template = (dir: string) => named(nonprod(dir), 'Services', '.template.json')
     const assets = (dir: string) => named(nonprod(dir), 'Services', '.assets.json')
     // Plant D: the template asset uploads another plain file in the same folder.
@@ -5604,32 +5642,35 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         })
       }),
     ).toBe(TEMPLATE)
-    // A second asset on the template's key, from another file.
+    // A second asset on the template's key, from another file (whose bytes aren't the key's), and from a copy
+    // of the template (whose are, but which isn't the stack's templateFile).
+    const second = (path: string) => (dir: string) =>
+      edit(assets(dir), json => {
+        const [first] = entries(json)
+        if (first !== undefined)
+          (json.files as Record<string, unknown>).second = { ...first, source: { path, packaging: 'file' } }
+      })
+    expect(check(second('tree.json'))).toBe(KEY)
     expect(
-      check(dir =>
-        edit(assets(dir), json => {
-          const [first] = entries(json)
-          if (first !== undefined)
-            (json.files as Record<string, unknown>).second = {
-              ...first,
-              source: { path: 'tree.json', packaging: 'file' },
-            }
-        }),
-      ),
+      check(dir => {
+        cpSync(template(dir), join(nonprod(dir), 'copy.json'))
+        second('copy.json')(dir)
+      }),
     ).toBe(TEMPLATE)
-    // The template uploaded as a zip, a URL naming no asset's key, one that isn't s3, and none at all.
+    // The template uploaded as a zip (a .json key no zip has), a URL naming no asset's key and one that isn't
+    // s3; and no URL at all, which is no longer the synth's set of properties.
     expect(
       check(dir =>
         edit(assets(dir), json => {
           for (const entry of entries(json)) entry.source.packaging = 'zip'
         }),
       ),
-    ).toBe(TEMPLATE)
-    for (const url of [
-      `s3://cdk-hearthapp-assets-\${AWS::AccountId}-ap-southeast-1/other.json`,
-      'https://example.invalid/t.json',
-      undefined,
-    ]) {
+    ).toBe(DESTINATION)
+    for (const [url, rule] of [
+      [`s3://${BUCKET}/other.json`, TEMPLATE],
+      ['https://example.invalid/t.json', TEMPLATE],
+      [undefined, FACTS],
+    ] as const) {
       expect(
         check(dir =>
           stacks(nonprod(dir), artifact => {
@@ -5637,22 +5678,31 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
           }),
         ),
         String(url),
-      ).toBe(TEMPLATE)
+      ).toBe(rule)
     }
-    // Plant A: no stackName, which the CLI would take from the artifact's id; a name that isn't the stage's id;
-    // and no displayName.
-    for (const change of [
-      (artifact: Artifact & { displayName?: string }) => {
-        if (artifact.properties !== undefined) delete artifact.properties.stackName
-      },
-      (artifact: Artifact & { displayName?: string }) => {
-        if (artifact.properties !== undefined) artifact.properties.stackName = 'Hearth-nonprod-Tasks'
-      },
-      (artifact: Artifact & { displayName?: string }) => {
-        delete artifact.displayName
-      },
-    ]) {
-      expect(check(dir => stacks(nonprod(dir), change))).toBe(TEMPLATE)
+    // Plant A: no stackName, which the CLI would take from the artifact's id (no longer the synth's set of
+    // properties); a name that isn't the stage's id; and no displayName.
+    for (const [change, rule] of [
+      [
+        (artifact: Artifact & { displayName?: string }) => {
+          if (artifact.properties !== undefined) delete artifact.properties.stackName
+        },
+        FACTS,
+      ],
+      [
+        (artifact: Artifact & { displayName?: string }) => {
+          if (artifact.properties !== undefined) artifact.properties.stackName = 'Hearth-nonprod-Tasks'
+        },
+        TEMPLATE,
+      ],
+      [
+        (artifact: Artifact & { displayName?: string }) => {
+          delete artifact.displayName
+        },
+        TEMPLATE,
+      ],
+    ] as const) {
+      expect(check(dir => stacks(nonprod(dir), change))).toBe(rule)
     }
     // Plant B: a backslash in a file name, which @tsv would double; and a space.
     for (const name of ['S\\x.template.json', 'S x.template.json']) {
@@ -5666,6 +5716,216 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ).toBe(PLAIN)
     }
   }, 60_000)
+
+  // Round 5's second attack (COMMANDS-A2-01). The CLI publishes every asset of every stack it deploys,
+  // resolves a destination's placeholders before it publishes, and uploads nothing to a key that already
+  // holds an object; CloudFormation is handed the object at the template's key. So another stack's asset
+  // that put another template at the Services template's key under another spelling of the bucket (P, and S
+  // with the release and images kept), or an earlier run's asset at a key no stack named yet, which a later
+  // run's template URL then names (Q1 then Q2), would be what CloudFormation deploys, while the approver's
+  // diff and the release check read the templateFile. Every file asset therefore has one destination, the
+  // staging bucket, its region and its publishing role as the synth spells them, at a key that is the
+  // sha256 of its bytes (a file's) or 64 hex digits (a zip's), so the object at a template's key is that
+  // template whoever put it there.
+  it('holds every file asset to the staging bucket by one spelling, at a key of its own bytes (COMMANDS-A2-01)', () => {
+    const OTHER = `${'1'.repeat(40)}:sha256:${'2'.repeat(64)}`
+    // Another Services template in the stage's folder: another release and another image (P, Q), or the
+    // release and images kept and one environment variable added to each container (S).
+    const deployed = (folder: string, stealthy = false) => {
+      const json = read(named(folder, 'Services', '.template.json'))
+      const outputs = json.Outputs as Record<string, { Value: unknown }>
+      if (!stealthy && outputs.Release !== undefined) outputs.Release.Value = OTHER
+      for (const resource of Object.values(json.Resources as Record<string, Record<string, unknown>>)) {
+        if (resource.Type !== 'AWS::ECS::TaskDefinition') continue
+        const properties = resource.Properties as { ContainerDefinitions: Array<Record<string, unknown>> }
+        for (const container of properties.ContainerDefinitions) {
+          if (stealthy)
+            container.Environment = [...((container.Environment as unknown[]) ?? []), { Name: 'X', Value: 'x' }]
+          else container.Image = 'example.invalid/not-the-release:latest'
+        }
+      }
+      write(join(folder, 'deployed.json'), json)
+      return 'deployed.json'
+    }
+    // The Services template asset's own destination, and an asset added to one stack's asset manifest.
+    const servicesDestination = (folder: string) => {
+      const [entry] = entries(read(named(folder, 'Services', '.assets.json')))
+      const [destination] = Object.values(entry?.destinations ?? {})
+      return { ...destination }
+    }
+    const addAsset = (folder: string, part: string, path: string, destination: Record<string, unknown>) =>
+      edit(named(folder, part, '.assets.json'), json => {
+        ;(json.files as Record<string, unknown>)['0'.repeat(64)] = {
+          displayName: 'an asset of its own',
+          source: { path, packaging: 'file' },
+          destinations: { 'current_account-ap-southeast-1-00000000': destination },
+        }
+      })
+    const REGION_BUCKET = `cdk-hearthapp-assets-\${AWS::AccountId}-\${AWS::Region}`
+    // P and S: the Tasks asset manifest uploads another template to the Services template's bucket and key,
+    // the bucket spelled with the region's placeholder, in both stages; and the same spelled as the synth
+    // spells it, whose bytes then aren't the key's.
+    const onTasks =
+      (bucketName: string, stealthy = false) =>
+      (dir: string) => {
+        for (const folder of [nonprod(dir), prod(dir)])
+          addAsset(folder, 'Tasks', deployed(folder, stealthy), { ...servicesDestination(folder), bucketName })
+      }
+    expect(check(onTasks(REGION_BUCKET))).toBe(DESTINATION)
+    expect(check(onTasks(REGION_BUCKET, true))).toBe(DESTINATION)
+    expect(check(onTasks(BUCKET))).toBe(KEY)
+    expect(check(onTasks(BUCKET, true))).toBe(KEY)
+    // Q1 then Q2: an asset uploads another template to a key no stack names; then the Services template URL
+    // and its own asset name that key, the asset uploading the honest templateFile.
+    const Q = `${'a'.repeat(64)}.json`
+    expect(
+      check(dir =>
+        addAsset(nonprod(dir), 'Services', deployed(nonprod(dir)), {
+          ...servicesDestination(nonprod(dir)),
+          objectKey: Q,
+        }),
+      ),
+    ).toBe(KEY)
+    expect(
+      check(dir => {
+        edit(named(nonprod(dir), 'Services', '.assets.json'), json => {
+          for (const entry of entries(json))
+            for (const destination of Object.values(entry.destinations)) destination.objectKey = Q
+        })
+        edit(join(nonprod(dir), 'manifest.json'), json => {
+          for (const artifact of Object.values(artifacts(json)))
+            if (artifact.properties?.stackName === 'Hearth-nonprod-Services')
+              artifact.properties.stackTemplateAssetObjectUrl = `s3://${BUCKET}/${Q}`
+        })
+      }),
+    ).toBe(KEY)
+    // R: the template URL and its asset name a bucket outside the bootstrap.
+    expect(
+      check(dir => {
+        const other = 'another-bucket-example'
+        edit(named(nonprod(dir), 'Services', '.assets.json'), json => {
+          for (const entry of entries(json))
+            for (const destination of Object.values(entry.destinations)) destination.bucketName = other
+        })
+        edit(join(nonprod(dir), 'manifest.json'), json => {
+          for (const artifact of Object.values(artifacts(json)))
+            if (artifact.properties?.stackName === 'Hearth-nonprod-Services') {
+              const url = String(artifact.properties.stackTemplateAssetObjectUrl)
+              artifact.properties.stackTemplateAssetObjectUrl = url.replace(BUCKET, other)
+            }
+        })
+      }),
+    ).toBe(DESTINATION)
+    // Each destination field off the synth's: another region, another role, a field of its own, a second
+    // destination, a key in a folder, upper-case hex, a file at a .zip key, and a file outside its folder.
+    const destinations = (change: (entry: Entry) => void) => (dir: string) =>
+      edit(named(prod(dir), 'Data', '.assets.json'), json => {
+        for (const entry of entries(json)) change(entry)
+      })
+    const each = (change: (destination: Record<string, unknown>) => void) =>
+      destinations(entry => {
+        for (const destination of Object.values(entry.destinations)) change(destination)
+      })
+    for (const plant of [
+      each(destination => (destination.region = 'us-east-1')),
+      each(
+        destination =>
+          (destination.assumeRoleArn = String(destination.assumeRoleArn).replace('file-publishing', 'deploy')),
+      ),
+      each(destination => (destination.assumeRoleExternalId = 'x')),
+      each(destination => (destination.objectKey = `x/${String(destination.objectKey)}`)),
+      each(
+        destination => (destination.objectKey = String(destination.objectKey).toUpperCase().replace('.JSON', '.json')),
+      ),
+      each(destination => (destination.objectKey = String(destination.objectKey).replace('.json', '.zip'))),
+      destinations(entry => {
+        const [first] = Object.values(entry.destinations)
+        entry.destinations.second = { ...first }
+      }),
+      destinations(entry => (entry.source.path = `../assembly-prod/${String(entry.source.path)}`)),
+    ]) {
+      expect(check(plant)).toBe(DESTINATION)
+    }
+  }, 120_000)
+
+  // Round 5's second attack (COMMANDS-A2-02). The CLI acts on each stack's deploy facts, which no template
+  // or diff shows: it sets termination protection to the artifact's (off when it is missing), reads the
+  // bootstrap version from the parameter the artifact names with the deploy role and prints its value
+  // when it isn't a number, and hands CloudFormation the artifact's notification topics, tags and
+  // parameters. So each stack's and asset manifest's are exactly the synth's.
+  it('holds each stack’s and asset manifest’s deploy facts to the synth’s (COMMANDS-A2-02)', () => {
+    const stacksOf =
+      (change: (artifact: Artifact & { environment?: string }) => void, part?: string) => (dir: string) =>
+        edit(join(prod(dir), 'manifest.json'), json => {
+          for (const artifact of Object.values(artifacts(json)))
+            if (
+              artifact.type === 'aws:cloudformation:stack' &&
+              (part === undefined || String(artifact.properties?.stackName).endsWith(`-${part}`))
+            )
+              change(artifact)
+        })
+    const property = (name: string, value: unknown, part?: string) =>
+      stacksOf(artifact => {
+        if (artifact.properties !== undefined) artifact.properties[name] = value
+      }, part)
+    for (const [plant, label] of [
+      [
+        stacksOf(artifact => {
+          if (artifact.properties !== undefined) delete artifact.properties.terminationProtection
+        }, 'Platform'),
+        'Platform unprotected',
+      ],
+      [property('terminationProtection', false, 'Data'), 'Data unprotected'],
+      [property('terminationProtection', true, 'Services'), 'Services protected'],
+      [property('bootstrapStackVersionSsmParameter', '/hearth/organisation/id', 'Services'), 'another parameter'],
+      [property('requiresBootstrapStackVersion', 1), 'another version'],
+      [property('notificationArns', ['x'], 'Services'), 'a topic'],
+      [property('tags', { x: 'y' }, 'Services'), 'a tag'],
+      [property('parameters', { X: 'y' }), 'a parameter'],
+      [property('assumeRoleExternalId', 'x'), 'an external id'],
+      [property('validateOnSynth', true), 'validated on synth'],
+      [
+        stacksOf(artifact => {
+          const role = artifact.properties?.lookupRole as Record<string, unknown> | undefined
+          if (role !== undefined) role.bootstrapStackVersionSsmParameter = '/hearth/organisation/id'
+        }),
+        "the lookup role's parameter",
+      ],
+      [
+        stacksOf(artifact => {
+          if (artifact.properties !== undefined)
+            artifact.properties.assumeRoleArn = String(artifact.properties.assumeRoleArn).replace('deploy', 'lookup')
+        }),
+        'another deploy role',
+      ],
+      [
+        stacksOf(artifact => {
+          artifact.environment = 'aws://unknown-account/us-east-1'
+        }),
+        'another region',
+      ],
+      [
+        (dir: string) =>
+          edit(join(nonprod(dir), 'manifest.json'), json => {
+            for (const artifact of Object.values(artifacts(json)))
+              if (artifact.type === 'cdk:asset-manifest' && artifact.properties !== undefined)
+                artifact.properties.bootstrapStackVersionSsmParameter = '/hearth/organisation/id'
+          }),
+        "an asset manifest's parameter",
+      ],
+      [
+        (dir: string) =>
+          edit(join(nonprod(dir), 'manifest.json'), json => {
+            for (const artifact of Object.values(artifacts(json)))
+              if (artifact.type === 'cdk:asset-manifest' && artifact.properties !== undefined)
+                artifact.properties.assumeRoleExternalId = 'x'
+          }),
+        "an asset manifest's property of its own",
+      ],
+    ] as const) {
+      expect(check(plant), label).toBe(FACTS)
+    }
+  }, 120_000)
 
   it('refuses each planted breakage of the manifests, the files they name and the tree', () => {
     const inManifest =
@@ -5755,12 +6015,13 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   it('refuses an assembly built for another release', () => {
     const other = `${'e'.repeat(40)}:sha256:${'0'.repeat(64)}`
     expect(
-      check(dir =>
+      check(dir => {
         edit(named(prod(dir), 'Services', '.template.json'), json => {
           const outputs = json.Outputs as Record<string, { Value: unknown }>
           if (outputs.Release !== undefined) outputs.Release.Value = other
-        }),
-      ),
+        })
+        rekey(prod(dir), 'Services')
+      }),
     ).toBe(refused("a Services template's Release is not this job's release"))
     expect(
       check(dir => {
@@ -5772,6 +6033,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
             `hearth-server@sha256:${'1'.repeat(64)}`,
           ),
         )
+        rekey(prod(dir), 'Tasks')
       }),
     ).toBe(refused('a container image is not the server image at this release'))
     expect(check(() => {}, other)).toBe(refused("a Services template's Release is not this job's release"))
