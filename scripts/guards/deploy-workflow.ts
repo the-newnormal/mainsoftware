@@ -12,8 +12,9 @@
 // the workflow and its guard can't drift apart unseen. A shell text here is a raw template in which a
 // backtick is written \` and a dollar-brace $\{, the one way it differs from the workflow's own text.
 // Every action the workflow uses is pinned to the one commit ACTION_PINS (action-pins.ts) names, which
-// CI's check job proves against the action's own repository (scripts/check-action-pins.ts), so no
-// commit that exists only in a fork, which GitHub resolves under the action's name, runs in a job.
+// CI proves against the action's own repository (scripts/check-action-pins.ts) in a job of its own that
+// check needs, before any of the repository's code and with git reading no configuration, so no commit
+// that exists only in a fork, which GitHub resolves under the action's name, runs in a job.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
@@ -35,9 +36,11 @@
 // step of its own stands before a pinned run in any job, and no run of any job names GITHUB_ENV,
 // GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
-// written as a block mapping and never as one expression GitHub would read as the whole mapping, and every
-// step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned step's outputs; each run
-// a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
+// written as a block mapping and never as one expression GitHub would read as the whole mapping, every
+// step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned step's outputs, and so are
+// every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
+// decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
+// each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
 // of its own, or hands it another input; and so is every other run of every job, the five that hold the
 // deploy role and build's and synth's (each synth step in its own folder) included, so no run of
@@ -57,7 +60,8 @@
 // as a command is found where bash would run it and not where it is a jq path, a message or a URL; the
 // words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
-// a failed job through. This file decides who and what may deploy, so it is on the owner's-read list
+// a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
+// hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
 import { ACTION_PINS } from './action-pins'
 import {
@@ -3704,12 +3708,16 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // --- DPW-04: action pins -------------------------------------------------------------------------------------
 
 // DPW-04 (C11-D48, C11-D79): every uses: in deploy.yml is one of the five actions at exactly the commit and
-// version comment ACTION_PINS names for it (scripts/guards/action-pins.ts), which CI's check job proves
-// against the action's own repository (scripts/check-action-pins.ts), so no commit pushed only to a fork,
+// version comment ACTION_PINS names for it (scripts/guards/action-pins.ts), which CI proves against the
+// action's own repository (scripts/check-action-pins.ts), so no commit pushed only to a fork,
 // which GitHub resolves under the action's name, and no older release's commit under a newer comment, runs
 // in a job that holds the OIDC request token; no local action, docker:// image or reusable workflow. And
 // .github/workflows holds workflows alone (WORKFLOW_FILE), so no actions lockfile, which could name a commit
-// for an action the guard never reads, stands beside them.
+// for an action the guard never reads, stands beside them. The check that proves the pins runs where nothing
+// of the repository's ran first (pinsJobHolds): ci.yml's job action-pins, on GitHub's own runner, is
+// checkout without credentials, Node from .nvmrc with no cache and the check, and check needs it, so no
+// test, install script or build that runs in check can leave a git configuration (a url.<base>.insteadOf
+// that sends the read to a fork), a file or a variable behind for the check to read, or change the check.
 export function actionPinFindings(workflows: Texts, folder?: readonly string[]): Finding[] {
   const text = workflows.get(DEPLOY) ?? ''
   const spans = jobSpans(text)
@@ -3740,7 +3748,47 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[]):
       )
     }
   }
+  if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
   return [...found]
+}
+// The job that proves the pins: a step before it in its job (a test that wrote url.<fork>.insteadOf to
+// $HOME/.gitconfig, say, or wrote the check over, or a GITHUB_PATH that put another git first) would decide
+// what it reads. A job runs on a runner of its own, so this one, whose only steps are GitHub's checkout and
+// setup-node and the check, runs it before any of the repository's code.
+export const PINS_JOB = 'action-pins'
+export const PINS_RUN = 'node scripts/check-action-pins.ts'
+const NEEDS_FAILED = expr(
+  "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
+)
+const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials, Node from .nvmrc with no cache and the check, so nothing of the repository's runs before it on its runner; check needs it, runs under always() and first fails when a job it needs didn't succeed`
+function pinsJobHolds(ci: string): boolean {
+  const jobs = workflowJobs(ci)
+  const pins = jobs.filter(job => job.id === PINS_JOB)
+  const check = jobs.find(job => job.id === 'check')
+  const job = pins[0]
+  if (pins.length !== 1 || job === undefined || check === undefined) return false
+  const steps = parsedSteps(job)
+  const [checkout, node, run] = steps
+  const only = (step: WorkflowStep | undefined, keys: readonly string[]) =>
+    step !== undefined && onceEach(step.keyNames, keys)
+  const first = parsedSteps(check)[0]
+  return (
+    onceEach(job.keyNames, ['runs-on', 'timeout-minutes', 'steps']) &&
+    jobScalar(job, 'runs-on') === 'ubuntu-24.04' &&
+    steps.length === 3 &&
+    only(checkout, ['name', 'uses', 'with']) &&
+    /^actions\/checkout@[\w.-]+$/.test(checkout?.uses ?? '') &&
+    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false' }) &&
+    only(node, ['name', 'uses', 'with']) &&
+    /^actions\/setup-node@[\w.-]+$/.test(node?.uses ?? '') &&
+    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc' }) &&
+    only(run, ['name', 'run']) &&
+    run?.run === PINS_RUN &&
+    jobNeeds(check).includes(PINS_JOB) &&
+    jobScalar(check, 'if') === 'always()' &&
+    first?.if === NEEDS_FAILED &&
+    first.run === 'exit 1'
+  )
 }
 // A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows.
 export const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/
@@ -4453,8 +4501,10 @@ const SMOKES: Readonly<Record<string, string>> = {
 // exit 0 or forged output passes it; each smoke judges only the read-back its job wrote in this
 // attempt (the job outputs attempt, and the smoke's one
 // step reading READBACK first refuses another, SMOKE_ATTEMPT); each rollback job needs build, takes this
-// run's digest from build for a deploy and from the gate for a drill-smoke, runs only once its
-// deploy job set services_started, and judges the release that deploy replaced from that job's own
+// run's digest from build for a deploy and from the gate for a drill-smoke, runs only when the gate allows
+// the automatic rollback (rollback_<env>), once its deploy job set services_started and only once its
+// smoke or its deploy job failed (its if: whole is JOB_IFS', DPW-10), and judges the release that deploy
+// replaced from that job's own
 // AWS_CHECK (the deploy job outputs replaced from its aws step, whose value AWS_CHECK_ENV pins as the
 // rollback's REPLACED);
 // rollback-prod's steps are rollback-nonprod's but for the environment's name; only prod and
@@ -4613,6 +4663,16 @@ export function prodPathFindings(workflows: Texts): Finding[] {
         rollback,
         `needs build, takes this run's digest from build for a deploy and from the gate for a drill-smoke, and runs only once ${deploy} set services_started`,
       )
+    }
+    // The gate's verdict on the automatic rollback (floor-crossed, say, refuses it) and the failure it
+    // answers: with either clause gone, GitHub rolls back across a floor the gate refused, or rolls back a
+    // release that passed, which the record job then records as running.
+    if (evaluateIf(condition, { [`needs.gate.outputs.rollback_${deploy}`]: 'false' }) !== false) {
+      add(rollback, `runs only when the gate allows the automatic rollback (rollback_${deploy})`)
+    }
+    const passed = { [`needs.smoke-${deploy}.result`]: 'success', [`needs.${deploy}.result`]: 'success' }
+    if (evaluateIf(condition, passed) !== false) {
+      add(rollback, `runs only once smoke-${deploy} or ${deploy} failed`)
     }
   }
   // rollback-nonprod's steps with nonprod read as prod are rollback-prod's, line for line.
@@ -5433,8 +5493,10 @@ function definitionsAreCanonical(run: string): boolean {
 // service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
 // variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; every env: and job's
 // outputs: is the guard's, whole, each a block mapping, and every step's id too (STEP_ENVS, JOB_OUTPUTS,
-// STEP_IDS below); and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs
-// names a file command that hands a later step something (GITHUB_ENV, GITHUB_PATH, GITHUB_STATE).
+// STEP_IDS below); every job's if: and needs: and every action step's if: are the guard's, whole (JOB_IFS,
+// JOB_NEEDS, ACTION_IFS), so no decision GitHub makes about running a job or an action is read only in
+// part; and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs names a file
+// command that hands a later step something (GITHUB_ENV, GITHUB_PATH, GITHUB_STATE).
 const TOP_KEYS = ['name', 'on', 'permissions', 'jobs']
 const JOB_KEYS = [
   'needs',
@@ -5746,6 +5808,124 @@ export const STEP_IDS: Readonly<Record<string, Readonly<Record<string, string>>>
   'rollback-prod': rollbackIds,
 }
 const IDS = "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's"
+// Each job's needs:, in order, and its if:, whole (the gate has neither): the jobs it waits for and every
+// clause GitHub decides it by, which are the bot test, the gate's verdicts (build, nonprod, prod and
+// rollback_<env>), the jobs' results, the mode and target, and services_started. With every run's if:
+// pinned with its run (PINNED_RUNS) and every action's here (ACTION_IFS), no if: in deploy.yml is read only
+// in part: a clause dropped, added or changed (an automatic rollback the gate refused, or one after its
+// release passed) or a need dropped, whose result and outputs an if: or env: would then read as '', is
+// found whatever the rules that read single clauses (DPW-08, DPW-09) still pass.
+const jobIf = (...clauses: readonly string[]) => expr([BOT_TEST, ...clauses].join(' && '))
+const DEPLOY_OR_ROLLBACK = "(needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback')"
+export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
+  gate: undefined,
+  build: jobIf("needs.gate.outputs.build == 'true'"),
+  synth: jobIf(
+    '!cancelled()',
+    "needs.gate.result == 'success'",
+    "(needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.gate.outputs.build != 'true'))",
+  ),
+  nonprod: jobIf('!cancelled()', "needs.synth.result == 'success'", "needs.gate.outputs.nonprod == 'true'"),
+  'smoke-nonprod': jobIf('!cancelled()', "needs.nonprod.result == 'success'"),
+  'rollback-nonprod': jobIf(
+    '!cancelled()',
+    "needs.gate.outputs.rollback_nonprod == 'true'",
+    "(needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke')",
+    "needs.nonprod.outputs.services_started == 'true'",
+    "(needs.smoke-nonprod.result == 'failure' || needs.nonprod.result == 'failure')",
+  ),
+  'resmoke-nonprod': jobIf('!cancelled()', "needs.rollback-nonprod.outputs.rolled == 'true'"),
+  'record-nonprod': jobIf(
+    '!cancelled()',
+    "needs.gate.outputs.nonprod == 'true'",
+    "needs.gate.outputs.mode != 'drill-break'",
+  ),
+  'prod-plan': jobIf(
+    '!cancelled()',
+    "needs.synth.result == 'success'",
+    "needs.gate.outputs.target == 'prod'",
+    "((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')",
+  ),
+  'prod-gate': jobIf(
+    '!cancelled()',
+    "needs.gate.result == 'success'",
+    DEPLOY_OR_ROLLBACK,
+    "((needs.gate.outputs.target == 'prod' && needs.prod-plan.result == 'success') || needs.gate.outputs.target == 'restore')",
+  ),
+  prod: jobIf(
+    '!cancelled()',
+    "needs.synth.result == 'success'",
+    "needs.prod-gate.result == 'success'",
+    DEPLOY_OR_ROLLBACK,
+  ),
+  'smoke-prod': jobIf('!cancelled()', "needs.prod.result == 'success'"),
+  'rollback-prod': jobIf(
+    '!cancelled()',
+    "needs.gate.outputs.rollback_prod == 'true'",
+    "needs.gate.outputs.target == 'prod'",
+    "needs.gate.outputs.mode == 'deploy'",
+    "needs.prod.outputs.services_started == 'true'",
+    "(needs.smoke-prod.result == 'failure' || needs.prod.result == 'failure')",
+  ),
+  'resmoke-prod': jobIf('!cancelled()', "needs.rollback-prod.outputs.rolled == 'true'"),
+  'record-prod': jobIf(
+    '!cancelled()',
+    "needs.gate.outputs.prod == 'true'",
+    DEPLOY_OR_ROLLBACK,
+    "(needs.prod.result == 'success' || needs.prod.result == 'failure')",
+  ),
+}
+export const JOB_NEEDS: Readonly<Record<JobId, readonly string[]>> = {
+  gate: [],
+  build: ['gate'],
+  synth: ['gate', 'build'],
+  nonprod: ['gate', 'build', 'synth'],
+  'smoke-nonprod': ['gate', 'nonprod'],
+  'rollback-nonprod': ['gate', 'build', 'synth', 'nonprod', 'smoke-nonprod'],
+  'resmoke-nonprod': ['gate', 'rollback-nonprod'],
+  'record-nonprod': ['gate', 'nonprod', 'smoke-nonprod', 'rollback-nonprod', 'resmoke-nonprod'],
+  'prod-plan': ['gate', 'build', 'synth', 'smoke-nonprod'],
+  'prod-gate': ['gate', 'build', 'nonprod', 'smoke-nonprod', 'prod-plan'],
+  prod: ['gate', 'build', 'synth', 'nonprod', 'prod-plan', 'prod-gate'],
+  'smoke-prod': ['gate', 'prod'],
+  'rollback-prod': ['gate', 'build', 'synth', 'prod', 'smoke-prod'],
+  'resmoke-prod': ['gate', 'rollback-prod'],
+  'record-prod': ['gate', 'prod', 'smoke-prod', 'rollback-prod', 'resmoke-prod'],
+}
+// Each action step's if:, by its job and its name; a step not named runs under none (a run step's is
+// pinned with its run).
+const previousCommit = (stage: Stage) => expr(`needs.gate.outputs.previous_${stage}_commit != ''`)
+const ASSEMBLY_DOWNLOAD = expr("needs.synth.outputs.assembly != ''")
+export const ACTION_IFS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  synth: {
+    "Check out nonprod's previous release": previousCommit('nonprod'),
+    "Upload nonprod's previous assembly": previousCommit('nonprod'),
+    "Check out prod's previous release": previousCommit('prod'),
+    "Upload prod's previous assembly": previousCommit('prod'),
+  },
+  nonprod: {
+    'Download the assembly': ASSEMBLY_DOWNLOAD,
+    'Download the image': expr("needs.build.outputs.image != '' && needs.gate.outputs.mode == 'deploy'"),
+  },
+  'rollback-nonprod': {
+    'Download the previous assembly': expr("needs.synth.outputs.assembly_previous_nonprod != ''"),
+  },
+  'prod-plan': { 'Download the assembly': ASSEMBLY_DOWNLOAD },
+  prod: {
+    'Download the assembly': ASSEMBLY_DOWNLOAD,
+    'Download the image': expr(
+      "needs.build.outputs.image != '' && needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'",
+    ),
+  },
+  'rollback-prod': {
+    'Download the previous assembly': expr("needs.synth.outputs.assembly_previous_prod != ''"),
+  },
+}
+const JOB_IF =
+  "runs under the if: JOB_IFS names, whole (the gate under none): no clause GitHub decides it by (the bot test, a gate's verdict, a job's result, the mode or target, services_started) dropped, added or changed"
+const JOB_NEED =
+  "needs exactly the jobs JOB_NEEDS names, in order: none dropped, whose result and outputs an if: or env: would read as '', and none added"
+const ACTION_IF = 'runs its action under the if: ACTION_IFS names, whole (none where it names none)'
 // Each job's steps, in order, each by its name and, for a step that uses an action, the action (its pin is
 // DPW-04's; a run step uses none). With STEP_ENVS, STEP_IDS and the pinned runs, no step of its own stands
 // before, between or after them, in any job, credentialed or not: none can write GITHUB_ENV (a BASH_ENV
@@ -5899,6 +6079,17 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       )
     }
     if (jobScalar(job, 'runs-on') !== RUNNER(id)) add(id, `runs on ${RUNNER(id)}, GitHub's own runner`)
+    const condition = (JOB_IFS as Readonly<Record<string, string | undefined>>)[id]
+    if (condition === undefined ? job.keys.has('if') : jobScalar(job, 'if') !== condition) add(id, JOB_IF)
+    const needs = (JOB_NEEDS as Readonly<Record<string, readonly string[]>>)[id] ?? []
+    const have = jobNeeds(job)
+    if (
+      (needs.length === 0 && job.keys.has('needs')) ||
+      have.length !== needs.length ||
+      have.some((need, i) => need !== needs[i])
+    ) {
+      add(id, JOB_NEED)
+    }
     const stage = STAGES[id]
     if (
       !onceEach(mappingKeys(job.keys.get('env')), ENV_KEYS) ||
@@ -5932,6 +6123,10 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       const action = step.uses?.split('@')[0]
       if (action !== undefined && !onceEach([...step.with.keys()], WITH_KEYS[action] ?? [])) {
         add(where, 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source')
+      }
+      const actionIf = ACTION_IFS[id]?.[step.name ?? '']
+      if (step.uses !== undefined && (actionIf === undefined ? step.keyNames.includes('if') : step.if !== actionIf)) {
+        add(where, ACTION_IF)
       }
       if (!onceEach([...step.env.keys()], ENV_KEYS) || !sameMap(step.env, STEP_ENVS[id]?.[step.name ?? ''] ?? {})) {
         add(where, ENV)

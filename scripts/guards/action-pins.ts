@@ -2,12 +2,12 @@
 // commit pushed only to a fork of an action resolves under the action's own name, since forks share objects
 // with it, and an older release's commit can stand under a newer version's comment, so a 40-hex pin with a
 // version comment proves nothing on its own. DPW-04 holds every uses: in deploy.yml to its action's entry
-// here, so a pin moves only with this file, and CI's check job proves each entry against the action's own
-// repository (scripts/check-action-pins.ts): the version's tag there must name exactly that commit. A tag
-// the action moves or deletes fails that check until a person reads the change and moves the pin here and
-// in deploy.yml together, and a Renovate digest bump of deploy.yml fails DPW-04 until the same PR moves
-// the entry here. The deploy-workflow guard reads its rules from this file, so it is on the owner's-read
-// list with it (C11-D74).
+// here, so a pin moves only with this file, and CI proves each entry against the action's own repository
+// (scripts/check-action-pins.ts, in ci.yml's job action-pins, which check needs): the version's tag there
+// must name exactly that commit. A tag the action moves or deletes fails that check until a person reads
+// the change and moves the pin here and in deploy.yml together, and a Renovate digest bump of deploy.yml
+// fails DPW-04 until the same PR moves the entry here. The deploy-workflow guard reads its rules from this
+// file, so it is on the owner's-read list with it (C11-D74).
 export const ACTION_PINS: Readonly<Record<string, string>> = {
   'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
   'actions/setup-node': '949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',

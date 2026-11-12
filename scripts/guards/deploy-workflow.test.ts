@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { gitIsAncestor, type PlanInput, parseReleaseRecords, plan } from '../../infra/scripts/deploy/history.ts'
 import { PROFILES } from '../../infra/src/config/profiles.ts'
 import { synthWorkload } from '../../infra/src/testing/workload.ts'
-import { pinProblems, tagCommit } from '../check-action-pins.ts'
+import { gitEnvironment, pinProblems, readTagRefs, tagCommit } from '../check-action-pins.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE } from './action-pins'
 import {
@@ -96,6 +96,7 @@ import {
   jobEnvironment,
   jobNeeds,
   jobPermissions,
+  jobScalar,
   parsedSteps,
   workflowJobs,
   workflowTop,
@@ -608,7 +609,7 @@ describe('DPW-01 (C11-D47, C11-D62): what starts the workflow', () => {
     ])
     expect(
       triggerFindings(
-        plant('    needs: [secrets, audit]\n', '    needs: [secrets, audit, gate]\n', '', CI),
+        plant('    needs: [secrets, audit, action-pins]\n', '    needs: [secrets, audit, action-pins, gate]\n', '', CI),
         rulesetText,
       ),
     ).toEqual([`${CI}: DPW-01 check: needs no deploy.yml job`])
@@ -654,7 +655,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
       `${DEPLOY}: DPW-02 is written in block mappings: no flow mapping, anchor, alias or quoted key`,
       `${DEPLOY}: DPW-02 ${SHAPE}`,
     ])
-    const check = '  check:\n    needs: [secrets, audit]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
     expect(permissionFindings(plant(check, `${check}    permissions: write-all\n`, '', CI))).toEqual([
       `${CI}: DPW-02 no job may ask for an id-token`,
     ])
@@ -807,7 +808,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
 
   // The clause infra.ts's ciSynthProblems held for ci.yml until C0.11 PR 4, with its cases, as they stood.
   it('holds every other workflow to no id-token in any spelling, comments included, and no escape', () => {
-    const check = '  check:\n    needs: [secrets, audit]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
     const idToken = [`${CI}: DPW-02 no job may ask for an id-token`]
     const escaped = [
       `${CI}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`,
@@ -855,9 +856,11 @@ describe('DPW-02 (C11-D55): permissions', () => {
     ).toEqual([shape(secrets)])
     expect(permissionFindings(plant(checkout, '      - uses: &co actions/checkout@v5\n', '', CI))).toEqual([shape(CI)])
     expect(permissionFindings(plant('name: ci\n', 'name: !!str ci\n', '', CI))).toEqual([shape(CI)])
-    const check = '  check:\n    needs: [secrets, audit]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
     expect(
-      permissionFindings(plant(check, '  check:\n    concurrency: *g\n    needs: [secrets, audit]\n', '', CI)),
+      permissionFindings(
+        plant(check, '  check:\n    concurrency: *g\n    needs: [secrets, audit, action-pins]\n', '', CI),
+      ),
     ).toEqual([shape(CI)])
     expect(permissionFindings(plant('name: ci\n', 'name: &k "id\\x2Dtoken"\n', '', CI))).toEqual([shape(CI), escaped])
     // An escape in a flow sequence's item, a sequence item or a value after an anchor, not only after a key.
@@ -906,7 +909,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     const shape = [`${CI}: DPW-02 ${SHAPE}`]
     const ci = (from: string, to: string) => permissionFindings(plant(from, to, '', CI))
     const branches = '    branches: [main]\n'
-    const needs = '    needs: [secrets, audit]\n'
+    const needs = '    needs: [secrets, audit, action-pins]\n'
     for (const to of [
       '    branches:\n      - - main\n',
       '    branches:\n      - ? main\n',
@@ -1079,6 +1082,99 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     })
     expect(asked).toEqual(['actions/checkout v7.0.1'])
   })
+
+  // FETCH-A3-01: git read each action's repository with the configuration of whoever ran the check, so a
+  // test that ran before it in CI's check job and wrote url.<fork>.insteadOf to $HOME/.gitconfig sent the read
+  // to a fork whose tag names the fork's commit, and a pin moved to that commit passed. Each way git takes
+  // configuration is planted here, first shown to send a plain git ls-remote to the fork, then the check's
+  // own read to name the repository's commit all the same.
+  it('reads the repository it names whatever configuration git would otherwise read (FETCH-A3-01)', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-action-pins-'))
+    try {
+      const bare = { PATH: process.env.PATH ?? '', HOME: join(folder, 'home') }
+      const git = (cwd: string, args: readonly string[]) =>
+        execFileSync(
+          'git',
+          [
+            ...['-c', 'user.name=hearth-test', '-c', `user.email=${['test', 'example.invalid'].join('@')}`],
+            ...['-c', 'commit.gpgsign=false', '-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+          ],
+          {
+            cwd,
+            encoding: 'utf8',
+            env: { ...bare, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ).trim()
+      const repository = (name: string) => {
+        const path = join(folder, name)
+        execFileSync('mkdir', ['-p', path, bare.HOME])
+        git(path, ['init', '-q'])
+        git(path, ['commit', '-q', '--allow-empty', '-m', name])
+        git(path, ['tag', '-a', '-m', name, 'v7.0.1'])
+        return { url: `file://${path}`, commit: git(path, ['rev-parse', 'HEAD']) }
+      }
+      const own = repository('own')
+      const fork = repository('fork')
+      expect(own.commit).not.toBe(fork.commit)
+      const rewrite = `[url "${fork.url}"]\n\tinsteadOf = ${own.url}\n`
+      const file = (name: string, text: string) => {
+        const path = join(folder, name)
+        execFileSync('mkdir', ['-p', join(path, '..')])
+        writeFileSync(path, text)
+        return path
+      }
+      const local = join(folder, 'local')
+      execFileSync('mkdir', ['-p', local])
+      git(local, ['init', '-q'])
+      file('local/.git/config', `${readFileSync(join(local, '.git/config'), 'utf8')}${rewrite}`)
+      const ways: ReadonlyArray<readonly [string, Record<string, string>]> = [
+        ['$HOME/.gitconfig', { HOME: join(folder, 'poisoned'), _: file('poisoned/.gitconfig', rewrite) }],
+        ['$XDG_CONFIG_HOME/git/config', { XDG_CONFIG_HOME: join(folder, 'xdg'), _: file('xdg/git/config', rewrite) }],
+        ['GIT_CONFIG_GLOBAL', { GIT_CONFIG_GLOBAL: file('global', rewrite) }],
+        ['GIT_CONFIG_SYSTEM', { GIT_CONFIG_SYSTEM: file('system', rewrite) }],
+        [
+          'GIT_CONFIG_COUNT',
+          { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${fork.url}.insteadOf`, GIT_CONFIG_VALUE_0: own.url },
+        ],
+        ['GIT_CONFIG_PARAMETERS', { GIT_CONFIG_PARAMETERS: `'url.${fork.url}.insteadof'='${own.url}'` }],
+        ['GIT_DIR', { GIT_DIR: join(local, '.git') }],
+      ]
+      const read = (answer: string) => tagCommit(answer, 'v7.0.1')
+      for (const [way, planted] of ways) {
+        const { _: _file, ...variables } = planted
+        const env = { ...bare, ...variables }
+        const plain = execFileSync('git', ['ls-remote', own.url, 'refs/tags/v7.0.1', 'refs/tags/v7.0.1^{}'], {
+          cwd: folder,
+          encoding: 'utf8',
+          env: { ...env, GIT_TERMINAL_PROMPT: '0' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        expect(read(plain), `${way}: a plain read goes to the fork`).toBe(fork.commit)
+        expect(read(readTagRefs(own.url, 'v7.0.1', env)), way).toBe(own.commit)
+      }
+      // All of them at once, and only the network's variables and PATH handed on.
+      const all = Object.assign({}, ...ways.map(([, planted]) => planted)) as Record<string, string>
+      expect(read(readTagRefs(own.url, 'v7.0.1', { ...bare, ...all }))).toBe(own.commit)
+      const env = gitEnvironment(
+        { ...bare, ...all, HTTPS_PROXY: 'http://proxy.invalid:3128', NODE_OPTIONS: '-r x' },
+        folder,
+      )
+      expect(Object.keys(env).sort()).toEqual([
+        'GIT_CEILING_DIRECTORIES',
+        'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_NOSYSTEM',
+        'GIT_CONFIG_SYSTEM',
+        'GIT_TERMINAL_PROMPT',
+        'HOME',
+        'HTTPS_PROXY',
+        'PATH',
+        'XDG_CONFIG_HOME',
+      ])
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
@@ -1116,7 +1212,7 @@ describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
         ),
       ),
     ).toEqual([`${DEPLOY}: DPW-05 has no workflow-level concurrency`])
-    const check = '  check:\n    needs: [secrets, audit]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
     expect(
       timeoutAndGroupFindings(plant(check, `${check}    concurrency:\n      group: Deploy-Prod\n`, '', CI)),
     ).toEqual([`${CI}: DPW-05 names neither deploy-nonprod nor deploy-prod, in any letter case`])
@@ -4768,6 +4864,188 @@ describe('Round 5, attack 1: the ways past the allowlist (DPW-04, DPW-07, DPW-08
       ),
     ).toContain(at('DPW-08', "prod-gate (main's own CI)", PINNED_08))
   }, 120_000)
+})
+
+describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const JOB_IF =
+    "runs under the if: JOB_IFS names, whole (the gate under none): no clause GitHub decides it by (the bot test, a gate's verdict, a job's result, the mode or target, services_started) dropped, added or changed"
+  const JOB_NEED =
+    "needs exactly the jobs JOB_NEEDS names, in order: none dropped, whose result and outputs an if: or env: would read as '', and none added"
+  const ACTION_IF = 'runs its action under the if: ACTION_IFS names, whole (none where it names none)'
+  // An if:'s clauses joined by && outside parentheses.
+  const clauses = (condition: string) => {
+    const inner = condition.replace(/^\$\{\{ /, '').replace(/ \}\}$/, '')
+    const parts: string[] = []
+    let depth = 0
+    let start = 0
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '(') depth++
+      else if (inner[i] === ')') depth--
+      else if (depth === 0 && inner.startsWith(' && ', i)) {
+        parts.push(inner.slice(start, i))
+        start = i + 4
+      }
+    }
+    return [...parts, inner.slice(start)]
+  }
+  const jobs = workflowJobs(deployText)
+
+  // FLOW-A3-01: a rollback job's if: was held only to the bot test, the drill test and services_started, so
+  // one with the gate's verdict gone (an automatic rollback across a floor the gate refused) or with the
+  // failure it answers gone (a passing release rolled back, then recorded as running) passed every rule.
+  it('holds each rollback job to the gate’s verdict and to the failure it answers (FLOW-A3-01)', () => {
+    const verdict = (env: string) =>
+      plant(`needs.gate.outputs.rollback_${env} == 'true' && `, '', job(`rollback-${env}`))
+    const afterPass = (env: string) =>
+      plant(
+        ` && (needs.smoke-${env}.result == 'failure' || needs.${env}.result == 'failure')`,
+        '',
+        job(`rollback-${env}`),
+      )
+    const allowed = (env: string) =>
+      at('DPW-08', `rollback-${env}`, `runs only when the gate allows the automatic rollback (rollback_${env})`)
+    const failed = (env: string) => at('DPW-08', `rollback-${env}`, `runs only once smoke-${env} or ${env} failed`)
+    for (const env of ['nonprod', 'prod']) {
+      expect(prodPathFindings(verdict(env)), env).toEqual([allowed(env)])
+      expect(credentialed(verdict(env)), env).toContain(at('DPW-10', `rollback-${env}`, JOB_IF))
+      expect(prodPathFindings(afterPass(env)), env).toEqual([failed(env)])
+      expect(credentialed(afterPass(env)), env).toContain(at('DPW-10', `rollback-${env}`, JOB_IF))
+    }
+    const both = edited(
+      edited(
+        edited(
+          edited(deployText, "needs.gate.outputs.rollback_nonprod == 'true' && ", '', job('rollback-nonprod')),
+          "needs.gate.outputs.rollback_prod == 'true' && ",
+          '',
+          job('rollback-prod'),
+        ),
+        " && (needs.smoke-nonprod.result == 'failure' || needs.nonprod.result == 'failure')",
+        '',
+        job('rollback-nonprod'),
+      ),
+      " && (needs.smoke-prod.result == 'failure' || needs.prod.result == 'failure')",
+      '',
+      job('rollback-prod'),
+    )
+    expect(prodPathFindings(withText(DEPLOY, both))).toEqual([
+      allowed('nonprod'),
+      failed('nonprod'),
+      allowed('prod'),
+      failed('prod'),
+    ])
+  })
+
+  // The class: a job's if: was the one decision GitHub makes that the guard read only in parts (the bot
+  // test, the drill test, the status functions' needs, prod-plan's smoke, services_started), and its needs:
+  // and an action step's if: weren't read at all. Each is now pinned whole: every clause of every job's if:
+  // dropped in turn, a need dropped from every job, an if: given to the gate, an action step's if: changed,
+  // and one given to an action step that has none.
+  it('pins every job’s if: and needs: and every action step’s if: whole', () => {
+    for (const each of jobs) {
+      const condition = jobScalar(each, 'if')
+      if (condition === undefined) continue
+      const parts = clauses(condition)
+      expect(parts.slice(0, 2).join(' && '), each.id).toBe(BOT_TEST)
+      for (let i = 2; i < parts.length; i++) {
+        const dropped = `\${{ ${parts.filter((_, j) => j !== i).join(' && ')} }}`
+        expect(
+          credentialed(plant(`    if: ${condition}\n`, `    if: ${dropped}\n`, job(each.id))),
+          `${each.id} ${i}`,
+        ).toContain(at('DPW-10', each.id, JOB_IF))
+      }
+    }
+    expect(
+      credentialed(
+        plant(
+          '    runs-on: ubuntu-24.04\n',
+          `    if: \${{ github.event_name == 'push' }}\n    runs-on: ubuntu-24.04\n`,
+          job('gate'),
+        ),
+      ),
+    ).toContain(at('DPW-10', 'gate', JOB_IF))
+    for (const each of jobs) {
+      const needs = jobNeeds(each)
+      if (needs.length === 0) continue
+      const line = (each.keys.get('needs') ?? [])[0] ?? ''
+      const fewer = needs.length === 1 ? '    needs: []' : `    needs: [${needs.slice(0, -1).join(', ')}]`
+      expect(credentialed(plant(`${line}\n`, `${fewer}\n`, job(each.id))), each.id).toContain(
+        at('DPW-10', each.id, JOB_NEED),
+      )
+    }
+    expect(
+      credentialed(plant('    runs-on: ubuntu-24.04\n', '    needs: []\n    runs-on: ubuntu-24.04\n', job('gate'))),
+    ).toContain(at('DPW-10', 'gate', JOB_NEED))
+    let held = 0
+    for (const each of jobs) {
+      for (const step of parsedSteps(each).filter(one => one.uses !== undefined && one.if !== undefined)) {
+        const name = step.name ?? ''
+        const text = stepText(deployText, each.id, name)
+        const changed = edited(text, `        if: ${step.if}\n`, `        if: \${{ true }}\n`)
+        expect(
+          credentialed(withText(DEPLOY, edited(deployText, text, changed, job(each.id)))),
+          `${each.id} ${name}`,
+        ).toContain(at('DPW-10', `${each.id} (${name})`, ACTION_IF))
+        held++
+      }
+    }
+    expect(held).toBe(11)
+    for (const [id, name] of [
+      ['build', 'Upload the image'],
+      ['gate', "Check out the run's commit"],
+    ] as const) {
+      const text = stepText(deployText, id, name)
+      const given = text.replace(`      - name: ${name}\n`, `      - name: ${name}\n        if: \${{ false }}\n`)
+      expect(credentialed(withText(DEPLOY, edited(deployText, text, given, job(id)))), name).toContain(
+        at('DPW-10', `${id} (${name})`, ACTION_IF),
+      )
+    }
+  }, 300_000)
+
+  // FETCH-A3-01, in CI: the check that proves the pins ran in check after npm test, on the same runner, so a
+  // test could leave a git configuration, a file or a variable behind for it, or write over it. It runs in a
+  // job of its own now, before any of the repository's code, and check needs it; each way back is found.
+  it('runs the pins check in a job of its own, before any of the repository’s code, which check needs (FETCH-A3-01)', () => {
+    const PINS =
+      "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials, Node from .nvmrc with no cache and the check, so nothing of the repository's runs before it on its runner; check needs it, runs under always() and first fails when a job it needs didn't succeed"
+    const finding = `${CI}: DPW-04 ${PINS}`
+    const ci = workflows.get(CI) ?? ''
+    const pinsJob = '  action-pins:\n'
+    const checkRun = '      - run: node scripts/check-action-pins.ts\n'
+    const pinsText = ci.slice(ci.indexOf(pinsJob), ci.indexOf('\n  # ', ci.indexOf(pinsJob)) + 1)
+    expect(pinsText.endsWith(checkRun)).toBe(true)
+    const inCi = (from: string, to: string, after = pinsJob) => plant(from, to, after, CI)
+    const synthCi = '      - run: npm run synth:ci -w @hearth/infra\n'
+    for (const [what, planted] of [
+      [
+        'the check back in check, after npm test',
+        withText(
+          CI,
+          edited(edited(ci, pinsText, ''), synthCi, `${synthCi}${checkRun}`, '\n  check:\n').replace(
+            'needs: [secrets, audit, action-pins]',
+            'needs: [secrets, audit]',
+          ),
+        ),
+      ],
+      ['an install before it', inCi(checkRun, `      - run: npm ci\n${checkRun}`)],
+      ['a test before it', inCi(checkRun, `      - run: npx vitest run scripts/guards\n${checkRun}`)],
+      [
+        'npm’s cache restored',
+        inCi('          node-version-file: .nvmrc\n', '          node-version-file: .nvmrc\n          cache: npm\n'),
+      ],
+      ['credentials kept', inCi('          persist-credentials: false\n', '          persist-credentials: true\n')],
+      ['a variable for its step', inCi(checkRun, `${checkRun}        env:\n          GIT_CONFIG_GLOBAL: .gitconfig\n`)],
+      ['a runner of its own', inCi('    runs-on: ubuntu-24.04\n', '    runs-on: self-hosted\n')],
+      ['a job it waits for', inCi('    runs-on: ubuntu-24.04\n', '    needs: [audit]\n    runs-on: ubuntu-24.04\n')],
+      ['another check', inCi(checkRun, '      - run: node scripts/check-action-pins.ts || true\n')],
+      ['check not waiting for it', plant('needs: [secrets, audit, action-pins]', 'needs: [secrets, audit]', '', CI)],
+      ['check not failing first', plant("contains(needs.*.result, 'failure') || ", '', '\n  check:\n', CI)],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+    expect(actionPinFindings(workflows)).toEqual([])
+  })
 })
 
 describe('DPW-14 (C11-D76): the asset and release checks', () => {
