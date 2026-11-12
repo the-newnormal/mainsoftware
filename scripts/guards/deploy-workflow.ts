@@ -23,28 +23,33 @@
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
 // and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, every aws
 // word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
-// whole, a canonical text's function or a record job's own only as the workflow calls it), and no line of
-// its own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable,
-// REGISTRY or RUN, or, outside a step whose run is pinned whole, a name an aws value reads). The wiring
-// between the runs is pinned too: every job's steps are the guard's, in order, by name and action
-// (JOB_STEPS), so no step of its own stands before a pinned run in any job, and no run of any job names
-// GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a
-// path or a state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES,
-// JOB_OUTPUTS), written as a block mapping and never as one expression GitHub would read as the whole
-// mapping, and every step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned
-// step's outputs; and each run a gate, an approval, a smoke, a rollback or a record rests on is pinned
-// whole with its step's if: (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an
-// output, a file or a record of its own, or hands it another input; outside build and synth no other
-// step writes an output. A canonical text is read whole, so it is held instead to bash's own reading of it
-// (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()). Beside that, the
-// regex reader shellViews() and shellCommands() still reads every run as a second layer that only ever
-// adds a command: it sets aside what bash reads as data (comments, quoted text outside its command
-// substitutions, a test's operands and a case's patterns) and reads through what comes before a command
-// (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids as a
-// command is found where bash would run it and not where it is a jq path, a message or a URL; the words
-// no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment. An
-// if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or a
-// failed job through. This file decides who and what may deploy, so it is on the owner's-read list
+// whole, a canonical text's function or a record job's own only as the workflow calls it), no line of its
+// own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
+// RUN, ACCOUNT_ID, or a name an aws value reads but by a command its step's pinned run holds), and none
+// expands a name the run doesn't own (its step's or job's env: but GH_TOKEN, what it sets itself, and the
+// runner's outputs, summary, folder and run ids), so the OIDC request token the runner hands every run step
+// of a job with an id-token is never handed to a tool that could print it in pieces. The wiring between the
+// runs is pinned too: every job's steps are the guard's, in order, by name and action (JOB_STEPS), so no
+// step of its own stands before a pinned run in any job, and no run of any job names GITHUB_ENV,
+// GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
+// state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
+// written as a block mapping and never as one expression GitHub would read as the whole mapping, and every
+// step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned step's outputs; each run
+// a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
+// (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
+// of its own, or hands it another input; and so is every other run of the five jobs that hold the deploy
+// role, so no run there has a line of its own at all; outside build and synth no other step writes an
+// output. Every other workflow's jobs call only a workflow of this repository at the same commit, which
+// every rule reads, and hand it no secret. A canonical text is read whole, so it is held instead to bash's
+// own reading of it (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()).
+// Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
+// that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
+// command substitutions, a test's operands and a case's patterns) and reads through what comes before a
+// command (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids
+// as a command is found where bash would run it and not where it is a jq path, a message or a URL; the
+// words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
+// An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
+// a failed job through. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
 import {
   type BlockValue,
@@ -771,14 +776,15 @@ export const SYNTH_LINES: readonly string[] = [
   'npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-prod"',
 ]
 
-// --- The runs the guard pins whole (DPW-08, DPW-09, DPW-13) ----------------------------------------------
+// --- The runs the guard pins whole (DPW-08, DPW-09, DPW-10, DPW-13) --------------------------------------
 
 // Each run whose exit or outputs a gate, an approval, a smoke, a rollback or a record rests on, pinned whole
 // as the workflow pastes it, so no line of its own can end it early, write an output, a file or a record of
 // its own, or hand one of its lines another input: the gate's reads of the records and main's ruleset (and
 // its plan, PLAN_STEP), prod-gate's read of prod's records, the deploy jobs' release, push, migrate and its
 // record, services_started and read-back, the rollback jobs' releases, read-back and rolled, prod-plan's
-// diff, the smokes and the record jobs (PINNED_RUNS). The rest of each such run's rules still read it.
+// diff, the smokes and the record jobs; and every other run of a job that holds the deploy role
+// (PINNED_RUNS). The rest of each such run's rules still read it.
 
 // The gate's read of the release, migration and restore records (C11-D58, C11-D61, DPW-09), which
 // history.ts plan reads as data.
@@ -1121,12 +1127,97 @@ export const recordRun = (stage: Stage) =>
       ].join('\n')
     : [RECORD_HEAD, RECORD_RELEASE, RECORD_TAIL].join('\n')
 
+// Every other run of the five jobs that hold the deploy role, or the OIDC request token that gets it
+// (C11-D48, C11-D61, C11-D76, DPW-10), pinned whole too, so no run there has a line of its own to read,
+// split, print or send what the job holds (the request token, the account id, an AWS answer) or to
+// hand a pinned line another input: the asset check on each folder its job downloaded, the install and
+// CLI_CHECK, the account id's mask, AWS_CHECK with its job's call, each CLI step and the probe; the fast
+// re-checks are canonical texts standing whole.
+export const INSTALL = 'npm ci --ignore-scripts -w @hearth/infra'
+export const MASK_RUN = 'echo "::add-mask::$ACCOUNT_ID"'
+export const assetCheckRun = (folders: readonly string[], variable: string) =>
+  [
+    'set -euo pipefail',
+    ASSET_CHECK,
+    ...folders.flatMap(folder => [
+      `check_assembly "$RUNNER_TEMP/${folder}"`,
+      `check_release_in "$RUNNER_TEMP/${folder}" "$${variable}"`,
+    ]),
+  ].join('\n')
+// A step that runs one CLI line: the preamble, what it is, its folder, CDK_FOLDER and the line.
+const cliRun = (what: string, assembly: 'assembly' | 'assembly-previous', line: string) =>
+  [PREAMBLE, what, `ASSEMBLY="$RUNNER_TEMP/${assembly}"`, CDK_FOLDER, line].join('\n')
+export const FORWARD_RUN = cliRun(
+  sh`# A forward deploy's first call (C11-D52; TECH-SPEC T24 item 11): the stacks the services stand on,
+# by their stage ids, each change set from the downloaded assembly alone.`,
+  'assembly',
+  CDK_DEPLOY_FORWARD,
+)
+export const SERVICES_RUN = cliRun(
+  sh`# Services (C11-D52; TECH-SPEC T24 item 11): the release's services alone, after the stacks they stand
+# on (and after migrate, from C0.12).`,
+  'assembly',
+  CDK_DEPLOY_SERVICES,
+)
+export const MANUAL_ROLLBACK_RUN = cliRun(
+  sh`# A rollback a person dispatched (C11-D52, C11-D58): the target's Tasks and Services alone, over the
+# Platform and Data that run; never a push and never migrate.`,
+  'assembly',
+  CDK_DEPLOY_ROLLBACK,
+)
+export const ROLLBACK_RUN = cliRun(
+  sh`# The pipeline's rollback (C11-D52, C11-D58): the previous release's Tasks and Services, from its own
+# assembly; never a push and never migrate.`,
+  'assembly-previous',
+  CDK_DEPLOY_ROLLBACK,
+)
+export const DOWN_RUN = cliRun(
+  sh`# restore=down (C11-D45; TECH-SPEC T24 item 18): Services, then Data, then Platform, one call each, since
+# one call would order them by dependency; each only for a restore stack that exists and has settled.
+# One a failed create left (ROLLBACK_COMPLETE or REVIEW_IN_PROGRESS, nothing billed) or that doesn't
+# exist is skipped, and one still moving refuses, so down works after a failed or partial up and
+# never creates a stack. One whose failed create couldn't roll back (ROLLBACK_FAILED, which may hold
+# billed resources, and which the CLI would delete and create again) is skipped too, the later stacks
+# are still taken down, and the step then fails, since that stack waits for tier 2.`,
+  'assembly',
+  RESTORE_DOWN,
+)
+export const DRILL_RUN = sh`${PREAMBLE}
+# drill-break (C11-D59): a Services deploy whose realtime can't start must fail, the circuit breaker
+# and CloudFormation must put realtime back on the revision it ran, one deployment, PRIMARY and
+# COMPLETED, and leave the stack UPDATE_ROLLBACK_COMPLETE; the smoke then passes on what runs. A14
+# emails, as expected. No probe and no record: nothing changed.
+BEFORE=$(get aws ecs describe-services --cluster "hearth-$STAGE" --services "hearth-$STAGE-realtime" --query 'services[0].deployments[?status==\`PRIMARY\`] | [0].taskDefinition' --output text)
+BEFORE=$\{BEFORE##*/}
+if ! [[ "$BEFORE" =~ ^hearth-nonprod-realtime:[1-9][0-9]{0,5}$ ]]; then
+  echo "drill-break: realtime's revision can't be read" | mask
+  exit 1
+fi
+ASSEMBLY="$RUNNER_TEMP/assembly"
+${CDK_FOLDER}
+${CDK_DEPLOY_DRILL}
+  echo 'drill-break: the broken Services deploy succeeded, so the drill proved nothing' | mask
+  exit 1
+fi
+AFTER=$(get aws ecs describe-services --cluster "hearth-$STAGE" --services "hearth-$STAGE-realtime" --query 'services[0].deployments[].{status: status, rollout: rolloutState, definition: taskDefinition}' --output json)
+if ! jq -e --arg before "$BEFORE" 'length == 1 and .[0].status == "PRIMARY" and .[0].rollout == "COMPLETED" and (.[0].definition | endswith("/" + $before))' <<<"$AFTER" >/dev/null; then
+  echo "drill-break: realtime isn't back on the revision it ran" | mask
+  exit 1
+fi
+STACK=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].StackStatus' --output text)
+if [ "$STACK" != UPDATE_ROLLBACK_COMPLETE ]; then
+  echo "drill-break: the Services stack is $STACK, not UPDATE_ROLLBACK_COMPLETE" | mask
+  exit 1
+fi
+echo "drill-break: the broken deploy failed and realtime runs $BEFORE again" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
+
 // Each pinned run by its job and its step's name, with its step's if: (none, unless named), since an if:
 // that skips the step passes its job as surely as an early exit 0 would, and the rule that holds it
 // whole: the gate's under DPW-09; prod-gate's records, the smokes, services_started, the read-back, the
 // rollback jobs' releases and rolled, and prod-plan's diff under DPW-08; the release, the push, migrate
-// with its record and the record jobs under DPW-13.
-type Pinned = Readonly<Record<string, { run: string; rule: 'DPW-08' | 'DPW-09' | 'DPW-13'; if?: string }>>
+// with its record and the record jobs under DPW-13; every other run of a job that holds credentials
+// under DPW-10.
+type Pinned = Readonly<Record<string, { run: string; rule: 'DPW-08' | 'DPW-09' | 'DPW-10' | 'DPW-13'; if?: string }>>
 const deployRuns = (stage: Stage): Pinned => ({
   'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
   'Push the image': { run: pushRun(stage), rule: 'DPW-13', if: PUSH_IF[stage] },
@@ -1147,6 +1238,51 @@ const rollbackRuns = (): Pinned => ({
   'Read back what runs': { run: [PREAMBLE, READ_BACK].join('\n'), rule: 'DPW-08', if: GO_IF },
   'Rolled back': { run: DONE_RUN, rule: 'DPW-08', if: GO_IF },
 })
+// A credentialed job's other runs (DPW-10): before the credentials action its asset check, the fast
+// re-check (nonprod and prod), the install, CLI_CHECK and the mask; after them AWS_CHECK with its job's
+// call, its CLI steps and its probe, each under its own if:.
+const checksBefore = (id: string, recheck?: string): Pinned => ({
+  ...(DEPLOY_JOBS[id]?.rollback === true
+    ? { 'Check the previous assembly': { run: assetCheckRun(['assembly-previous'], 'PREVIOUS'), rule: 'DPW-10' } }
+    : { 'Check the assembly': { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-10' } }),
+  ...(recheck === undefined ? {} : { 'The fast re-check': { run: recheck, rule: 'DPW-10' } }),
+  'The pinned CDK CLI': { run: INSTALL, rule: 'DPW-10' },
+  "The CLI is the registry's": { run: CLI_CHECK, rule: 'DPW-10' },
+  'Mask the account id': { run: MASK_RUN, rule: 'DPW-10' },
+})
+const whatRuns = (id: string): Pinned => ({
+  'What runs': { run: [PREAMBLE, AWS_CHECK, AWS_CHECK_CALLS[id] ?? ''].join('\n'), rule: 'DPW-10' },
+})
+const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonprod' | 'rollback-prod'): Pinned => {
+  const ifOf = (line: string) => CLI_STEP_IF[id]?.[line]
+  const probe = (stage: Stage, job: 'deploy' | 'rollback'): Pinned => ({
+    Probe: { run: probeRun(stage, job), rule: 'DPW-10', if: PROBE_IF[id] },
+  })
+  switch (id) {
+    case 'prod-plan':
+      return checksBefore(id)
+    case 'nonprod':
+    case 'prod':
+      return {
+        ...checksBefore(id, id === 'prod' ? FAST_RECHECK_PROD : FAST_RECHECK_NONPROD),
+        ...whatRuns(id),
+        'Deploy Platform, Data and Tasks': { run: FORWARD_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_FORWARD) },
+        'Deploy Services': { run: SERVICES_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_SERVICES) },
+        'Roll back to the target': { run: MANUAL_ROLLBACK_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_ROLLBACK) },
+        ...(id === 'prod'
+          ? { 'Take the restore stage down': { run: DOWN_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_DOWN) } }
+          : { 'drill-break': { run: DRILL_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_DRILL) } }),
+        ...probe(id, 'deploy'),
+      }
+    default:
+      return {
+        ...checksBefore(id),
+        ...whatRuns(id),
+        'Roll back Tasks and Services': { run: ROLLBACK_RUN, rule: 'DPW-10', if: ifOf(CDK_DEPLOY_ROLLBACK) },
+        ...probe(id === 'rollback-prod' ? 'prod' : 'nonprod', 'rollback'),
+      }
+  }
+}
 export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   gate: {
     'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
@@ -1154,14 +1290,15 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
     Plan: { run: PLAN_STEP, rule: 'DPW-09' },
   },
   'prod-gate': { "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' } },
-  nonprod: deployRuns('nonprod'),
-  prod: deployRuns('prod'),
+  nonprod: { ...deployRuns('nonprod'), ...credentialedRuns('nonprod') },
+  prod: { ...deployRuns('prod'), ...credentialedRuns('prod') },
   'prod-plan': {
     'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
     Diff: { run: DIFF_RUN, rule: 'DPW-08' },
+    ...credentialedRuns('prod-plan'),
   },
-  'rollback-nonprod': rollbackRuns(),
-  'rollback-prod': rollbackRuns(),
+  'rollback-nonprod': { ...rollbackRuns(), ...credentialedRuns('rollback-nonprod') },
+  'rollback-prod': { ...rollbackRuns(), ...credentialedRuns('rollback-prod') },
   'smoke-nonprod': { Smoke: { run: smokeRun('smoke-nonprod'), rule: 'DPW-08' } },
   'smoke-prod': { Smoke: { run: smokeRun('smoke-prod'), rule: 'DPW-08' } },
   'resmoke-nonprod': { Smoke: { run: smokeRun('resmoke-nonprod'), rule: 'DPW-08' } },
@@ -3160,6 +3297,11 @@ const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
 const BLOCK_SCALARS =
   "writes a block scalar only as a run:, never as an env: entry, an output, an input or any other value, whose last line break GitHub keeps and the guard's reader drops"
+// A reusable workflow a job may call (DPW-02): one of this repository's at the caller's own commit, named by
+// its local path, ./.github/workflows/<file>.yml, which GitHub reads from the same commit as the caller.
+const CALLED_WORKFLOW = /^\.\/(\.github\/workflows\/[^/@\s]+\.ya?ml)$/
+const CALLS_OWN =
+  'calls only another workflow of this repository at this commit (./.github/workflows/<file>.yml), never deploy.yml, one of another repository or one at another ref'
 // An if: as GitHub reads an expression: a plain scalar that is one ${{ … }} and nothing else (a comment
 // aside), with no ${{ or }} inside it.
 const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:\s+#.*)?$/
@@ -3196,7 +3338,9 @@ function unreadCharacter(text: string): string | undefined {
 // escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow
 // mapping but {}), so none is read wrong, and holds only tabs, newlines and printable text
 // (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
-// no environment, and gives no block scalar an indentation indicator (indicatorProblems).
+// no environment, gives no block scalar an indentation indicator (indicatorProblems), and has each job that
+// calls a reusable workflow call another of this repository's at this commit (CALLED_WORKFLOW), never
+// deploy.yml, handing it no secret.
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -3295,6 +3439,18 @@ export function permissionFindings(workflows: Texts): Finding[] {
     }
     if (yamlLines(text).some(line => /^\s*(?:-\s+)?environment\s*:/.test(line.text))) {
       found.push(at(path, 'DPW-02', 'names no environment'))
+    }
+    // A job that calls a reusable workflow calls one of this repository's at this commit, which every
+    // rule here reads as it reads this one, and never deploy.yml: a workflow of another repository, or of
+    // this one at another ref, could name an environment or join a deploy group unread, and no secret is
+    // handed to one, whose job naming an environment would receive that environment's secrets too.
+    for (const job of workflowJobs(text)) {
+      const uses = job.keys.has('uses') ? jobScalar(job, 'uses') : undefined
+      const called = uses === undefined ? undefined : CALLED_WORKFLOW.exec(uses)?.[1]
+      if (job.keys.has('uses') && (called === undefined || called === DEPLOY || !workflows.has(called))) {
+        found.push(at(path, 'DPW-02', `${job.id}: ${CALLS_OWN}`))
+      }
+      if (job.keys.has('secrets')) found.push(at(path, 'DPW-02', `${job.id}: hands no secret to a called workflow`))
     }
     if (indicatorProblems(text).length > 0) {
       found.push(
@@ -3801,10 +3957,42 @@ const PREAMBLE_LINES = PREAMBLE.split('\n').length
 // a pipe's next line), then tee -a or >>.
 const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
 const AWS_ENV_ASSIGNMENT = assigns('AWS_[A-Z0-9_]*|ROLE_TO_ASSUME')
+// The runner's own names a credentialed or record run's own lines may expand: its outputs, its summary, its
+// folder and the run's ids and address, none of them a credential. Not GH_TOKEN, which gh reads itself,
+// and none of the names the runner hands a job a credential in (the OIDC request token and its URL, the
+// AWS session), which a jq split or slice would print in pieces no mask matches.
+const RUNNER_EXPANSIONS = [
+  'GITHUB_OUTPUT',
+  'GITHUB_STEP_SUMMARY',
+  'RUNNER_TEMP',
+  'GITHUB_RUN_ID',
+  'GITHUB_RUN_ATTEMPT',
+  'GITHUB_SERVER_URL',
+  'GITHUB_REPOSITORY',
+]
+const TOKEN_NAMES = ['GH_TOKEN']
+// Whether a run's own lines expand only a name its step's or job's env: sets (but a token's), one its own
+// lines or a canonical text standing in it set, one of RUNNER_EXPANSIONS, a function's argument ($1 to $9)
+// or the last status ($?).
+function expandsOnlyItsOwn(run: string, read: ShellRead, env: readonly string[]): boolean {
+  const own = new Set<string>([...env.filter(name => !TOKEN_NAMES.includes(name)), ...RUNNER_EXPANSIONS])
+  for (const command of read.commands) for (const name of namesSet(command)) own.add(name)
+  for (const place of canonicalPlaces(run)) for (const name of NAMES_SET_BY(place.text)) own.add(name)
+  return read.commands.every(command =>
+    [
+      ...command.args,
+      ...command.assignments.map(each => each.value),
+      ...command.redirections.flatMap(each => each.target ?? []),
+    ].every(word => word.expands.every(name => own.has(name) || /^(?:[1-9]|\?)$/.test(name))),
+  )
+}
+const EXPANDS_ITS_OWN =
+  "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
 
 // DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, env as a word
 // outside quotes, bare set, printenv, export -p, declare -p or a declare, export, local or readonly given no
-// name; in a credentialed run no jq program's env or $ENV, /proc file or AWS_ variable's expansion; no ${{ }}
+// name; in a credentialed or record run's own lines no expansion but of its own names (EXPANDS_ITS_OWN), and
+// in a credentialed run no jq program's env or $ENV, /proc file or AWS_ variable's expansion; no ${{ }}
 // inside a run (inputs and outputs come through env:); secrets. names only the role and the account id in
 // the five environment jobs, and never GITHUB_TOKEN; in each environment job the account id is masked
 // before the credentials action, every run after it starts with the preamble, whose mask, run and get no
@@ -3832,6 +4020,8 @@ export function maskingFindings(workflows: Texts): Finding[] {
   for (const { id, job, steps } of jobsOf(text).values()) {
     const credentialed = ENVIRONMENT_JOBS[id] !== undefined
     const credentials = credentialsAt(steps)
+    const jobEnv = blockValue(job.keys.get('env') ?? [])
+    const jobNames = isMap(jobEnv) ? [...jobEnv.keys()] : []
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       if (credentialed && Object.keys(Object.fromEntries(step.env)).some(key => /^AWS_|^ROLE_TO_ASSUME$/.test(key))) {
@@ -3847,6 +4037,14 @@ export function maskingFindings(workflows: Texts): Finding[] {
       // others' by DPW-10 and DPW-13.
       const refused = refusedAt(where, read)
       if (refused !== undefined && !credentialed && !RECORD_JOBS.includes(id)) add(refused, AS_BASH)
+      // A credentialed or record run's own lines expand only the names it owns, so none hands the OIDC
+      // request token, the AWS session or the GitHub token to a tool that prints it in pieces.
+      if (
+        (credentialed || RECORD_JOBS.includes(id)) &&
+        !expandsOnlyItsOwn(run, read, [...jobNames, ...step.env.keys()])
+      ) {
+        add(where, EXPANDS_ITS_OWN)
+      }
       // env or printenv, by name or path, as a command or a word handed to one.
       const printsEnvironment = read.commands.some(
         command =>
@@ -3962,13 +4160,11 @@ export function maskingFindings(workflows: Texts): Finding[] {
       }
     })
     if (!credentialed) continue
-    const jobEnv = blockValue(job.keys.get('env') ?? [])
-    if (isMap(jobEnv) && [...jobEnv.keys()].some(key => /^AWS_|^ROLE_TO_ASSUME$/.test(key))) {
+    if (jobNames.some(key => /^AWS_|^ROLE_TO_ASSUME$/.test(key))) {
       add(id, 'sets no AWS_ variable and no ROLE_TO_ASSUME')
     }
     const mask = steps.findIndex(
-      step =>
-        step.run === 'echo "::add-mask::$ACCOUNT_ID"' && step.env.get('ACCOUNT_ID') === expr('secrets.AWS_ACCOUNT_ID'),
+      step => step.run === MASK_RUN && step.env.get('ACCOUNT_ID') === expr('secrets.AWS_ACCOUNT_ID'),
     )
     if (mask < 0 || credentials < 0 || mask > credentials) {
       add(id, 'masks secrets.AWS_ACCOUNT_ID (::add-mask::) before the credentials action')
@@ -4859,16 +5055,19 @@ const NAMES_SET_BY = keptByText((text: string): readonly string[] => {
   return [...names]
 })
 // The lines that alone may set a name a pinned line reads on a run's own lines: the registry the login and
-// the push name, and the one-off migrate's end waits on. (TOKEN, NET_MIGRATE, OVERRIDES, ASSEMBLY, DIFF,
-// CDK and STAGE are pinned by the rules that read them.)
+// the push name, the one-off migrate's end waits on, and none the account id REGISTRY_LINE builds the
+// registry from, which comes only from the masked secret in its step's env:, so no own line points the
+// login, and the registry password with it, or the push at another host. (TOKEN, NET_MIGRATE, OVERRIDES,
+// ASSEMBLY, DIFF, CDK and STAGE are pinned by the rules that read them.)
 const ASSIGNED_ONLY_BY: ReadonlyMap<string, readonly string[]> = new Map([
   ['REGISTRY', [REGISTRY_LINE]],
   ['RUN', [RUN_TASK_MIGRATE]],
+  ['ACCOUNT_ID', []],
 ])
-// Every name an aws value reads (AWS_VALUE_NAMES) is set on a run's own lines only in a step whose run
-// the guard pins whole (the release's DIGEST, the read-back's tasks, target group, load balancer and
-// roles, migrate's network), whose own lines are the guard's text and any change to which is the pin's
-// finding, but TOKEN, also on the lines DPW-06 pins; a name a canonical text sets (CLUSTER, the task
+// Every name an aws value reads (AWS_VALUE_NAMES) is set on a run's own lines only by a command its step's
+// pinned run holds (the release's DIGEST, the read-back's tasks, target group, load balancer and roles,
+// migrate's network), so a line added to a pinned run that sets one is this rule's finding as well as the
+// pin's, but TOKEN, also on the lines DPW-06 pins; a name a canonical text sets (CLUSTER, the task
 // definitions) never on an own line.
 const AWS_VALUE_LINES: ReadonlyMap<string, readonly string[]> = new Map(
   AWS_VALUE_NAMES.map((name): [string, readonly string[]] => [
@@ -4882,17 +5081,22 @@ const AWS_VALUE_LINES: ReadonlyMap<string, readonly string[]> = new Map(
       : [],
   ]),
 )
-// The steps whose runs the guard pins whole (PINNED_RUNS), by their job and their name.
-const PINNED_STEPS: ReadonlySet<string> = new Set(
-  Object.entries(PINNED_RUNS()).flatMap(([id, pinned]) => Object.keys(pinned).map(name => `${id}\n${name}`)),
+// The runs the guard pins whole (PINNED_RUNS), by their job and their step's name.
+const PINNED_RUN_TEXTS: ReadonlyMap<string, string> = new Map(
+  Object.entries(PINNED_RUNS()).flatMap(([id, pinned]) =>
+    Object.entries(pinned).map(([name, { run }]): [string, string] => [`${id}\n${name}`, run]),
+  ),
 )
-const isPinnedStep = (id: string, step: WorkflowStep) => PINNED_STEPS.has(`${id}\n${step.name ?? ''}`)
+const pinnedRunOf = (id: string, step: WorkflowStep) => PINNED_RUN_TEXTS.get(`${id}\n${step.name ?? ''}`)
+// The commands a pinned run's own lines run, as the table reads them.
+const PINNED_COMMANDS = keptByText((run: string): readonly string[] => readShell(run).commands.map(each => each.raw))
 // Whether a run's own lines set an input its pinned lines read (DPW-10, DPW-13): a name its step's or its
 // job's env: sets, one a canonical text standing in the run sets, one ASSIGNED_ONLY_BY names on any line
-// but its own, or, outside a step whose run the guard pins whole, one an aws value reads on any line but
-// AWS_VALUE_LINES' own.
-function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinned: boolean): boolean {
+// but its own, or one an aws value reads by any command but AWS_VALUE_LINES' own and its step's pinned
+// run's.
+function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinned: string | undefined): boolean {
   const canonical = new Set(canonicalPlaces(run).flatMap(place => NAMES_SET_BY(place.text)))
+  const held = pinned === undefined ? [] : PINNED_COMMANDS(pinned)
   const onlyOn = (lines: readonly string[] | undefined, raw: string) => lines !== undefined && !lines.includes(raw)
   return read.commands.some(command =>
     namesSet(command).some(
@@ -4900,12 +5104,12 @@ function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinne
         env.includes(name) ||
         canonical.has(name) ||
         onlyOn(ASSIGNED_ONLY_BY.get(name), command.raw) ||
-        (!pinned && onlyOn(AWS_VALUE_LINES.get(name), command.raw)),
+        (onlyOn(AWS_VALUE_LINES.get(name), command.raw) && !held.includes(command.raw)),
     ),
   )
 }
 const SETS_INPUT =
-  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
 // the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
@@ -5472,13 +5676,15 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
   }
 }
 
-const INSTALL = 'npm ci --ignore-scripts -w @hearth/infra'
 const PREAMBLE_CDK = 'CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"'
 const ALLOWED_USES = /^(?:actions\/checkout|actions\/download-artifact|aws-actions\/configure-aws-credentials)@/
 const REFUSED_CLI =
   /(?<![\w-])(?:--no-rollback|-R|--express|--hotswap|--hotswap-fallback|--import-existing-resources|--force|--all|--method[= ](?:direct|prepare-change-set|execute-change-set)|--revert-drift|--outputs-file|--parameters|--notification-arns|--role-arn|--toolkit-stack-name|--plugin)(?![\w-])|"\$CDK"\s+(?:synth|destroy|bootstrap|import|publish-assets|watch|migrate|refactor|gc|drift|context|acknowledge|init|rollback)\b/
 const CLI_DEPLOY = /"\$CDK" deploy --app "\$ASSEMBLY" /
 const CLI_DIFF = /"\$CDK" diff --app "\$ASSEMBLY" /
+
+const PINNED_CREDENTIALED =
+  'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
 
 // What the CLI is run with (DPW-10): deploy or diff, --app "$ASSEMBLY", --no-lookups and --no-notices, and
 // for a deploy --require-approval never, --ci and --exclusively.
@@ -5498,21 +5704,29 @@ function cliLineIsSafe(line: string): boolean {
 // only on SETTER_LINES, and never PATH, RUNNER_TEMP or another that chooses what runs; CDK is assigned
 // only by the preamble, as the registry package's own bin; the CLI runs only as deploy or diff with --app
 // "$ASSEMBLY" (set once in its step to the folder it downloaded), after CDK_FOLDER, with no other change of
-// folder, and with its safe flags; no line anywhere passes a refused flag or subcommand; its own lines
-// are read by SHELL_TABLE, each command held to GLUE_USES, and set no input a pinned line reads
-// (SETS_INPUT). In every job, credentialed or not, its steps are JOB_STEPS' and no run names GITHUB_ENV,
-// GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the repository no workspace is named aws-cdk
-// or declares a cdk bin, and the lockfile's aws-cdk is the registry's at infra's pin.
+// folder, and with its safe flags; no line anywhere passes a refused flag or subcommand; every run of it is
+// one PINNED_RUNS pins whole, under its own if: (its CLI steps, the probe, AWS_CHECK's step and the checks
+// before the credentials under this rule, the rest under DPW-08 and DPW-13), so none has a line of its own;
+// and its own lines, the pinned texts' included, are read by SHELL_TABLE, each command held to GLUE_USES,
+// and set no input a pinned line reads (SETS_INPUT). In every job, credentialed or not, its steps are
+// JOB_STEPS' and no run names GITHUB_ENV, GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the
+// repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
+// registry's at infra's pin.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
   shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
-  for (const { id, job, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
+  const jobs = jobsOf(workflows.get(DEPLOY) ?? '')
+  // Every run of a credentialed job is one PINNED_RUNS pins whole, under its own if:, so none has a line
+  // of its own: those it pins under DPW-10 are held here, the rest by the rule each names.
+  for (const place of unpinnedRuns(jobs, 'DPW-10')) add(place, PINNED_CREDENTIALED)
+  for (const { id, job, steps } of jobs.values()) {
     const credentialed = ENVIRONMENT_JOBS[id] !== undefined
     const jobEnv = blockValue(job.keys.get('env') ?? [])
     const jobNames = isMap(jobEnv) ? [...jobEnv.keys()] : []
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
+      if (credentialed && step.run !== undefined && pinnedRunOf(id, step) === undefined) add(where, PINNED_CREDENTIALED)
       const run = step.run ?? ''
       const views = shellViews(run)
       const lines = runLines(run, views)
@@ -5555,7 +5769,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const refused = refusedAt(where, read)
       if (refused !== undefined) add(refused, AS_BASH)
       if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS))) add(where, HELD)
-      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], isPinnedStep(id, step))) add(where, SETS_INPUT)
+      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], pinnedRunOf(id, step))) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
@@ -5864,7 +6078,9 @@ export function releaseFindings(workflows: Texts): Finding[] {
     if (read.commands.some(command => !glueIsHeld(command, recordCalls(id)))) add(where, HELD)
     const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
     const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
-    if (setsAnInput(run, read, envNames, steps[0] !== undefined && isPinnedStep(id, steps[0]))) add(where, SETS_INPUT)
+    if (setsAnInput(run, read, envNames, steps[0] === undefined ? undefined : pinnedRunOf(id, steps[0]))) {
+      add(where, SETS_INPUT)
+    }
   }
   for (const { id, steps } of jobs.values()) {
     steps.forEach((step, index) => {
@@ -5942,15 +6158,6 @@ export function releaseFindings(workflows: Texts): Finding[] {
 // --- DPW-14: the asset and release checks -------------------------------------------------------------------
 
 const RUNNER_TEMP = `${expr('runner.temp')}/`
-const assetCheckRun = (folders: readonly string[], variable: string) =>
-  [
-    'set -euo pipefail',
-    ASSET_CHECK,
-    ...folders.flatMap(folder => [
-      `check_assembly "$RUNNER_TEMP/${folder}"`,
-      `check_release_in "$RUNNER_TEMP/${folder}" "$${variable}"`,
-    ]),
-  ].join('\n')
 
 // DPW-14 (C11-D76): every credentialed job runs ASSET_CHECK, check_assembly then check_release_in with the
 // release it deploys, on each folder it downloaded, after its downloads and before the credentials
