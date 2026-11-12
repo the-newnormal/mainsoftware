@@ -277,4 +277,11 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
   }
 }
 
+// Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never run and the
+// script would exit 0 having checked no floor: it refuses such a Node instead. history.ts loads this file,
+// so on such a Node history refuses with this line before its own.
+if (typeof import.meta.main !== 'boolean') {
+  process.stderr.write('floors-check: Node 24.2 or later is needed (import.meta.main), so no floor was checked\n')
+  process.exit(1)
+}
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2))

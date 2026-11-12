@@ -380,6 +380,13 @@ jobs:
           RELEASE: ${{ steps.synth.outputs.release }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -558,6 +565,13 @@ jobs:
           RELEASE: ${{ needs.gate.outputs.previous_nonprod_commit }}:${{ needs.gate.outputs.previous_nonprod_digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -737,6 +751,13 @@ jobs:
           RELEASE: ${{ needs.gate.outputs.previous_prod_commit }}:${{ needs.gate.outputs.previous_prod_digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -931,6 +952,13 @@ jobs:
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The release this job deploys: the run's commit with the build's digest for a deploy, the gate's
           # commit and digest (a rollback's target, or the release a drill or a restore runs) otherwise.
           DIGEST=$GATE_DIGEST
@@ -960,6 +988,13 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'deploy' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
           # archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
           # from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
@@ -993,6 +1028,13 @@ jobs:
           RELEASE: ${{ steps.release.outputs.release }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -1142,6 +1184,13 @@ jobs:
           RECORD_ID: ${{ needs.gate.outputs.current_nonprod_id }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The fast re-check (C11-D52), before the credentials: non-prod's newest release record, read again
           # and checked by its shape. A deploy's commit descends from it (none on a first deploy); any other
           # mode finds the record the gate read.
@@ -1177,6 +1226,13 @@ jobs:
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
           # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -1195,6 +1251,13 @@ jobs:
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
           # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -1232,8 +1295,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1430,8 +1494,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1467,8 +1532,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1493,8 +1559,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1595,8 +1662,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1614,8 +1682,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1636,8 +1705,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1658,8 +1728,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1702,8 +1773,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -1819,8 +1891,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2008,6 +2081,13 @@ jobs:
           PREVIOUS_DIGEST: ${{ needs.gate.outputs.previous_nonprod_digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # This run's release, which the deploy job deployed (the build's digest for a deploy, the gate's for a
           # drill-smoke), and the previous release it goes back to.
           DIGEST=$GATE_DIGEST
@@ -2033,6 +2113,13 @@ jobs:
           PREVIOUS: ${{ steps.release.outputs.previous }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -2177,6 +2264,13 @@ jobs:
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
           # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -2195,6 +2289,13 @@ jobs:
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
           # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -2233,8 +2334,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2423,8 +2525,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2445,8 +2548,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2563,8 +2667,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2674,8 +2779,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -2833,6 +2939,13 @@ jobs:
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The release this job deploys: the run's commit with the build's digest for a deploy, the gate's
           # commit and digest (a rollback's target, or the release a drill or a restore runs) otherwise.
           DIGEST=$GATE_DIGEST
@@ -2857,6 +2970,13 @@ jobs:
           RELEASE: ${{ steps.release.outputs.release }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -3001,6 +3121,13 @@ jobs:
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
           # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -3019,6 +3146,13 @@ jobs:
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
           # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -3053,8 +3187,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3066,8 +3201,10 @@ jobs:
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
           # the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
-          # a rollback its Tasks and Services; into the log, and into the summary cut at 900 KB, both through
-          # the filter. A diff that fails still shows the CLI's message in both, then fails the step.
+          # a rollback its Tasks and Services; into the log, and into the summary cut at 200 KB, both through
+          # the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
+          # summary it is an indented code block, each line four spaces in and each carriage return a line
+          # break, so no line of a release's own text ends the block or opens HTML that hides what follows.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
@@ -3084,10 +3221,11 @@ jobs:
           cat "$DIFF"
           {
             echo "### What prod's $MODE changes"
-            echo '```'
-            head -c 921600 "$DIFF"
-            echo '```'
-            if [ "$(wc -c <"$DIFF")" -gt 921600 ]; then echo "The diff is cut at 900 KB here; the job's log holds it whole."; fi
+            echo ''
+            head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
+            echo ''
+            echo ''
+            if [ "$(wc -c <"$DIFF")" -gt 204800 ]; then echo "The diff is cut at 200 KB here; the job's log holds it whole."; fi
             if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
           } | mask >>"$GITHUB_STEP_SUMMARY"
           exit "$STATUS"
@@ -3236,6 +3374,13 @@ jobs:
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The release this job deploys: the run's commit with the build's digest for a deploy, the gate's
           # commit and digest (a rollback's target, or the release a drill or a restore runs) otherwise.
           DIGEST=$GATE_DIGEST
@@ -3265,6 +3410,13 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
           # archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
           # from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
@@ -3298,6 +3450,13 @@ jobs:
           RELEASE: ${{ steps.release.outputs.release }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -3451,6 +3610,13 @@ jobs:
           NONPROD_DIGEST: ${{ needs.nonprod.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
           # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
           # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
@@ -3499,6 +3665,13 @@ jobs:
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
           # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -3517,6 +3690,13 @@ jobs:
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
           # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -3556,8 +3736,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3756,8 +3937,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3793,8 +3975,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3819,8 +4002,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3921,8 +4105,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3940,8 +4125,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3962,8 +4148,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -3984,8 +4171,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4045,8 +4233,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4162,8 +4351,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4354,6 +4544,13 @@ jobs:
           PREVIOUS_DIGEST: ${{ needs.gate.outputs.previous_prod_digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # This run's release, which the deploy job deployed (the build's digest for a deploy, the gate's for a
           # drill-smoke), and the previous release it goes back to.
           DIGEST=$GATE_DIGEST
@@ -4379,6 +4576,13 @@ jobs:
           PREVIOUS: ${{ steps.release.outputs.previous }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -4523,6 +4727,13 @@ jobs:
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
           # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -4541,6 +4752,13 @@ jobs:
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
           # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -4579,8 +4797,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4769,8 +4988,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4791,8 +5011,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -4909,8 +5130,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
@@ -5020,8 +5242,9 @@ jobs:
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
           # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)

@@ -5,7 +5,8 @@
 // Cases so far (C0.11 PR 1 to PR 4): IG-01 to IG-12, and C11-D62's synth scripts: synth:lz, and from
 // PR 3 the workload's synth (the pipeline's) and synth:ci (CI's), with no hook around any of them. From
 // PR 4, IG-01 reads the deploy workflow, its environments and their script, IG-08 holds every script
-// under infra/scripts/deploy/ to loading no npm package, and the id-token clause ciSynthProblems held for
+// under infra/scripts/deploy/ to loading no npm package and every file those scripts load from outside
+// their folder (the profiles, the floors) to data that runs nothing as it loads, and the id-token clause ciSynthProblems held for
 // ci.yml is DPW-02's, for every workflow (scripts/guards/deploy-workflow.ts; T24 item 28).
 import { posix } from 'node:path'
 import ts from 'typescript'
@@ -800,6 +801,88 @@ export function packageFindings(specifiers: ReadonlyMap<string, readonly string[
       if (spec.startsWith('node:') || spec.startsWith('.')) continue
       const name = packageOf(spec)
       if (name !== undefined) found.push(`${path}: IG-08 loads ${name}, but runs without npm ci`)
+    }
+  }
+  return found
+}
+
+// The files the deploy scripts load from outside infra/scripts/deploy/ (C11-D54, C11-D58): the profiles,
+// which history.ts imports in the gate and prod-gate, and smoke.ts loads at the release it judges
+// (--profile-at), and the rollback floors, which floors-check.ts loads at a commit on main. Each is on the
+// owner's-read list whole, and each is data: loading one runs nothing (deployScriptDataFindings).
+export const DEPLOY_SCRIPT_DATA = ['infra/src/config/profiles.ts', 'infra/src/release/floors.ts'] as const
+
+// What runs when a deploy script loads a data file, beyond its own text: at the top level only type-only
+// imports, types and interfaces, function declarations (which run only when a deploy script calls one) and
+// const declarations of data (literals, other names, arrays and objects of them with plain keys, a type
+// assertion or satisfies), exported or not. Nothing else: no import that loads a module, no re-export, no
+// statement that runs (an if, a call, an assignment), no let or var, no class (its static parts run), and
+// in a const no call, new, tagged template, template with a substitution, property read (a getter runs),
+// spread, computed key, method or accessor. So a data file can't take over the gate's plan or a smoke's
+// verdict by what it does when it loads (writing the plan itself and exiting 0, say), and what it decides
+// is its values, which its owner's read and the scripts' own checks hold.
+export function deployScriptDataFindings(path: string, source: string): Finding[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const found: string[] = []
+  const refuse = (node: ts.Node, what: string) =>
+    found.push(
+      `${path}, line ${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}: IG-08 ${what}, but a deploy script loads this file, so it holds data alone and runs nothing as it loads`,
+    )
+  const inert = (node: ts.Expression): boolean => {
+    if (
+      ts.isStringLiteral(node) ||
+      ts.isNumericLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isIdentifier(node) ||
+      node.kind === ts.SyntaxKind.TrueKeyword ||
+      node.kind === ts.SyntaxKind.FalseKeyword ||
+      node.kind === ts.SyntaxKind.NullKeyword
+    ) {
+      return true
+    }
+    if (ts.isPrefixUnaryExpression(node))
+      return node.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(node.operand)
+    if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+      return inert(node.expression)
+    }
+    if (ts.isArrayLiteralExpression(node))
+      return node.elements.every(element => !ts.isSpreadElement(element) && inert(element))
+    if (ts.isObjectLiteralExpression(node)) {
+      return node.properties.every(
+        property =>
+          (ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer === undefined) ||
+          (ts.isPropertyAssignment(property) &&
+            (ts.isIdentifier(property.name) ||
+              ts.isStringLiteral(property.name) ||
+              ts.isNumericLiteral(property.name)) &&
+            inert(property.initializer)),
+      )
+    }
+    return false
+  }
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      if (statement.importClause?.isTypeOnly !== true)
+        refuse(statement, 'imports a module (only import type loads nothing)')
+    } else if (ts.isExportDeclaration(statement)) {
+      if (!statement.isTypeOnly) refuse(statement, 're-exports a module')
+    } else if (ts.isVariableStatement(statement)) {
+      if ((statement.declarationList.flags & ts.NodeFlags.Const) === 0) refuse(statement, 'declares a let or a var')
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          !ts.isIdentifier(declaration.name) ||
+          declaration.initializer === undefined ||
+          !inert(declaration.initializer)
+        ) {
+          refuse(declaration, 'gives a const something other than data')
+        }
+      }
+    } else if (
+      !ts.isTypeAliasDeclaration(statement) &&
+      !ts.isInterfaceDeclaration(statement) &&
+      !(ts.isFunctionDeclaration(statement) && statement.body !== undefined && statement.name !== undefined)
+    ) {
+      refuse(statement, `has a top-level ${ts.SyntaxKind[statement.kind]}`)
     }
   }
   return found

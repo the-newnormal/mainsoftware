@@ -17,11 +17,16 @@
 // that exists only in a fork, which GitHub resolves under the action's name, runs in a job. That job's own
 // checkout and setup-node run before the check can prove anything, so they are held to PINS_JOB_ACTIONS,
 // apart from ACTION_PINS, which a person proves by hand when they move, and ci.yml sets no env: or
-// defaults: at its top, which would reach the check's step.
-// Every run after the credentials action starts by stopping the runner reading workflow commands for the
-// rest of its step (STOP_COMMANDS, the preamble's first command), so no ##[add-mask] or other command in
-// what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the
-// approver's diff or drops a job output; and ASSET_CHECK refuses a template that hands CloudFormation
+// defaults: at its top, which would reach the check's step. .nvmrc, which chooses that job's Node and every
+// deploy job's, is 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart
+// gives one job a Node on which a script's entry runs nothing and exits 0.
+// Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
+// id's mask starts by stopping the runner reading workflow commands for the rest of its step (STOP_HEAD,
+// the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
+// command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
+// build's image archive) hides a line of the log or the approver's diff or drops a job output; prod-plan
+// writes the diff into its summary as an indented code block, which no line of a release's own text can
+// end or turn into HTML that hides the rest; and ASSET_CHECK refuses a template that hands CloudFormation
 // another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
 // type, a transform), which neither the CLI's diff nor the release check reads.
 //
@@ -33,8 +38,8 @@
 // assignments and builtins as it holds them), so any form the table doesn't name is refused at its line
 // (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
-// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, every aws
-// word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
+// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, tr and sed
+// only as prod-plan's diff summary's, every aws word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
 // whole, a canonical text's function or a record job's own only as the workflow calls it), no line of its
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
 // RUN, ACCOUNT_ID, or a name an aws value reads but by a command its step's pinned run holds), and none
@@ -121,17 +126,26 @@ function sh(strings: TemplateStringsArray, ...values: readonly string[]): string
 export const STOP_COMMANDS = sh`stop_token=$(openssl rand -hex 16)
 echo "::stop-commands::$stop_token"`
 
+// The first lines of every run of a job that holds the deploy role, or the OIDC request token that gets it,
+// but the account id's mask (DPW-07): set -euo pipefail, then STOP_COMMANDS, before anything the run reads
+// or prints. The runs before the credentials action read what other jobs made, which repository code can
+// shape (the build's image archive, whose pax headers GNU tar names on stderr as they are, the synth's
+// assembly, the records), so they stop reading commands as the runs after it do; a stop lasts only its own
+// step, so the mask's step still adds its mask.
+export const STOP_HEAD = sh`set -euo pipefail
+# The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+# (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+# so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+# or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+# masks it.
+${STOP_COMMANDS}`
+
 // The preamble (C11-D61): the first lines of every run step after the credentials action. It stops the
-// runner reading workflow commands for the step (STOP_COMMANDS); then every aws, cdk and skopeo command
+// runner reading workflow commands for the step (STOP_HEAD); then every aws, cdk and skopeo command
 // runs as `run …`, its output shown through the account-id filter (a run of twelve digits with no digit
 // or lowercase hex letter beside it, so a commit or digest stays whole), or inside `$(get …)`, its output
 // kept and never printed and its errors filtered (DPW-07).
-export const PREAMBLE = sh`set -euo pipefail
-# The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
-# (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
-# so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
-# included, is only shown. The token that would resume them is made here, and the runner masks it.
-${STOP_COMMANDS}
+export const PREAMBLE = sh`${STOP_HEAD}
 # Every aws, cdk and skopeo command runs as \`run …\` (its output shown through the account-id filter)
 # or inside \`$(get …)\` (its output kept for use and never printed, its errors filtered) (C11-D61).
 mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -152,7 +166,7 @@ export const CDK_FOLDER = sh`cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export 
 // folder of the runner's temp folder that CLI_FETCH makes itself (so nothing a download left can stand
 // there), checked against the lockfile's sha512 integrity for it and unpacked there; aws-cdk has no
 // dependencies, so the tarball is the whole CLI.
-export const CLI_FETCH = sh`set -euo pipefail
+export const CLI_FETCH = sh`${STOP_HEAD}
 # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
 # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
 # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
@@ -172,7 +186,7 @@ tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-
 // The CLI check (C11-D48, C11-D76, DPW-10): the whole run of the step after CLI_FETCH, before the credentials
 // action. The CLI is the registry's aws-cdk at infra's pin as CLI_FETCH unpacked it, never a workspace's or a
 // link.
-export const CLI_CHECK = sh`set -euo pipefail
+export const CLI_CHECK = sh`${STOP_HEAD}
 # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
 # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
 # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
@@ -765,7 +779,7 @@ echo "$OUT" >>"$GITHUB_OUTPUT"`
 // The fast re-checks (C11-D52, DPW-08), before the credentials: the newest release record read again; a
 // deploy's ancestry (and in prod both digests), any other mode's record id (in prod every mode's, after
 // it holds a prod deploy's or rollback's approval to prod-plan's diff of this attempt).
-export const FAST_RECHECK_NONPROD = sh`set -euo pipefail
+export const FAST_RECHECK_NONPROD = sh`${STOP_HEAD}
 # The fast re-check (C11-D52), before the credentials: non-prod's newest release record, read again
 # and checked by its shape. A deploy's commit descends from it (none on a first deploy); any other
 # mode finds the record the gate read.
@@ -780,7 +794,7 @@ elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
   echo "fast re-check: nonprod's release records changed since the gate read them"
   exit 1
 fi`
-export const FAST_RECHECK_PROD = sh`set -euo pipefail
+export const FAST_RECHECK_PROD = sh`${STOP_HEAD}
 # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
 # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
 # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
@@ -905,10 +919,13 @@ unpack_image() {
     { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
 }`
 // The deploy jobs' step that checks and unpacks the image (DPW-13), before the credentials action, under the
-// push's if:: the archive the build uploaded, into the folder the push copies from.
+// push's if:: the archive the build uploaded, into the folder the push copies from. It stops the runner
+// reading workflow commands first (STOP_HEAD): GNU tar names an unknown pax header keyword on stderr as it
+// is, and a keyword may hold a line break, so the archive's own headers could otherwise end a line with
+// ##[add-mask] and a value of the build's choosing.
 export const IMAGE_LAYOUT = '$RUNNER_TEMP/image-layout'
 export const IMAGE_UNPACK_RUN = [
-  'set -euo pipefail',
+  STOP_HEAD,
   IMAGE_CHECK,
   'check_image_archive "$RUNNER_TEMP/image/image.tar"',
   `unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`,
@@ -1051,7 +1068,7 @@ gh api "repos/$REPO/deployments?environment=prod&task=hearth-release&per_page=10
 
 // The release a deploy job and prod-plan deploy (C11-D50, C11-D52, DPW-13): the commit the push tags and
 // every later check reads, and its digest.
-export const RELEASE_STEP = sh`set -euo pipefail
+export const RELEASE_STEP = sh`${STOP_HEAD}
 # The release this job deploys: the run's commit with the build's digest for a deploy, the gate's
 # commit and digest (a rollback's target, or the release a drill or a restore runs) otherwise.
 DIGEST=$GATE_DIGEST
@@ -1068,7 +1085,7 @@ fi
 
 // A rollback job's two releases (C11-D52, C11-D58, DPW-08): this run's, which its AWS_CHECK judges, and
 // the previous one it deploys and its smoke judges.
-export const PREVIOUS_STEP = sh`set -euo pipefail
+export const PREVIOUS_STEP = sh`${STOP_HEAD}
 # This run's release, which the deploy job deployed (the build's digest for a deploy, the gate's for a
 # drill-smoke), and the previous release it goes back to.
 DIGEST=$GATE_DIGEST
@@ -1230,12 +1247,21 @@ fi
 } >>"$GITHUB_OUTPUT"
 echo "read-back: Hearth-$STAGE-Services runs $DEPLOYED" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
 
-// prod-plan's diff (C11-D51, DPW-08): what the approver reads, into the log and the summary.
+// prod-plan's diff (C11-D51, DPW-08): what the approver reads, into the log and the summary. The summary is
+// GitHub Flavored Markdown, and the diff prints a release's own text as it is (a template's strings, an
+// annotation, a validation report), so the diff is written as an indented code block: every line four
+// spaces in, every carriage return made a line break first (Markdown reads a lone one as a line's end), so
+// no line of it can end the block or open HTML that hides the rest, as a line of three backticks would end
+// a fenced block and a line starting <!-- then hide everything after it. Four spaces a line can make the
+// text five times longer, so it is cut at 200 KB, under a step summary's 1 MiB.
+export const DIFF_CUT = 204800
 export const DIFF_RUN = sh`${PREAMBLE}
 # The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
 # the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
-# a rollback its Tasks and Services; into the log, and into the summary cut at 900 KB, both through
-# the filter. A diff that fails still shows the CLI's message in both, then fails the step.
+# a rollback its Tasks and Services; into the log, and into the summary cut at 200 KB, both through
+# the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
+# summary it is an indented code block, each line four spaces in and each carriage return a line
+# break, so no line of a release's own text ends the block or opens HTML that hides what follows.
 ASSEMBLY="$RUNNER_TEMP/assembly"
 DIFF="$RUNNER_TEMP/diff.txt"
 STATUS=0
@@ -1252,10 +1278,11 @@ fi
 cat "$DIFF"
 {
   echo "### What prod's $MODE changes"
-  echo '\`\`\`'
-  head -c 921600 "$DIFF"
-  echo '\`\`\`'
-  if [ "$(wc -c <"$DIFF")" -gt 921600 ]; then echo "The diff is cut at 900 KB here; the job's log holds it whole."; fi
+  echo ''
+  head -c ${String(DIFF_CUT)} "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
+  echo ''
+  echo ''
+  if [ "$(wc -c <"$DIFF")" -gt ${String(DIFF_CUT)} ]; then echo "The diff is cut at 200 KB here; the job's log holds it whole."; fi
   if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
 } | mask >>"$GITHUB_STEP_SUMMARY"
 exit "$STATUS"`
@@ -1366,7 +1393,7 @@ export const recordRun = (stage: Stage) =>
 export const MASK_RUN = 'echo "::add-mask::$ACCOUNT_ID"'
 export const assetCheckRun = (folders: readonly string[], variable: string) =>
   [
-    'set -euo pipefail',
+    STOP_HEAD,
     ASSET_CHECK,
     ...folders.flatMap(folder => [
       `check_assembly "$RUNNER_TEMP/${folder}"`,
@@ -2308,6 +2335,7 @@ function runLines(
 // held by the tests; a run's own lines, every line outside a canonical text standing whole, are read by
 // SHELL_TABLE alone (readShell()).
 export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
+  STOP_HEAD,
   PREAMBLE,
   CDK_FOLDER,
   CLI_FETCH,
@@ -3830,7 +3858,13 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // checkout without credentials, Node from .nvmrc with no cache and the check, and check needs it, so no
 // test, install script or build that runs in check can leave a git configuration (a url.<base>.insteadOf
 // that sends the read to a fork), a file or a variable behind for the check to read, or change the check.
-export function actionPinFindings(workflows: Texts, folder?: readonly string[]): Finding[] {
+// And .nvmrc, which chooses that job's Node and every deploy.yml job's, is 24 alone (NVMRC): setup-node
+// reads a JSON .nvmrc as a manifest, and its versions read one apart (7.1 takes devEngines.runtime, which 5
+// doesn't know, before engines.node), so a .nvmrc no rule held could give the pins job, and every deploy
+// job, a Node older than 24.2, which has no import.meta.main: the check, history.ts and smoke.ts would then
+// run nothing and exit 0, the pins unproved and a broken release's smoke passed, while check, on 5, still
+// ran a Node new enough to pass.
+export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {
   const text = workflows.get(DEPLOY) ?? ''
   const spans = jobSpans(text)
   const found = new Set<Finding>()
@@ -3861,8 +3895,16 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[]):
     }
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
+  if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
   return [...found]
 }
+// The Node every setup-node of ci.yml and deploy.yml reads (node-version-file: .nvmrc, and synth's release's
+// own): the major version alone, which each version of setup-node reads the same way, as the latest Node 24
+// (CLAUDE.md: Node stays on 24), so no manifest, range or older release chooses an older Node in some jobs.
+export const NVMRC_FILE = '.nvmrc'
+export const NVMRC = '24\n'
+const NVMRC_RULE =
+  'is 24 alone, a line of its own, which every setup-node reads as the latest Node 24, so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0'
 // The job that proves the pins: a step before it in its job (a test that wrote url.<fork>.insteadOf to
 // $HOME/.gitconfig, say, or wrote the check over, or a GITHUB_PATH that put another git first) would decide
 // what it reads. A job runs on a runner of its own, so this one, whose only steps are GitHub's checkout and
@@ -4356,13 +4398,11 @@ const PRINTS_VARIABLES = ['declare', 'typeset', 'export', 'readonly', 'local']
 // and never unsets or shadows by an alias, so every later run …, $(get …) and summary write is filtered.
 const FILTER_FUNCTIONS = ['mask', 'run', 'get', 'sed']
 const PREAMBLE_LINES = PREAMBLE.split('\n').length
-// A run that stops the runner reading workflow commands before anything it runs can print: its commands,
-// comments and blank lines aside, are set -euo pipefail and then STOP_COMMANDS' two lines, first.
-const STOP_LINES = STOP_COMMANDS.split('\n')
-function stopsCommandsFirst(run: string): boolean {
-  const code = run.split('\n').filter(line => line.trim() !== '' && !line.trimStart().startsWith('#'))
-  return code[0] === 'set -euo pipefail' && STOP_LINES.every((line, i) => code[i + 1] === line)
-}
+// A run that stops the runner reading workflow commands before anything it runs can print: it starts with
+// STOP_HEAD, set -euo pipefail and then STOP_COMMANDS, whole.
+const stopsCommandsFirst = (run: string): boolean => run.startsWith(`${STOP_HEAD}\n`)
+const STOPS_FIRST =
+  "starts with STOP_HEAD, which stops the runner reading workflow commands before anything it runs reads or prints (every run but the account id's mask, before the credentials action or after it), so no ##[add-mask] or other command in what it prints, a downloaded archive's or assembly's text or the CLI's, aws's or skopeo's among it, hides a line of the log or the approver's diff or drops a job output"
 // What comes right before a write to the job summary: mask as a command after a pipe (or first on its line,
 // a pipe's next line), then tee -a or >>.
 const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
@@ -4552,12 +4592,9 @@ export function maskingFindings(workflows: Texts): Finding[] {
       if (credentials >= 0 && index > credentials && !preambled) {
         add(where, 'a run after the credentials action starts with the preamble')
       }
-      if (credentials >= 0 && index > credentials && !stopsCommandsFirst(run)) {
-        add(
-          where,
-          "stops the runner reading workflow commands (STOP_COMMANDS) before anything it runs prints, so no ##[add-mask] or other command in what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the approver's diff or drops a job output",
-        )
-      }
+      // Every run, before the credentials action or after it, but the account id's mask, which must add its
+      // mask and prints only the secret.
+      if (run !== MASK_RUN && !stopsCommandsFirst(run)) add(where, STOPS_FIRST)
       if (
         definitionsOf(run, read).some(
           each => FILTER_FUNCTIONS.includes(each.name) && !(preambled && each.line < PREAMBLE_LINES),
@@ -5188,10 +5225,17 @@ const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
   mkdir: imageTextLines('mkdir '),
   find: imageTextLines('entries=$(find '),
 }
-// openssl also makes the preamble's stop token (STOP_COMMANDS), on that line of the preamble alone: it only
-// prints random bytes.
+// The tools DIFF_RUN alone runs beyond the text tools, each only on its summary's diff line and only in a
+// run that is DIFF_RUN whole: tr makes each carriage return a line break and sed sets each line four spaces
+// in, so the summary holds the diff as one indented code block; neither reads or writes a file.
+const DIFF_SUMMARY_LINE = DIFF_RUN.split('\n')
+  .map(line => line.trim())
+  .find(line => line.startsWith('head -c '))
+const DIFF_TOOLS: ReadonlySet<string> = new Set(['tr', 'sed'])
+// openssl also makes the stop token (STOP_COMMANDS), on that line of STOP_HEAD alone, at a run's start: it
+// only prints random bytes.
 const STOP_TOKEN_LINE = STOP_COMMANDS.split('\n')[0] ?? ''
-const STOP_TOKEN_AT = PREAMBLE.split('\n').indexOf(STOP_TOKEN_LINE)
+const STOP_TOKEN_AT = STOP_HEAD.split('\n').indexOf(STOP_TOKEN_LINE)
 const AWS_CALLS =
   /^\s+(?:ecs\s+(?:run-task|describe-tasks|describe-services|list-tasks|stop-task|wait\s+tasks-stopped|describe-task-definition)|elbv2\s+describe-(?:target-groups|target-group-attributes|target-health|load-balancers|load-balancer-attributes)|cloudformation\s+describe-stacks|ecr\s+(?:describe-images|get-login-password)|logs\s+get-log-events)(?:\s|$)/
 const NO_FLAG = (command: ShellCommand) => !/(?:^|\s)[-+][A-Za-z]/.test(command.tail)
@@ -5473,7 +5517,11 @@ const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
   gh: ({ args }) => ghIsHeld(args),
   // The step's own files: the pushed digest and prod-plan's diff.
   cat: ({ args }) => argText(args) === '"$RUNNER_TEMP/pushed"' || argText(args) === '"$DIFF"',
-  head: ({ args }) => argText(args) === '-c 921600 "$DIFF"',
+  head: ({ args }) => argText(args) === `-c ${DIFF_CUT} "$DIFF"`,
+  // prod-plan's diff into its summary as an indented code block: each carriage return a line break, then
+  // each line four spaces in, piped from the diff's head.
+  tr: ({ args, previous }) => argText(args) === String.raw`'\r' '\n'` && previous === 'head',
+  sed: ({ args, previous }) => argText(args) === "'s/^/    /'" && previous === 'tr',
   wc: ({ args }) => argText(args) === '-c',
   tee: ({ args }) => argText(args) === '-a "$GITHUB_STEP_SUMMARY"',
   mask: ({ args }) => args.length === 0,
@@ -6484,11 +6532,12 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         const fetchLine = FETCH_TOOLS[word]
         const imageLines = IMAGE_TOOLS[word]
         if (imageLines !== undefined && run === IMAGE_UNPACK_RUN && imageLines.includes(raw(command))) return false
+        if (DIFF_TOOLS.has(word) && run === DIFF_RUN && raw(command) === DIFF_SUMMARY_LINE) return false
         if (
           word === 'openssl' &&
           raw(command) === STOP_TOKEN_LINE &&
           command.line === STOP_TOKEN_AT &&
-          run.startsWith(`${PREAMBLE}\n`)
+          stopsCommandsFirst(run)
         ) {
           return false
         }

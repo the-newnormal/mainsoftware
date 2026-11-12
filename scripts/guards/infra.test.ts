@@ -24,7 +24,9 @@ import {
   breakGlassFindings,
   cdkJsonProblems,
   ciSynthProblems,
+  DEPLOY_SCRIPT_DATA,
   DESTROY_RULES,
+  deployScriptDataFindings,
   GROUP_ID,
   IDENTITY_CENTER_ID,
   IMAGE_RULES,
@@ -659,6 +661,69 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
       )
       expect(packageFindings(importGraph(script, read, importsOf).specifiers), script).toEqual([])
     }
+  })
+  // INPUTS-A1-02 (round 6). history.ts imports the profiles, so their top level ran in the gate's Plan step
+  // and prod-gate, and smoke.ts loads the release's own profiles, so theirs ran in every smoke: a top level
+  // that wrote a plan of its own choosing and exited 0, or turned each SMK line to a pass, decided the
+  // gate's plan and a broken release's smoke from text outside the fields then on the owner's-read list. So
+  // each file a deploy script loads from outside its folder, statically or at a commit, is data alone (and
+  // on that list whole).
+  it('every file a deploy script loads from outside its folder is data, which runs nothing as it loads (INPUTS-A1-02, round 6)', () => {
+    const scripts = files.filter(path => /^infra\/scripts\/deploy\/[^/]+\.ts$/.test(path) && !path.endsWith('.test.ts'))
+    const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
+    const outside = new Set<string>()
+    for (const script of scripts) {
+      for (const path of importGraph(script, read, importsOf).files) {
+        if (!path.startsWith('infra/scripts/deploy/')) outside.add(path)
+      }
+      // What a script loads at a commit, by git show <commit>:<path>.
+      for (const shown of readRepoFile(script).matchAll(/`\$\{\w+\}:(infra\/[^`]+)`/g)) outside.add(shown[1] ?? '')
+    }
+    expect([...outside].sort()).toEqual([...DEPLOY_SCRIPT_DATA].sort())
+    for (const path of DEPLOY_SCRIPT_DATA) expect(deployScriptDataFindings(path, readRepoFile(path)), path).toEqual([])
+    // Each way a file runs something as it loads, planted at the profiles' end.
+    const profiles = readRepoFile('infra/src/config/profiles.ts')
+    const ends = (plant: string) => deployScriptDataFindings('p.ts', `${profiles}\n${plant}\n`)
+    const refused = (what: string) => [
+      `p.ts, line ${profiles.split('\n').length + 1}: IG-08 ${what}, but a deploy script loads this file, so it holds data alone and runs nothing as it loads`,
+    ]
+    const RUNS = (kind: string) => refused(`has a top-level ${kind}`)
+    const DATA = refused('gives a const something other than data')
+    expect(ends("import { writeSync } from 'node:fs'")).toEqual(
+      refused('imports a module (only import type loads nothing)'),
+    )
+    expect(ends("import './other.ts'")).toEqual(refused('imports a module (only import type loads nothing)'))
+    expect(ends("import { type Floor } from '../release/floors.ts'")).toEqual(
+      refused('imports a module (only import type loads nothing)'),
+    )
+    expect(ends("export * from './other.ts'")).toEqual(refused('re-exports a module'))
+    expect(ends("if (process.argv[1]?.endsWith('/history.ts')) process.exit(0)")).toEqual(RUNS('IfStatement'))
+    expect(ends("process.on('exit', () => {})")).toEqual(RUNS('ExpressionStatement'))
+    expect(ends('class X { static { process.exit(0) } }')).toEqual(RUNS('ClassDeclaration'))
+    expect(ends('let x = 1')).toEqual(refused('declares a let or a var'))
+    for (const value of [
+      'run()',
+      '(() => 1)()',
+      'new Date()',
+      'String.raw`x`',
+      // A template with a substitution, its $ and { apart so the line holds no placeholder.
+      '`$' + '{DOMAINS.app}`',
+      'DOMAINS.app',
+      '{ ...DOMAINS }',
+      "{ ['k']: 1 }",
+      '{ get k() { return 1 } }',
+      '{ k() { return 1 } }',
+      '[...ROLES]',
+      'await 1',
+    ]) {
+      expect(ends(`export const X = ${value}`), value).toEqual(DATA)
+    }
+    // Data passes: literals, names, arrays and objects of them, assertions, and functions and types.
+    expect(
+      ends(
+        "import type { Floor } from '../release/floors.ts'\nexport type { Floor } from '../release/floors.ts'\nexport const A = { a: -1, 'b': [REGION, null, true], c: `x` } as const satisfies object\nconst B = (A)\nexport function f(): number { return process.exitCode ?? 0 }",
+      ),
+    ).toEqual([])
   })
 })
 

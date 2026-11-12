@@ -1132,9 +1132,9 @@ describe('IAC-10 C11-D26 C11-D33 C11-D38: IAM in every workload template', () =>
   it.each(ENVIRONMENTS)(
     'IAC-10 C11-D33 C11-D38 %s: each task and execution role is exactly its trust, boundary and policy, the perimeter on the task roles in non-prod and restore and on none in prod, pinned literally, never on an execution role',
     env => {
-      // Literal, never read from PROFILES: taskRolePerimeter is off the owner's-read list, so this pin
-      // is what makes turning the perimeter off in non-prod or restore need the owner's read; turning
-      // it on in prod changes this line too (the variant case below proves prod's follows the profile).
+      // Literal, never read from PROFILES, so turning the perimeter off in non-prod or restore changes
+      // this owner's-read pin as well as the profile; turning it on in prod changes this line too (the
+      // variant case below proves prod's follows the profile).
       const perimeter = env !== 'prod'
       for (const [build, synth] of buildsWith(env)) {
         const platform = workloadTemplate(synth, env, 'Platform')

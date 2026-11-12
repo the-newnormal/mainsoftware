@@ -5,11 +5,13 @@
 // (bin/workload.ts) reads only this file, so the pipeline's synth needs no person's configuration
 // (C11-D24, IG-08).
 //
-// A change to holdsRealData, logLockMode, smsProvider, DOMAINS or NONPROD_NAME_SERVERS is on the
-// owner's-read list (C11-D74): holdsRealData brings production's rules to an environment (C11-D69),
-// logLockMode makes the audit store's lock one nobody can lift (C11-D18), smsProvider starts real
-// texts, DOMAINS names prod's zones, and NONPROD_NAME_SERVERS decides who answers for `nonprod.`,
-// which is same-site with prod (C11-D43).
+// The whole file is on the owner's-read list (C11-D74): holdsRealData brings production's rules to an
+// environment (C11-D69), logLockMode makes the audit store's lock one nobody can lift (C11-D18),
+// smsProvider starts real texts, DOMAINS names prod's zones, NONPROD_NAME_SERVERS decides who answers
+// for `nonprod.`, which is same-site with prod (C11-D43), and the deploy pipeline loads the file: the
+// gate and prod-gate import it, and each smoke loads the release's own and runs its host functions. So
+// its top level is data alone (IG-08): types, function declarations and consts of plain data, and no
+// import but import type, since anything else would run as a deploy script loads it.
 
 // Every stack is in ap-southeast-1 (D37, B.6), C0.12's Hearth-<env>-Edge alone in us-east-1 (IG-05).
 export const REGION = 'ap-southeast-1'

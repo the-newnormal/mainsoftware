@@ -54,6 +54,8 @@ import {
   credentialJobFindings,
   DEPLOY,
   DEPLOY_WORDS,
+  DIFF_CUT,
+  DIFF_RUN,
   deployStepFindings,
   ENVIRONMENT_JOBS,
   evaluatedLines,
@@ -70,10 +72,12 @@ import {
   IMAGE_UNPACK_RUN,
   JOB_IDS,
   MAIN_CI,
+  MASK_RUN,
   MIGRATE_LINES,
   maskingFindings,
   NET_JQ,
   NEWEST_RELEASE,
+  NVMRC,
   ONE_OFF,
   OVERRIDES_JQ,
   outsideEvaluations,
@@ -95,6 +99,7 @@ import {
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
   STOP_COMMANDS,
+  STOP_HEAD,
   shellCommands,
   shellViews,
   TARGETS_QUERY,
@@ -191,6 +196,15 @@ function addedBefore(jobId: string, stepName: string, line: string, added: strin
   const step = stepText(deployText, jobId, stepName)
   return withText(DEPLOY, edited(deployText, step, edited(step, line, `${added}${line}`), job(jobId)))
 }
+
+// What a run said on its stdout, line by line, but the stop-commands line STOP_HEAD prints first, which only
+// the runner reads.
+const STOP_LINE = /^::stop-commands::[0-9a-f]{32}$/
+const spoken = (stdout: string): string[] =>
+  stdout
+    .trim()
+    .split('\n')
+    .filter(line => !STOP_LINE.test(line))
 
 // DPW-02's finding for a file workflow.ts would read wrong.
 const SHAPE =
@@ -1051,8 +1065,62 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     expect(actionPinFindings(workflows, [...real, '.github/workflows/x.yml.bak'])).toEqual([FOLDER])
   })
 
+  // FETCH-A6-01 (round 6). .nvmrc chooses the pins job's Node and every deploy job's. A JSON .nvmrc that
+  // setup-node 7.1 (the pins job's and deploy.yml's) reads by devEngines.runtime, 24.1.0, and setup-node 5
+  // (check's) by engines.node, 24, gave the pins job a Node without import.meta.main, on which the check
+  // ran nothing and exited 0, while check ran a Node new enough to pass: a pin moved with its table entry to
+  // a fork's commit passed CI, and every deploy job's smoke would have passed a broken release the same way.
+  it('holds .nvmrc to 24 alone, which every setup-node reads as the latest Node 24 (FETCH-A6-01, round 6)', () => {
+    const NODE = `.nvmrc: DPW-04 is 24 alone, a line of its own, which every setup-node reads as the latest Node 24, so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0`
+    for (const planted of [
+      '{"devEngines":{"runtime":{"name":"node","version":"24.1.0"}},"engines":{"node":"24"}}\n',
+      '{"volta":{"node":"24.1.0"}}\n',
+      '[tools]\nnode = "24.1.0"\n',
+      '24.1.0\n',
+      'v24\n',
+      'node 24\n',
+      '>=24.2\n',
+      'lts/*\n',
+      '24',
+      '24\n\n',
+      ' 24\n',
+    ]) {
+      expect(actionPinFindings(workflows, undefined, planted), JSON.stringify(planted)).toEqual([NODE])
+    }
+    expect(actionPinFindings(workflows, undefined, NVMRC)).toEqual([])
+    expect(NVMRC).toBe('24\n')
+    // And each script the pipeline runs whose answer a gate, a smoke or a person rests on refuses a Node
+    // without import.meta.main, on which it would otherwise run nothing and exit 0 (a smoke passed, say).
+    for (const [script, said] of [
+      ['history', 'nothing was decided'],
+      ['smoke', 'nothing was judged'],
+      ['floors-check', 'no floor was checked'],
+    ] as const) {
+      const code = readRepoFile(`infra/scripts/deploy/${script}.ts`).trimEnd().split('\n')
+      const refusal = [
+        "if (typeof import.meta.main !== 'boolean') {",
+        `  process.stderr.write('${script}: Node 24.2 or later is needed (import.meta.main), so ${said}\\n')`,
+        '  process.exit(1)',
+        '}',
+        'if (import.meta.main) process.exitCode = await main(process.argv.slice(2))',
+      ]
+      expect(code.slice(-refusal.length), script).toEqual(refusal)
+      const older = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          refusal.slice(0, 4).join('\n').replace('typeof import.meta.main', 'typeof undefined'),
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(older.status, script).toBe(1)
+      expect(older.stderr, script).toBe(`${script}: Node 24.2 or later is needed (import.meta.main), so ${said}\n`)
+    }
+  })
+
   it('holds the repository', () => {
-    expect(actionPinFindings(workflows, files)).toEqual([])
+    expect(actionPinFindings(workflows, files, readRepoFile('.nvmrc'))).toEqual([])
     // The table names exactly the actions deploy.yml uses, each in the shape scripts/check-action-pins.ts reads.
     const used = new Set([...deployText.matchAll(/^\s+(?:- )?uses: ([^@\s]+)@/gm)].map(each => each[1]))
     expect([...used].sort()).toEqual(Object.keys(ACTION_PINS).sort())
@@ -1171,12 +1239,42 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         expect(asked).toEqual([`https://github.com/${action}.git ${version}`])
       }
       // The script's last line exits with run's answer over lsRemote, so neither a skipped exit nor another
-      // reader stands in for it.
-      const code = readRepoFile('scripts/check-action-pins.ts').trimEnd().split('\n')
-      expect(code.at(-1)).toBe('if (import.meta.main) process.exit(run(lsRemote))')
-      expect(code.filter(line => /\bimport\.meta\.main\b|process\.(?:exit|exitCode)\b/.test(line))).toEqual([
+      // reader stands in for it; and before it, a Node without import.meta.main (older than 24.2), on which
+      // that line would never call run and the script would exit 0 having read nothing, exits 1
+      // (FETCH-A6-01, round 6).
+      const source = readRepoFile('scripts/check-action-pins.ts')
+      const code = source.trimEnd().split('\n')
+      const refusal = [
+        "if (typeof import.meta.main !== 'boolean') {",
+        "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
+        '  process.exit(1)',
+        '}',
+        'if (import.meta.main) process.exit(run(lsRemote))',
+      ]
+      expect(code.slice(-refusal.length)).toEqual(refusal)
+      expect(
+        code.filter(
+          line =>
+            !line.trimStart().startsWith('//') && /\bimport\.meta\.main\b|process\.(?:exit|exitCode)\b/.test(line),
+        ),
+      ).toEqual([
+        "if (typeof import.meta.main !== 'boolean') {",
+        "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
+        '  process.exit(1)',
         'if (import.meta.main) process.exit(run(lsRemote))',
       ])
+      // Run as a Node older than 24.2 runs it, import.meta.main undefined: it says so and exits 1.
+      const older = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          refusal.slice(0, 4).join('\n').replace('typeof import.meta.main', 'typeof undefined'),
+        ],
+        { encoding: 'utf8' },
+      )
+      expect(older.status).toBe(1)
+      expect(older.stderr).toContain('no pin was read')
     })
   })
 
@@ -1605,7 +1703,7 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     )
   const MASK = 'masks secrets.AWS_ACCOUNT_ID (::add-mask::) before the credentials action'
   const STOPS =
-    "stops the runner reading workflow commands (STOP_COMMANDS) before anything it runs prints, so no ##[add-mask] or other command in what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the approver's diff or drops a job output"
+    "starts with STOP_HEAD, which stops the runner reading workflow commands before anything it runs reads or prints (every run but the account id's mask, before the credentials action or after it), so no ##[add-mask] or other command in what it prints, a downloaded archive's or assembly's text or the CLI's, aws's or skopeo's among it, hides a line of the log or the approver's diff or drops a job output"
   const TRACE =
     'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
   const OWN =
@@ -1634,9 +1732,9 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
         ),
       ),
     ).toEqual([at('record-nonprod', 'names no secret')])
+    // The mask's run must add its mask, so it alone never stops the runner reading commands, wherever it stands.
     expect(maskingFindings(movedStep('nonprod', 'Mask the account id', 'What runs'))).toEqual([
       at('nonprod (Mask the account id)', 'a run after the credentials action starts with the preamble'),
-      at('nonprod (Mask the account id)', STOPS),
       at('nonprod', MASK),
     ])
     expect(added('aws sts get-caller-identity')).toEqual([
@@ -1883,26 +1981,39 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
   // summary and drops any job output it would change. The CLI prints a template's text as it is: a release
   // whose stack description ended ##[add-mask] and a host hid that host in prod-plan's diff, the one thing
   // the approver reads, and a Tasks output ##[add-mask]true dropped services_started, and with it the
-  // pipeline's rollback. So every run after the credentials action stops the runner reading commands, under
-  // a token of its own, before anything it runs prints.
-  it('stops the runner reading workflow commands before a credentialed run prints anything (EXPAND-A4-01, A4-02)', () => {
+  // pipeline's rollback. The runs before the credentials action read what other jobs made as well: GNU tar
+  // names an unknown pax header keyword of the build's image archive on stderr as it is, line breaks and
+  // all (EXPAND-A1-01, round 6). So every run of a credentialed job but the account id's mask starts with
+  // STOP_HEAD, which stops the runner reading commands, under a token of its own, before anything it runs
+  // reads or prints.
+  it('stops the runner reading workflow commands before any credentialed run but the mask reads or prints anything (EXPAND-A4-01, A4-02; EXPAND-A1-01, round 6)', () => {
     expect(STOP_COMMANDS).toBe('stop_token=$(openssl rand -hex 16)\necho "::stop-commands::$stop_token"')
-    let runs = 0
+    expect(STOP_HEAD.startsWith('set -euo pipefail\n')).toBe(true)
+    expect(STOP_HEAD.endsWith(`\n${STOP_COMMANDS}`)).toBe(true)
+    expect(PREAMBLE.startsWith(`${STOP_HEAD}\n`)).toBe(true)
+    let before = 0
+    let after = 0
     for (const each of workflowJobs(deployText)) {
       const steps = parsedSteps(each)
       const credentials = steps.findIndex(step => step.uses?.startsWith('aws-actions/configure-aws-credentials@'))
       if (credentials < 0) continue
-      for (const step of steps.slice(credentials + 1)) {
-        if (step.run === undefined) continue
-        runs += 1
+      steps.forEach((step, index) => {
+        if (step.run === undefined || step.run === MASK_RUN) return
+        if (index < credentials) before += 1
+        else after += 1
         const code = step.run.split('\n').filter(line => line.trim() !== '' && !line.trimStart().startsWith('#'))
         expect(code.slice(0, 3), `${each.id} (${step.name})`).toEqual([
           'set -euo pipefail',
           ...STOP_COMMANDS.split('\n'),
         ])
-      }
+        expect(step.run.startsWith(`${STOP_HEAD}\n`), `${each.id} (${step.name})`).toBe(true)
+      })
     }
-    expect(runs).toBe(31)
+    // Before the credentials: the release (or a rollback job's two releases), the image's check (nonprod and
+    // prod), the assembly's, the fast re-check (nonprod and prod), CLI_FETCH and CLI_CHECK: six in each deploy
+    // job and four in prod-plan and each rollback job.
+    expect(before).toBe(24)
+    expect(after).toBe(31)
     // The token is new each run, and the line naming it is the first the run prints.
     const tokens = [0, 1].map(() => {
       const result = spawnSync('bash', ['-c', `${PREAMBLE}\necho after`], {
@@ -1916,16 +2027,100 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     })
     expect(tokens[0]).toBeDefined()
     expect(tokens[0]).not.toBe(tokens[1])
-    // A run that drops the two lines, or stops them only after its first command, is refused.
-    const services = stepText(deployText, 'nonprod', 'Deploy Services')
+    // A run that drops the two lines, or stops them only after its first command, is refused, before the
+    // credentials action as after it.
     const indented = (text: string) => text.replace(/^/gm, '          ')
-    for (const changed of [
-      edited(services, `${indented(STOP_COMMANDS)}\n`, ''),
-      edited(services, `${indented(STOP_COMMANDS)}\n`, `          echo starting\n${indented(STOP_COMMANDS)}\n`),
-    ]) {
-      expect(maskingFindings(withText(DEPLOY, edited(deployText, services, changed, job('nonprod'))))).toContain(
-        at('nonprod (Deploy Services)', STOPS),
-      )
+    for (const [id, name] of [
+      ['nonprod', 'Deploy Services'],
+      ['nonprod', 'Check and unpack the image'],
+      ['prod', 'The pinned CDK CLI'],
+      ['prod-plan', 'Check the assembly'],
+      ['rollback-prod', "This run's release and the previous one"],
+    ] as const) {
+      const step = stepText(deployText, id, name)
+      for (const changed of [
+        edited(step, `${indented(STOP_COMMANDS)}\n`, ''),
+        edited(step, `${indented(STOP_COMMANDS)}\n`, `          echo starting\n${indented(STOP_COMMANDS)}\n`),
+      ]) {
+        expect(maskingFindings(withText(DEPLOY, edited(deployText, step, changed, job(id))))).toContain(
+          at(`${id} (${name})`, STOPS),
+        )
+      }
+    }
+  })
+  // INPUTS-A1-01 (round 6). The approver reads prod-plan's diff in the job summary, which GitHub renders as
+  // GitHub Flavored Markdown, and the diff prints a release's own text as it is (an annotation, a validation
+  // report, a template's string): written inside a fenced block, a line of three backticks ended the block
+  // and a line starting <!-- then hid the real diff in an HTML comment, and Markdown reads a lone carriage
+  // return as a line's end too. So the run writes the diff as an indented code block, every line four spaces
+  // in and every carriage return a line break first: no line of the diff can end the block or open HTML.
+  // And four spaces a line can make the text five times longer, so it is cut short of a step summary's 1 MiB.
+  it('writes the approver’s diff as one indented code block no line of it can end, under a summary’s 1 MiB (INPUTS-A1-01, round 6)', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw07-diff-'))
+    // The pinned Diff run, with a stand-in CLI that prints the given bytes as its diff.
+    const summary = (diff: Buffer) => {
+      const temp = mkdtempSync(join(scratch, 'runner-'))
+      execFileSync('mkdir', ['-p', join(temp, 'aws-cdk', 'package', 'bin')])
+      writeFileSync(join(temp, 'printed'), diff)
+      writeFileSync(join(temp, 'aws-cdk', 'package', 'bin', 'cdk'), `#!/bin/sh\ncat '${join(temp, 'printed')}'\n`, {
+        mode: 0o755,
+      })
+      writeFileSync(join(temp, 'summary.md'), '')
+      const result = spawnSync('bash', ['-c', DIFF_RUN], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: temp,
+          RUNNER_TEMP: temp,
+          GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
+          STAGE: 'prod',
+          MODE: 'deploy',
+        },
+      })
+      expect(result.status).toBe(0)
+      return readFileSync(join(temp, 'summary.md'), 'utf8')
+    }
+    try {
+      const diff = [
+        'Stack prod/Services (Hearth-prod-Services)',
+        '```',
+        '<!-- everything after this is hidden',
+        '',
+        'a line\r```\r<!--\rafter a carriage return',
+        '\t<details>',
+        '[~] AWS::ECS::TaskDefinition Services/ApiTask replace',
+      ].join('\n')
+      const lines = summary(Buffer.from(`${diff}\n`)).split('\n')
+      expect(lines.slice(0, 2)).toEqual(["### What prod's deploy changes", ''])
+      // Every line of the diff is four spaces in, a carriage return made a line break; then blank lines.
+      expect(lines.slice(2, 13)).toEqual([
+        '    Stack prod/Services (Hearth-prod-Services)',
+        '    ```',
+        '    <!-- everything after this is hidden',
+        '    ',
+        '    a line',
+        '    ```',
+        '    <!--',
+        '    after a carriage return',
+        '    \t<details>',
+        '    [~] AWS::ECS::TaskDefinition Services/ApiTask replace',
+        '',
+      ])
+      expect(lines.slice(13).every(line => line === '')).toBe(true)
+      expect(lines.join('\n')).not.toContain('\r')
+      // A diff of line breaks alone, each made five bytes, stays under a step summary's 1 MiB, and says it is cut.
+      expect(DIFF_CUT).toBe(204800)
+      const cut = summary(Buffer.alloc(3 * DIFF_CUT, '\n'))
+      expect(Buffer.byteLength(cut)).toBeLessThan(1024 * 1024)
+      expect(cut).toContain("The diff is cut at 200 KB here; the job's log holds it whole.")
+      expect(
+        cut
+          .split('\n')
+          .slice(2, 2 + DIFF_CUT)
+          .every(line => line === '    '),
+      ).toBe(true)
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
     }
   })
 })
@@ -3010,12 +3205,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         'nonprod (What runs)',
         'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked',
       ),
-      // The preamble changed is no preamble, so its lines are the run's own: its openssl, held to the
-      // preamble's stop-token line, is refused, the table refuses the first function it doesn't name, and
-      // its mask, run and get are functions of the run's own.
-      at('nonprod (What runs)', RUNS),
+      // The preamble changed is no preamble, so its lines after STOP_HEAD, which still stands whole, are the
+      // run's own: the table refuses the first function it doesn't name, and its mask, run and get are
+      // functions of the run's own.
       at(`nonprod (What runs), line ${PREAMBLE.split('\n').findIndex(line => line.startsWith('mask()')) + 1}`, AS_BASH),
-      at('nonprod (What runs)', HELD),
       at('nonprod (What runs)', DEFINES),
     ])
     expect(
@@ -3192,7 +3385,9 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 4}`, AS_BASH),
       at('nonprod (Deploy Services)', CLI),
     ])
+    // The run is no longer DIFF_RUN whole, so the tr and sed that set its summary's code block are refused too.
     expect(find('DIFF="$RUNNER_TEMP/diff.txt"', 'DIFF=node_modules/aws-cdk/bin/cdk', job('prod-plan'))).toEqual([
+      at('prod-plan (Diff)', RUNS),
       at('prod-plan (Diff)', WRITES),
     ])
   }, 30_000)
@@ -3778,7 +3973,7 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
     }
     return {
       status: result.status,
-      said: result.stdout.trim().split('\n').at(-1) ?? '',
+      said: spoken(result.stdout).at(-1) ?? '',
       curl: readFileSync(log, 'utf8').split('\n').filter(Boolean),
       npm,
       cdk,
@@ -3924,7 +4119,7 @@ describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives'
     } catch {
       unpacked = []
     }
-    return { status: result.status, said: result.stdout.trim().split('\n').at(-1) ?? '', unpacked }
+    return { status: result.status, said: spoken(result.stdout).at(-1) ?? '', unpacked }
   }
   const MEMBER = "image-check: the image's archive holds a member buildx's OCI export never writes"
   const FOLDER = "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"
@@ -3954,6 +4149,46 @@ describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives'
       `set -euo pipefail\n${IMAGE_CHECK}\ncheck_image_archive "$RUNNER_TEMP/image/image.tar"\n`,
     )
     expect(buildRun).toMatchObject({ status: 0, said: '' })
+  })
+
+  // EXPAND-A1-01 (round 6). GNU tar names a pax header keyword it doesn't know on stderr as it is, line
+  // breaks and all, and still exits 0, and pax headers are no members, so the listing and the folder pass.
+  // The build runs repository code before it uploads the archive, so the archive could end a line with
+  // ##[add-mask] and a value of its choosing, which the runner would hide in every later line and summary
+  // and in any job output it matches (services_started, and with it the pipeline's rollback). The run stops
+  // the runner reading workflow commands before tar reads anything: the stop line is the first it prints.
+  it('stops the runner reading workflow commands before tar names the archive’s pax headers (EXPAND-A1-01, round 6)', () => {
+    const folder = layout()
+    const path = join(scratch, 'image-pax.tar')
+    execFileSync('tar', [
+      '--numeric-owner',
+      '--no-recursion',
+      '-C',
+      folder,
+      '--format=posix',
+      '--pax-option=##[add-mask]true\nhearth:=x',
+      '-cf',
+      path,
+      'blobs/',
+      'blobs/sha256/',
+      `blobs/sha256/${BLOB}`,
+      `blobs/sha256/${MANIFEST}`,
+      'index.json',
+      'oci-layout',
+    ])
+    const temp = mkdtempSync(join(scratch, 'runner-'))
+    execFileSync('mkdir', [join(temp, 'image')])
+    cpSync(path, join(temp, 'image', 'image.tar'))
+    // Both streams in the order the run wrote them, as the runner reads both.
+    const result = spawnSync('bash', ['-c', `exec 2>&1\n${IMAGE_UNPACK_RUN}\n`], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: temp, RUNNER_TEMP: temp },
+    })
+    expect(result.status).toBe(0)
+    const lines = result.stdout.split('\n')
+    expect(lines.some(line => line.endsWith('##[add-mask]true'))).toBe(true)
+    expect(lines[0]).toMatch(STOP_LINE)
+    expect(readdirSync(join(temp, 'image-layout'), { recursive: true }).length).toBe(6)
   })
 
   it('refuses a link written through, a link or hard link, an absolute, escaped or other name, a fifo or a folder, before unpacking anything (SECURITY-01, round 5)', () => {
@@ -4276,8 +4511,8 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     expect(
       releaseFindings(
         plant(
-          `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The image's`,
-          `if: \${{ needs.gate.outputs.mode != 'rollback' }}\n        run: |\n          set -euo pipefail\n          # The image's`,
+          `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The runner reads`,
+          `if: \${{ needs.gate.outputs.mode != 'rollback' }}\n        run: |\n          set -euo pipefail\n          # The runner reads`,
           job('nonprod'),
         ),
       ),
@@ -4298,7 +4533,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
   })
 
   it('finds a check and unpacking skipped where the step runs before the credentials (DPW-06), and IMAGE_CHECK’s tools on any other line (DPW-10)', () => {
-    const imageIf = `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The image's`
+    const imageIf = `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The runner reads`
     expect(deployStepFindings(plant(imageIf, imageIf.replace("== 'deploy'", "!= 'rollback'"), job('nonprod')))).toEqual(
       [
         `${DEPLOY}: DPW-06 nonprod: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:`,

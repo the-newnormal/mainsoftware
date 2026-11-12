@@ -1018,4 +1018,10 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
   }
 }
 
+// Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never run and the
+// script would exit 0 having decided nothing: it refuses such a Node instead.
+if (typeof import.meta.main !== 'boolean') {
+  process.stderr.write('history: Node 24.2 or later is needed (import.meta.main), so nothing was decided\n')
+  process.exit(1)
+}
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2))

@@ -162,4 +162,11 @@ export function run(read: (action: string, version: string) => string): number {
   return 0
 }
 
+// Node 24.2 added import.meta.main. On an older Node it is undefined, so run would never be called and the
+// script would exit 0 having read no tag: it refuses such a Node instead (CI's comes from .nvmrc, which
+// DPW-04 holds to 24 alone, and a person runs it on Node 24).
+if (typeof import.meta.main !== 'boolean') {
+  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')
+  process.exit(1)
+}
 if (import.meta.main) process.exit(run(lsRemote))
