@@ -8,10 +8,12 @@
 // Beside the cases are the canonical texts the workflow pastes byte for byte wherever it runs them:
 // the preamble, the CLI's folder, the CLI, asset and AWS checks, the one-off runs and their parts,
 // the newest-release reader, the gates' reads of the CI runs and prod-gate's call, the fast re-checks,
-// the CLI's lines, the push and the synth's lines, and the whole runs the gates, the smokes, the
-// rollbacks and the records rest on (PINNED_RUNS), so the workflow and its guard can't drift apart
-// unseen. A shell text here is a raw template in which a backtick is written \` and a dollar-brace $\{,
-// the one way it differs from the workflow's own text.
+// the CLI's lines, the push and the synth's lines, and every run of every job whole (PINNED_RUNS), so
+// the workflow and its guard can't drift apart unseen. A shell text here is a raw template in which a
+// backtick is written \` and a dollar-brace $\{, the one way it differs from the workflow's own text.
+// Every action the workflow uses is pinned to the one commit ACTION_PINS (action-pins.ts) names, which
+// CI's check job proves against the action's own repository (scripts/check-action-pins.ts), so no
+// commit that exists only in a fork, which GitHub resolves under the action's name, runs in a job.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
@@ -37,11 +39,17 @@
 // step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned step's outputs; each run
 // a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
-// of its own, or hands it another input; and so is every other run of the five jobs that hold the deploy
-// role, so no run there has a line of its own at all; outside build and synth no other step writes an
-// output. Every other workflow's jobs call only a workflow of this repository at the same commit, which
-// every rule reads, and hand it no secret. A canonical text is read whole, so it is held instead to bash's
-// own reading of it (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()).
+// of its own, or hands it another input; and so is every other run of every job, the five that hold the
+// deploy role and build's and synth's (each synth step in its own folder) included, so no run of
+// deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
+// word bash joins from quoted or expanded parts, or npm's and the CLI's own aliases, would pass a rule
+// that reads the text); outside build and synth no other step writes an output. Build and synth still
+// run repository code by design (the install, the synth, the image), which could write a later step's
+// file by its folder, so synth's own asset check holds only against deploy.yml's text: each credentialed
+// job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. Every other workflow's jobs call
+// only a workflow of this repository at the same commit, which every rule reads, and hand it no secret. A
+// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()) and to
+// evaluating only what it sets itself (outsideEvaluations()).
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -51,6 +59,7 @@
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
 // a failed job through. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
+import { ACTION_PINS } from './action-pins'
 import {
   type BlockValue,
   blockScalarProblems,
@@ -149,14 +158,19 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # the CLI acts on, so before any credential each one is walked from its root manifest through every
 # nested assembly, the files its manifests name and not file names, and refused for: missing context
 # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-# writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-# artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-# asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-# otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-# link. The release check then requires every Services template's Release output to be the release
-# this job deploys, and every container image in the Tasks and Services templates to be the server
-# image at its digest. A refusal is one line naming the rule, never a path or value from the
-# assembly.
+# writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+# underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+# (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+# file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+# tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+# otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+# templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+# asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+# folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+# The release check then requires every Services template's Release output to be the release this
+# job deploys, and every container image in the Tasks and Services templates to be the server image
+# at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+# naming the rule, never a path or value from the assembly.
 asset_refuse() {
   echo "asset-check: $1"
   exit 1
@@ -174,7 +188,7 @@ assembly_dirs() {
   done
 }
 check_assembly() {
-  local root dir file path manifests=0 queue
+  local root dir file path manifests=0 queue stackfiles
   [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
   root=$(cd "$1" && pwd -P)
   [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -188,7 +202,7 @@ check_assembly() {
       asset_refuse 'a manifest has missing context, which the CLI would look up'
     jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'an artifact type is not one a workload synth writes'
-    jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+    jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -214,6 +228,12 @@ check_assembly() {
       done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
       manifests=$((manifests + 1))
     done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+    stackfiles=()
+    while IFS= read -r file; do
+      stackfiles+=("$dir/$file")
+    done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+    jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "$\{stackfiles[@]}" >/dev/null 2>&1 ||
+      asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
     while IFS= read -r file; do
       [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
       queue+=("$dir/$file")
@@ -802,6 +822,73 @@ export const SYNTH_LINES: readonly string[] = [
   'npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-prod"',
 ]
 
+// The build's runs (C11-D50, C11-D79, DPW-13): the containerd image store, the PostgreSQL client, the
+// install, the local stack and database, the image, its check and its migrate step. The build holds no
+// secret and runs repository code by design, but its runs make the image every deploy pushes, so none has
+// a line of its own: a word bash joins from quoted or expanded parts (a script's name, env) would pass a
+// rule that reads the text.
+export const CONTAINERD_RUN = sh`set -euo pipefail
+# The containerd image store, which the OCI export and a docker load of that same archive need and
+# the runner's Docker doesn't use by default (C11-D50).
+sudo mkdir -p /etc/docker
+CURRENT='{}'
+if sudo test -s /etc/docker/daemon.json; then CURRENT=$(sudo cat /etc/docker/daemon.json); fi
+jq '.features["containerd-snapshotter"] = true' <<<"$CURRENT" | sudo tee /etc/docker/daemon.json >/dev/null
+sudo systemctl restart docker
+if ! docker info --format '{{json .DriverStatus}}' | jq -e 'any(.[]; .[0] == "driver-type" and .[1] == "io.containerd.snapshotter.v1")' >/dev/null; then
+  echo "build: Docker isn't on the containerd image store"
+  exit 1
+fi`
+export const PSQL_RUN = sh`set -euo pipefail
+# db:reset needs psql, which the Arm runner image leaves out.
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends postgresql-client`
+export const INSTALL_RUN = 'npm ci --ignore-scripts'
+export const IMAGE_RUN = sh`set -euo pipefail
+# The image (C11-D50): built once for ARM, with no provenance or SBOM manifest, exported as an OCI
+# archive named hearth-server:build. Its digest is the build's metadata, which must be the archive's
+# one manifest; the very archive this job checks is the one the deploy jobs push.
+docker buildx build --platform linux/arm64 --provenance=false --sbom=false -f apps/server/Dockerfile --metadata-file "$RUNNER_TEMP/meta.json" --output "type=oci,dest=$RUNNER_TEMP/image.tar,name=hearth-server:build" .
+DIGEST=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/meta.json")
+INDEX=$(tar -xOf "$RUNNER_TEMP/image.tar" index.json | jq -er '.manifests | select(length == 1) | .[0].digest')
+if [ "$DIGEST" != "$INDEX" ]; then
+  echo "build: the build's digest isn't the archive's one manifest"
+  exit 1
+fi
+echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
+echo "build: hearth-server@$DIGEST" >>"$GITHUB_STEP_SUMMARY"`
+export const LOAD_RUN = sh`set -euo pipefail
+# The archive, loaded, checked as CI checks its image: every role starts, answers and stops cleanly.
+docker load -i "$RUNNER_TEMP/image.tar"
+IMAGE=hearth-server:build scripts/check-server.sh`
+export const MIGRATE_IMAGE_RUN = sh`set -euo pipefail
+# The image's pre-deploy migrate step, as ci.yml runs it (T3): the image must hold every migration. The
+# database URL is built from parts, so no line has an email's shape (IG-01).
+HOST=127.0.0.1
+docker run --rm --read-only --network host -e "MIGRATION_DATABASE_URL=postgres://postgres:postgres@$\{HOST}:5432/hearth" hearth-server:build node src/db/migrate.ts`
+
+// The synth's runs (C11-D51, C11-D76, DPW-13): the release's synth, by mode, and each previous release's,
+// each in its own checkout's folder (its working-directory, pinned with its run); the asset checks before
+// each upload are DPW-14's assetCheckRun. Synth holds no secret and runs repository code by design, but
+// its runs choose the commit, the release and the context the assembly is synthesised with, so none has a
+// line of its own: npm's and the CLI's own aliases (run-script, synthesize, --context) or a quoted word
+// would pass a rule that reads the text. Synth's own asset check holds only against these texts, never
+// against the repository code its install and synth run (which could rewrite the assembly after it):
+// each credentialed job's own ASSET_CHECK, pinned in that job, is the check a deploy rests on.
+export const SYNTH_RUN = sh`set -euo pipefail
+# The pipeline's synth (C11-D51; TECH-SPEC T24 item 10): the workload entry with the release's commit
+# and digest, the build's for a deploy and the record's otherwise, a drill-break's context or a
+# restore up's restoreActive, written straight into its own folder. cdk-nag isn't registered here:
+# IAC-15 runs it on every PR over every build the pipeline deploys (T24 item 28).
+DIGEST=$GATE_DIGEST
+if [ "$BUILD" = true ]; then DIGEST=$BUILD_DIGEST; fi
+${SYNTH_LINES.slice(0, 4).join('\n')}
+echo "release=$COMMIT:$DIGEST" >>"$GITHUB_OUTPUT"`
+export const previousSynthRun = (stage: 'nonprod' | 'prod') => sh`set -euo pipefail
+# The release ${stage} runs now, for its automatic rollback, synthesised only after the run's own
+# assembly is checked and uploaded, so no other commit's code runs while that one can still change.
+npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-${stage}"`
+
 // --- The runs the guard pins whole (DPW-08, DPW-09, DPW-10, DPW-13) --------------------------------------
 
 // Each run whose exit or outputs a gate, an approval, a smoke, a rollback or a record rests on, pinned whole
@@ -809,8 +896,9 @@ export const SYNTH_LINES: readonly string[] = [
 // its own, or hand one of its lines another input: the gate's reads of the records and main's ruleset (and
 // its plan, PLAN_STEP), prod-gate's read of prod's records, the deploy jobs' release, push, migrate and its
 // record, services_started and read-back, the rollback jobs' releases, read-back and rolled, prod-plan's
-// diff, the smokes and the record jobs; and every other run of a job that holds the deploy role
-// (PINNED_RUNS). The rest of each such run's rules still read it.
+// diff, the smokes and the record jobs; every other run of a job that holds the deploy role; and the gate's
+// and prod-gate's other reads, and every run of build and synth, so no run of deploy.yml has a line of its
+// own (PINNED_RUNS). The rest of each such run's rules still read it.
 
 // The gate's read of the release, migration and restore records (C11-D58, C11-D61, DPW-09), which
 // history.ts plan reads as data.
@@ -1241,12 +1329,16 @@ fi
 echo "drill-break: the broken deploy failed and realtime runs $BEFORE again" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
 
 // Each pinned run by its job and its step's name, with its step's if: (none, unless named), since an if:
-// that skips the step passes its job as surely as an early exit 0 would, and the rule that holds it
-// whole: the gate's under DPW-09; prod-gate's records, the smokes, services_started, the read-back, the
-// rollback jobs' releases and rolled, and prod-plan's diff under DPW-08; the release, the push, migrate
-// with its record and the record jobs under DPW-13; every other run of a job that holds credentials
-// under DPW-10.
-type Pinned = Readonly<Record<string, { run: string; rule: 'DPW-08' | 'DPW-09' | 'DPW-10' | 'DPW-13'; if?: string }>>
+// that skips the step passes its job as surely as an early exit 0 would, its working-directory (cwd, synth's
+// alone), and the rule that holds it whole: the gate's records, ruleset, environments and plan under DPW-09;
+// the gate's read of its pull request's checks, prod-gate's records, wait for main's CI and call, the
+// smokes, services_started, the read-back, the rollback jobs' releases and rolled, and prod-plan's diff
+// under DPW-08; the build's and the synth's runs, the release, the push, migrate with its record and the
+// record jobs under DPW-13; every other run of a job that holds credentials under DPW-10. No run of
+// deploy.yml is outside it (DPW-13 refuses one in a job that holds no credentials, DPW-10 in one that does).
+type Pinned = Readonly<
+  Record<string, { run: string; rule: 'DPW-08' | 'DPW-09' | 'DPW-10' | 'DPW-13'; if?: string; cwd?: string }>
+>
 const deployRuns = (stage: Stage): Pinned => ({
   'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
   'Push the image': { run: pushRun(stage), rule: 'DPW-13', if: PUSH_IF[stage] },
@@ -1312,14 +1404,64 @@ const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonpr
       }
   }
 }
+// The build's runs and the synth's, each synth step's in its own checkout's folder (its working-directory,
+// pinned with it), under DPW-13.
+const buildRuns = (): Pinned => ({
+  "Docker's containerd image store": { run: CONTAINERD_RUN, rule: 'DPW-13' },
+  'The PostgreSQL client': { run: PSQL_RUN, rule: 'DPW-13' },
+  Install: { run: INSTALL_RUN, rule: 'DPW-13' },
+  'The local stack': { run: 'docker compose up -d --wait', rule: 'DPW-13' },
+  'The local database': { run: 'npm run db:reset', rule: 'DPW-13' },
+  'Build the image': { run: IMAGE_RUN, rule: 'DPW-13' },
+  'Check the image': { run: LOAD_RUN, rule: 'DPW-13' },
+  "The image's migrate step": { run: MIGRATE_IMAGE_RUN, rule: 'DPW-13' },
+})
+const synthRuns = (): Pinned => {
+  const previous = (stage: 'nonprod' | 'prod'): Pinned => {
+    const condition = expr(`needs.gate.outputs.previous_${stage}_commit != ''`)
+    const cwd = `previous-${stage}`
+    return {
+      [`Install ${stage}'s previous release`]: { run: INSTALL_RUN, rule: 'DPW-13', if: condition, cwd },
+      [`Synthesise ${stage}'s previous release`]: {
+        run: previousSynthRun(stage),
+        rule: 'DPW-13',
+        if: condition,
+        cwd,
+      },
+      [`Check ${stage}'s previous assembly`]: {
+        run: assetCheckRun([`assembly-previous-${stage}`], 'RELEASE'),
+        rule: 'DPW-13',
+        if: condition,
+      },
+    }
+  }
+  return {
+    'Install the release': { run: INSTALL_RUN, rule: 'DPW-13', cwd: 'release' },
+    'Synthesise the release': { run: SYNTH_RUN, rule: 'DPW-13', cwd: 'release' },
+    "Check the release's assembly": { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-13' },
+    ...previous('nonprod'),
+    ...previous('prod'),
+  }
+}
 export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   gate: {
     'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
+    'The pull request that made this commit, and its checks': { run: PULL_CHECKS, rule: 'DPW-08' },
     "main's ruleset is live": { run: RULESET_CHECK, rule: 'DPW-09' },
     'The environments are live as written': { run: ENVIRONMENTS_CHECK, rule: 'DPW-09' },
     Plan: { run: PLAN_STEP, rule: 'DPW-09' },
   },
-  'prod-gate': { "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' } },
+  build: buildRuns(),
+  synth: synthRuns(),
+  'prod-gate': {
+    "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' },
+    "main's own CI": {
+      run: MAIN_CI,
+      rule: 'DPW-08',
+      if: expr("needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'"),
+    },
+    'The prod gate': { run: PROD_GATE_CALL, rule: 'DPW-08' },
+  },
   nonprod: { ...deployRuns('nonprod'), ...credentialedRuns('nonprod') },
   prod: { ...deployRuns('prod'), ...credentialedRuns('prod') },
   'prod-plan': {
@@ -1447,10 +1589,17 @@ function jobsOf(text: string): Map<string, Job> {
 function unpinnedRuns(jobs: ReadonlyMap<string, Job>, rule: string): string[] {
   const places: string[] = []
   for (const [id, pinned] of Object.entries(PINNED_RUNS())) {
-    for (const [name, { run, rule: its, if: condition }] of Object.entries(pinned)) {
+    for (const [name, { run, rule: its, if: condition, cwd }] of Object.entries(pinned)) {
       if (its !== rule) continue
       const steps = jobs.get(id)?.steps.filter(step => step.name === name) ?? []
-      if (steps.length !== 1 || steps[0]?.run !== run || steps[0]?.if !== condition) places.push(`${id} (${name})`)
+      if (
+        steps.length !== 1 ||
+        steps[0]?.run !== run ||
+        steps[0]?.if !== condition ||
+        steps[0]?.keys.get('working-directory') !== cwd
+      ) {
+        places.push(`${id} (${name})`)
+      }
     }
   }
   return places
@@ -3534,30 +3683,47 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 
 // --- DPW-04: action pins -------------------------------------------------------------------------------------
 
-const PIN =
-  /^(?:actions\/checkout|actions\/setup-node|actions\/upload-artifact|actions\/download-artifact|aws-actions\/configure-aws-credentials)@[0-9a-f]{40} # v\d+\.\d+\.\d+$/
-
-// DPW-04 (C11-D48, C11-D79): every uses: in deploy.yml is one of the five actions at a 40-hex commit with its
-// version in a comment; no local action, docker:// image or reusable workflow.
-export function actionPinFindings(workflows: Texts): Finding[] {
+// DPW-04 (C11-D48, C11-D79): every uses: in deploy.yml is one of the five actions at exactly the commit and
+// version comment ACTION_PINS names for it (scripts/guards/action-pins.ts), which CI's check job proves
+// against the action's own repository (scripts/check-action-pins.ts), so no commit pushed only to a fork,
+// which GitHub resolves under the action's name, and no older release's commit under a newer comment, runs
+// in a job that holds the OIDC request token; no local action, docker:// image or reusable workflow. And
+// .github/workflows holds workflows alone (WORKFLOW_FILE), so no actions lockfile, which could name a commit
+// for an action the guard never reads, stands beside them.
+export function actionPinFindings(workflows: Texts, folder?: readonly string[]): Finding[] {
   const text = workflows.get(DEPLOY) ?? ''
   const spans = jobSpans(text)
   const found = new Set<Finding>()
   for (const { index, text: line } of yamlLines(text)) {
     const uses = /(?:^|[\s{,])uses\s*:\s*(.*)$/.exec(line)
     if (!uses) continue
-    if (PIN.test((uses[1] ?? '').trim())) continue
+    const value = (uses[1] ?? '').trim()
+    const action = value.split('@')[0] ?? ''
+    if (Object.hasOwn(ACTION_PINS, action) && value === `${action}@${ACTION_PINS[action]}`) continue
     const job = [...spans].find(([, [from, to]]) => index >= from && index < to)?.[0] ?? 'the top level'
     found.add(
       at(
         DEPLOY,
         'DPW-04',
-        `${job}: every uses: is checkout, setup-node, upload-artifact, download-artifact or the credentials action, at a 40-hex commit with its version comment`,
+        `${job}: every uses: is checkout, setup-node, upload-artifact, download-artifact or the credentials action, at exactly the commit and version comment ACTION_PINS names, which CI proves against the action's own repository`,
       ),
     )
   }
+  for (const path of folder ?? []) {
+    if (path.startsWith('.github/workflows/') && !WORKFLOW_FILE.test(path)) {
+      found.add(
+        at(
+          DEPLOY,
+          'DPW-04',
+          '.github/workflows holds workflows alone (<name>.yml or <name>.yaml): no actions lockfile or other file beside them',
+        ),
+      )
+    }
+  }
   return [...found]
 }
+// A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows.
+export const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/
 
 // --- DPW-05: timeouts and concurrency ---------------------------------------------------------------------
 
@@ -4383,7 +4549,7 @@ export function prodPathFindings(workflows: Texts): Finding[] {
   for (const place of unpinnedRuns(jobs, 'DPW-08')) {
     add(
       place,
-      "runs as written, whole and under its own if: (PINNED_RUNS): prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own",
+      "runs as written, whole and under its own if: (PINNED_RUNS): the pull request's checks, main's CI, the prod gate, prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own",
     )
   }
   // An output only from a run the guard pins whole, outside build and synth (which run repository code by
@@ -5665,7 +5831,12 @@ const STEPS =
 // No run of any job names a file command that hands a later step of its job something: GITHUB_ENV (a
 // variable, BASH_ENV say, which bash reads before the next step's run), GITHUB_PATH (a folder searched
 // first for every command) or GITHUB_STATE. Only GITHUB_OUTPUT (DPW-08's) and GITHUB_STEP_SUMMARY are
-// written. Read in the whole run, comments included, so no spelling of the name passes.
+// written. Read in the whole run, comments included, so no spelling of the name passes. The file itself
+// has a path of its own under the runner's temp folder, which no text test can name in every spelling
+// (find reaches it by its folder): that route is closed by every run being pinned whole (PINNED_RUNS),
+// and stays open only to the repository code build and synth run by design, so synth's own asset check
+// holds only against deploy.yml's text, and each credentialed job's pinned ASSET_CHECK, in a job of its
+// own (file commands don't cross jobs), is the check a deploy rests on.
 const FILE_COMMANDS = /GITHUB_(?:ENV|PATH|STATE)(?![A-Za-z0-9_])/
 const FILES =
   'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
@@ -6102,9 +6273,13 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 // GitHub API write made; each record's body built whole by jq -n with ref main, auto_merge false and no
 // required contexts, and sent with --input -; each record job is one step, with no action (so no
 // checkout), running only bash's own, its functions (each called only as written), jq and gh api, and
-// setting no input its env: or a pinned line reads; and the release steps, the push, migrate with its
-// record and the record jobs are pinned whole (PINNED_RUNS). (Every deploy of a recorded digest checks
-// ECR's tags for its commit inside AWS_CHECK, which DPW-06 pins.)
+// setting no input its env: or a pinned line reads; the release steps, the push, migrate with its record,
+// the record jobs and every run of build and synth (each synth step in its own folder) are pinned whole
+// (PINNED_RUNS), so the synth's words can't be quoted or aliased past the text rules (npm run-script, cdk
+// synthesize, --context); and every run of a job that holds no credentials is one PINNED_RUNS names
+// (UNPINNED; a credentialed job's are DPW-10's), so no run of deploy.yml has a line of its own. (Every
+// deploy of a recorded digest checks ECR's tags for its commit inside AWS_CHECK, which DPW-06 pins.)
+const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
 export function releaseFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -6118,8 +6293,16 @@ export function releaseFindings(workflows: Texts): Finding[] {
   for (const place of unpinnedRuns(jobs, 'DPW-13')) {
     add(
       place,
-      'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment',
+      'runs as written, whole and under its own if: (PINNED_RUNS) and in its own folder: the build, the synth, the release, the push, migrate with its record and the record job, so no line of its own builds, synthesises, tags, migrates or records by another commit, context, task or environment, or runs, prints or writes what a rule reading the text would miss',
     )
+  }
+  // Every run of every other job is one PINNED_RUNS names too (a credentialed job's are DPW-10's), so no run
+  // of deploy.yml has a line of its own, even a step JOB_STEPS were to gain without a pinned run.
+  for (const { id, steps } of jobs.values()) {
+    if (ENVIRONMENT_JOBS[id] !== undefined) continue
+    steps.forEach((step, index) => {
+      if (step.run !== undefined && pinnedRunOf(id, step) === undefined) add(`${id} (${label(step, index)})`, UNPINNED)
+    })
   }
   if (/:latest\b/i.test(text)) add('deploy.yml', 'names no image :latest')
   if (/synth:ci|synth:lz|HEARTH_FAKE_RELEASE|\bcdk\s+synth\b|"\$CDK"\s+synth/.test(text)) {

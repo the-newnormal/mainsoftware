@@ -45,10 +45,11 @@ jobs:
   # after the tests, and from C0.11 PR 3 the workload entry over a fake release (npm run synth:ci
   # -w @hearth/infra) straight after that, both credential-free and offline (C11-D62). Keep
   # CLAUDE.md (Testing and CI) in step with this job. It waits for secrets and audit, so it gates
-  # merging on them too. From C0.8 it also installs Playwright's browsers, checks the web bundle
-  # against its budget and scans what it ships (scripts/check-web-dist.ts) straight after the build,
-  # and runs the web app's end-to-end suite last (npm run e2e), uploading its report when a step
-  # fails or the job is cancelled (T21).
+  # merging on them too. From C0.11 PR 4 it also proves deploy.yml's action pins against each action's
+  # own repository (scripts/check-action-pins.ts) straight after synth:ci. From C0.8 it also installs
+  # Playwright's browsers, checks the web bundle against its budget and scans what it ships
+  # (scripts/check-web-dist.ts) straight after the build, and runs the web app's end-to-end suite last
+  # (npm run e2e), uploading its report when a step fails or the job is cancelled (T21).
   check:
     needs: [secrets, audit]
     if: always()
@@ -94,6 +95,13 @@ jobs:
       # environment as synth:lz, so no AWS call. synth:ci alone sets the fake-release marker; the
       # pipeline's synth takes a real release (PR 4).
       - run: npm run synth:ci -w @hearth/infra
+      # deploy.yml's action pins (C0.11 PR 4, DPW-04): DPW-04, in npm test, holds every uses: in
+      # deploy.yml to its entry in scripts/guards/action-pins.ts, and this reads each entry's version tag
+      # from the action's own repository (git ls-remote), which must name exactly the pinned commit, so no
+      # commit that exists only in a fork (GitHub resolves one under the action's name) and no older
+      # release's commit under a newer version's comment passes. Each read is tried three times; a tag
+      # that names another commit fails.
+      - run: node scripts/check-action-pins.ts
       # The Rule 1-9 access suite, case by case, todos included, so CI lists every rule
       # (BUILD-PLAN C0.4, T10). `npm test` above already ran it; this prints the names.
       - run: npx vitest run packages/access/rules.test.ts --reporter=verbose

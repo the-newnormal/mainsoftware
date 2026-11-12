@@ -356,14 +356,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -381,7 +386,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -395,7 +400,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -421,6 +426,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -493,14 +504,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -518,7 +534,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -532,7 +548,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -558,6 +574,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -631,14 +653,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -656,7 +683,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -670,7 +697,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -696,6 +723,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -814,14 +847,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -839,7 +877,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -853,7 +891,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -879,6 +917,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -1753,14 +1797,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -1778,7 +1827,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -1792,7 +1841,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -1818,6 +1867,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -2506,14 +2561,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -2531,7 +2591,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -2545,7 +2605,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2571,6 +2631,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -2868,14 +2934,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -2893,7 +2964,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -2907,7 +2978,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2933,6 +3004,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")
@@ -3848,14 +3925,19 @@ jobs:
           # the CLI acts on, so before any credential each one is walked from its root manifest through every
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
-          # writes; a named file that isn't a plain name in its own folder; a legacy asset entry in any
-          # artifact's metadata, inline or in its metadata file (the CLI would build or upload it whatever the
-          # asset manifests say); a container image asset, or a file asset that runs a command, is packaged
-          # otherwise than file or zip, or whose path leaves the tree; no asset manifest at all; any symbolic
-          # link. The release check then requires every Services template's Release output to be the release
-          # this job deploys, and every container image in the Tasks and Services templates to be the server
-          # image at its digest. A refusal is one line naming the rule, never a path or value from the
-          # assembly.
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; no asset manifest at all; a stack whose name isn't Hearth- and its stage's id (the CLI would
+          # otherwise name it by its artifact's id), or whose template CloudFormation is handed isn't its own
+          # templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl names, which the
+          # asset manifests upload, never the templateFile itself, so that URL must name an s3 object that this
+          # folder's asset manifests upload from the stack's templateFile alone, as a file); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -3873,7 +3955,7 @@ jobs:
             done
           }
           check_assembly() {
-            local root dir file path manifests=0 queue
+            local root dir file path manifests=0 queue stackfiles
             [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
             root=$(cd "$1" && pwd -P)
             [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
@@ -3887,7 +3969,7 @@ jobs:
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
               jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("^[^./][^/]*$") and (contains("..") | not) and (test("[[:cntrl:]]") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -3913,6 +3995,12 @@ jobs:
                 done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
                 manifests=$((manifests + 1))
               done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
               while IFS= read -r file; do
                 [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
                 queue+=("$dir/$file")

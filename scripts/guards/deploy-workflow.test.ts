@@ -19,7 +19,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { gitIsAncestor, type PlanInput, parseReleaseRecords, plan } from '../../infra/scripts/deploy/history.ts'
 import { PROFILES } from '../../infra/src/config/profiles.ts'
 import { synthWorkload } from '../../infra/src/testing/workload.ts'
+import { pinProblems, tagCommit } from '../check-action-pins.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
+import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE } from './action-pins'
 import {
   ASSET_CHECK,
   AWS_CHECK,
@@ -190,11 +192,12 @@ const HELD =
 // The findings for a run the guard pins whole (PINNED_RUNS), under the rule that holds it, and for an output
 // written outside one.
 const PINNED_08 =
-  "runs as written, whole and under its own if: (PINNED_RUNS): prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
+  "runs as written, whole and under its own if: (PINNED_RUNS): the pull request's checks, main's CI, the prod gate, prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
 const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
 const PINNED_13 =
-  'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment'
+  'runs as written, whole and under its own if: (PINNED_RUNS) and in its own folder: the build, the synth, the release, the push, migrate with its record and the record job, so no line of its own builds, synthesises, tags, migrates or records by another commit, context, task or environment, or runs, prints or writes what a rule reading the text would miss'
+const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
 const PINNED_10 =
   'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
 const OUTPUT_PINNED = 'writes an output only from a run the guard pins whole'
@@ -978,10 +981,11 @@ describe('DPW-03 (C11-D55, C11-D56): only the five environment jobs hold AWS cre
 
 describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
   const PIN = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
-  const FOUND = [
-    `${DEPLOY}: DPW-04 gate: every uses: is checkout, setup-node, upload-artifact, download-artifact or the credentials action, at a 40-hex commit with its version comment`,
-  ]
+  const pinned = (where: string) =>
+    `${DEPLOY}: DPW-04 ${where}: every uses: is checkout, setup-node, upload-artifact, download-artifact or the credentials action, at exactly the commit and version comment ACTION_PINS names, which CI proves against the action's own repository`
+  const FOUND = [pinned('gate')]
   const pin = (to: string) => actionPinFindings(plant(PIN, to))
+  const FOLDER = `${DEPLOY}: DPW-04 .github/workflows holds workflows alone (<name>.yml or <name>.yaml): no actions lockfile or other file beside them`
 
   it('finds each planted breakage', () => {
     expect(pin('actions/checkout@v7')).toEqual(FOUND)
@@ -991,10 +995,89 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     expect(pin(`docker/setup-buildx-action@${'a'.repeat(40)} # v3.11.1`)).toEqual(FOUND)
     expect(pin('./.github/actions/x')).toEqual(FOUND)
     expect(pin('docker://alpine@sha256:0')).toEqual(FOUND)
+    // FETCH-A1-01: a pin moved to another commit, under the same version comment or another, which GitHub
+    // resolves under the action's name if a fork holds it.
+    const fork = '5f1c0a7e9d2b4c6a8e0f1b3d5c7e9a1b2c4d6e8f'
+    expect(pin(`actions/checkout@${fork} # v7.0.1`)).toEqual(FOUND)
+    expect(pin('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.2')).toEqual(FOUND)
+    expect(pin(`actions/checkout@${fork} # v7.0.2`)).toEqual(FOUND)
+  })
+
+  it('holds each action of a credentialed job to its pin (FETCH-A1-01)', () => {
+    const fork = '5f1c0a7e9d2b4c6a8e0f1b3d5c7e9a1b2c4d6e8f'
+    for (const [id, from, to] of [
+      [
+        'nonprod',
+        'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+        `actions/checkout@${fork} # v7.0.1`,
+      ],
+      [
+        'prod-plan',
+        'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2',
+        `actions/download-artifact@${fork} # v8.0.3`,
+      ],
+      [
+        'rollback-prod',
+        'aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0',
+        `aws-actions/configure-aws-credentials@${fork} # v6.3.0`,
+      ],
+    ] as const) {
+      expect(actionPinFindings(plant(from, to, job(id))), id).toEqual([pinned(id)])
+    }
+  })
+
+  it('finds a file beside the workflows', () => {
+    const real = [...workflows.keys()]
+    expect(actionPinFindings(workflows, [...real, '.github/workflows/actions.lock'])).toEqual([FOLDER])
+    expect(actionPinFindings(workflows, [...real, '.github/workflows/sub/x.yml'])).toEqual([FOLDER])
+    expect(actionPinFindings(workflows, [...real, '.github/workflows/x.yml.bak'])).toEqual([FOLDER])
   })
 
   it('holds the repository', () => {
-    expect(actionPinFindings(workflows)).toEqual([])
+    expect(actionPinFindings(workflows, files)).toEqual([])
+    // The table names exactly the actions deploy.yml uses, each in the shape scripts/check-action-pins.ts reads.
+    const used = new Set([...deployText.matchAll(/^\s+(?:- )?uses: ([^@\s]+)@/gm)].map(each => each[1]))
+    expect([...used].sort()).toEqual(Object.keys(ACTION_PINS).sort())
+    for (const [action, entry] of Object.entries(ACTION_PINS)) {
+      expect(ACTION_SHAPE.test(action), action).toBe(true)
+      expect(PIN_SHAPE.test(entry), action).toBe(true)
+    }
+  })
+})
+
+describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s own repository', () => {
+  const commit = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+  const other = '5f1c0a7e9d2b4c6a8e0f1b3d5c7e9a1b2c4d6e8f'
+
+  it('reads the commit a tag names, the peeled one of an annotated tag, from the two exact refs alone', () => {
+    expect(tagCommit(`${commit}\trefs/tags/v7.0.1\n`, 'v7.0.1')).toBe(commit)
+    expect(tagCommit(`${other}\trefs/tags/v7.0.1\n${commit}\trefs/tags/v7.0.1^{}\n`, 'v7.0.1')).toBe(commit)
+    expect(tagCommit(`${commit}\trefs/tags/x/v7.0.1\n`, 'v7.0.1')).toBeUndefined()
+    expect(tagCommit(`${commit}\trefs/heads/v7.0.1\n`, 'v7.0.1')).toBeUndefined()
+    expect(tagCommit('', 'v7.0.1')).toBeUndefined()
+  })
+
+  it('finds a pin its tag doesn’t name, a missing tag and an entry in another shape', () => {
+    const answer = (sha: string) => () => `${sha}\trefs/tags/v7.0.1\n`
+    const pins = { 'actions/checkout': `${commit} # v7.0.1` }
+    expect(pinProblems(pins, answer(commit))).toEqual([])
+    expect(pinProblems(pins, answer(other))).toEqual([
+      "actions/checkout: tag v7.0.1 names another commit than the pin's",
+    ])
+    expect(pinProblems(pins, () => '')).toEqual(['actions/checkout: the repository has no tag v7.0.1'])
+    expect(pinProblems({ 'actions/checkout': `${commit}` }, answer(commit))).toEqual([
+      'actions/checkout: the pin is not <40-hex commit> # v<major>.<minor>.<patch>',
+    ])
+    expect(pinProblems({ 'actions/checkout/../x': `${commit} # v7.0.1` }, answer(commit))).toEqual([
+      'actions/checkout/../x: the pin is not <40-hex commit> # v<major>.<minor>.<patch>',
+    ])
+    // It asks for the version's own tag of the action's own repository.
+    const asked: string[] = []
+    pinProblems(pins, (action, version) => {
+      asked.push(`${action} ${version}`)
+      return `${commit}\trefs/tags/${version}\n`
+    })
+    expect(asked).toEqual(['actions/checkout v7.0.1'])
   })
 })
 
@@ -1656,6 +1739,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
         "waits for main's check and migrations for a deploy alone, read from ci.yml's own run and its jobs",
       ),
       at('prod-gate', 'reads no check run, check suite or commit status'),
+      at("prod-gate (main's own CI)", PINNED_08),
     ])
     expect(
       prodPathFindings(
@@ -1686,7 +1770,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     const WAIT = "waits for main's check and migrations for a deploy alone, read from ci.yml's own run and its jobs"
     expect(
       prodPathFindings(addedBefore('prod-gate', "main's own CI", '          DEADLINE=', '          exit 0\n')),
-    ).toEqual([at('prod-gate', WAIT)])
+    ).toEqual([at('prod-gate', WAIT), at("prod-gate (main's own CI)", PINNED_08)])
     expect(
       prodPathFindings(
         addedBefore(
@@ -1698,6 +1782,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       ),
     ).toEqual([
       at('prod-gate', 'runs history.ts prod-gate with the mode'),
+      at('prod-gate (The prod gate)', PINNED_08),
       at('prod-gate (The prod gate)', OUTPUT_PINNED),
     ])
     expect(
@@ -1726,6 +1811,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       ),
     ).toEqual([
       at('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs"),
+      at('gate (The pull request that made this commit, and its checks)', PINNED_08),
     ])
     // SECURITY-01: a run chosen without its head repository and branch could be another fork's.
     expect(
@@ -1738,6 +1824,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       ),
     ).toEqual([
       at('gate', "reads its pull request's check and migrations from ci.yml's own run on its head and that run's jobs"),
+      at('gate (The pull request that made this commit, and its checks)', PINNED_08),
     ])
   })
 
@@ -3538,6 +3625,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         'npm run synth:ci -w @hearth/infra --',
       ),
     ).toEqual([
+      at('synth (Synthesise the release)', PINNED_13),
       at(
         'deploy.yml',
         "synthesises only with the pipeline's npm run synth, never synth:ci, synth:lz, HEARTH_FAKE_RELEASE or cdk synth",
@@ -3545,12 +3633,14 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       at('synth (Synthesise the release)', SYNTH),
     ])
     expect(find('          CONTEXT=()\n', '          CONTEXT=()\n          export HEARTH_FAKE_RELEASE=1\n')).toEqual([
+      at('synth (Synthesise the release)', PINNED_13),
       at(
         'deploy.yml',
         "synthesises only with the pipeline's npm run synth, never synth:ci, synth:lz, HEARTH_FAKE_RELEASE or cdk synth",
       ),
     ])
     expect(find('          CONTEXT=()\n', '          CONTEXT=(-c release=x)\n')).toEqual([
+      at('synth (Synthesise the release)', PINNED_13),
       at('synth (Synthesise the release)', SYNTH),
     ])
     expect(find(':sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', ':latest"', push)).toEqual([
@@ -3687,7 +3777,10 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       '        run: node scripts/x.ts',
       '',
     ].join('\n')
-    expect(find(write, `${checkout}${write}`, job('record-nonprod'))).toEqual([at('record-nonprod', RECORD)])
+    expect(find(write, `${checkout}${write}`, job('record-nonprod'))).toEqual([
+      at('record-nonprod (Run code)', UNPINNED),
+      at('record-nonprod', RECORD),
+    ])
     expect(
       releaseFindings(
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          node scripts/x.ts\n'),
@@ -4531,6 +4624,140 @@ describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10
   })
 })
 
+describe('Round 5, attack 1: the ways past the allowlist (DPW-04, DPW-07, DPW-08, DPW-12 to DPW-14)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
+  const synthLine = `          npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" "\${CONTEXT[@]}" -o "$RUNNER_TEMP/assembly"\n`
+  const synthStep = 'synth (Synthesise the release)'
+
+  // EXPAND-A1-01 to A1-03, COMMANDS-A1-01 and A1-02: build's and synth's runs had lines of their own, which the
+  // table and the text rules read, so env handed to a program as a word built from an expansion, the synth's
+  // words quoted, npm's and the CLI's own aliases for its command and flag (run-script, synthesize, --context),
+  // GITHUB_ENV's file reached through its folder, and a script's name bash joins from quoted or expanded parts
+  // all passed. Every run of build and synth is now pinned whole too, so no run of deploy.yml has a line of its
+  // own.
+  it('pins every run of build and synth whole, so none has a line of its own (EXPAND-A1-01 to A1-03, COMMANDS-A1-01, A1-02)', () => {
+    const ahead = (added: string) => addedBefore('synth', 'Synthesise the release', synthLine, added)
+    const instead = (to: string) => plant(synthLine, to, job('synth'))
+    for (const [what, planted] of [
+      ['env by an expanded word', ahead(lines('E=en', `xargs "\${E}v" </dev/null`))],
+      ['env by a quoted split', ahead(lines('E=e""nv', 'xargs "$E" </dev/null'))],
+      ['printenv by an expanded word', ahead(lines('P=print', `xargs "\${P}env" </dev/null`))],
+      ['env through find', ahead(lines('E=en', `find /dev/null -maxdepth 0 -exec "\${E}v" ';'`))],
+      [
+        'the step file by its folder',
+        ahead(
+          lines(
+            `echo 'exit 0' >"$RUNNER_TEMP/bash-env"`,
+            `FILE=$(find "$RUNNER_TEMP/_runner_file_commands" -name 'set_env_*')`,
+            'echo "BASH_ENV=$RUNNER_TEMP/bash-env" >>"$FILE"',
+          ),
+        ),
+      ],
+      [
+        'quoted words',
+        instead(
+          lines(
+            'npm run "synth" -w @hearth/infra -- -c "release=$COMMIT:$DIGEST" -c "drill=break:nonprod" -o "$RUNNER_TEMP/assembly"',
+          ),
+        ),
+      ],
+      ['synth:ci quoted', instead(lines('npm run "synth":ci -w @hearth/infra -- -o "$RUNNER_TEMP/assembly"'))],
+      [
+        'run-script and --context',
+        instead(
+          lines(
+            'npm run-script synth -w @hearth/infra -- --context release="$COMMIT:$DIGEST" --context drill=break:nonprod -o "$RUNNER_TEMP/assembly"',
+          ),
+        ),
+      ],
+      [
+        'cdk synthesize',
+        instead(
+          lines(
+            `npx -w @hearth/infra cdk synthesize --app 'node bin/workload.ts' --context release="$COMMIT:$DIGEST" --context drill=break:nonprod -o "$RUNNER_TEMP/assembly"`,
+          ),
+        ),
+      ],
+    ] as const) {
+      expect(releaseFindings(planted), what).toContain(at('DPW-13', synthStep, PINNED_13))
+    }
+    const check = '          IMAGE=hearth-server:build scripts/check-server.sh\n'
+    for (const added of [
+      lines('node scripts/owner-"bootstrap".ts set-up --database hearth'),
+      lines('B=bootstrap', 'node "scripts/owner-$B.ts" set-up --database hearth'),
+    ]) {
+      expect(releaseFindings(addedBefore('build', 'Check the image', check, added)), added).toContain(
+        at('DPW-13', 'build (Check the image)', PINNED_13),
+      )
+    }
+    // Each synth step's folder is pinned with its run: the release's synth run in another checkout's folder.
+    expect(
+      releaseFindings(
+        plant(
+          '        working-directory: release\n        env:\n',
+          '        working-directory: previous-nonprod\n        env:\n',
+          job('synth'),
+        ),
+      ),
+    ).toContain(at('DPW-13', synthStep, PINNED_13))
+  })
+
+  // The same class beyond build and synth: the gate's read of its pull request's checks and prod-gate's wait
+  // for main's CI and its call were held by run, not by their if:, so a step skipped under an if: of its own
+  // passed. Every run of every job is now one PINNED_RUNS pins whole, under its own if: and in its own folder.
+  it('pins every run of deploy.yml whole, under its own if:, so none has a line of its own', () => {
+    const finders = {
+      'DPW-08': [prodPathFindings, PINNED_08],
+      'DPW-09': [
+        (planted: ReadonlyMap<string, string>) =>
+          gateFindings(planted, environments, PROFILES.nonprod.holdsRealData, protectEnvironments, AGENT_MARKERS),
+        PINNED_09,
+      ],
+      'DPW-10': [
+        (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile),
+        PINNED_10,
+      ],
+      'DPW-13': [releaseFindings, PINNED_13],
+    } as const
+    for (const each of workflowJobs(deployText)) {
+      for (const { name = '' } of parsedSteps(each).filter(step => step.run !== undefined)) {
+        const rule = PINNED_RUNS()[each.id]?.[name]?.rule
+        expect(rule, `${each.id} (${name})`).toBeDefined()
+        if (rule === undefined) continue
+        const step = stepText(deployText, each.id, name)
+        const one = /^ {8}run: (?![|>])(.*)\n/m.exec(step)
+        const to =
+          one === null
+            ? `${step}          echo ready\n`
+            : step.replace(one[0], `        run: |\n          ${one[1]}\n          echo ready\n`)
+        const [finder, text] = finders[rule]
+        expect(finder(withText(DEPLOY, edited(deployText, step, to, job(each.id)))), `${each.id} (${name})`).toContain(
+          at(rule, `${each.id} (${name})`, text),
+        )
+      }
+    }
+    // A step skipped under an if: of its own, and one whose if: is gone.
+    const pull = '      - name: The pull request that made this commit, and its checks\n'
+    expect(prodPathFindings(plant(pull, `${pull}        if: \${{ false }}\n`, job('gate')))).toContain(
+      at('DPW-08', 'gate (The pull request that made this commit, and its checks)', PINNED_08),
+    )
+    const prodGate = '      - name: The prod gate\n'
+    expect(prodPathFindings(plant(prodGate, `${prodGate}        if: \${{ false }}\n`, job('prod-gate')))).toContain(
+      at('DPW-08', 'prod-gate (The prod gate)', PINNED_08),
+    )
+    expect(
+      prodPathFindings(
+        plant(
+          `        if: \${{ needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' }}\n`,
+          '',
+          "      - name: main's own CI\n",
+        ),
+      ),
+    ).toContain(at('DPW-08', "prod-gate (main's own CI)", PINNED_08))
+  }, 120_000)
+})
+
 describe('DPW-14 (C11-D76): the asset and release checks', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-14 ${where}: ${rule}`
   const CHECKED =
@@ -5259,6 +5486,9 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   const RUNS = refused('a file asset runs a command, is packaged otherwise than file or zip, or names no relative path')
   const PLAIN = refused('a manifest names a file that is not a plain name in its own folder')
   const LEGACY = refused('an artifact carries a legacy asset entry, which the CLI would build or upload')
+  const TEMPLATE = refused(
+    "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile",
+  )
   const nonprod = (dir: string) => join(dir, 'assembly-nonprod')
   const prod = (dir: string) => join(dir, 'assembly-prod')
 
@@ -5328,18 +5558,114 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         ),
       ),
     ).toBe(refused('an asset path leaves the assembly'))
-    expect(
-      check(dir => {
+    // No asset manifest at all: with the stacks they upload gone too, and with the stacks left, whose templates
+    // then nothing uploads.
+    const without =
+      (...types: string[]) =>
+      (dir: string) => {
         for (const folder of [dir, nonprod(dir), prod(dir), join(dir, 'assembly-restore')]) {
           edit(join(folder, 'manifest.json'), json => {
             json.artifacts = Object.fromEntries(
-              Object.entries(artifacts(json)).filter(([, artifact]) => artifact.type !== 'cdk:asset-manifest'),
+              Object.entries(artifacts(json)).filter(([, artifact]) => !types.includes(artifact.type ?? '')),
             )
           })
         }
-      }),
-    ).toBe(refused('no asset manifest was read'))
+      }
+    expect(check(without('cdk:asset-manifest', 'aws:cloudformation:stack'))).toBe(refused('no asset manifest was read'))
+    expect(check(without('cdk:asset-manifest'))).toBe(TEMPLATE)
   }, 30_000)
+
+  // FLOW-A1-01 and A1-02: the CLI hands CloudFormation the object a stack's stackTemplateAssetObjectUrl names,
+  // which its asset manifests upload, never the templateFile the release check reads and the approver's diff
+  // shows; and it names a stack with no stackName by its artifact's id, and reads a file name raw, where the
+  // release check read both through @tsv. So each stack's template object is uploaded from its own
+  // templateFile alone, its name is Hearth- and its stage's id, and a file name is letters, digits, dots,
+  // dashes and underscores.
+  it('refuses a template CloudFormation would be handed other than the one checked, and a stack named otherwise (FLOW-A1-01, A1-02)', () => {
+    const stacks = (dir: string, change: (artifact: Artifact & { displayName?: string }) => void) =>
+      edit(join(dir, 'manifest.json'), json => {
+        for (const artifact of Object.values(artifacts(json)))
+          if (
+            artifact.type === 'aws:cloudformation:stack' &&
+            artifact.properties?.stackName === 'Hearth-nonprod-Services'
+          )
+            change(artifact)
+      })
+    type Entry = { source: Record<string, unknown>; destinations: Record<string, Record<string, unknown>> }
+    const entries = (json: Record<string, unknown>) => Object.values((json.files ?? {}) as Record<string, Entry>)
+    const template = (dir: string) => named(nonprod(dir), 'Services', '.template.json')
+    const assets = (dir: string) => named(nonprod(dir), 'Services', '.assets.json')
+    // Plant D: the template asset uploads another plain file in the same folder.
+    expect(
+      check(dir => {
+        cpSync(template(dir), join(nonprod(dir), 'deployed.json'))
+        edit(assets(dir), json => {
+          for (const entry of entries(json)) if (entry.source.packaging === 'file') entry.source.path = 'deployed.json'
+        })
+      }),
+    ).toBe(TEMPLATE)
+    // A second asset on the template's key, from another file.
+    expect(
+      check(dir =>
+        edit(assets(dir), json => {
+          const [first] = entries(json)
+          if (first !== undefined)
+            (json.files as Record<string, unknown>).second = {
+              ...first,
+              source: { path: 'tree.json', packaging: 'file' },
+            }
+        }),
+      ),
+    ).toBe(TEMPLATE)
+    // The template uploaded as a zip, a URL naming no asset's key, one that isn't s3, and none at all.
+    expect(
+      check(dir =>
+        edit(assets(dir), json => {
+          for (const entry of entries(json)) entry.source.packaging = 'zip'
+        }),
+      ),
+    ).toBe(TEMPLATE)
+    for (const url of [
+      `s3://cdk-hearthapp-assets-\${AWS::AccountId}-ap-southeast-1/other.json`,
+      'https://example.invalid/t.json',
+      undefined,
+    ]) {
+      expect(
+        check(dir =>
+          stacks(nonprod(dir), artifact => {
+            if (artifact.properties !== undefined) artifact.properties.stackTemplateAssetObjectUrl = url
+          }),
+        ),
+        String(url),
+      ).toBe(TEMPLATE)
+    }
+    // Plant A: no stackName, which the CLI would take from the artifact's id; a name that isn't the stage's id;
+    // and no displayName.
+    for (const change of [
+      (artifact: Artifact & { displayName?: string }) => {
+        if (artifact.properties !== undefined) delete artifact.properties.stackName
+      },
+      (artifact: Artifact & { displayName?: string }) => {
+        if (artifact.properties !== undefined) artifact.properties.stackName = 'Hearth-nonprod-Tasks'
+      },
+      (artifact: Artifact & { displayName?: string }) => {
+        delete artifact.displayName
+      },
+    ]) {
+      expect(check(dir => stacks(nonprod(dir), change))).toBe(TEMPLATE)
+    }
+    // Plant B: a backslash in a file name, which @tsv would double; and a space.
+    for (const name of ['S\\x.template.json', 'S x.template.json']) {
+      expect(
+        check(dir =>
+          stacks(nonprod(dir), artifact => {
+            if (artifact.properties !== undefined) artifact.properties.templateFile = name
+          }),
+        ),
+        name,
+      ).toBe(PLAIN)
+    }
+  }, 60_000)
 
   it('refuses each planted breakage of the manifests, the files they name and the tree', () => {
     const inManifest =
