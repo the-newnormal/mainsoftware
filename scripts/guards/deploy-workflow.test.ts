@@ -60,6 +60,7 @@ import {
   ONE_OFF,
   OVERRIDES_JQ,
   outsideEvaluations,
+  PLAN_CALL,
   PREAMBLE,
   PROBE,
   PROBE_LINES,
@@ -181,6 +182,15 @@ const AS_BASH =
   'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 const HELD =
   'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
+// The findings for a run the guard pins whole (PINNED_RUNS), under the rule that holds it, and for an output
+// written outside one.
+const PINNED_08 =
+  "runs as written, whole and under its own if: (PINNED_RUNS): prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
+const PINNED_09 =
+  "runs as written, whole and under its own if: (PINNED_RUNS): the records and main's ruleset the plan rests on and the plan itself, so no line of its own ends one early, forges what the plan reads or writes an output of its own"
+const PINNED_13 =
+  'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment'
+const OUTPUT_PINNED = 'writes an output only from a run the guard pins whole'
 
 const indent = (text: string, n: number) =>
   text
@@ -1588,7 +1598,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     ])
     expect(
       prodPathFindings(plant('      - name: Rolled back\n', '      - name: Rolled back, prod\n', job('rollback-prod'))),
-    ).toEqual([at('rollback-prod', SAME_STEPS)])
+    ).toEqual([at('rollback-prod (Rolled back)', PINNED_08), at('rollback-prod', SAME_STEPS)])
     // Each run the gates rest on is pinned whole: an early exit 0 or a forged output is found.
     const WAIT = "waits for main's check and migrations for a deploy alone, read from ci.yml's own run and its jobs"
     expect(
@@ -1603,7 +1613,10 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
           '          echo current_prod_id= >>"$GITHUB_OUTPUT"; exit 0\n',
         ),
       ),
-    ).toEqual([at('prod-gate', 'runs history.ts prod-gate with the mode')])
+    ).toEqual([
+      at('prod-gate', 'runs history.ts prod-gate with the mode'),
+      at('prod-gate (The prod gate)', OUTPUT_PINNED),
+    ])
     expect(
       prodPathFindings(
         addedBefore('prod', 'The fast re-check', '          newest=$(newest_release prod)\n', '          exit 0\n'),
@@ -1668,6 +1681,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     const check = `${indent(SMOKE_ATTEMPT, 10)}\n`
     expect(prodPathFindings(plant(check, '', job('resmoke-nonprod')))).toEqual([
       stale('resmoke-nonprod', 'rollback-nonprod'),
+      at('resmoke-nonprod (Smoke)', PINNED_08),
     ])
     // The check after smoke.ts has judged, or in a step of its own beside it, comes too late.
     const smokeLine = '          node infra/scripts/deploy/smoke.ts '
@@ -1677,9 +1691,13 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       `${check}${smokeLine}`,
       job('smoke-nonprod'),
     )
-    expect(prodPathFindings(withText(DEPLOY, moved))).toEqual([stale('smoke-nonprod', 'nonprod')])
+    expect(prodPathFindings(withText(DEPLOY, moved))).toEqual([
+      stale('smoke-nonprod', 'nonprod'),
+      at('smoke-nonprod (Smoke)', PINNED_08),
+    ])
     expect(prodPathFindings(copiedStep('smoke-prod', 'Smoke', 'smoke-prod', 'Smoke'))).toEqual([
       stale('smoke-prod', 'prod'),
+      at('smoke-prod (Smoke)', PINNED_08),
     ])
   })
 
@@ -1950,6 +1968,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     ])
     expect(gate(plant('--release "$RELEASE" --restore', '--release "" --restore', job('gate')))).toEqual([
       at('gate', 'plans through history.ts plan, every input and actor through env:'),
+      at('gate (Plan)', PINNED_09),
     ])
     // An if: with !cancelled() isn't joined to success(): prod after a failed prod-gate, nonprod after a
     // failed synth, prod-gate after a failed prod-plan.
@@ -2313,7 +2332,8 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const STEP_KEYS =
     'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error'
   const WITH = 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source'
-  const ENV = 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS'
+  const ENV =
+    'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
   const DEFINES =
     'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does'
@@ -3158,11 +3178,13 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       at('synth (Synthesise the release)', SYNTH),
     ])
     expect(find(':sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', ':latest"', push)).toEqual([
+      at('nonprod (Push the image)', PINNED_13),
       at('deploy.yml', 'names no image :latest'),
       at('nonprod (Push the image)', TAG),
       at('nonprod (Push the image)', PUSH),
     ])
     expect(find(':sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', ':sha-$COMMIT-$GITHUB_RUN_ID"', push)).toEqual([
+      at('nonprod (Push the image)', PINNED_13),
       at('nonprod (Push the image)', TAG),
       at('nonprod (Push the image)', PUSH),
     ])
@@ -3219,13 +3241,17 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         `${ended}          ID=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$BODY")\n`,
         job('nonprod'),
       ),
-    ).toEqual([at('nonprod (Migrate)', 'writes in its migrate step the one migration record and its status alone')])
+    ).toEqual([
+      at('nonprod (Migrate)', PINNED_13),
+      at('nonprod (Migrate)', 'writes in its migrate step the one migration record and its status alone'),
+    ])
     // Any other write, GraphQL's included, is no record's.
     expect(record("gh api graphql -f query='mutation { x }'")).toEqual([
       at('nonprod (Read back what runs)', 'makes no GitHub API write but a record’s'),
       at('nonprod (Read back what runs)', 'sends a record’s body whole, with --input -'),
     ])
     expect(find('auto_merge: false, ', '', job('record-nonprod'))).toEqual([
+      at('record-nonprod (Write the record)', PINNED_13),
       at('record-nonprod (Write the record)', BODY),
     ])
     expect(
@@ -3235,6 +3261,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         job('record-nonprod'),
       ),
     ).toEqual([
+      at('record-nonprod (Write the record)', PINNED_13),
       at('record-nonprod (Write the record)', HELD),
       at('record-nonprod (Write the record)', 'sends a record’s body whole, with --input -'),
     ])
@@ -3245,6 +3272,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         withText(DEPLOY, edited(edited(deployText, end, '', job('nonprod')), last, `${last}${end}`, job('nonprod'))),
       ),
     ).toEqual([
+      at('nonprod (Migrate)', PINNED_13),
       at(
         'nonprod (Migrate)',
         'writes the migration record only after migrate’s own end, which fails on any exit but 0',
@@ -3266,7 +3294,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         `if: \${{ (needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod') || needs.gate.outputs.target == 'restore' }}\n        env:\n          ACCOUNT_ID`,
         job('prod'),
       ),
-    ).toEqual([at('prod (Push the image)', ONLY_PUSH)])
+    ).toEqual([at('prod (Push the image)', PINNED_13), at('prod (Push the image)', ONLY_PUSH)])
   }, 30_000)
 
   // A record job holds deployments: write, so it runs no repository code: one step, no action, and only
@@ -3288,19 +3316,31 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       releaseFindings(
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          node scripts/x.ts\n'),
       ),
-    ).toEqual([at('record-prod', RECORD), at('record-prod (Write the record)', HELD)])
+    ).toEqual([
+      at('record-prod (Write the record)', PINNED_13),
+      at('record-prod', RECORD),
+      at('record-prod (Write the record)', HELD),
+    ])
     expect(
       releaseFindings(
         addedBefore('record-prod', 'Write the record', '          record() {\n', '          ./scripts/x.sh\n'),
       ),
-    ).toEqual([at('record-prod', RECORD), at('record-prod (Write the record)', HELD)])
+    ).toEqual([
+      at('record-prod (Write the record)', PINNED_13),
+      at('record-prod', RECORD),
+      at('record-prod (Write the record)', HELD),
+    ])
     // GUARDS-01: an escaped blank before # once hid what follows it from the reader; the table names no
     // unquoted backslash, and refuses it at its line (9, where the plant stands in the run).
     expect(
       releaseFindings(
         addedBefore('record-nonprod', 'Write the record', '          record() {\n', '          echo a\\ #;node x\n'),
       ),
-    ).toEqual([at('record-nonprod', RECORD), at('record-nonprod (Write the record), line 9', AS_BASH)])
+    ).toEqual([
+      at('record-nonprod (Write the record)', PINNED_13),
+      at('record-nonprod', RECORD),
+      at('record-nonprod (Write the record), line 9', AS_BASH),
+    ])
   })
 
   // Round 2's GUARDS-01 and GUARDS-02: a record job's write hidden after a substitution's ), inside a ${…}
@@ -3313,13 +3353,19 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         addedBefore('record-nonprod', 'Write the record', '          record() {\n', `          ${line}\n`),
       )
     const refused = at('record-nonprod (Write the record), line 9', AS_BASH)
+    const pinned = at('record-nonprod (Write the record)', PINNED_13)
     expect(record(post)).toEqual([
+      pinned,
       at('record-nonprod (Write the record)', HELD),
       at('record-nonprod (Write the record)', WHOLE),
     ])
-    expect(record(`echo $(echo)#;${post}`)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
-    expect(record(`echo \${x:-a #}; ${post}`)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
-    expect(record(`echo \`${post}\``)).toEqual([refused, at('record-nonprod (Write the record)', WHOLE)])
+    expect(record(`echo $(echo)#;${post}`)).toEqual([pinned, refused, at('record-nonprod (Write the record)', WHOLE)])
+    expect(record(`echo \${x:-a #}; ${post}`)).toEqual([
+      pinned,
+      refused,
+      at('record-nonprod (Write the record)', WHOLE),
+    ])
+    expect(record(`echo \`${post}\``)).toEqual([pinned, refused, at('record-nonprod (Write the record)', WHOLE)])
   })
 
   // Round 3's SECURITY-01, SECURITY-02 and GUARDS-05 in a record job, which holds deployments: write: a
@@ -3332,6 +3378,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     const post =
       'gh api -X POST "repos/$REPO/deployments" -f ref=main -f task=hearth-release -f environment=nonprod --silent'
     const quoted = `'GITHUB_RUN_ATTEMPT[$(${post}; echo 0)]'`
+    const pinned = at('record-nonprod (Write the record)', PINNED_13)
     const record = (...lines: string[]) =>
       releaseFindings(
         addedBefore(
@@ -3348,16 +3395,21 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       [`y=${quoted}`, 'a=([y]=1)'],
       [`x=${quoted}`, 'local "$x=1"'],
     ]) {
-      expect(record(...lines), lines.join('; ')).toEqual([at('record-nonprod (Write the record), line 10', AS_BASH)])
+      expect(record(...lines), lines.join('; ')).toEqual([
+        pinned,
+        at('record-nonprod (Write the record), line 10', AS_BASH),
+      ])
     }
     expect(record(`y=${quoted}`, `: "\${@:y}"`)).toEqual([
+      pinned,
       at('record-nonprod', RECORD),
       at('record-nonprod (Write the record), line 10', AS_BASH),
     ])
     const refused = at('record-nonprod (Write the record), line 9', AS_BASH)
-    expect(record('local -n r=x')).toEqual([at('record-nonprod', RECORD), refused])
-    expect(record('local -i n')).toEqual([at('record-nonprod', RECORD), refused])
+    expect(record('local -n r=x')).toEqual([pinned, at('record-nonprod', RECORD), refused])
+    expect(record('local -i n')).toEqual([pinned, at('record-nonprod', RECORD), refused])
     expect(record(`X=$(true) ${post}`)).toEqual([
+      pinned,
       at('record-nonprod', RECORD),
       refused,
       at('record-nonprod (Write the record)', WHOLE),
@@ -3406,6 +3458,350 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
   it('holds the repository', () => {
     expect(releaseFindings(workflows)).toEqual([])
   })
+})
+
+// Round 4's first attack on the allowlist: each way past it the attackers proved, planted as they planted
+// it, is found at its root: a jq or gh program built from a quoted string and an expansion, the registry
+// password asked for on a line of its own, a record, a function of a canonical text or an aws value
+// given what the workflow never gives it, an input a pinned line reads set by a line of its own, an env:
+// value or a whole env: mapping from elsewhere, and a step the gates, the smokes, the rollbacks or the
+// records rest on ending early or writing an output of its own.
+describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-13)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const SETS_INPUT =
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+  const ENV =
+    'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
+  const MAPPING =
+    'writes env:, with: and outputs: as block mappings, never one expression GitHub would read as the whole mapping'
+  const LOGIN = 'asks ECR for the registry password only as SKOPEO_LOGIN, piped straight into skopeo login'
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const mark = 'Services are about to change'
+  const services = '          echo "services_started=true" >>"$GITHUB_OUTPUT"\n'
+  const pushed = '          PUSHED=$(cat "$RUNNER_TEMP/pushed")\n'
+  const migrated = '          MIGRATED=$(gh api "repos/$REPO/deployments'
+  const smoke = '          if [ "$SMOKE" = success ] && [ "$MODE" != drill-smoke ]; then\n'
+  const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
+
+  // EXPAND-A1-01 and COMMANDS-A1-02: a program word that joins a quoted string to an expansion hands jq (or
+  // gh's --jq) a program built at run time, `.|env` or `$ENV|@base64`, which the hold never read.
+  it('holds a jq or gh program to one whole single-quoted string (EXPAND-A1-01, COMMANDS-A1-02)', () => {
+    const held = at('DPW-10', `nonprod (${mark})`, HELD)
+    for (const program of [`'.'"$P"`, `''"$P"`, `'.|'"$P"`, `''"$P$GITHUB_WORKSPACE"'"}; $p'`]) {
+      expect(
+        credentialed(
+          addedBefore('nonprod', mark, services, lines("A='|e'", "B='nv'", 'P="$A$B"', `jq -nc ${program}`)),
+        ),
+        program,
+      ).toContain(held)
+    }
+    expect(
+      releaseFindings(
+        addedBefore(
+          'record-nonprod',
+          'Write the record',
+          migrated,
+          lines(
+            "P='$E''NV|tostring|@base64'",
+            `gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.|'"$P"`,
+          ),
+        ),
+      ),
+    ).toContain(at('DPW-13', 'record-nonprod (Write the record)', HELD))
+    // The workflow's own programs, each one whole string, still pass.
+    expect(credentialed(withText(DEPLOY, deployText))).toEqual([])
+  }, 30_000)
+
+  // COMMANDS-A1-01: the registry password, a credential good for twelve hours, asked for on a line of its
+  // own goes to the log through the filter, which hides only twelve-digit runs.
+  it('asks ECR for the registry password only as the login (COMMANDS-A1-01)', () => {
+    for (const line of [
+      'run aws ecr get-login-password --region ap-southeast-1',
+      'X=$(get aws ecr get-login-password --region ap-southeast-1)',
+      'get aws ecr get-login-password --region ap-southeast-1',
+      'get aws ecr get-login-password --region ap-southeast-1 | tee -a "$GITHUB_STEP_SUMMARY"',
+      'get aws ecr get-login-password --region ap-southeast-1 | mask',
+    ]) {
+      const planted = addedBefore('nonprod', 'Push the image', pushed, lines(line))
+      expect(maskingFindings(planted), line).toContain(at('DPW-07', 'nonprod (Push the image)', LOGIN))
+      expect(credentialed(planted), line).toContain(at('DPW-10', 'nonprod (Push the image)', HELD))
+    }
+  }, 30_000)
+
+  // COMMANDS-A1-03: a record job writes only its own release records (and record-prod its restore records),
+  // from the payload release_payload built, in its own environment.
+  it('holds a record job to the records it writes, and their environment (COMMANDS-A1-03)', () => {
+    const where = 'record-nonprod (Write the record)'
+    for (const line of [
+      `record hearth-migrated '{"schema": 1, "commit": "${'0'.repeat(40)}"}'`,
+      'record hearth-"restore" "$PAYLOAD"',
+      'record hearth-restore "$PAYLOAD"',
+      `PAYLOAD=$(release_payload deploy ${'0'.repeat(40)} "$DIGEST" "$SERVICES")`,
+    ]) {
+      const found = releaseFindings(addedBefore('record-nonprod', 'Write the record', smoke, lines(line)))
+      expect(found, line).toContain(at('DPW-13', where, HELD))
+      expect(found, line).toContain(at('DPW-13', where, PINNED_13))
+    }
+    expect(
+      releaseFindings(addedBefore('record-nonprod', 'Write the record', smoke, lines('ENVIRONMENT=prod'))),
+    ).toContain(at('DPW-13', where, SETS_INPUT))
+    // The record job's env: is held too: its ENVIRONMENT is its own.
+    expect(
+      credentialed(plant('          ENVIRONMENT: nonprod\n', '          ENVIRONMENT: prod\n', job('record-nonprod'))),
+    ).toEqual([at('DPW-10', where, ENV)])
+  }, 30_000)
+
+  // COMMANDS-A1-04: a canonical text's function called again by a line of its own, or handed another
+  // pattern by a variable set anew, prints the log lines it withholds.
+  it('holds a call of a canonical function to the call the workflow makes (COMMANDS-A1-04)', () => {
+    const record = '          # The migration record (C11-D58;'
+    expect(credentialed(addedBefore('nonprod', 'Migrate', record, lines(`one_off_end migrate '.' "$RUN"`)))).toContain(
+      at('DPW-10', 'nonprod (Migrate)', HELD),
+    )
+    expect(
+      credentialed(
+        addedBefore('nonprod', 'Migrate', '          one_off_end migrate "$MIGRATE_LINES"', lines("MIGRATE_LINES='.'")),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Migrate)', SETS_INPUT))
+    expect(credentialed(addedBefore('nonprod', 'Migrate', record, lines("RUN='{}'")))).toContain(
+      at('DPW-10', 'nonprod (Migrate)', SETS_INPUT),
+    )
+    expect(
+      releaseFindings(addedBefore('nonprod', 'Migrate', record, lines(`one_off_end migrate '.' "$RUN"`))),
+    ).toContain(at('DPW-13', 'nonprod (Migrate)', PINNED_13))
+  }, 30_000)
+
+  // COMMANDS-A1-05 and FLOW-A1-05: aws reads a file a value names by a scheme or a shorthand load anywhere in
+  // it, quoted or not, and an option a quoted word spells; a value starting with an expansion holds what an
+  // own line put there.
+  it('holds each aws value as aws reads it (COMMANDS-A1-05, FLOW-A1-05)', () => {
+    const readBack = "          SERVICE_LIST='[]'\n"
+    const call = (value: string) =>
+      `X=$(get aws ecs describe-services --cluster ${value} --services "hearth-$STAGE-api" --query 'services[0]' --output json)`
+    for (const value of [
+      `'file'://"$RUNNER_TEMP/x"`,
+      `'file':///'pr'oc/self/environ`,
+      '"$X"',
+      `"x" '--debug'`,
+      `"x" '--endpoint-url' x`,
+      'fileb://x',
+      '"https://x"',
+    ]) {
+      expect(
+        credentialed(addedBefore('nonprod', 'Read back what runs', readBack, lines(call(value)))),
+        value,
+      ).toContain(at('DPW-10', 'nonprod (Read back what runs)', HELD))
+    }
+    const shorthand =
+      'IDS=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$DIGEST,imageTag@=file://$XDG_RUNTIME_DIR/containers/auth.json" --query \'imageDetails[0].imageTags\' --output json)'
+    expect(credentialed(addedBefore('nonprod', 'Push the image', pushed, lines(shorthand)))).toContain(
+      at('DPW-10', 'nonprod (Push the image)', HELD),
+    )
+  }, 30_000)
+
+  // COMMANDS-A1-06 and FLOW-A1-03: the login sends the password, and the copy the image, wherever REGISTRY
+  // names; the tag's commit is COMMIT's, which the push's env: names.
+  it('pins the push: its registry, its env and its run (COMMANDS-A1-06, FLOW-A1-03)', () => {
+    const planted = addedBefore('nonprod', 'Push the image', pushed, lines('REGISTRY="registry.example.net"'))
+    expect(credentialed(planted)).toContain(at('DPW-10', 'nonprod (Push the image)', SETS_INPUT))
+    expect(releaseFindings(planted)).toContain(at('DPW-13', 'nonprod (Push the image)', PINNED_13))
+    expect(credentialed(addedBefore('nonprod', 'Push the image', pushed, lines(`COMMIT=${'1'.repeat(40)}`)))).toContain(
+      at('DPW-10', 'nonprod (Push the image)', SETS_INPUT),
+    )
+    const commit = `          COMMIT: \${{ steps.release.outputs.commit }}\n          DIGEST: \${{ steps.release.outputs.digest }}\n`
+    for (const to of ['needs.gate.outputs.previous_nonprod_commit', 'steps.release.outputs.comit']) {
+      expect(
+        credentialed(
+          plant(commit, commit.replace('steps.release.outputs.commit', to), '      - name: Push the image\n'),
+        ),
+        to,
+      ).toEqual([at('DPW-10', 'nonprod (Push the image)', ENV)])
+    }
+    // The release step that names the commit is pinned whole too.
+    expect(
+      releaseFindings(
+        addedBefore('nonprod', 'The release this job deploys', '          {\n', lines(`COMMIT=${'1'.repeat(40)}`)),
+      ),
+    ).toContain(at('DPW-13', 'nonprod (The release this job deploys)', PINNED_13))
+  }, 30_000)
+
+  // FLOW-A1-01 and FLOW-A1-02: a pinned run reads its inputs from its step's env:, which is pinned whole, so a
+  // TARGET from prod-gate's outputs (which hold none) or another commit's SHA can't skip its checks.
+  it('pins every env: value (FLOW-A1-01, FLOW-A1-02)', () => {
+    const target = `          TARGET: \${{ needs.gate.outputs.target }}\n          RECORD_ID: \${{ needs.prod-gate`
+    expect(
+      credentialed(plant(target, target.replace('needs.gate.outputs.target', 'needs.prod-gate.outputs.target'))),
+    ).toEqual([at('DPW-10', 'prod (The fast re-check)', ENV)])
+    const mode = `          MODE: \${{ needs.gate.outputs.mode }}\n          TARGET: \${{ needs.gate.outputs.target }}\n          RECORD_ID`
+    expect(credentialed(plant(mode, mode.replace('needs.gate.outputs.mode', 'needs.prod-gate.outputs.mode')))).toEqual([
+      at('DPW-10', 'prod (The fast re-check)', ENV),
+    ])
+    expect(
+      credentialed(
+        plant(
+          `          SHA: \${{ github.sha }}\n`,
+          `          SHA: \${{ needs.gate.outputs.previous_prod_commit }}\n`,
+          "      - name: main's own CI\n",
+        ),
+      ),
+    ).toEqual([at('DPW-10', "prod-gate (main's own CI)", ENV)])
+    expect(
+      credentialed(
+        plant(
+          `          NONPROD_DIGEST: \${{ needs.nonprod.outputs.digest }}\n        run: |\n          set -euo pipefail\n          # history.ts`,
+          `          NONPROD_DIGEST: \${{ needs.build.outputs.digest }}\n        run: |\n          set -euo pipefail\n          # history.ts`,
+        ),
+      ),
+    ).toEqual([at('DPW-10', 'prod-gate (The prod gate)', ENV)])
+    // A record job's decision reads SMOKE from its env:, held as well.
+    expect(
+      credentialed(
+        plant(
+          `          SMOKE: \${{ needs.smoke-nonprod.result }}\n`,
+          `          SMOKE: \${{ needs.nonprod.result }}\n`,
+          job('record-nonprod'),
+        ),
+      ),
+    ).toEqual([at('DPW-10', 'record-nonprod (Write the record)', ENV)])
+    // A job's outputs are its steps' as named: one swapped for another of the plan's is found.
+    expect(
+      credentialed(
+        plant(
+          `      rollback_prod: \${{ steps.plan.outputs.rollback_prod }}\n`,
+          `      rollback_prod: \${{ steps.plan.outputs.rollback_nonprod }}\n`,
+          job('gate'),
+        ),
+      ),
+    ).toEqual([at('DPW-10', 'gate', 'outputs only what JOB_OUTPUTS names, each from the step it names')])
+    // A step of its own can't take the id a job's outputs read: every step's id is the guard's.
+    expect(
+      credentialed(
+        plant(
+          '      - name: Plan\n        id: plan\n',
+          '      - name: Forge\n        id: plan\n        run: echo\n      - name: Plan\n        id: plan0\n',
+          job('gate'),
+        ),
+      ),
+    ).toEqual([
+      at(
+        'DPW-10',
+        'gate (Forge)',
+        "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's",
+      ),
+      at(
+        'DPW-10',
+        'gate (Plan)',
+        "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's",
+      ),
+    ])
+  }, 30_000)
+
+  // FLOW-A1-04: the gate's outputs are its plan's; a line of its own before PLAN_CALL ends the step with
+  // outputs of its own, and one after it writes a key again, which the runner reads last.
+  it('pins the gate’s steps and every run that writes an output (FLOW-A1-04)', () => {
+    const plan = `          ${PLAN_CALL}\n`
+    for (const planted of [
+      addedBefore('gate', 'Plan', plan, lines('echo "rollback_prod=true" >>"$GITHUB_OUTPUT"', 'exit 0')),
+      plant(
+        '          } >>"$GITHUB_STEP_SUMMARY"\n\n  # The build',
+        '          } >>"$GITHUB_STEP_SUMMARY"\n          echo "rollback_prod=true" >>"$GITHUB_OUTPUT"\n\n  # The build',
+      ),
+    ]) {
+      expect(
+        gateFindings(planted, environments, PROFILES.nonprod.holdsRealData, protectEnvironments, AGENT_MARKERS),
+      ).toContain(at('DPW-09', 'gate (Plan)', PINNED_09))
+      expect(prodPathFindings(planted)).toContain(at('DPW-08', 'gate (Plan)', OUTPUT_PINNED))
+    }
+    expect(
+      gateFindings(
+        addedBefore('gate', 'The release, migration and restore records', '          mkdir -p', lines('exit 0')),
+        environments,
+        PROFILES.nonprod.holdsRealData,
+        protectEnvironments,
+        AGENT_MARKERS,
+      ),
+    ).toEqual([at('DPW-09', 'gate (The release, migration and restore records)', PINNED_09)])
+    expect(
+      gateFindings(
+        addedBefore('gate', "main's ruleset is live", '          RULES=', lines('exit 0')),
+        environments,
+        PROFILES.nonprod.holdsRealData,
+        protectEnvironments,
+        AGENT_MARKERS,
+      ),
+    ).toEqual([at('DPW-09', "gate (main's ruleset is live)", PINNED_09)])
+    // The same class beyond the gate: a smoke ended early, a read-back, a release or prod-gate's records
+    // forged, and a step of its own writing an output.
+    expect(prodPathFindings(addedBefore('smoke-nonprod', 'Smoke', "          printf '%s'", lines('exit 0')))).toEqual([
+      at('DPW-08', 'smoke-nonprod (Smoke)', PINNED_08),
+    ])
+    // An if: that skips a pinned step passes its job as surely as an early exit 0 does.
+    expect(
+      prodPathFindings(
+        plant('      - name: Smoke\n', `      - name: Smoke\n        if: \${{ false }}\n`, job('smoke-prod')),
+      ),
+    ).toEqual([at('DPW-08', 'smoke-prod (Smoke)', PINNED_08)])
+    expect(
+      prodPathFindings(
+        plant(
+          `        if: \${{ needs.gate.outputs.target == 'prod' }}\n`,
+          `        if: \${{ needs.gate.outputs.target == 'nothing' }}\n`,
+          job('prod'),
+        ),
+      ),
+    ).toEqual([at('DPW-08', 'prod (Services are about to change)', PINNED_08)])
+    expect(
+      prodPathFindings(
+        addedBefore(
+          'nonprod',
+          'Read back what runs',
+          "          SERVICE_LIST='[]'\n",
+          lines(`echo 'readback={}' >>"$GITHUB_OUTPUT"`),
+        ),
+      ),
+    ).toEqual([
+      at('DPW-08', 'nonprod (Read back what runs)', PINNED_08),
+      at('DPW-08', 'nonprod (Read back what runs)', OUTPUT_PINNED),
+    ])
+    expect(
+      prodPathFindings(
+        addedBefore('rollback-prod', "This run's release and the previous one", '          {\n', lines('exit 0')),
+      ),
+    ).toContain(at('DPW-08', "rollback-prod (This run's release and the previous one)", PINNED_08))
+    expect(
+      prodPathFindings(addedBefore('prod-gate', "Prod's release records", '          mkdir -p', lines('exit 0'))),
+    ).toEqual([at('DPW-08', "prod-gate (Prod's release records)", PINNED_08)])
+    expect(
+      prodPathFindings(
+        plant(
+          '      - name: Deploy Services\n',
+          '      - name: Go\n        run: echo "go=true" >>"$GITHUB_OUTPUT"\n      - name: Deploy Services\n',
+          job('nonprod'),
+        ),
+      ),
+    ).toEqual([at('DPW-08', 'nonprod (Go)', OUTPUT_PINNED)])
+  }, 30_000)
+
+  // YAML-A1-01 and YAML-A1-02: an env: (or with: or outputs:) written as one expression is the whole mapping
+  // to GitHub (BASH_ENV, say, run by bash before the step's first line) and none to the reader.
+  it('refuses an env:, with: or outputs: written as one expression (YAML-A1-01, YAML-A1-02)', () => {
+    const value = `\${{ fromJSON('{"BASH_ENV":"$(touch $RUNNER_TEMP/marker)"}') }}`
+    expect(
+      credentialed(plant('        id: mark\n', `        id: mark\n        env: ${value}\n`, job('nonprod'))),
+    ).toEqual([at('DPW-10', `nonprod (${mark})`, MAPPING)])
+    expect(
+      credentialed(plant('    cache-mode: none\n', `    cache-mode: none\n    env: ${value}\n`, job('record-nonprod'))),
+    ).toEqual([at('DPW-10', 'record-nonprod', ENV), at('DPW-10', 'record-nonprod', MAPPING)])
+    expect(
+      credentialed(
+        plant(
+          `        with:\n          artifact-ids: \${{ needs.synth.outputs.assembly }}\n          path: \${{ runner.temp }}/assembly\n`,
+          `        with: \${{ fromJSON('{"artifact-ids":"","path":"x"}') }}\n`,
+          job('nonprod'),
+        ),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Download the assembly)', MAPPING))
+  }, 30_000)
 })
 
 describe('DPW-14 (C11-D76): the asset and release checks', () => {

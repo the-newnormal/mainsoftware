@@ -8,7 +8,8 @@
 // Beside the cases are the canonical texts the workflow pastes byte for byte wherever it runs them:
 // the preamble, the CLI's folder, the CLI, asset and AWS checks, the one-off runs and their parts,
 // the newest-release reader, the gates' reads of the CI runs and prod-gate's call, the fast re-checks,
-// the CLI's lines, the push and the synth's lines, so the workflow and its guard can't drift apart
+// the CLI's lines, the push and the synth's lines, and the whole runs the gates, the smokes, the
+// rollbacks and the records rest on (PINNED_RUNS), so the workflow and its guard can't drift apart
 // unseen. A shell text here is a raw template in which a backtick is written \` and a dollar-brace $\{,
 // the one way it differs from the workflow's own text.
 //
@@ -19,8 +20,17 @@
 // assignments and builtins as it holds them), so any form the table doesn't name is refused at its line
 // (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
-// and arguments the workflow uses (GLUE_USES). A canonical text is read whole, so it is held instead to
-// bash's own reading of it (readsAsBash()) and to evaluating only what it sets itself
+// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, every aws
+// word as aws reads it, a canonical text's function or a record job's own only as the workflow calls it),
+// and no line of its own sets an input a pinned line reads (its step's or job's env:, a canonical text's
+// variable, REGISTRY or RUN). The wiring between the runs is pinned too: every env: and every job's
+// outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS), written as a block mapping and never as
+// one expression GitHub would read as the whole mapping, and every step's id is the guard's (STEP_IDS),
+// so no step of its own answers for a pinned step's outputs; and each run a gate, an approval, a smoke, a
+// rollback or a record rests on is pinned whole with its step's if: (PINNED_RUNS), so no line of its own
+// or if: ends or skips one early, writes an output, a file or a record of its own, or hands it another
+// input; outside build and synth no other step writes an output. A canonical text is read whole, so it is
+// held instead to bash's own reading of it (readsAsBash()) and to evaluating only what it sets itself
 // (outsideEvaluations()). Beside that, the regex reader shellViews() and shellCommands() still reads
 // every run as a second layer that only ever adds a command: it sets aside what bash reads as data
 // (comments, quoted text outside its command substitutions, a test's operands and a case's patterns) and
@@ -754,6 +764,405 @@ export const SYNTH_LINES: readonly string[] = [
   'npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-prod"',
 ]
 
+// --- The runs the guard pins whole (DPW-08, DPW-09, DPW-13) ----------------------------------------------
+
+// Each run whose exit or outputs a gate, an approval, a smoke, a rollback or a record rests on, pinned whole
+// as the workflow pastes it, so no line of its own can end it early, write an output, a file or a record of
+// its own, or hand one of its lines another input: the gate's reads of the records and main's ruleset (and
+// its plan, PLAN_STEP), prod-gate's read of prod's records, the deploy jobs' release, push, migrate and its
+// record, services_started and read-back, the rollback jobs' releases, read-back and rolled, prod-plan's
+// diff, the smokes and the record jobs (PINNED_RUNS). The rest of each such run's rules still read it.
+
+// The gate's read of the release, migration and restore records (C11-D58, C11-D61, DPW-09), which
+// history.ts plan reads as data.
+export const GATE_RECORDS = sh`set -euo pipefail
+# The records (C11-D58, C11-D61), one page each, the newest 100 (ECR keeps 50 images, so an older
+# release couldn't start): history.ts reads them as data, ignores any whose payload fails validation,
+# and orders them itself.
+mkdir -p "$RUNNER_TEMP/records"
+for environment in nonprod prod; do
+  gh api "repos/$REPO/deployments?environment=$environment&task=hearth-release&per_page=100" >"$RUNNER_TEMP/records/release-$environment.json"
+  gh api "repos/$REPO/deployments?environment=$environment&task=hearth-migrated&per_page=100" >"$RUNNER_TEMP/records/migrated-$environment.json"
+done
+gh api "repos/$REPO/deployments?environment=prod&task=hearth-restore&per_page=100" >"$RUNNER_TEMP/records/restore-prod.json"`
+
+// The gate's read of main's ruleset (C11-D49, DPW-09).
+export const RULESET_CHECK = sh`set -euo pipefail
+# main's ruleset is live (C11-D49): a deploy's tree argument rests on it, so the gate refuses unless
+# main's rules are deletion, non_fast_forward, pull_request and required_status_checks naming check
+# and migrations.
+RULES=$(gh api "repos/$REPO/rules/branches/main")
+if ! jq -e '
+  [.[].type] as $types
+  | [.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context] as $checks
+  | all("deletion", "non_fast_forward", "pull_request", "required_status_checks"; . as $type | any($types[]; . == $type))
+    and any($checks[]; . == "check") and any($checks[]; . == "migrations")' <<<"$RULES" >/dev/null; then
+  echo "gate: main's ruleset isn't live"
+  exit 1
+fi`
+
+// prod-gate's read of prod's release records (C11-D52, DPW-08), which history.ts prod-gate reads as data.
+export const PROD_RECORDS = sh`set -euo pipefail
+mkdir -p "$RUNNER_TEMP/records"
+gh api "repos/$REPO/deployments?environment=prod&task=hearth-release&per_page=100" >"$RUNNER_TEMP/records/release-prod.json"`
+
+// The release a deploy job and prod-plan deploy (C11-D50, C11-D52, DPW-13): the commit the push tags and
+// every later check reads, and its digest.
+export const RELEASE_STEP = sh`set -euo pipefail
+# The release this job deploys: the run's commit with the build's digest for a deploy, the gate's
+# commit and digest (a rollback's target, or the release a drill or a restore runs) otherwise.
+DIGEST=$GATE_DIGEST
+if [ "$BUILD" = true ]; then DIGEST=$BUILD_DIGEST; fi
+if ! [[ "$COMMIT:$DIGEST" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+  echo 'release: the release is not <commit>:<digest>'
+  exit 1
+fi
+{
+  echo "commit=$COMMIT"
+  echo "digest=$DIGEST"
+  echo "release=$COMMIT:$DIGEST"
+} >>"$GITHUB_OUTPUT"`
+
+// A rollback job's two releases (C11-D52, C11-D58, DPW-08): this run's, which its AWS_CHECK judges, and
+// the previous one it deploys and its smoke judges.
+export const PREVIOUS_STEP = sh`set -euo pipefail
+# This run's release, which the deploy job deployed (the build's digest for a deploy, the gate's for a
+# drill-smoke), and the previous release it goes back to.
+DIGEST=$GATE_DIGEST
+if [ "$MODE" = deploy ]; then DIGEST=$BUILD_DIGEST; fi
+for RELEASE in "$COMMIT:$DIGEST" "$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"; do
+  if ! [[ "$RELEASE" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+    echo 'release: a release is not <commit>:<digest>'
+    exit 1
+  fi
+done
+{
+  echo "release=$COMMIT:$DIGEST"
+  echo "previous=$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"
+} >>"$GITHUB_OUTPUT"`
+
+// The push's registry (C11-D50, DPW-07, DPW-13): the environment's own, which the login and the copy name.
+export const REGISTRY_LINE = 'REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"'
+// The push (C11-D50, C11-D79, DPW-13): the login, the copy to this run's own tag, and the digest and tag
+// checks, prod's against the digest non-prod deployed too.
+export const pushRun = (stage: Stage) => sh`${PREAMBLE}
+# The push (C11-D50, C11-D79): the build's own archive, to a tag of its own, sha-<commit>-<run>-<attempt>,
+# so no push collides, keeping its digest; the pushed digest must be the build's, and ECR must name it
+# by the new tag. It comes before anything moves, and AWS_CHECK refused this job if any image's commit
+# isn't this run's or an ancestor of it, so the images' commits stay on one line of main's history and
+# every commit that has migrated the database is one of them; ECR's push times are never the order.
+${REGISTRY_LINE}
+${SKOPEO_LOGIN}
+${SKOPEO_COPY}
+PUSHED=$(cat "$RUNNER_TEMP/pushed")
+if [ "$PUSHED" != "$DIGEST" ]${stage === 'prod' ? ' || [ "$PUSHED" != "$NONPROD_DIGEST" ]' : ''}; then
+  echo "push: the pushed digest isn't the one the build made" | mask
+  exit 1
+fi
+TAGS=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$DIGEST" --query 'imageDetails[0].imageTags' --output json)
+if ! jq -e --arg tag "sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 'index($tag) != null' <<<"$TAGS" >/dev/null; then
+  echo "push: ECR doesn't name the image by this run's tag" | mask
+  exit 1
+fi
+echo "digest=$PUSHED" >>"$GITHUB_OUTPUT"
+echo "push: hearth-server@$PUSHED, tagged for this run" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
+
+// migrate's record (C11-D58, DPW-13): after migrate's own end, the commit the database was migrated by.
+export const migrationRecord = (
+  stage: Stage,
+) => sh`# The migration record (C11-D58; TECH-SPEC T24 item 23): the commit the database was migrated by,
+# written as soon as migrate exits 0, while this job holds its group.
+BODY=$(jq -n --arg environment "${stage}" --arg commit "$COMMIT" '{ref: "main", task: "hearth-migrated", environment: $environment, auto_merge: false, required_contexts: [], transient_environment: false, production_environment: ($environment == "prod"), payload: {schema: 1, commit: $commit}}')
+ID=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$BODY")
+if ! [[ "$ID" =~ ^[0-9]+$ ]]; then
+  echo 'migrate: GitHub made no migration record' | mask
+  exit 1
+fi
+jq -n --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state: "success", auto_inactive: false, log_url: $url}' |
+  gh api -X POST "repos/$REPO/deployments/$ID/statuses" --input - --silent
+echo "migrate: recorded $COMMIT as the commit ${stage}'s database was migrated by" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
+
+// The step before Services change (C11-D52, DPW-08): from here a failure starts the rollback job.
+export const MARK_RUN = sh`${PREAMBLE}
+# From here a failure of this job starts its rollback job, as a failed smoke does.
+echo "services_started=true" >>"$GITHUB_OUTPUT"`
+
+// A rollback job's last step (C11-D52, DPW-08): the rollback ran, for the second smoke.
+export const DONE_RUN = sh`${PREAMBLE}
+echo "rolled=true" >>"$GITHUB_OUTPUT"`
+
+// The read-back (C11-D54, DPW-07, DPW-08): what runs, by health states, counts, digests and settings alone,
+// for the smoke to judge.
+export const READ_BACK = sh`# The read-back (C11-D54, C11-D61): what runs, for the smoke to judge as SMK-06 and SMK-07 read it,
+# states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
+# deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
+# each target group's target states, deregistration delay, stickiness and health path, and the load
+# balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
+# outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
+# Services stack now says it runs.
+SERVICE_LIST='[]'
+FAMILIES='{}'
+for ROLE in api realtime worker; do
+  if ! SERVICE=$(get aws ecs describe-services --cluster "hearth-$STAGE" --services "hearth-$STAGE-$ROLE" --query 'services[?status!=\`INACTIVE\`] | [0].{desired: desiredCount, running: runningCount, deployments: deployments[].{status: status, rollout: rolloutState, desired: desiredCount, running: runningCount, failed: failedTasks}, family: deployments[?status==\`PRIMARY\`] | [0].taskDefinition}' --output json 2>&1); then
+    case "$SERVICE" in
+      *ClusterNotFoundException*) SERVICE=null ;;
+      *)
+        echo "read-back: hearth-$STAGE-$ROLE can't be read" | mask
+        exit 1
+        ;;
+    esac
+  fi
+  [ "$SERVICE" != null ] || continue
+  ARNS=$(get aws ecs list-tasks --cluster "hearth-$STAGE" --service-name "hearth-$STAGE-$ROLE" --desired-status RUNNING --query 'taskArns' --output json)
+  mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")
+  TASKS='[]'
+  if [ "$\{#TASK_ARNS[@]}" -gt 0 ]; then
+    TASKS=$(get aws ecs describe-tasks --cluster "hearth-$STAGE" --tasks "$\{TASK_ARNS[@]}" --query "tasks[].{az: availabilityZone, last: lastStatus, health: healthStatus, digest: containers[?name=='server'] | [0].imageDigest}" --output json)
+  fi
+  FAMILY=$(jq -r '.family // ""' <<<"$SERVICE")
+  FAMILIES=$(jq -c --arg role "$ROLE" --arg family "$\{FAMILY##*/}" '. + {($role): $family}' <<<"$FAMILIES")
+  SERVICE_LIST=$(jq -c --arg role "$ROLE" --argjson service "$SERVICE" --argjson tasks "$TASKS" '. + [{role: $role, desired: $service.desired, running: $service.running, deployments: $service.deployments, tasks: $tasks}]' <<<"$SERVICE_LIST")
+done
+GROUP_LIST='[]'
+LOAD_BALANCER=null
+if [ "$STAGE" != restore ]; then
+  TARGET_GROUPS=$(get aws elbv2 describe-target-groups --names "hearth-$STAGE-api" "hearth-$STAGE-realtime" --query 'TargetGroups[].{name: TargetGroupName, arn: TargetGroupArn, path: HealthCheckPath}' --output json)
+  for ROLE in api realtime; do
+    GROUP=$(jq -ec --arg name "hearth-$STAGE-$ROLE" 'first(.[] | select(.name == $name))' <<<"$TARGET_GROUPS")
+    GROUP_ARN=$(jq -r '.arn' <<<"$GROUP")
+    STATES=$(get aws elbv2 describe-target-health --target-group-arn "$GROUP_ARN" --query 'TargetHealthDescriptions[].TargetHealth.State' --output json)
+    ATTRIBUTES=$(get aws elbv2 describe-target-group-attributes --target-group-arn "$GROUP_ARN" --query 'Attributes' --output json)
+    GROUP_LIST=$(jq -c --arg role "$ROLE" --argjson group "$GROUP" --argjson states "$STATES" --argjson attributes "$ATTRIBUTES" '
+      def attribute($key): first($attributes[] | select(.Key == $key) | .Value);
+      . + [{
+        role: $role,
+        healthy: ($states | map(select(. == "healthy")) | length),
+        other: ($states | map(select(. != "healthy")) | length),
+        deregistration: (attribute("deregistration_delay.timeout_seconds") | tonumber),
+        stickiness: (attribute("stickiness.enabled") == "true"),
+        healthPath: $group.path
+      }]' <<<"$GROUP_LIST")
+  done
+  BALANCER=$(get aws elbv2 describe-load-balancers --names "hearth-$STAGE" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+  IDLE=$(get aws elbv2 describe-load-balancer-attributes --load-balancer-arn "$BALANCER" --query 'Attributes[?Key==\`idle_timeout.timeout_seconds\`].Value | [0]' --output text)
+  LOAD_BALANCER=$(jq -nc --arg idle "$IDLE" '{idleTimeout: ($idle | tonumber)}')
+fi
+if ! STACK=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].[StackStatus, Outputs[?OutputKey==\`Release\`].OutputValue | [0]]' --output json 2>&1); then
+  case "$STACK" in
+    *'does not exist'*) STACK=null ;;
+    *)
+      echo "read-back: Hearth-$STAGE-Services can't be read" | mask
+      exit 1
+      ;;
+  esac
+fi
+# No Services stack, or for restore=down one a failed create left with no Release (ROLLBACK_COMPLETE or
+# REVIEW_IN_PROGRESS, which down skips), runs the release this job was given; any other's Release is read.
+if [ "$STACK" = null ] || { [ "$STAGE" = restore ] && [ "$RESTORE" = down ] &&
+  jq -e '.[0] == "ROLLBACK_COMPLETE" or .[0] == "REVIEW_IN_PROGRESS"' <<<"$STACK" >/dev/null && jq -e '.[1] == null' <<<"$STACK" >/dev/null; }; then
+  DEPLOYED=$RELEASE
+else
+  DEPLOYED=$(jq -r '.[1] // ""' <<<"$STACK")
+fi
+# The release goes out as a job output and into the summary, so it is held to its shape first (a value
+# with anything else in it, or none, is refused).
+if ! [[ "$DEPLOYED" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then
+  echo "read-back: Hearth-$STAGE-Services' Release isn't <commit>:<digest>" | mask
+  exit 1
+fi
+PROBE=ran
+if [ "$MODE" = drill-break ] || [ "$RESTORE" = down ]; then
+  PROBE=skipped
+  echo "probe: skipped (mode $MODE, restore $RESTORE): a drill-break leaves the tasks that ran before it, and a restore taken down runs none" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+fi
+READBACK=$(jq -nc --arg stage "$STAGE" --arg release "$DEPLOYED" --arg probe "$PROBE" --argjson services "$SERVICE_LIST" --argjson groups "$GROUP_LIST" --argjson balancer "$LOAD_BALANCER" '{schema: 1, env: $stage, release: $release, probe: $probe, services: $services, targetGroups: $groups, loadBalancer: $balancer}')
+if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then
+  echo 'read-back: it would hold an ARN' | mask
+  exit 1
+fi
+{
+  echo "readback=$READBACK"
+  echo "services=$FAMILIES"
+  echo "deployed=$DEPLOYED"
+} >>"$GITHUB_OUTPUT"
+echo "read-back: Hearth-$STAGE-Services runs $DEPLOYED" | mask | tee -a "$GITHUB_STEP_SUMMARY"`
+
+// prod-plan's diff (C11-D51, DPW-08): what the approver reads, into the log and the summary.
+export const DIFF_RUN = sh`${PREAMBLE}
+# The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
+# the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
+# a rollback its Tasks and Services; into the log, and into the summary cut at 900 KB, both through
+# the filter. A diff that fails still shows the CLI's message in both, then fails the step.
+ASSEMBLY="$RUNNER_TEMP/assembly"
+DIFF="$RUNNER_TEMP/diff.txt"
+STATUS=0
+${CDK_FOLDER}
+if [ "$MODE" = rollback ]; then
+  {
+    ${CDK_DIFF_ROLLBACK}
+  } >"$DIFF" || STATUS=$?
+else
+  {
+    ${CDK_DIFF_PROD}
+  } >"$DIFF" || STATUS=$?
+fi
+cat "$DIFF"
+{
+  echo "### What prod's $MODE changes"
+  echo '\`\`\`'
+  head -c 921600 "$DIFF"
+  echo '\`\`\`'
+  if [ "$(wc -c <"$DIFF")" -gt 921600 ]; then echo "The diff is cut at 900 KB here; the job's log holds it whole."; fi
+  if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
+} | mask >>"$GITHUB_STEP_SUMMARY"
+exit "$STATUS"`
+
+// A smoke's run (C11-D54, DPW-08): SMOKE_ATTEMPT, the read-back to a file, then smoke.ts by its job's flags.
+export const smokeRun = (job: 'smoke-nonprod' | 'smoke-prod' | 'resmoke-nonprod' | 'resmoke-prod') =>
+  [
+    'set -euo pipefail',
+    SMOKE_ATTEMPT,
+    {
+      'smoke-nonprod': sh`printf '%s' "$READBACK" >"$RUNNER_TEMP/readback.json"
+# drill-smoke inverts SMK-05, so this smoke fails and the rollback runs (C11-D59).
+STAGE_FLAGS=(--env nonprod)
+if [ "$MODE" = drill-smoke ]; then STAGE_FLAGS=(--env nonprod --invert SMK-05); fi
+node infra/scripts/deploy/smoke.ts "$\{STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"`,
+      'smoke-prod': sh`printf '%s' "$READBACK" >"$RUNNER_TEMP/readback.json"
+# A restore is judged as the restore stage, by SMK-06's services half alone.
+STAGE_FLAGS=(--env prod)
+if [ "$TARGET" = restore ]; then STAGE_FLAGS=(--env restore --restore "$RESTORE"); fi
+node infra/scripts/deploy/smoke.ts "$\{STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"`,
+      'resmoke-nonprod': sh`printf '%s' "$READBACK" >"$RUNNER_TEMP/readback.json"
+STAGE_FLAGS=(--env nonprod)
+node infra/scripts/deploy/smoke.ts "$\{STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"`,
+      'resmoke-prod': sh`printf '%s' "$READBACK" >"$RUNNER_TEMP/readback.json"
+STAGE_FLAGS=(--env prod)
+node infra/scripts/deploy/smoke.ts "$\{STAGE_FLAGS[@]}" --release "$RELEASE" --readback "$RUNNER_TEMP/readback.json" --profile-at "$PROFILE_AT"`,
+    }[job],
+  ].join('\n')
+
+// A record job's run (C11-D58, C11-D61, DPW-13): its two functions, the newest migration record read
+// afresh, then a release record, or in record-prod a restore's record, and the job red unless its own
+// smoke passed.
+const RECORD_HEAD = sh`set -euo pipefail
+# The release record (C11-D58, C11-D61; TECH-SPEC T24 items 22 and 23), a GitHub deployment of task
+# hearth-release: written only for a release that passed its smoke (a deploy, or a rollback a person
+# dispatched), or for the release the pipeline rolled back to once its second smoke passed. Each body
+# is built whole by jq, its payload an object, then given its success status, and goes into this
+# job's summary; migratedCommit is the newest migration record's commit, read afresh. The job fails
+# whenever the release's own smoke didn't pass, so the run ends red whatever the rollback did.
+URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+record() {
+  local body id
+  body=$(jq -n --arg environment "$ENVIRONMENT" --arg task "$1" --argjson payload "$2" '{ref: "main", task: $task, environment: $environment, auto_merge: false, required_contexts: [], transient_environment: false, production_environment: ($environment == "prod"), payload: $payload}')
+  id=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$body")
+  if ! [[ "$id" =~ ^[0-9]+$ ]]; then
+    echo 'record: GitHub made no deployment'
+    exit 1
+  fi
+  jq -n --arg url "$URL" '{state: "success", auto_inactive: false, log_url: $url}' |
+    gh api -X POST "repos/$REPO/deployments/$id/statuses" --input - --silent
+  {
+    echo "### The $1 record in $ENVIRONMENT (deployment $id)"
+    echo '\`\`\`json'
+    jq . <<<"$2"
+    echo '\`\`\`'
+  } >>"$GITHUB_STEP_SUMMARY"
+}
+release_payload() {
+  if ! [[ "$2:$3" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]] ||
+    ! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z"))' <<<"$4" >/dev/null; then
+    echo 'record: the release or its services are not of their shapes' >&2
+    exit 1
+  fi
+  jq -n --arg kind "$1" --arg commit "$2" --arg digest "$3" --arg migrated "$MIGRATED" --argjson services "$4" '{schema: 1, kind: $kind, commit: $commit, digest: $digest, migratedCommit: (if $migrated == "" then null else $migrated end), services: $services}'
+}
+MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("\\A[0-9a-f]{40}\\z")) then .commit else "" end')`
+const RECORD_RELEASE = sh`if [ "$SMOKE" = success ] && [ "$MODE" != drill-smoke ]; then
+  KIND=deploy
+  if [ "$MODE" = rollback ]; then KIND=rollback; fi
+  PAYLOAD=$(release_payload "$KIND" "$COMMIT" "$DIGEST" "$SERVICES")
+  record hearth-release "$PAYLOAD"
+elif [ "$RESMOKE" = success ]; then
+  PAYLOAD=$(release_payload pipeline-rollback "$PREVIOUS_COMMIT" "$PREVIOUS_DIGEST" "$ROLLBACK_SERVICES")
+  record hearth-release "$PAYLOAD"
+fi`
+const RECORD_RESTORE = sh`# A restore's record is its own task, hearth-restore, so prod's release history never sees it.
+if [ "$TARGET" = restore ]; then
+  if [ "$SMOKE" = success ]; then
+    if ! [[ "$COMMIT:$DIGEST" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ && "$RESTORE" =~ ^(up|down)$ ]]; then
+      echo 'record: the restore is not of its shape'
+      exit 1
+    fi
+    PAYLOAD=$(jq -n --arg kind "$RESTORE" --arg commit "$COMMIT" --arg digest "$DIGEST" '{schema: 1, kind: $kind, commit: $commit, digest: $digest}')
+    record hearth-restore "$PAYLOAD"
+  fi
+else`
+const RECORD_TAIL = sh`if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
+  echo "record: the release's own smoke didn't pass, so the run ends red"
+  exit 1
+fi`
+export const recordRun = (stage: Stage) =>
+  stage === 'prod'
+    ? [
+        RECORD_HEAD,
+        RECORD_RESTORE,
+        ...RECORD_RELEASE.split('\n').map(line => (line === '' ? line : `  ${line}`)),
+        'fi',
+        RECORD_TAIL,
+      ].join('\n')
+    : [RECORD_HEAD, RECORD_RELEASE, RECORD_TAIL].join('\n')
+
+// Each pinned run by its job and its step's name, with its step's if: (none, unless named), since an if:
+// that skips the step passes its job as surely as an early exit 0 would, and the rule that holds it
+// whole: the gate's under DPW-09; prod-gate's records, the smokes, services_started, the read-back, the
+// rollback jobs' releases and rolled, and prod-plan's diff under DPW-08; the release, the push, migrate
+// with its record and the record jobs under DPW-13.
+type Pinned = Readonly<Record<string, { run: string; rule: 'DPW-08' | 'DPW-09' | 'DPW-13'; if?: string }>>
+const deployRuns = (stage: Stage): Pinned => ({
+  'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
+  'Push the image': { run: pushRun(stage), rule: 'DPW-13', if: PUSH_IF[stage] },
+  Migrate: {
+    run: [PREAMBLE, TASKS_OUTPUTS, ONE_OFF, migrateRun(stage), migrationRecord(stage)].join('\n'),
+    rule: 'DPW-13',
+    if: PUSH_IF[stage],
+  },
+  'Services are about to change': {
+    run: MARK_RUN,
+    rule: 'DPW-08',
+    if: expr(stage === 'prod' ? "needs.gate.outputs.target == 'prod'" : "needs.gate.outputs.mode != 'drill-break'"),
+  },
+  'Read back what runs': { run: [PREAMBLE, READ_BACK].join('\n'), rule: 'DPW-08' },
+})
+const rollbackRuns = (): Pinned => ({
+  "This run's release and the previous one": { run: PREVIOUS_STEP, rule: 'DPW-08' },
+  'Read back what runs': { run: [PREAMBLE, READ_BACK].join('\n'), rule: 'DPW-08', if: GO_IF },
+  'Rolled back': { run: DONE_RUN, rule: 'DPW-08', if: GO_IF },
+})
+export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
+  gate: {
+    'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
+    "main's ruleset is live": { run: RULESET_CHECK, rule: 'DPW-09' },
+    Plan: { run: PLAN_STEP, rule: 'DPW-09' },
+  },
+  'prod-gate': { "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' } },
+  nonprod: deployRuns('nonprod'),
+  prod: deployRuns('prod'),
+  'prod-plan': {
+    'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
+    Diff: { run: DIFF_RUN, rule: 'DPW-08' },
+  },
+  'rollback-nonprod': rollbackRuns(),
+  'rollback-prod': rollbackRuns(),
+  'smoke-nonprod': { Smoke: { run: smokeRun('smoke-nonprod'), rule: 'DPW-08' } },
+  'smoke-prod': { Smoke: { run: smokeRun('smoke-prod'), rule: 'DPW-08' } },
+  'resmoke-nonprod': { Smoke: { run: smokeRun('resmoke-nonprod'), rule: 'DPW-08' } },
+  'resmoke-prod': { Smoke: { run: smokeRun('resmoke-prod'), rule: 'DPW-08' } },
+  'record-nonprod': { 'Write the record': { run: recordRun('nonprod'), rule: 'DPW-13' } },
+  'record-prod': { 'Write the record': { run: recordRun('prod'), rule: 'DPW-13' } },
+})
+
 // --- The workflow's jobs, as the cases read them ------------------------------------------------------
 
 export type Finding = string
@@ -857,6 +1266,20 @@ interface Job {
 
 function jobsOf(text: string): Map<string, Job> {
   return new Map(workflowJobs(text).map(job => [job.id, { id: job.id, job, steps: parsedSteps(job) }]))
+}
+
+// The steps PINNED_RUNS holds under a rule whose run or if: isn't the one it names, whole, or that its job
+// holds other than once, each as a finding's place: its job and its step.
+function unpinnedRuns(jobs: ReadonlyMap<string, Job>, rule: string): string[] {
+  const places: string[] = []
+  for (const [id, pinned] of Object.entries(PINNED_RUNS())) {
+    for (const [name, { run, rule: its, if: condition }] of Object.entries(pinned)) {
+      if (its !== rule) continue
+      const steps = jobs.get(id)?.steps.filter(step => step.name === name) ?? []
+      if (steps.length !== 1 || steps[0]?.run !== run || steps[0]?.if !== condition) places.push(`${id} (${name})`)
+    }
+  }
+  return places
 }
 
 // Each job's lines in the file, from its id's line to the next job's (a job's own comment, above its id,
@@ -1875,6 +2298,9 @@ export interface GlueCommand {
   inSubstitution: boolean
   previous: string | undefined
   raw: string
+  // A for loop's variable, and the command a pipeline's command pipes into.
+  variable?: string
+  next?: string
 }
 
 export interface ShellRead {
@@ -2016,8 +2442,12 @@ class ShellReader {
       this.blanks()
     }
     let previous: string | undefined
+    let last: GlueCommand | undefined
     for (;;) {
       previous = this.command(previous)
+      // The command before it in the pipeline learns what it pipes into.
+      if (last !== undefined) last.next = previous
+      last = this.commands[this.commands.length - 1]
       this.blanks()
       if (this.peek() === '|' && this.peek(1) !== '|') {
         if (this.peek(1) === '&') this.refuse('an operator the table does not name')
@@ -2080,7 +2510,7 @@ class ShellReader {
       this.i += 2
       this.list(['done'])
       this.i += 4
-      this.emit({ ...base, name: 'for', args: words, redirections: [] }, from)
+      this.emit({ ...base, name: 'for', args: words, redirections: [], variable: name }, from)
     } else if (keyword === 'case') {
       this.i += 4
       this.blanks()
@@ -3427,6 +3857,11 @@ export function maskingFindings(workflows: Texts): Finding[] {
           'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name',
         )
       }
+      // The registry password, a credential good for twelve hours, is asked for only by the login, piped
+      // straight into skopeo login; any other line naming it could print it or keep it.
+      if (lines.some(line => line.text.includes('get-login-password') && line.raw.trim() !== SKOPEO_LOGIN)) {
+        add(where, 'asks ECR for the registry password only as SKOPEO_LOGIN, piped straight into skopeo login')
+      }
       for (const command of commands) {
         const wrapped = command.word === '"$CDK"' ? ['run'] : ['run', 'get']
         const tool = command.word === 'aws' || command.word === 'skopeo' || /^"?\$\{?CDK\b/.test(command.word)
@@ -3568,8 +4003,11 @@ const SMOKES: Readonly<Record<string, string>> = {
 // deploy job set services_started, and judges the release that deploy replaced from that job's own
 // AWS_CHECK (the deploy job outputs replaced from its aws step, whose value AWS_CHECK_ENV pins as the
 // rollback's REPLACED);
-// rollback-prod's steps are rollback-nonprod's but for the environment's name; and only prod and
-// rollback-prod deploy to prod, rollback-prod only the previous release's Tasks and Services.
+// rollback-prod's steps are rollback-nonprod's but for the environment's name; only prod and
+// rollback-prod deploy to prod, rollback-prod only the previous release's Tasks and Services; the runs a
+// smoke, a rollback, prod-gate or the approver rests on are pinned whole (PINNED_RUNS: prod's records, the
+// smokes, services_started, the read-back, the rollback jobs' releases and rolled, prod-plan's diff); and
+// outside build and synth only a pinned run, AWS_CHECK's step and prod-gate's call write an output.
 export function prodPathFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -3674,6 +4112,29 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       )
     }
   }
+  // What a smoke, a rollback, prod-gate or the approver judges, each run pinned whole, so no line of its own
+  // ends one early, writes an output or a file of its own, or hands it another input.
+  for (const place of unpinnedRuns(jobs, 'DPW-08')) {
+    add(
+      place,
+      "runs as written, whole and under its own if: (PINNED_RUNS): prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own",
+    )
+  }
+  // An output only from a run the guard pins whole, outside build and synth (which run repository code by
+  // design): PINNED_RUNS', AWS_CHECK's step and history.ts prod-gate's.
+  const outputRuns = new Set([
+    ...Object.values(PINNED_RUNS()).flatMap(pinned => Object.values(pinned).map(each => each.run)),
+    ...Object.values(AWS_CHECK_CALLS).map(call => [PREAMBLE, AWS_CHECK, call].join('\n')),
+    PROD_GATE_CALL,
+  ])
+  for (const { id, steps } of jobs.values()) {
+    if (id === 'build' || id === 'synth') continue
+    steps.forEach((step, index) => {
+      if (step.run?.includes('GITHUB_OUTPUT') && !outputRuns.has(step.run)) {
+        add(`${id} (${label(step, index)})`, 'writes an output only from a run the guard pins whole')
+      }
+    })
+  }
   for (const [rollback, deploy] of [
     ['rollback-nonprod', 'nonprod'],
     ['rollback-prod', 'prod'],
@@ -3725,6 +4186,29 @@ export function prodPathFindings(workflows: Texts): Finding[] {
 
 export const PLAN_CALL =
   'if ! PLAN=$(node infra/scripts/deploy/history.ts plan --event "$EVENT" --ref "$REF" --actor "$ACTOR" --triggering-actor "$TRIGGERING_ACTOR" --sha "$SHA" --target "$TARGET" --mode "$MODE" --release "$RELEASE" --restore "$RESTORE" --records "$RUNNER_TEMP/records" --checks "$RUNNER_TEMP/checks.json" 2>"$RUNNER_TEMP/plan-ignored.txt"); then'
+// The gate's plan (C11-D49, C11-D58, DPW-09): PLAN_CALL, then the plan's lines checked, written to the
+// outputs and summarised, pinned whole so no line of its own writes an output or ends it early.
+export const PLAN_STEP = sh`set -euo pipefail
+# The plan (C11-D49, C11-D58): who started the run and where, the inputs, DOMAINS, a deploy's pull
+# request, each environment's current release and, for a deploy or a drill-smoke, the release each
+# automatic rollback goes back to and whether it may (above every floor at this commit). Every commit
+# it outputs is on main at this run's commit. A refusal is one line, \`history: refused <code>: <why>\`.
+# Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
+${PLAN_CALL}
+  tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/plan-ignored.txt" >&2
+  printf '%s\n' "$PLAN"
+  exit 1
+fi
+tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/plan-ignored.txt" >&2
+if grep -Evq '^[a-z_]+=[0-9a-z:._-]*$' <<<"$PLAN"; then
+  echo 'gate: the plan printed a line that is not key=value'
+  exit 1
+fi
+printf '%s\n' "$PLAN" >>"$GITHUB_OUTPUT"
+{
+  echo '### The plan'
+  grep -E '^(mode|target|restore|commit|digest|current_nonprod|current_prod|previous_nonprod_commit|previous_prod_commit|rollback_nonprod|rollback_prod|first_nonprod|first_prod)=' <<<"$PLAN" | sed 's/^/- /'
+} >>"$GITHUB_STEP_SUMMARY"`
 const PLAN_ENV: Readonly<Record<string, string>> = {
   EVENT: expr('github.event_name'),
   REF: expr('github.ref'),
@@ -3813,8 +4297,10 @@ function environmentFile(name: string, text: string): Record<string, unknown> | 
 // a status function runs only once the jobs it relies on succeeded (REQUIRES); .github/environments
 // holds exactly the three files, each the environment file's shape: prod.json asks for at least one
 // reviewer and no admin bypass, prod-plan.json for none, nonprod.json for one exactly when non-prod
-// holds real data (C0.12's flip can't land half done); and the script's agent markers are the Owner
-// bootstrap script's.
+// holds real data (C0.12's flip can't land half done); the script's agent markers are the Owner
+// bootstrap script's; and the gate's reads of the records and main's ruleset and its plan are pinned whole
+// (GATE_RECORDS, RULESET_CHECK, PLAN_STEP), so no line of their own ends one early, forges what the plan
+// reads or writes a gate output.
 export function gateFindings(
   workflows: Texts,
   environments: Texts,
@@ -3837,6 +4323,14 @@ export function gateFindings(
   }
   const check = gate.findIndex(step => step.run === ENVIRONMENTS_CHECK)
   if (check < 0 || plan < 0 || check > plan) add('gate', 'runs scripts/protect-environments.sh check before it plans')
+  // The steps the plan rests on, each pinned whole, so no line of its own ends one early, forges a file the
+  // plan reads or writes a gate output of its own.
+  for (const place of unpinnedRuns(jobs, 'DPW-09')) {
+    add(
+      place,
+      "runs as written, whole and under its own if: (PINNED_RUNS): the records and main's ruleset the plan rests on and the plan itself, so no line of its own ends one early, forges what the plan reads or writes an output of its own",
+    )
+  }
   for (const { id, job } of jobs.values()) {
     if (id === 'gate') continue
     const condition = jobScalar(job, 'if') ?? ''
@@ -4075,6 +4569,18 @@ export function jqProgramIsHeld(program: string, given: readonly string[]): bool
   }
   return true
 }
+// A jq program as a word: . alone, or one whole single-quoted string, which bash hands jq as written. Any
+// other word (one joining a quoted string to an expansion, '.'"$P" say) hands jq a program built at run
+// time, which no hold can read, so it is refused whatever its quoted part holds.
+const WHOLE_PROGRAM = /^'[^']*'$/
+const programOf = (word: ShellWord | undefined): string | undefined =>
+  word === undefined
+    ? undefined
+    : word.raw === '.'
+      ? '.'
+      : WHOLE_PROGRAM.test(word.raw) && word.value !== undefined && word.expands.length === 0
+        ? word.value
+        : undefined
 // jq given its flags, then one program (single-quoted, or . alone) and no file to read.
 function jqIsHeld(args: readonly ShellWord[]): boolean {
   const given: string[] = []
@@ -4088,9 +4594,9 @@ function jqIsHeld(args: readonly ShellWord[]): boolean {
     given.push(name)
     i += 2
   }
-  const program = args[i]
+  const program = programOf(args[i])
   if (program === undefined || i !== args.length - 1) return false
-  return program.raw === '.' || (program.raw.startsWith("'") && jqProgramIsHeld(program.value ?? '', given))
+  return jqProgramIsHeld(program, given)
 }
 // gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
 // migration record read with a held program.
@@ -4101,13 +4607,8 @@ const GH_CALLS = [
 const GH_MIGRATED = 'api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq'
 function ghIsHeld(args: readonly ShellWord[]): boolean {
   if (GH_CALLS.some(call => call.test(argText(args)))) return true
-  const program = args[args.length - 1]
-  return (
-    argText(args.slice(0, -1)) === GH_MIGRATED &&
-    program !== undefined &&
-    program.raw.startsWith("'") &&
-    jqProgramIsHeld(program.value ?? '', [])
-  )
+  const program = programOf(args[args.length - 1])
+  return argText(args.slice(0, -1)) === GH_MIGRATED && program !== undefined && jqProgramIsHeld(program, [])
 }
 // aws only through run or get, as the calls the lines make (AWS_CALLS), each option one they use with its
 // values, none of them a file:// or fileb:// the CLI would read; never --endpoint-url, --cli-input-json,
@@ -4136,15 +4637,57 @@ const AWS_OPTIONS = [
   '--target-group-arn',
   '--load-balancer-arn',
 ]
+// A word as the program it is handed reads it: its quotes taken off and each expansion written \0, or
+// undefined for one holding a substitution (no aws word of the workflow's own lines holds one). The table
+// admits only $NAME, ${…}, $1 to $9 and $? as expansions, so each ends at its name, brace or character.
+function wordSkeleton(raw: string): string | undefined {
+  let out = ''
+  let quote: string | undefined
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+      else out += c
+    } else if (c === "'" && quote === undefined) quote = "'"
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === '$') {
+      const rest = raw.slice(i)
+      const found = /^\$(?:\{[^}]*\}|[A-Za-z_]\w*|[0-9?])/.exec(rest)?.[0]
+      if (found === undefined) return undefined
+      out += '\0'
+      i += found.length - 1
+    } else out += c
+  }
+  return out
+}
+// The words a value of an aws call on a run's own lines starts with when it starts with an expansion: the
+// variables the workflow passes there, each set by a canonical text from AWS's own answers or on the
+// line the guard pins (DPW-06), never one an own line may set (DPW-10's SETS_INPUT).
+const AWS_VALUE_WORDS = [
+  '"$CLUSTER"',
+  '"$MIGRATE_TD"',
+  '"$NET_MIGRATE"',
+  '"$TOKEN"',
+  sh`"$\{TASK_ARNS[@]}"`,
+  '"$GROUP_ARN"',
+  '"$BALANCER"',
+]
+// aws on a run's own lines: the call (AWS_CALLS) and each option, written plainly, from AWS_OPTIONS, the
+// options told apart from values as aws tells them, by the text it is handed (so a quoted '--debug' is
+// an option too); each value, as aws reads it, holding no scheme (file://, fileb://, https://) or
+// shorthand file load (key@=) anywhere, and starting with an expansion only as one of AWS_VALUE_WORDS.
 function awsIsHeld(args: readonly ShellWord[]): boolean {
   if (!AWS_CALLS.test(` ${argText(args)}`)) return false
   let option = ''
   return args.slice(2).every(arg => {
-    if (arg.raw.startsWith('-')) {
+    const value = wordSkeleton(arg.raw)
+    if (value === undefined) return false
+    if (value.startsWith('-')) {
       option = arg.raw
-      return AWS_OPTIONS.includes(arg.raw)
+      return arg.raw === value && AWS_OPTIONS.includes(arg.raw)
     }
-    return option !== '' && !/^["']?(?:file|fileb|https?):/i.test(arg.raw)
+    if (option === '' || /:\/\/|@=/.test(value) || /^(?:file|fileb|https?):/i.test(value)) return false
+    return !value.startsWith('\0') || AWS_VALUE_WORDS.includes(arg.raw)
   })
 }
 // The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
@@ -4161,6 +4704,17 @@ const SKOPEO_LOGIN_COMMAND = 'skopeo login --username AWS --password-stdin "$REG
 const wrapped = (command: GlueCommand) => {
   const program = command.args[0]?.raw
   const rest = command.args.slice(1)
+  // The registry password only through get, first in its pipeline, in no substitution and piped straight
+  // into skopeo: the login's.
+  if (program === 'aws' && argText(rest).startsWith('ecr get-login-password')) {
+    return (
+      command.name === 'get' &&
+      !command.inSubstitution &&
+      command.previous === undefined &&
+      command.next === 'skopeo' &&
+      argText(rest) === 'ecr get-login-password --region ap-southeast-1'
+    )
+  }
   if (program === 'aws') return awsIsHeld(rest)
   if (program === '"$CDK"') return command.name === 'run' && CLI_LINES.includes(command.raw)
   if (program === 'skopeo') return command.name === 'run' && command.raw === SKOPEO_COPY
@@ -4182,8 +4736,44 @@ const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
 }
 // The commands the table holds itself, and the compound ones.
 const TABLE_HELD = [...Object.keys(SHELL_TABLE.builtins), 'if', 'for', 'case', '{', '[[']
-// Whether a command a credentialed or record job's own lines run is held to its uses.
-function glueIsHeld(command: GlueCommand, own: ReadonlySet<string>): boolean {
+// The calls a credentialed run's own lines make of the functions its canonical texts define, each as
+// written, with the arguments the workflow gives it, so none is handed a pattern, a task, a folder or a
+// release of another's (one_off_end given '.' prints every line of a task's log, say). mask, run and get
+// are GLUE_USES's.
+const CANONICAL_CALLS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['one_off_end', ['one_off_end migrate "$MIGRATE_LINES" "$RUN"']],
+  ['aws_check', ['aws_check drill', 'aws_check "$MODE"', 'aws_check auto', 'aws_check restore']],
+  ['check_assembly', ['check_assembly "$RUNNER_TEMP/assembly"', 'check_assembly "$RUNNER_TEMP/assembly-previous"']],
+  [
+    'check_release_in',
+    [
+      'check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"',
+      'check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"',
+    ],
+  ],
+])
+// The calls a record job's own lines make of its own two functions, each as written: a release record in
+// either, a restore record in record-prod alone, each from the payload release_payload built from the
+// step's env (DPW-13), so no record of another task, environment or commit is written.
+const recordCalls = (id: string): ReadonlyMap<string, readonly string[]> =>
+  new Map([
+    [
+      'record',
+      id === 'record-prod'
+        ? ['record hearth-release "$PAYLOAD"', 'record hearth-restore "$PAYLOAD"']
+        : ['record hearth-release "$PAYLOAD"'],
+    ],
+    [
+      'release_payload',
+      [
+        'release_payload "$KIND" "$COMMIT" "$DIGEST" "$SERVICES"',
+        'release_payload pipeline-rollback "$PREVIOUS_COMMIT" "$PREVIOUS_DIGEST" "$ROLLBACK_SERVICES"',
+      ],
+    ],
+  ])
+// Whether a command a credentialed or record job's own lines run is held to its uses: GLUE_USES's, the
+// table's own, or a function's call as calls names it.
+function glueIsHeld(command: GlueCommand, calls: ReadonlyMap<string, readonly string[]>): boolean {
   const name = command.name
   const redirections = command.redirections.every(({ op, target }) =>
     op === '<' ? target?.raw === '"$DIFF"' : op.startsWith('<') || op.includes('&') || WRITABLE.test(target?.raw ?? ''),
@@ -4192,10 +4782,60 @@ function glueIsHeld(command: GlueCommand, own: ReadonlySet<string>): boolean {
   if (!redirections || command.assignments.length > 0) return false
   const use = GLUE_USES[name]
   if (use !== undefined) return use(command)
-  return TABLE_HELD.includes(name) || own.has(name)
+  return TABLE_HELD.includes(name) || calls.get(name)?.includes(command.raw) === true
 }
 const HELD =
   'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
+// The names a command on a run's own lines sets: its assignments, a for loop's variable, mapfile's array
+// and local's names.
+const namesSet = (command: GlueCommand): string[] => [
+  ...command.assignments.map(each => each.name),
+  ...(command.variable === undefined ? [] : [command.variable]),
+  ...(command.name === 'mapfile' ? [command.args[1]?.raw ?? ''] : []),
+  ...(command.name === 'local' ? command.args.map(arg => arg.raw) : []),
+]
+// The names each canonical text sets, read on its code view (quoted text blanked): its assignments, its
+// locals, its for loops' variables and its arrays read by mapfile or read; TASKS_OUTPUTS sets MIGRATE_TD
+// and PROBE_TD by printf -v on a name it builds.
+const BUILT_NAMES: ReadonlyMap<string, readonly string[]> = new Map([[TASKS_OUTPUTS, ['MIGRATE_TD', 'PROBE_TD']]])
+const NAMES_SET_BY = keptByText((text: string): readonly string[] => {
+  const names = new Set<string>(BUILT_NAMES.get(text) ?? [])
+  for (const line of shellViews(text).code.split('\n')) {
+    for (const match of line.matchAll(/(?:^|[\s;&|(!{])([A-Za-z_]\w*)(?:\[[^\]]*\])?\+?=(?!=)/g))
+      names.add(match[1] ?? '')
+    for (const match of line.matchAll(/\blocal\s+([^;&|]*)/g)) {
+      for (const word of (match[1] ?? '').split(/\s+/)) names.add(/^[A-Za-z_]\w*/.exec(word)?.[0] ?? '')
+    }
+    for (const match of line.matchAll(/\bfor\s+([A-Za-z_]\w*)\s+in\b/g)) names.add(match[1] ?? '')
+    for (const match of line.matchAll(/\b(?:mapfile|readarray|read)\s+(?:-\S+\s+)*([A-Za-z_]\w*)/g))
+      names.add(match[1] ?? '')
+  }
+  names.delete('')
+  return [...names]
+})
+// The lines that alone may set a name a pinned line reads on a run's own lines: the registry the login and
+// the push name, and the one-off migrate's end waits on. (TOKEN, NET_MIGRATE, OVERRIDES, ASSEMBLY, DIFF,
+// CDK and STAGE are pinned by the rules that read them.)
+const ASSIGNED_ONLY_BY: ReadonlyMap<string, readonly string[]> = new Map([
+  ['REGISTRY', [REGISTRY_LINE]],
+  ['RUN', [RUN_TASK_MIGRATE]],
+])
+// Whether a run's own lines set an input its pinned lines read (DPW-10, DPW-13): a name its step's or its
+// job's env: sets, one a canonical text standing in the run sets, or one ASSIGNED_ONLY_BY names on any
+// line but its own.
+function setsAnInput(run: string, read: ShellRead, env: readonly string[]): boolean {
+  const canonical = new Set(canonicalPlaces(run).flatMap(place => NAMES_SET_BY(place.text)))
+  return read.commands.some(command =>
+    namesSet(command).some(
+      name =>
+        env.includes(name) ||
+        canonical.has(name) ||
+        (ASSIGNED_ONLY_BY.has(name) && !(ASSIGNED_ONLY_BY.get(name) ?? []).includes(command.raw)),
+    ),
+  )
+}
+const SETS_INPUT =
+  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
 // the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
@@ -4256,7 +4896,9 @@ function definitionsAreCanonical(run: string): boolean {
 // The shape of every job and step (DPW-10): the top level, each job's keys and runner, each step's keys,
 // each action's inputs and every env: key are the ones the workflow uses, so no shell, container,
 // service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
-// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen.
+// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; and every env: and
+// job's outputs: is the guard's, whole, each a block mapping, and every step's id too (STEP_ENVS,
+// JOB_OUTPUTS, STEP_IDS below).
 const TOP_KEYS = ['name', 'on', 'permissions', 'jobs']
 const JOB_KEYS = [
   'needs',
@@ -4332,6 +4974,263 @@ const onceEach = (names: readonly string[], allowed: readonly string[]) =>
 const mappingKeys = (lines: readonly string[] | undefined) =>
   (lines ?? []).slice(1).flatMap(line => /^ {6}([\w-]+):/.exec(line)?.[1] ?? [])
 
+// Every env: and every job's outputs: in the workflow, whole (DPW-10): each value the expression it reads,
+// so no pinned run reads an input another step, job or context hands it (a TARGET from prod-gate's
+// outputs, which hold none, reads as '' and skips the checks it guards), no push tags an image by another
+// commit, and no gate output is taken from another of the plan's. A job's env: is STAGES' alone.
+const gateOutput = (name: string) => expr(`needs.gate.outputs.${name}`)
+const GH_ENV = { GH_TOKEN: expr('github.token'), REPO: expr('github.repository') }
+const ACCOUNT_ENV = { ACCOUNT_ID: expr('secrets.AWS_ACCOUNT_ID') }
+const BUILD_DIGEST = expr('needs.build.outputs.digest')
+const NONPROD_DIGEST = expr('needs.nonprod.outputs.digest')
+const RELEASE_ENV = {
+  BUILD: gateOutput('build'),
+  COMMIT: gateOutput('commit'),
+  GATE_DIGEST: gateOutput('digest'),
+  BUILD_DIGEST,
+}
+const readBackEnv = (release: string) => ({ RELEASE: release, MODE, RESTORE: gateOutput('restore') })
+const previousRelease = (stage: Stage) =>
+  `${gateOutput(`previous_${stage}_commit`)}:${gateOutput(`previous_${stage}_digest`)}`
+const deployEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
+  'The release this job deploys': RELEASE_ENV,
+  'Check the assembly': { RELEASE: RELEASE_OUTPUT },
+  'The fast re-check':
+    stage === 'nonprod'
+      ? { ...GH_ENV, MODE, RECORD_ID: gateOutput('current_nonprod_id') }
+      : {
+          ...GH_ENV,
+          MODE,
+          TARGET: gateOutput('target'),
+          RECORD_ID: expr('needs.prod-gate.outputs.current_prod_id'),
+          PLAN_ATTEMPT: expr('needs.prod-plan.outputs.attempt'),
+          BUILD_DIGEST,
+          NONPROD_DIGEST,
+        },
+  'Mask the account id': ACCOUNT_ENV,
+  'What runs': AWS_CHECK_ENV[stage] ?? {},
+  'Push the image': {
+    ...ACCOUNT_ENV,
+    COMMIT: expr('steps.release.outputs.commit'),
+    DIGEST: expr('steps.release.outputs.digest'),
+    ...(stage === 'prod' ? { NONPROD_DIGEST } : {}),
+  },
+  Migrate: { ...GH_ENV, COMMIT: expr('steps.release.outputs.commit') },
+  'Read back what runs': readBackEnv(RELEASE_OUTPUT),
+})
+const rollbackEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
+  "This run's release and the previous one": {
+    MODE,
+    COMMIT: gateOutput('commit'),
+    GATE_DIGEST: gateOutput('digest'),
+    BUILD_DIGEST,
+    PREVIOUS_COMMIT: gateOutput(`previous_${stage}_commit`),
+    PREVIOUS_DIGEST: gateOutput(`previous_${stage}_digest`),
+  },
+  'Check the previous assembly': { PREVIOUS: PREVIOUS_OUTPUT },
+  'Mask the account id': ACCOUNT_ENV,
+  'What runs': AWS_CHECK_ENV[`rollback-${stage}`] ?? {},
+  'Read back what runs': readBackEnv(PREVIOUS_OUTPUT),
+})
+const smokeEnv = (stage: Stage, resmoke: boolean) => {
+  const source = resmoke ? `rollback-${stage}` : stage
+  return {
+    Smoke: {
+      READBACK: expr(`needs.${source}.outputs.readback`),
+      ATTEMPT: expr(`needs.${source}.outputs.attempt`),
+      RELEASE: resmoke ? previousRelease(stage) : `${gateOutput('commit')}:${expr(`needs.${stage}.outputs.digest`)}`,
+      PROFILE_AT: resmoke ? gateOutput(`previous_${stage}_commit`) : gateOutput('commit'),
+      MODE,
+      ...(stage === 'prod' ? { TARGET: gateOutput('target'), RESTORE: gateOutput('restore') } : {}),
+    },
+  }
+}
+const recordEnv = (stage: Stage) => ({
+  'Write the record': {
+    ...GH_ENV,
+    ENVIRONMENT: stage,
+    MODE,
+    ...(stage === 'prod' ? { TARGET: gateOutput('target'), RESTORE: gateOutput('restore') } : {}),
+    COMMIT: gateOutput('commit'),
+    DIGEST: expr(`needs.${stage}.outputs.digest`),
+    SERVICES: expr(`needs.${stage}.outputs.services`),
+    SMOKE: expr(`needs.smoke-${stage}.result`),
+    RESMOKE: expr(`needs.resmoke-${stage}.result`),
+    PREVIOUS_COMMIT: gateOutput(`previous_${stage}_commit`),
+    PREVIOUS_DIGEST: gateOutput(`previous_${stage}_digest`),
+    ROLLBACK_SERVICES: expr(`needs.rollback-${stage}.outputs.services`),
+  },
+})
+// Each step's env:, by its job and its name; a step not named sets none.
+export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
+  gate: {
+    'The release, migration and restore records': GH_ENV,
+    'The pull request that made this commit, and its checks': {
+      ...GH_ENV,
+      SHA: expr('github.sha'),
+      MODE: expr('inputs.mode'),
+      TARGET: expr('inputs.target'),
+    },
+    "main's ruleset is live": GH_ENV,
+    'The environments are live as written': GH_ENV,
+    Plan: PLAN_ENV,
+  },
+  synth: {
+    'Synthesise the release': {
+      MODE,
+      RESTORE: gateOutput('restore'),
+      BUILD: gateOutput('build'),
+      COMMIT: gateOutput('commit'),
+      GATE_DIGEST: gateOutput('digest'),
+      BUILD_DIGEST,
+    },
+    "Check the release's assembly": { RELEASE: expr('steps.synth.outputs.release') },
+    "Synthesise nonprod's previous release": {
+      COMMIT: gateOutput('previous_nonprod_commit'),
+      DIGEST: gateOutput('previous_nonprod_digest'),
+    },
+    "Check nonprod's previous assembly": { RELEASE: previousRelease('nonprod') },
+    "Synthesise prod's previous release": {
+      COMMIT: gateOutput('previous_prod_commit'),
+      DIGEST: gateOutput('previous_prod_digest'),
+    },
+    "Check prod's previous assembly": { RELEASE: previousRelease('prod') },
+  },
+  nonprod: deployEnvs('nonprod'),
+  'smoke-nonprod': smokeEnv('nonprod', false),
+  'rollback-nonprod': rollbackEnvs('nonprod'),
+  'resmoke-nonprod': smokeEnv('nonprod', true),
+  'record-nonprod': recordEnv('nonprod'),
+  'prod-plan': {
+    'The release this job deploys': RELEASE_ENV,
+    'Check the assembly': { RELEASE: RELEASE_OUTPUT },
+    'Mask the account id': ACCOUNT_ENV,
+    Diff: { MODE },
+  },
+  'prod-gate': {
+    "Prod's release records": GH_ENV,
+    "main's own CI": { ...GH_ENV, SHA: expr('github.sha') },
+    'The prod gate': {
+      MODE,
+      TARGET: gateOutput('target'),
+      SHA: expr('github.sha'),
+      COMMIT: gateOutput('commit'),
+      DIGEST: gateOutput('digest'),
+      CURRENT_PROD_ID: gateOutput('current_prod_id'),
+      BUILD_DIGEST,
+      NONPROD_DIGEST,
+    },
+  },
+  prod: deployEnvs('prod'),
+  'smoke-prod': smokeEnv('prod', false),
+  'rollback-prod': rollbackEnvs('prod'),
+  'resmoke-prod': smokeEnv('prod', true),
+  'record-prod': recordEnv('prod'),
+}
+const stepOutput = (step: string, name: string) => expr(`steps.${step}.outputs.${name}`)
+const deployOutputs = {
+  digest: expr('steps.push.outputs.digest || steps.release.outputs.digest'),
+  services: stepOutput('readback', 'services'),
+  readback: stepOutput('readback', 'readback'),
+  deployed: stepOutput('readback', 'deployed'),
+  services_started: stepOutput('mark', 'services_started'),
+  replaced: stepOutput('aws', 'replaced'),
+  attempt: expr('github.run_attempt'),
+}
+const rollbackOutputs = {
+  rolled: expr('steps.done.outputs.rolled || steps.aws.outputs.rolled'),
+  services: stepOutput('readback', 'services'),
+  readback: stepOutput('readback', 'readback'),
+  attempt: expr('github.run_attempt'),
+}
+// Each job's outputs:, by its job; a job not named has none. The gate's are the plan's, key for key.
+export const JOB_OUTPUTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  gate: Object.fromEntries(
+    [
+      'mode',
+      'target',
+      'restore',
+      'commit',
+      'digest',
+      'build',
+      'nonprod',
+      'prod',
+      'current_nonprod',
+      'current_nonprod_id',
+      'current_prod',
+      'current_prod_id',
+      'previous_nonprod_commit',
+      'previous_nonprod_digest',
+      'previous_prod_commit',
+      'previous_prod_digest',
+      'rollback_nonprod',
+      'rollback_prod',
+      'first_nonprod',
+      'first_prod',
+    ].map(name => [name, stepOutput('plan', name)]),
+  ),
+  build: { digest: stepOutput('image', 'digest'), image: stepOutput('upload', 'artifact-id') },
+  synth: {
+    assembly: stepOutput('assembly', 'artifact-id'),
+    assembly_previous_nonprod: stepOutput('previous-nonprod', 'artifact-id'),
+    assembly_previous_prod: stepOutput('previous-prod', 'artifact-id'),
+  },
+  nonprod: deployOutputs,
+  'rollback-nonprod': rollbackOutputs,
+  'prod-plan': { attempt: expr('github.run_attempt') },
+  'prod-gate': { current_prod_id: stepOutput('check', 'current_prod_id') },
+  prod: deployOutputs,
+  'rollback-prod': rollbackOutputs,
+}
+// Each step's id, by its job and its name; a step not named has none. With JOB_OUTPUTS and the pins on
+// the runs that write them, every output a job hands on is its pinned step's, never one a step of its own
+// takes the id of.
+const deployIds = { 'The release this job deploys': 'release', 'What runs': 'aws', 'Push the image': 'push' }
+const markIds = { 'Services are about to change': 'mark', 'Read back what runs': 'readback' }
+const rollbackIds = {
+  "This run's release and the previous one": 'release',
+  'What runs': 'aws',
+  'Read back what runs': 'readback',
+  'Rolled back': 'done',
+}
+export const STEP_IDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  gate: { Plan: 'plan' },
+  build: { 'Build the image': 'image', 'Upload the image': 'upload' },
+  synth: {
+    'Synthesise the release': 'synth',
+    "Upload the release's assembly": 'assembly',
+    "Upload nonprod's previous assembly": 'previous-nonprod',
+    "Upload prod's previous assembly": 'previous-prod',
+  },
+  nonprod: { ...deployIds, ...markIds },
+  'rollback-nonprod': rollbackIds,
+  'prod-plan': { 'The release this job deploys': 'release' },
+  'prod-gate': { 'The prod gate': 'check' },
+  prod: { ...deployIds, ...markIds },
+  'rollback-prod': rollbackIds,
+}
+const IDS = "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's"
+// A mapping as a block of its lines alone: a key whose value the reader reads as a mapping (a step's env:
+// or with:, a job's env: or outputs:) holds nothing on its own line but a comment, since GitHub reads one
+// expression there (env: ${{ fromJSON(…) }}) as the whole mapping, which the reader would read as none.
+const INLINE_VALUE = /^\s*(?:-\s+)?[\w-]+:[ \t]*(?:[^\s#].*)$/
+const inlineMappings = (lines: readonly string[], indent: number, keys: readonly string[]) =>
+  lines.some(line => {
+    const key = new RegExp(`^ {${indent}}(?:- )?(${keys.join('|')}):`).exec(line.replace(/^( {6})- /, '$1  '))
+    return key !== null && INLINE_VALUE.test(line)
+  })
+const sameValues = (value: BlockValue | undefined, record: Readonly<Record<string, string>>) =>
+  value === undefined || value === ''
+    ? Object.keys(record).length === 0
+    : isMap(value) &&
+      [...value.values()].every(each => typeof each === 'string') &&
+      sameMap(value as ReadonlyMap<string, string>, record)
+const ENV =
+  'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
+const OUTPUTS = 'outputs only what JOB_OUTPUTS names, each from the step it names'
+const MAPPING =
+  'writes env:, with: and outputs: as block mappings, never one expression GitHub would read as the whole mapping'
+
 function shapeOfJobsFindings(text: string, add: (where: string, rule: string) => void): void {
   const top = yamlLines(text).flatMap(line => /^([\w-]+):/.exec(line.text)?.[1] ?? [])
   if (!onceEach(top, TOP_KEYS) || !TOP_KEYS.every(key => top.includes(key))) {
@@ -4345,8 +5244,16 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       )
     }
     if (jobScalar(job, 'runs-on') !== RUNNER(id)) add(id, `runs on ${RUNNER(id)}, GitHub's own runner`)
-    if (!onceEach(mappingKeys(job.keys.get('env')), ENV_KEYS)) {
-      add(id, 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS')
+    const stage = STAGES[id]
+    if (
+      !onceEach(mappingKeys(job.keys.get('env')), ENV_KEYS) ||
+      !sameValues(blockValue(job.keys.get('env') ?? []), stage === undefined ? {} : { STAGE: stage })
+    ) {
+      add(id, ENV)
+    }
+    if (!sameValues(blockValue(job.keys.get('outputs') ?? []), JOB_OUTPUTS[id] ?? {})) add(id, OUTPUTS)
+    if (['env', 'outputs'].some(key => inlineMappings((job.keys.get(key) ?? []).slice(0, 1), 4, [key]))) {
+      add(id, MAPPING)
     }
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
@@ -4360,9 +5267,11 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       if (action !== undefined && !onceEach([...step.with.keys()], WITH_KEYS[action] ?? [])) {
         add(where, 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source')
       }
-      if (!onceEach([...step.env.keys()], ENV_KEYS)) {
-        add(where, 'sets only the environment variables the workflow uses: no BASH_ENV, PATH or NODE_OPTIONS')
+      if (!onceEach([...step.env.keys()], ENV_KEYS) || !sameMap(step.env, STEP_ENVS[id]?.[step.name ?? ''] ?? {})) {
+        add(where, ENV)
       }
+      if (inlineMappings(step.lines, 8, ['env', 'with'])) add(where, MAPPING)
+      if (step.id !== STEP_IDS[id]?.[step.name ?? '']) add(where, IDS)
     })
   }
 }
@@ -4393,15 +5302,18 @@ function cliLineIsSafe(line: string): boolean {
 // only on SETTER_LINES, and never PATH, RUNNER_TEMP or another that chooses what runs; CDK is assigned
 // only by the preamble, as the registry package's own bin; the CLI runs only as deploy or diff with --app
 // "$ASSEMBLY" (set once in its step to the folder it downloaded), after CDK_FOLDER, with no other change of
-// folder, and with its safe flags; no line anywhere passes a refused flag or subcommand. Across the
-// repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
-// registry's at infra's pin.
+// folder, and with its safe flags; no line anywhere passes a refused flag or subcommand; its own lines
+// are read by SHELL_TABLE, each command held to GLUE_USES, and set no input a pinned line reads
+// (SETS_INPUT). Across the repository no workspace is named aws-cdk or declares a cdk bin, and the
+// lockfile's aws-cdk is the registry's at infra's pin.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
   shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
-  for (const { id, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
+  for (const { id, job, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
     const credentialed = ENVIRONMENT_JOBS[id] !== undefined
+    const jobEnv = blockValue(job.keys.get('env') ?? [])
+    const jobNames = isMap(jobEnv) ? [...jobEnv.keys()] : []
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       const run = step.run ?? ''
@@ -4445,7 +5357,8 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       // Its own lines are read by the table, each command held to its uses.
       const refused = refusedAt(where, read)
       if (refused !== undefined) add(refused, AS_BASH)
-      if (read.commands.some(command => !glueIsHeld(command, own))) add(where, HELD)
+      if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS))) add(where, HELD)
+      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()])) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
@@ -4700,9 +5613,11 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 // migration record by nonprod's and prod's migrate steps alone, after migrate's own end, a write being
 // any gh api call with a body or a method other than GET, however spelled (ghWrites), and no other
 // GitHub API write made; each record's body built whole by jq -n with ref main, auto_merge false and no
-// required contexts, and sent with --input -; and each record job is one step, with no action (so no
-// checkout), running only bash's own, its functions, jq and gh api. (Every deploy of a recorded digest
-// checks ECR's tags for its commit inside AWS_CHECK, which DPW-06 pins.)
+// required contexts, and sent with --input -; each record job is one step, with no action (so no
+// checkout), running only bash's own, its functions (each called only as written), jq and gh api, and
+// setting no input its env: or a pinned line reads; and the release steps, the push, migrate with its
+// record and the record jobs are pinned whole (PINNED_RUNS). (Every deploy of a recorded digest checks
+// ECR's tags for its commit inside AWS_CHECK, which DPW-06 pins.)
 export function releaseFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -4711,6 +5626,13 @@ export function releaseFindings(workflows: Texts): Finding[] {
   const build = jobs.get('build')
   if (build === undefined || jobScalar(build.job, 'if') !== BUILD_IF || jobNeeds(build.job).join(',') !== 'gate') {
     add('build', 'runs only when the gate says so: a deploy, not a restore')
+  }
+  // The release, the push, migrate with its record and the record jobs, each run pinned whole.
+  for (const place of unpinnedRuns(jobs, 'DPW-13')) {
+    add(
+      place,
+      'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment',
+    )
   }
   if (/:latest\b/i.test(text)) add('deploy.yml', 'names no image :latest')
   if (/synth:ci|synth:lz|HEARTH_FAKE_RELEASE|\bcdk\s+synth\b|"\$CDK"\s+synth/.test(text)) {
@@ -4742,7 +5664,10 @@ export function releaseFindings(workflows: Texts): Finding[] {
     const where = steps[0] === undefined ? id : `${id} (${label(steps[0], 0)})`
     const refused = refusedAt(where, read)
     if (refused !== undefined) add(refused, AS_BASH)
-    if (read.commands.some(command => !glueIsHeld(command, own))) add(where, HELD)
+    if (read.commands.some(command => !glueIsHeld(command, recordCalls(id)))) add(where, HELD)
+    const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
+    const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
+    if (setsAnInput(run, read, envNames)) add(where, SETS_INPUT)
   }
   for (const { id, steps } of jobs.values()) {
     steps.forEach((step, index) => {
