@@ -2,14 +2,16 @@
 // recorded answers, the read-back's validation, --profile-at in a scratch git repository, the command
 // line for each stage (the host, origin and profile each --env maps to), and the whole command against
 // a local TLS server with a certificate made for the test, so the network code runs too, its body limit
-// and its timeout among it. Commits are made by git (a developer's own git settings, a global hook or
-// signed tags, set aside) or built as repeats, and an ARN, account id or address is built from parts at
-// run time (IG-01). It holds what the smoke must decide, so it is on the owner's-read list (C11-D74).
+// and its timeouts among it. Commits are made by git (a developer's own git settings set aside: git's own
+// environment variables for the whole file, a hook's GIT_INDEX_FILE among them, and the system and
+// global configuration files, a global hook or signed tags, for every git command the test runs itself)
+// or built as repeats, and an ARN, account id or address is built from parts at run time (IG-01). It
+// holds what the smoke must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import { createServer, type Server } from 'node:https'
-import type { AddressInfo } from 'node:net'
+import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -325,6 +327,30 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
         'readback-worker-running',
       ],
       [changed(v => v.services.pop()), 'readback-services'],
+      // A fourth service repeating a role, its tasks on an earlier release: one service a role, each once.
+      [
+        changed(v => {
+          const extra = structuredClone(service(v, 'api'))
+          for (const task of extra.tasks) task.digest = EARLIER
+          v.services.push(extra)
+        }),
+        'readback-services',
+      ],
+      // A second target group for a role, healthy as the first: one target group a role.
+      [
+        changed(v => {
+          const [group] = v.targetGroups
+          if (group !== undefined) v.targetGroups.push({ ...group })
+        }),
+        'readback-api-targets',
+      ],
+      [
+        changed(v => {
+          const group = v.targetGroups.find(g => g.role === 'realtime')
+          if (group !== undefined) v.targetGroups.push({ ...group })
+        }),
+        'readback-realtime-targets',
+      ],
       [changed(v => Object.assign(v, { release: `${'a'.repeat(40)}:${EARLIER}` })), 'readback-release'],
       [changed(v => Object.assign(v, { env: 'prod' })), 'readback-env'],
     ]
@@ -399,7 +425,7 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
 })
 
 describe('SMK-T07 (SMK-07, C11-D42, T24 item 16): the load balancer’s settings', () => {
-  it('SMK-T07: deregistration 10 passes and 11 fails; stickiness on, realtime on /health, the api on /ready/local and idle 59 fail', () => {
+  it('SMK-T07: deregistration 10 passes and 11 fails; stickiness on, realtime on /health, the api on /ready/local, idle 59 and a role’s second target group fail', () => {
     expect(smk07(readBack())).toEqual({ pass: true })
     const group = (role: 'api' | 'realtime', edit: Partial<ReadBack['targetGroups'][number]>) =>
       changed(v => {
@@ -423,6 +449,14 @@ describe('SMK-T07 (SMK-07, C11-D42, T24 item 16): the load balancer’s settings
       code: 'readback-load-balancer',
     })
     expect(smk07(changed(v => v.targetGroups.pop()))).toEqual({ pass: false, code: 'readback-realtime-target-group' })
+    // A second target group for a role, with the first's settings: one target group a role.
+    for (const role of ['api', 'realtime'] as const) {
+      const twice = changed(v => {
+        const found = v.targetGroups.find(g => g.role === role)
+        if (found !== undefined) v.targetGroups.push({ ...found })
+      })
+      expect(smk07(twice), role).toEqual({ pass: false, code: `readback-${role}-target-group` })
+    }
   })
 })
 
@@ -467,8 +501,18 @@ let after = ''
 let prodUnset = ''
 let prodTwilio = ''
 
-// git with an identity, and none of the developer's commit and tag signing or hooks, so a global setting
-// can't refuse a commit.
+// git's own variables set aside for the whole file, the script's own git command included: a hook that
+// runs these tests hands git GIT_INDEX_FILE (and can hand it GIT_DIR or GIT_WORK_TREE), which would
+// point a command at the hook's repository and index instead of the scratch one, and a git -c value
+// (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT) would reach every command. Restored after the file.
+for (const name of Object.keys(process.env)) if (name.startsWith('GIT_')) vi.stubEnv(name, undefined)
+afterAll(() => {
+  vi.unstubAllEnvs()
+})
+const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+
+// git with no system or global configuration file, an identity, and none of the developer's commit and
+// tag signing or hooks, so a global setting can't refuse a commit.
 function git(args: readonly string[]): string {
   return execFileSync(
     'git',
@@ -476,7 +520,7 @@ function git(args: readonly string[]): string {
       ...['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false'],
       ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
     ],
-    { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd: repo, encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] },
   ).trim()
 }
 
@@ -895,6 +939,44 @@ describe('SMK-T08 (C11-D54): the whole smoke against a local TLS server', () => 
     } finally {
       vi.useRealTimers()
       for (const response of hanging.splice(0)) response.destroy()
+    }
+  }, 30_000)
+
+  it('SMK-T08: a TLS handshake nothing answers gives up as no-answer at 10 s, and not before', async () => {
+    // A server that takes the connection and never says a word, so neither the handshake nor an error
+    // ends the wait: only the transport's own timer does.
+    const silent: Socket[] = []
+    let accepted: () => void = () => undefined
+    const arrived = new Promise<void>(resolve => {
+      accepted = resolve
+    })
+    const mute = createTcpServer(socket => {
+      silent.push(socket)
+      accepted()
+    })
+    await new Promise<void>(resolve => mute.listen(0, [127, 0, 0, 1].join('.'), resolve))
+    const mutePort = (mute.address() as AddressInfo).port
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      let answer: TlsAnswer | 'no-answer' | undefined
+      void nodeTransport({ address: [127, 0, 0, 1].join('.'), port: mutePort, ca: cert })
+        .tls(HOST)
+        .then(raw => {
+          answer = raw
+        })
+      await arrived
+      const settle = () => new Promise(resolve => setImmediate(resolve))
+      await settle()
+      vi.advanceTimersByTime(9_999)
+      await settle()
+      expect(answer).toBeUndefined()
+      vi.advanceTimersByTime(1)
+      await settle()
+      expect(answer).toBe('no-answer')
+    } finally {
+      vi.useRealTimers()
+      for (const socket of silent) socket.destroy()
+      await new Promise<void>(resolve => mute.close(() => resolve()))
     }
   }, 30_000)
 })

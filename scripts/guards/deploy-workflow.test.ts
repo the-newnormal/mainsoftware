@@ -15,11 +15,19 @@ import { createHash } from 'node:crypto'
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { gitIsAncestor, type PlanInput, parseReleaseRecords, plan } from '../../infra/scripts/deploy/history.ts'
 import { PROFILES } from '../../infra/src/config/profiles.ts'
 import { synthWorkload } from '../../infra/src/testing/workload.ts'
-import { gitEnvironment, pinProblems, readTagRefs, tagCommit } from '../check-action-pins.ts'
+import {
+  actionUrl,
+  run as checkActionPins,
+  gitEnvironment,
+  lsRemote,
+  pinProblems,
+  readTagRefs,
+  tagCommit,
+} from '../check-action-pins.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins'
 import {
@@ -57,6 +65,9 @@ import {
   GENERAL_WORDS,
   GUARD,
   gateFindings,
+  IMAGE_CHECK,
+  IMAGE_LAYOUT,
+  IMAGE_UNPACK_RUN,
   JOB_IDS,
   MAIN_CI,
   MIGRATE_LINES,
@@ -218,14 +229,14 @@ describe('DPW: the guard reads the deploy workflow', () => {
     gate: 7,
     build: 11,
     synth: 16,
-    nonprod: 20,
+    nonprod: 21,
     'smoke-nonprod': 3,
     'rollback-nonprod': 13,
     'resmoke-nonprod': 3,
     'record-nonprod': 1,
     'prod-plan': 9,
     'prod-gate': 5,
-    prod: 20,
+    prod: 21,
     'smoke-prod': 3,
     'rollback-prod': 13,
     'resmoke-prod': 3,
@@ -1090,6 +1101,85 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     expect(asked).toEqual(['actions/checkout v7.0.1'])
   })
 
+  // RULES-01 (review 5): CI's proof of the pins is the script's own decision, which nothing but the owner's read
+  // held, so a pull request could move a pin to a fork's commit and, beside it, have the check skip a read or
+  // exit 0 with every test green. Its decision runs here end to end on planted answers, for each entry of both
+  // tables alone, and every address it reads is the action's own repository.
+  describe('the check end to end (RULES-01)', () => {
+    const entries = [
+      ...Object.entries(ACTION_PINS).map(([action, pin]) => ['deploy.yml', action, pin] as const),
+      ...Object.entries(PINS_JOB_ACTIONS).map(([action, pin]) => ['action-pins job', action, pin] as const),
+    ]
+    const tagOf = (pin: string) => PIN_SHAPE.exec(pin) ?? []
+    const commits = new Map(entries.map(([, action, pin]) => [`${action} ${tagOf(pin)[2]}`, tagOf(pin)[1]]))
+    const answer = (action: string, version: string) => `${commits.get(`${action} ${version}`)}\trefs/tags/${version}\n`
+    const quietly = (read: (action: string, version: string) => string) => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+      try {
+        return checkActionPins(read)
+      } finally {
+        log.mockRestore()
+        error.mockRestore()
+      }
+    }
+
+    it('exits 0 only when every pin of both tables is its tag’s commit', () => {
+      expect(entries.length).toBe(7)
+      expect(quietly(answer)).toBe(0)
+    })
+
+    it('exits 1 for each entry alone at another commit, with no tag, or whose read fails', () => {
+      for (const [table, action, pin] of entries) {
+        const [, commit = '', version = ''] = tagOf(pin)
+        const other = commit.replace(/^./, first => (first === '0' ? '1' : '0'))
+        const only = (planted: (version: string) => string) => (asked: string, askedVersion: string) =>
+          asked === action && askedVersion === version ? planted(askedVersion) : answer(asked, askedVersion)
+        const way = `${table} ${action}`
+        expect(quietly(only(tag => `${other}\trefs/tags/${tag}\n`)), `${way} at another commit`).toBe(1)
+        expect(quietly(only(tag => `${other}\trefs/tags/${tag}\n${other}\trefs/tags/${tag}^{}\n`)), way).toBe(1)
+        expect(quietly(only(() => '')), `${way} with no tag`).toBe(1)
+        expect(quietly(only(tag => `${commit}\trefs/tags/x/${tag}\n`)), `${way} under another ref`).toBe(1)
+        expect(
+          quietly(
+            only(() => {
+              throw new Error('check-action-pins: the read failed')
+            }),
+          ),
+          `${way} whose read fails`,
+        ).toBe(1)
+      }
+    })
+
+    it('reads each action from its own repository, and exits with the check’s answer', () => {
+      expect(Object.keys({ ...ACTION_PINS, ...PINS_JOB_ACTIONS }).map(actionUrl)).toEqual([
+        'https://github.com/actions/checkout.git',
+        'https://github.com/actions/setup-node.git',
+        'https://github.com/actions/upload-artifact.git',
+        'https://github.com/actions/download-artifact.git',
+        'https://github.com/aws-actions/configure-aws-credentials.git',
+      ])
+      for (const [, action, pin] of entries) {
+        const version = tagOf(pin)[2] ?? ''
+        const asked: string[] = []
+        expect(
+          lsRemote(action, version, (url, tag) => {
+            asked.push(`${url} ${tag}`)
+            return 'answer'
+          }),
+        ).toBe('answer')
+        expect(asked).toEqual([`https://github.com/${action}.git ${version}`])
+      }
+      // The script's last line exits with run's answer over lsRemote, so neither a skipped exit nor another
+      // reader stands in for it.
+      const code = readRepoFile('scripts/check-action-pins.ts').trimEnd().split('\n')
+      expect(code.at(-1)).toBe('if (import.meta.main) process.exit(run(lsRemote))')
+      expect(code.filter(line => /\bimport\.meta\.main\b|process\.(?:exit|exitCode)\b/.test(line))).toEqual([
+        'if (import.meta.main) process.exit(run(lsRemote))',
+      ])
+    })
+  })
+
   // FETCH-A3-01: git read each action's repository with the configuration of whoever ran the check, so a
   // test that ran before it in CI's check job and wrote url.<fork>.insteadOf to $HOME/.gitconfig sent the read
   // to a fork whose tag names the fork's commit, and a pin moved to that commit passed. Each way git takes
@@ -1276,7 +1366,7 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
   const GOES_ON =
     "lets no failure pass: no continue-on-error, and no step's if: calls always(), success(), failure() or cancelled()"
   const UNCONDITIONAL =
-    'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads'
+    'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:'
   const CLI_IF = "runs each CLI line only in the modes that call for it: its step's if: as written"
   const migrate = '      - name: Migrate\n'
   const probe = '      - name: Probe\n'
@@ -2385,13 +2475,29 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         workflows,
         envFile('prod.json', record => (record.required_reviewers = 0)),
       ),
-    ).toEqual([`${dir}/prod.json: DPW-09 asks for at least one reviewer and no admin bypass`])
+    ).toEqual([`${dir}/prod.json: DPW-09 asks for at least one reviewer`])
+    // Admin bypass in any environment, non-prod's included once it holds real data and asks for its
+    // reviewer (ENVS-01, round 5).
+    const bypass = (name: string) => `${dir}/${name}: DPW-09 lets no admin bypass its rules`
+    for (const name of ['prod.json', 'prod-plan.json', 'nonprod.json']) {
+      expect(
+        gate(
+          workflows,
+          envFile(name, record => (record.can_admins_bypass = true)),
+        ),
+        name,
+      ).toEqual([bypass(name)])
+    }
     expect(
       gate(
         workflows,
-        envFile('prod.json', record => (record.can_admins_bypass = true)),
+        envFile('nonprod.json', record => {
+          record.required_reviewers = 1
+          record.can_admins_bypass = true
+        }),
+        true,
       ),
-    ).toEqual([`${dir}/prod.json: DPW-09 asks for at least one reviewer and no admin bypass`])
+    ).toEqual([bypass('nonprod.json')])
     expect(
       gate(
         workflows,
@@ -2428,6 +2534,22 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(gate(workflows, environments, holds, protectEnvironments.replace('AI_AGENT CI', 'CI'))).toEqual([
       "scripts/protect-environments.sh: DPW-09 its agent markers are the Owner bootstrap script's AGENT_MARKERS",
     ])
+    // The refusal comes first and reads the declared list alone: a second assignment, an unset, a narrowed
+    // condition or a line run before it each make a finding.
+    const refuses = [
+      'scripts/protect-environments.sh: DPW-09 refuses every command but check under each agent marker, before anything else runs (MARKER_REFUSAL)',
+    ]
+    const plants: [string, string][] = [
+      ["CLAIM_KEYS='", "AGENT_MARKERS=()\nCLAIM_KEYS='"],
+      ['apply() {\n', 'apply() {\n  unset AGENT_MARKERS\n'],
+      [`if [ "\${1:-}" != check ]; then`, `if [ "\${1:-}" != check ] && [ "\${1:-}" != apply ]; then`],
+      ["CLAIM_KEYS='", "gh auth status\nCLAIM_KEYS='"],
+      ['    if [[ -v $marker ]]; then', '    if [[ -v marker ]]; then'],
+    ]
+    for (const [from, to] of plants) {
+      expect(protectEnvironments.includes(from)).toBe(true)
+      expect(gate(workflows, environments, holds, protectEnvironments.replace(from, to))).toEqual(refuses)
+    }
   })
 
   it('holds the repository', () => {
@@ -2545,6 +2667,40 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     })
   })
 
+  // No coding agent runs apply by any route (CLAUDE.md), so the refusal every command but check makes under
+  // an agent or CI marker is proved on the script run with no command: under each marker, set empty, it
+  // refuses before anything else runs, gh included; under none it prints its usage.
+  it('refuses every command but check under each agent marker, first', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-dpw09-markers-'))
+    try {
+      writeFileSync(join(folder, 'gh'), `#!/bin/sh\necho "$@" >>'${join(folder, 'gh-calls')}'\n`, { mode: 0o755 })
+      const run = (marker?: string) => {
+        const result = spawnSync('bash', [join(root, 'scripts/protect-environments.sh')], {
+          encoding: 'utf8',
+          env: {
+            PATH: `${folder}:${process.env.PATH ?? ''}`,
+            HOME: folder,
+            ...(marker === undefined ? {} : { [marker]: '' }),
+          },
+        })
+        return { status: result.status, stderr: result.stderr.trim() }
+      }
+      for (const marker of AGENT_MARKERS) {
+        expect(run(marker)).toEqual({
+          status: 1,
+          stderr: `protect-environments: refused while ${marker} is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI`,
+        })
+      }
+      expect(run()).toEqual({
+        status: 2,
+        stderr: 'usage: scripts/protect-environments.sh check [--from <dir>] [owner/repo] | apply [owner/repo]',
+      })
+      expect(readdirSync(folder)).toEqual(['gh'])
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
   // protect-environments.sh check --from compares saved answers with the files, field by field; it only
   // reads, and here it reads planted answers alone (never GitHub).
   describe('protect-environments.sh check --from on planted answers', () => {
@@ -2656,7 +2812,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
           rule.type === 'required_reviewers' ? { ...rule, ...change } : rule,
         ),
       })
-      planted(() => write('prod.json', { ...prod(), name: 'prod-x' }), 'protect-environments: prod name differs')
+      planted(() => write('prod.json', { ...prod(), name: 'Prod' }), 'protect-environments: prod name differs')
       planted(
         () => write('prod.json', reviewersRule({ prevent_self_review: true })),
         'protect-environments: prod prevent_self_review differs',
@@ -2704,7 +2860,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
 describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials are', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const RUNS =
-    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
+    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch, IMAGE_CHECK’s listing and unpacking and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
   // Every run of a credentialed job is pinned whole, so a plant in any of them is that finding too.
   const pinned = (where: string) => at(where, PINNED_10)
@@ -2715,6 +2871,8 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const STEP_KEYS =
     'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error'
   const WITH = 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source'
+  const WITH_WHOLE =
+    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
   const ENV =
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
@@ -2868,6 +3026,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       ),
     ).toEqual([
       at('prod', STEPS),
+      at('prod (Node, from .nvmrc)', WITH_WHOLE),
       at('prod (Node, from .nvmrc)', 'uses only checkout, download-artifact and the credentials action'),
     ])
     expect(credentialedCodeFindings(removedStep('nonprod', "The CLI is the registry's"), manifests, lockfile)).toEqual([
@@ -3075,10 +3234,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const persist = '          persist-credentials: false\n'
     expect(find(persist, `${persist}          repository: x/y\n`, job('nonprod'))).toEqual([
       at("nonprod (Check out the run's commit)", WITH),
+      at("nonprod (Check out the run's commit)", WITH_WHOLE),
     ])
     const ids = `          artifact-ids: \${{ needs.synth.outputs.assembly }}\n`
     expect(find(ids, `${ids}          run-id: 1\n          github-token: x\n`, job('nonprod'))).toEqual([
       at('nonprod (Download the assembly)', WITH),
+      at('nonprod (Download the assembly)', WITH_WHOLE),
     ])
     expect(
       find('      STAGE: nonprod\n', '      STAGE: nonprod\n      BASH_ENV: infra/x.sh\n', job('nonprod')),
@@ -3712,6 +3873,158 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
   })
 })
 
+describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives', () => {
+  let scratch = ''
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw13-image-'))
+  })
+  afterAll(() => {
+    if (scratch !== '') rmSync(scratch, { recursive: true, force: true })
+  })
+  const BLOB = 'a'.repeat(64)
+  const MANIFEST = 'b'.repeat(64)
+  // A folder holding the layout buildx's OCI export writes: oci-layout, index.json and two blobs.
+  let folders = 0
+  function layout(): string {
+    const folder = join(scratch, `layout-${++folders}`)
+    execFileSync('mkdir', ['-p', join(folder, 'blobs', 'sha256')])
+    writeFileSync(join(folder, 'oci-layout'), '{"imageLayoutVersion":"1.0.0"}')
+    writeFileSync(join(folder, 'index.json'), `{"schemaVersion":2,"manifests":[{"digest":"sha256:${MANIFEST}"}]}`)
+    writeFileSync(join(folder, 'blobs', 'sha256', BLOB), 'layer')
+    writeFileSync(join(folder, 'blobs', 'sha256', MANIFEST), 'manifest')
+    return folder
+  }
+  // An archive of a layout, its members in buildx's order (the folders first) and any more given after them,
+  // made by GNU tar in one go (so a hard link is written as one), or, with extra arguments (-P, a
+  // --transform), those members appended with them alone.
+  function archive(folder: string, more: readonly string[] = [], options: readonly string[] = []): string {
+    const path = join(scratch, `image-${folders}-${more.length}-${options.length}.tar`)
+    const members = ['blobs/', 'blobs/sha256/', `blobs/sha256/${BLOB}`, `blobs/sha256/${MANIFEST}`, 'index.json']
+    const tar = ['--numeric-owner', '--no-recursion', '-C', folder]
+    if (options.length === 0) execFileSync('tar', [...tar, '-cf', path, ...members, 'oci-layout', ...more])
+    else {
+      execFileSync('tar', [...tar, '-cf', path, ...members, 'oci-layout'])
+      execFileSync('tar', [...tar, ...options, '-rf', path, ...more])
+    }
+    return path
+  }
+  // The deploy jobs' step, as it runs: the archive at the runner's image folder, then the check and the
+  // unpacking into the folder the push copies from. The last line it said, and what the folder holds.
+  function checked(path: string, script = `${IMAGE_UNPACK_RUN}\n`) {
+    const temp = mkdtempSync(join(scratch, 'runner-'))
+    execFileSync('mkdir', [join(temp, 'image')])
+    cpSync(path, join(temp, 'image', 'image.tar'))
+    const result = spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: temp, RUNNER_TEMP: temp },
+    })
+    let unpacked: string[] = []
+    try {
+      unpacked = (readdirSync(join(temp, 'image-layout'), { recursive: true }) as string[]).sort()
+    } catch {
+      unpacked = []
+    }
+    return { status: result.status, said: result.stdout.trim().split('\n').at(-1) ?? '', unpacked }
+  }
+  const MEMBER = "image-check: the image's archive holds a member buildx's OCI export never writes"
+  const FOLDER = "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"
+
+  it('unpacks the archive buildx writes into the folder the push copies from, and the build’s check passes it', () => {
+    const done = checked(archive(layout()))
+    expect(done).toEqual({
+      status: 0,
+      said: '',
+      unpacked: [
+        'blobs',
+        'blobs/sha256',
+        `blobs/sha256/${BLOB}`,
+        `blobs/sha256/${MANIFEST}`,
+        'index.json',
+        'oci-layout',
+      ],
+    })
+    // The push copies from that folder, never the archive (SECURITY-01, round 5).
+    expect(SKOPEO_COPY).toContain(`"oci:${IMAGE_LAYOUT}:build"`)
+    expect(IMAGE_UNPACK_RUN).toContain(`unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`)
+    // The build's own run checks the archive buildx wrote, before its outputs.
+    const build = PINNED_RUNS().build?.['Build the image']?.run ?? ''
+    expect(build).toContain(`${IMAGE_CHECK}\ncheck_image_archive "$RUNNER_TEMP/image.tar"\necho "digest=`)
+    const buildRun = checked(
+      archive(layout()),
+      `set -euo pipefail\n${IMAGE_CHECK}\ncheck_image_archive "$RUNNER_TEMP/image/image.tar"\n`,
+    )
+    expect(buildRun).toMatchObject({ status: 0, said: '' })
+  })
+
+  it('refuses a link written through, a link or hard link, an absolute, escaped or other name, a fifo or a folder, before unpacking anything (SECURITY-01, round 5)', () => {
+    // A symbolic link to a folder outside, then a file through it: what skopeo's oci-archive source would
+    // write over the CLI.
+    const outside = mkdtempSync(join(scratch, 'outside-'))
+    const through = layout()
+    symlinkSync(outside, join(through, 'zz'))
+    writeFileSync(join(outside, 'index.js'), 'not the CLI')
+    const throughArchive = archive(through, ['zz', 'zz/index.js'])
+    rmSync(join(outside, 'index.js'))
+    expect(checked(throughArchive)).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    expect(readdirSync(outside)).toEqual([])
+    // A symbolic link under an allowed name.
+    const named = layout()
+    rmSync(join(named, 'index.json'))
+    symlinkSync('/etc/hostname', join(named, 'index.json'))
+    expect(checked(archive(named))).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    // A hard link, an extra member, a fifo and a folder under a file's name.
+    const hard = layout()
+    execFileSync('ln', [join(hard, 'oci-layout'), join(hard, 'blobs', 'sha256', 'c'.repeat(64))])
+    expect(checked(archive(hard, [`blobs/sha256/${'c'.repeat(64)}`]))).toEqual({
+      status: 1,
+      said: MEMBER,
+      unpacked: [],
+    })
+    const extra = layout()
+    writeFileSync(join(extra, 'manifest.json'), '[]')
+    expect(checked(archive(extra, ['manifest.json']))).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    const fifo = layout()
+    execFileSync('mkfifo', [join(fifo, 'blobs', 'sha256', 'pipe')])
+    expect(checked(archive(fifo, ['blobs/sha256/pipe']))).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    const folder = layout()
+    execFileSync('mkdir', [join(folder, 'blobs', 'sha256', 'd'.repeat(64))])
+    expect(checked(archive(folder, [`blobs/sha256/${'d'.repeat(64)}`]))).toEqual({
+      status: 1,
+      said: MEMBER,
+      unpacked: [],
+    })
+    // An absolute name, a name with .., and a name holding a line break.
+    const absolute = layout()
+    expect(
+      checked(archive(absolute, ['index.json'], ['-P', `--transform=s,^,${join(scratch, 'absolute')}/,`])),
+    ).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    expect(checked(archive(layout(), ['index.json'], ['-P', '--transform=s,^,../,']))).toEqual({
+      status: 1,
+      said: MEMBER,
+      unpacked: [],
+    })
+    const broken = layout()
+    writeFileSync(join(broken, 'x\nindex.json'), '')
+    expect(checked(archive(broken, ['x\nindex.json']))).toEqual({ status: 1, said: MEMBER, unpacked: [] })
+    // No archive at all, and a folder already there for the layout.
+    const junk = join(scratch, 'junk.tar')
+    writeFileSync(junk, 'not a tar\n')
+    expect(checked(junk)).toEqual({ status: 1, said: "image-check: the image's archive can't be read", unpacked: [] })
+    expect(checked(archive(layout()), `mkdir "$RUNNER_TEMP/image-layout"\n${IMAGE_UNPACK_RUN}\n`).status).not.toBe(0)
+  })
+
+  it('refuses an unpacked folder that holds a link even with no listing first', () => {
+    const named = layout()
+    rmSync(join(named, 'index.json'))
+    symlinkSync('/etc/hostname', join(named, 'index.json'))
+    const alone = `set -euo pipefail\n${IMAGE_CHECK}\nunpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"\n`
+    expect(checked(archive(named), alone)).toMatchObject({ status: 1, said: FOLDER })
+    const extra = layout()
+    writeFileSync(join(extra, 'manifest.json'), '[]')
+    expect(checked(archive(extra, ['manifest.json']), alone)).toMatchObject({ status: 1, said: FOLDER })
+  })
+})
+
 describe('DPW-11 (C11-D48): every checkout leaves no credential behind', () => {
   it('finds each planted breakage', () => {
     expect(checkoutFindings(plant('          persist-credentials: false\n', '', job('synth')))).toEqual([
@@ -3951,6 +4264,57 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
 
   // A record job holds deployments: write, so it runs no repository code: one step, no action, and only
   // bash's own, its functions, jq and gh api.
+  it('finds an image archive pushed unchecked: the check dropped, moved past the credentials or skipped, or the push from the archive (SECURITY-01, round 5)', () => {
+    const IMAGE =
+      'checks and unpacks the image archive it downloaded (IMAGE_CHECK) after the download and before the credentials action, under the push’s if:'
+    const step = 'Check and unpack the image'
+    for (const id of ['nonprod', 'prod']) {
+      expect(releaseFindings(removedStep(id, step)), id).toEqual([at(`${id} (${step})`, PINNED_13), at(id, IMAGE)])
+      expect(releaseFindings(movedStep(id, step, 'What runs')), id).toEqual([at(id, IMAGE)])
+      expect(releaseFindings(movedStep(id, step, 'Download the image')), id).toEqual([at(id, IMAGE)])
+    }
+    expect(
+      releaseFindings(
+        plant(
+          `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The image's`,
+          `if: \${{ needs.gate.outputs.mode != 'rollback' }}\n        run: |\n          set -euo pipefail\n          # The image's`,
+          job('nonprod'),
+        ),
+      ),
+    ).toEqual([at(`nonprod (${step})`, PINNED_13), at('nonprod', IMAGE)])
+    // The push handed the archive again, which skopeo would unpack itself.
+    expect(
+      find('"oci:$RUNNER_TEMP/image-layout:build"', '"oci-archive:$RUNNER_TEMP/image/image.tar:build"', push),
+    ).toEqual([
+      at('nonprod (Push the image)', PINNED_13),
+      at('deploy.yml', 'hands skopeo no archive, which it would unpack itself: the push copies from an OCI layout'),
+      at('nonprod (Push the image)', TAG),
+      at('nonprod (Push the image)', PUSH),
+    ])
+    // The build's check of the archive buildx wrote, dropped.
+    expect(find('          check_image_archive "$RUNNER_TEMP/image.tar"\n', '', job('build'))).toEqual([
+      at('build (Build the image)', PINNED_13),
+    ])
+  })
+
+  it('finds a check and unpacking skipped where the step runs before the credentials (DPW-06), and IMAGE_CHECK’s tools on any other line (DPW-10)', () => {
+    const imageIf = `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The image's`
+    expect(deployStepFindings(plant(imageIf, imageIf.replace("== 'deploy'", "!= 'rollback'"), job('nonprod')))).toEqual(
+      [
+        `${DEPLOY}: DPW-06 nonprod: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:`,
+      ],
+    )
+    const tar = '          tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions\n'
+    const found = credentialedCodeFindings(
+      addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", tar),
+      manifests,
+      lockfile,
+    )
+    expect(found).toContain(
+      `${DEPLOY}: DPW-10 nonprod (Read back what runs): runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch, IMAGE_CHECK’s listing and unpacking and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run`,
+    )
+  })
+
   it('finds a checkout or a program in a record job', () => {
     const RECORD = 'runs one step, with no action, of only bash’s own, its functions, jq and gh api: no repository code'
     const write = '      - name: Write the record\n'
@@ -5194,6 +5558,100 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
       expect(actionPinFindings(planted), what).toContain(finding)
     }
     expect(actionPinFindings(workflows, files)).toEqual([])
+  })
+})
+
+describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
+  const WITH =
+    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
+  const at = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${WITH}`
+  const found = (texts: ReadonlyMap<string, string>) =>
+    credentialedCodeFindings(texts, manifests, lockfile).filter(each => each.endsWith(WITH))
+  const checkout = '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n'
+  const release = `          ref: \${{ needs.gate.outputs.commit }}\n`
+  const RELEASE = "synth (Check out the release's commit)"
+
+  it('holds every checkout to the run’s commit, and synth’s three to their own commits and folders (GUARDS-01, round 5)', () => {
+    // A ref given to a checkout that has none: the gate's (an input, so a dispatch names the commit whose
+    // history.ts plans), the build's, a deploy job's and prod-gate's.
+    for (const [id, ref] of [
+      ['gate', `\${{ inputs.release }}`],
+      ['build', 'refs/heads/feature'],
+      ['build', '0'.repeat(40)],
+      ['nonprod', 'refs/heads/feature'],
+      ['prod-gate', 'refs/heads/feature'],
+      ['smoke-prod', `\${{ needs.gate.outputs.previous_prod_commit }}`],
+    ] as const) {
+      expect(found(plant(checkout, `${checkout}          ref: ${ref}\n`, job(id))), `${id} ${ref}`).toEqual([
+        at(`${id} (Check out the run's commit)`),
+      ])
+    }
+    // Synth's release checkout without its ref (main's head under the release's label), at a branch, at an
+    // input, at a slip GitHub reads as '', and prod's previous checkout at nonprod's previous commit.
+    for (const to of [
+      '',
+      '          ref: refs/heads/feature\n',
+      `          ref: \${{ inputs.release }}\n`,
+      `          ref: \${{ needs.gate.outputs.comit }}\n`,
+    ]) {
+      expect(found(plant(release, to, job('synth'))), to).toEqual([at(RELEASE)])
+    }
+    expect(
+      found(
+        plant(
+          `          ref: \${{ needs.gate.outputs.previous_prod_commit }}\n`,
+          `          ref: \${{ needs.gate.outputs.previous_nonprod_commit }}\n`,
+          job('synth'),
+        ),
+      ),
+    ).toEqual([at("synth (Check out prod's previous release)")])
+    // The release's and nonprod's previous folders swapped: each synth step then runs in the other's tree.
+    const swapped = edited(
+      edited(deployText, '          path: release\n', '          path: previous-nonprod\n', job('synth')),
+      '          path: previous-nonprod\n',
+      '          path: release\n',
+      "      - name: Check out nonprod's previous release\n",
+    )
+    expect(found(withText(DEPLOY, swapped))).toEqual([at(RELEASE), at("synth (Check out nonprod's previous release)")])
+  })
+
+  it('holds every download, upload, Node and credentials input to its value', () => {
+    expect(
+      found(
+        plant(
+          `          path: \${{ runner.temp }}/image\n`,
+          `          path: \${{ runner.temp }}/assembly\n`,
+          job('nonprod'),
+        ),
+      ),
+    ).toEqual([at('nonprod (Download the image)')])
+    expect(
+      found(
+        plant(
+          `          artifact-ids: \${{ needs.synth.outputs.assembly }}\n`,
+          `          artifact-ids: \${{ needs.synth.outputs.assembly_previous_prod }}\n`,
+          job('prod'),
+        ),
+      ),
+    ).toEqual([at('prod (Download the assembly)')])
+    expect(found(plant('          name: assembly\n', '          name: assembly-x\n', job('synth')))).toEqual([
+      at("synth (Upload the release's assembly)"),
+    ])
+    expect(found(plant('          retention-days: 14\n', '          retention-days: 90\n', job('build')))).toEqual([
+      at('build (Upload the image)'),
+    ])
+    expect(
+      found(plant('          node-version-file: .nvmrc\n', '          node-version-file: other/.nvmrc\n', job('gate'))),
+    ).toEqual([at('gate (Node, from .nvmrc)')])
+    expect(
+      found(
+        plant('          role-duration-seconds: 3600\n', '          role-duration-seconds: 43200\n', job('nonprod')),
+      ),
+    ).toEqual([at('nonprod (AWS credentials)')])
+  })
+
+  it('holds the repository', () => {
+    expect(found(workflows)).toEqual([])
   })
 })
 

@@ -21,7 +21,10 @@
 // action-pins, which DPW-04 holds), so nothing earlier on its runner can change the check itself either.
 // That job's checkout and setup-node run before this, each at its commit in PINS_JOB_ACTIONS, which this
 // reads too: that catches a mistake there, though never a fork's commit, which would already have run, so a
-// person proves a change to them by hand (action-pins.ts says how).
+// person proves a change to them by hand (action-pins.ts says how). What this check decides holds a pin
+// only as long as this file does, and CI runs it from the pull request's own head, so it is on the
+// owner's-read list (C11-D74); DPW-04's tests run its decision (run) and its address (actionUrl) on planted
+// answers.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -104,12 +107,20 @@ export function readTagRefs(url: string, version: string, env: NodeJS.ProcessEnv
   }
 }
 
-// The action's own repository's two refs for the version, tried three times.
-function lsRemote(action: string, version: string): string {
+// The address of an action's own repository on GitHub, the only one its tags are read from.
+export const actionUrl = (action: string): string => `https://github.com/${action}.git`
+
+// The action's own repository's two refs for the version, tried three times (readRefs is readTagRefs but in
+// DPW-04's tests, which see the address it is given).
+export function lsRemote(
+  action: string,
+  version: string,
+  readRefs: (url: string, version: string) => string = readTagRefs,
+): string {
   let failure: unknown
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      return readTagRefs(`https://github.com/${action}.git`, version)
+      return readRefs(actionUrl(action), version)
     } catch (error) {
       failure = error
       if (attempt < 3) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000)
@@ -118,13 +129,22 @@ function lsRemote(action: string, version: string): string {
   throw new Error(`check-action-pins: couldn't read ${action}'s tags: ${String(failure)}`)
 }
 
-function main(): void {
+// The check, given a reader of an action's tag refs (lsRemote, in CI): it reads both tables, prints a line
+// for each pin it proves and each problem, and answers the exit code, 1 on any problem or a read that fails
+// and 0 only when every pin is its version's tag's commit. The script exits with it.
+export function run(read: (action: string, version: string) => string): number {
   const problems: string[] = []
   for (const [where, pins] of [
     ['deploy.yml', ACTION_PINS],
     ["ci.yml's action-pins job", PINS_JOB_ACTIONS],
   ] as const) {
-    const found = pinProblems(pins, lsRemote)
+    let found: string[]
+    try {
+      found = pinProblems(pins, read)
+    } catch (error) {
+      console.error(`\n${where}: ${error instanceof Error ? error.message : String(error)}`)
+      return 1
+    }
     for (const [action, pin] of Object.entries(pins)) {
       if (!found.some(problem => problem.startsWith(`${action}:`)))
         console.log(`  ${where}: ${action} ${pin}: its tag's commit`)
@@ -134,11 +154,12 @@ function main(): void {
   if (problems.length > 0) {
     console.error(`\n${problems.length} problem(s):`)
     for (const problem of problems) console.error(`  - ${problem}`)
-    process.exit(1)
+    return 1
   }
   console.log(
     "Every action deploy.yml pins, and each ci.yml's action-pins job runs first, is at the commit its version names in its own repository.",
   )
+  return 0
 }
 
-if (import.meta.main) main()
+if (import.meta.main) process.exit(run(lsRemote))

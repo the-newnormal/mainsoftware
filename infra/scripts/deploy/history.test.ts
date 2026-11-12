@@ -5,15 +5,17 @@
 // and what the command line prints, plan's lines past DOMAINS among them. The commits are real ones in
 // scratch git repositories (main, a branch off it, and a second main whose floor lies between two
 // releases, after its expansion), so ancestry and the floors are git's own answers, and a developer's own
-// git settings (a global hook, signed tags) are set aside; every ARN, account id and address is built
-// from parts at run time (IG-01). It holds what the history must decide, so it is on the owner's-read
-// list (C11-D74).
+// git settings are set aside (git's own environment variables for the whole file, a hook's
+// GIT_INDEX_FILE among them, and the system and global configuration files, a global hook or signed
+// tags, for every git command the test runs itself); every ARN, account id and address is built from
+// parts at run time (IG-01). It holds what the history must decide, so it is on the owner's-read list
+// (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { DOMAINS, isPlaceholderDomain, REGION } from '../../src/config/profiles.ts'
 import {
   chooseFromEcs,
@@ -23,6 +25,7 @@ import {
   gitExpansionsMet,
   gitFloorsAllowed,
   gitIsAncestor,
+  HistoryInputError,
   type IsAncestor,
   main,
   migrated,
@@ -51,8 +54,18 @@ const m: string[] = []
 let branch = ''
 let isAncestor: IsAncestor = () => false
 
-// git with an identity, and none of the developer's commit and tag signing or hooks, so a global setting
-// can't refuse a commit.
+// git's own variables set aside for the whole file, the script's own git commands included: a hook that
+// runs these tests hands git GIT_INDEX_FILE (and can hand it GIT_DIR or GIT_WORK_TREE), which would
+// point a command at the hook's repository and index instead of the scratch one, and a git -c value
+// (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT) would reach every command. Restored after the file.
+for (const name of Object.keys(process.env)) if (name.startsWith('GIT_')) vi.stubEnv(name, undefined)
+afterAll(() => {
+  vi.unstubAllEnvs()
+})
+const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+
+// git with no system or global configuration file, an identity, and none of the developer's commit and
+// tag signing or hooks, so a global setting can't refuse a commit.
 function git(args: readonly string[], cwd = repo): string {
   return execFileSync(
     'git',
@@ -60,7 +73,7 @@ function git(args: readonly string[], cwd = repo): string {
       ...['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false'],
       ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
     ],
-    { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    { cwd, encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] },
   ).trim()
 }
 
@@ -200,7 +213,7 @@ async function refusalOf(input: PlanInput) {
 }
 
 describe('C11-D61, T24 item 23: the release record’s payload', () => {
-  it('C11-D61: keeps a good record, refuses an ARN, a long revision, an extra key, a string payload, another schema, a short migratedCommit and a fourth service, and never reads a per-job deployment', () => {
+  it('C11-D61: keeps a good record and one whose commit, digest and migratedCommit hold 12-digit runs, refuses an ARN, a long revision, an extra key, a string payload, another schema, a short migratedCommit and a fourth service, and never reads a per-job deployment', () => {
     const good = deployment(11, 'prod', 'a'.repeat(40), D.a, 3)
     const arn = deployment(12, 'prod', 'a'.repeat(40), D.a, 4)
     ;(arn.payload as { services: Record<string, string> }).services.api = [
@@ -233,6 +246,10 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     ;(shortMigrated.payload as Record<string, unknown>).migratedCommit = 'b'.repeat(12)
     const fourthService = deployment(25, 'prod', 'a'.repeat(40), D.a, 15)
     ;(fourthService.payload as { services: Record<string, string> }).services.scheduler = 'hearth-prod-scheduler:15'
+    // A commit, digest and migratedCommit made of digits alone: each holds a 12-digit run, as a real id
+    // can, and is no account id, so the record is kept (each field's exemption on its own).
+    const allDigits = deployment(26, 'prod', '1'.repeat(40), `sha256:${'2'.repeat(64)}`, 16, 'rollback')
+    ;(allDigits.payload as Record<string, unknown>).migratedCommit = '3'.repeat(40)
     const parsed = parseReleaseRecords(
       [
         good,
@@ -250,11 +267,17 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         schemaTwo,
         shortMigrated,
         fourthService,
+        allDigits,
       ],
       'prod',
     )
-    expect(parsed.records.map(record => record.id)).toEqual([11, 17, 18])
+    expect(parsed.records.map(record => record.id)).toEqual([11, 17, 18, 26])
     expect(parsed.ignored).toEqual([12, 13, 14, 15, 16, 19, 20, 23, 24, 25])
+    expect(parsed.records[3]).toMatchObject({
+      commit: '1'.repeat(40),
+      digest: `sha256:${'2'.repeat(64)}`,
+      migratedCommit: '3'.repeat(40),
+    })
     // The record's ref is main; its payload's commit is the release's.
     expect(parsed.records[0]).toMatchObject({
       commit: 'a'.repeat(40),
@@ -269,7 +292,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     expect(() => parseReleaseRecords([{ id: 'x', task: 'hearth-release', environment: 'prod' }], 'prod')).toThrow()
   })
 
-  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records, ignoring another schema’s', () => {
+  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records, ignoring another schema’s and keeping a commit or digest of digits', () => {
     // Run B's record (higher revisions) lands before run A's: read in revision order.
     const parsed = parseReleaseRecords(
       [
@@ -288,6 +311,8 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         { id: 10, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(3), extra: 1 } },
         { id: 11, task: 'hearth-migrated', environment: 'nonprod', payload: { schema: 1, commit: at(4) } },
         { id: 12, task: 'hearth-migrated', environment: 'prod', payload: { schema: 2, commit: at(3) } },
+        // A commit of digits alone holds a 12-digit run and is kept, as a release record's is.
+        { id: 13, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: '4'.repeat(40) } },
       ],
       'prod',
     )
@@ -295,6 +320,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
       records: [
         { id: 3, commit: at(1) },
         { id: 9, commit: at(2) },
+        { id: 13, commit: '4'.repeat(40) },
       ],
       ignored: [10, 12],
     })
@@ -317,8 +343,21 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         environment: 'prod',
         payload: { schema: 2, kind: 'down', commit: at(4), digest: D.d },
       },
+      // A commit and digest of digits alone, each holding a 12-digit run: kept.
+      {
+        id: 8,
+        task: 'hearth-restore',
+        environment: 'prod',
+        payload: { schema: 1, kind: 'down', commit: '5'.repeat(40), digest: `sha256:${'6'.repeat(64)}` },
+      },
     ])
-    expect(restores).toEqual({ records: [{ id: 5, kind: 'up', commit: at(4), digest: D.d }], ignored: [6, 7] })
+    expect(restores).toEqual({
+      records: [
+        { id: 5, kind: 'up', commit: at(4), digest: D.d },
+        { id: 8, kind: 'down', commit: '5'.repeat(40), digest: `sha256:${'6'.repeat(64)}` },
+      ],
+      ignored: [6, 7],
+    })
   })
 })
 
@@ -608,6 +647,33 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
       reason: 'drill-revision',
     })
     expect(chooseFromEcs(pages, c, new Set(['hearth-prod-realtime:3']))).toMatchObject({ ok: true })
+  })
+
+  it('C11-D58: refuses a role whose chosen revision names another role’s task definition, or one that isn’t hearth’s', () => {
+    // Every role shares the release's digest, so services-disagree can't see a mix-up: the api's pages
+    // holding the worker's, as a mistyped --service would save them, are refused by the family alone.
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.b, 2],
+      [20, D.c, 3],
+    ]
+    const c = new Set([D.c])
+    const refusal = "a api revision's task definition isn't one of hearth's"
+    const mixed = { ...sameForAll(entries), api: ecsHistory('worker', entries) }
+    expect(() => chooseFromEcs(mixed, c)).toThrow(HistoryInputError)
+    expect(() => chooseFromEcs(mixed, c)).toThrow(refusal)
+    // The api's own revisions, one naming the realtime family: the chosen one is refused.
+    const api = ecsHistory('api', entries)
+    const renamed: EcsHistory = {
+      deployments: api.deployments,
+      revisions: api.revisions.map(revision => ({ ...revision, taskDefinition: taskDefinitionArn('realtime', 2) })),
+    }
+    expect(() => chooseFromEcs({ ...sameForAll(entries), api: renamed }, c)).toThrow(refusal)
+    // A family that isn't hearth's.
+    const other: EcsHistory = {
+      deployments: api.deployments,
+      revisions: api.revisions.map(revision => ({ ...revision, taskDefinition: 'other-prod-api:2' })),
+    }
+    expect(() => chooseFromEcs({ ...sameForAll(entries), api: other }, c)).toThrow(refusal)
   })
 })
 
@@ -1638,6 +1704,36 @@ describe('C11-D58, C11-D61: the command line', () => {
         err: [],
       })
     }
+  })
+
+  it('C11-D58: choose-ecs refuses an api’s pages that hold the worker’s, as a mistyped --service would save them', async () => {
+    const pages = join(scratch, 'pages-mixed')
+    rmSync(pages, { recursive: true, force: true })
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.b, 2],
+      [20, D.c, 3],
+    ]
+    for (const role of ['api', 'realtime', 'worker']) {
+      // The api's files hold the worker's deployments and revisions.
+      const saved = role === 'api' ? 'worker' : role
+      writeJson(join(pages, `${role}-deployments-1.json`), {
+        next: null,
+        deployments: entries.map(([when], i) => [new Date(when * minute).toISOString(), revisionArn(saved, i + 1)]),
+      })
+      writeJson(
+        join(pages, `${role}-revisions-1.json`),
+        entries.map(([, digest, revision], i) => [
+          revisionArn(saved, i + 1),
+          taskDefinitionArn(saved, revision),
+          digest,
+        ]),
+      )
+    }
+    expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', D.c])).toEqual({
+      code: 2,
+      out: ["history: a api revision's task definition isn't one of hearth's"],
+      err: [],
+    })
   })
 
   it('C11-D49, C11-D58: plan’s command line past DOMAINS: every flag, the checks file, git’s trees, ancestry and floors, and every line it prints', async () => {

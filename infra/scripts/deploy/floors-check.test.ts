@@ -3,22 +3,34 @@
 // command line in a scratch git repository with fictional migrations and a floors.ts of its own in the
 // real one's shape, whose origin/main is c4, as a pulled clone's is, and a branch commit off it that
 // main never merged. CI's runner gives git no identity, so every commit here names its own (an address
-// built from parts, IG-01), and a developer's own git settings (a global hook, signed tags) are set
-// aside. It holds what the floors check must decide, so it is on the owner's-read list (C11-D74).
+// built from parts, IG-01), and a developer's own git settings are set aside: git's own environment
+// variables for the whole file (a hook's GIT_INDEX_FILE among them), and the system and global
+// configuration files (a global hook, signed tags) for every git command the test runs itself. It holds
+// what the floors check must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { FLOORS } from '../../src/release/floors.ts'
 import { checkExpansions, checkFloors, crossedFloors, FloorsError, main, parseFloors } from './floors-check.ts'
 
 const SCRIPT = fileURLToPath(new URL('./floors-check.ts', import.meta.url))
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const EMAIL = ['test', 'example.invalid'].join('@')
-// What every git command here is given: an identity, and none of the developer's commit and tag signing
-// or hooks, so a global setting can't refuse a commit or turn a plain tag into a signed one.
+// git's own variables set aside for the whole file, the script's own git commands included: a hook that
+// runs these tests hands git GIT_INDEX_FILE (and can hand it GIT_DIR or GIT_WORK_TREE), which would
+// point a command at the hook's repository and index instead of the scratch one, and a git -c value
+// (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT) would reach every command. Restored after the file.
+for (const name of Object.keys(process.env)) if (name.startsWith('GIT_')) vi.stubEnv(name, undefined)
+afterAll(() => {
+  vi.unstubAllEnvs()
+})
+// What every git command the test runs itself is given: no system or global configuration file, an
+// identity, and none of the developer's commit and tag signing or hooks, so a global setting can't
+// refuse a commit or turn a plain tag into a signed one.
+const GIT_ENV = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
 const GIT_SETTINGS = [
   ...['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false'],
   ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null'],
@@ -50,6 +62,7 @@ function run(args: readonly string[]): string {
   return execFileSync('git', [...GIT_SETTINGS, ...args], {
     cwd: repo,
     encoding: 'utf8',
+    env: GIT_ENV,
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
 }
@@ -232,9 +245,10 @@ describe('C11-D58: the rollback floors check', () => {
     }
     const orphan = mkdtempSync(join(tmpdir(), 'hearth-floors-orphan-'))
     try {
-      execFileSync('git', [...GIT_SETTINGS, 'init', '-q', '-b', 'main'], { cwd: orphan })
-      execFileSync('git', [...GIT_SETTINGS, 'commit', '-q', '--allow-empty', '-m', 'empty'], { cwd: orphan })
-      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: orphan, encoding: 'utf8' }).trim()
+      const inside = { cwd: orphan, env: GIT_ENV, stdio: 'pipe' } as const
+      execFileSync('git', [...GIT_SETTINGS, 'init', '-q', '-b', 'main'], inside)
+      execFileSync('git', [...GIT_SETTINGS, 'commit', '-q', '--allow-empty', '-m', 'empty'], inside)
+      const head = execFileSync('git', [...GIT_SETTINGS, 'rev-parse', 'HEAD'], { ...inside, encoding: 'utf8' }).trim()
       const inOrphan = async (argv: readonly string[]) => {
         let out = ''
         const code = await main([...argv, '--repo', orphan], { write: text => (out += text), cwd: repo })
@@ -243,7 +257,7 @@ describe('C11-D58: the rollback floors check', () => {
       // A clone with no origin/main is named, rather than read as main, and so is one where a tag named
       // refs/remotes/origin/main stands where the remote-tracking ref is missing (rev-parse would take it).
       expect(await inOrphan(['--target', head])).toEqual([2, 'floors-check: origin/main is not in this clone\n'])
-      execFileSync('git', [...GIT_SETTINGS, 'tag', 'refs/remotes/origin/main', head], { cwd: orphan })
+      execFileSync('git', [...GIT_SETTINGS, 'tag', 'refs/remotes/origin/main', head], inside)
       expect(await inOrphan(['--target', head])).toEqual([2, 'floors-check: origin/main is not in this clone\n'])
       expect(await inOrphan(['--target', head, '--main', head])).toEqual([
         2,

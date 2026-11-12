@@ -6,7 +6,7 @@
 // findings, `<path>: DPW-nn <rule>`, each naming a rule (and a job or step) and never a value.
 //
 // Beside the cases are the canonical texts the workflow pastes byte for byte wherever it runs them:
-// the preamble, the CLI's folder, the CLI, asset and AWS checks, the one-off runs and their parts,
+// the preamble, the CLI's folder, the CLI, image, asset and AWS checks, the one-off runs and their parts,
 // the newest-release reader, the gates' reads of the CI runs and prod-gate's call, the fast re-checks,
 // the CLI's lines, the push and the synth's lines, and every run of every job whole (PINNED_RUNS), so
 // the workflow and its guard can't drift apart unseen. A shell text here is a raw template in which a
@@ -46,7 +46,9 @@
 // GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
 // written as a block mapping and never as one expression GitHub would read as the whole mapping, every
-// step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned step's outputs, and so are
+// action step's with: is the guard's, whole (STEP_WITHS: no checkout but synth's three names a ref or a
+// path, and those check out their own commit into their own folder), every step's id is the guard's
+// (STEP_IDS), so no step of its own answers for a pinned step's outputs, and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
@@ -58,10 +60,13 @@
 // that reads the text); outside build and synth no other step writes an output. Build and synth still
 // run repository code by design (the install, the synth, the image), which could write a later step's
 // file by its folder, so synth's own asset check holds only against deploy.yml's text: each credentialed
-// job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. Every other workflow's jobs call
-// only a workflow of this repository at the same commit, which every rule reads, and hand it no secret. A
-// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()) and to
-// evaluating only what it sets itself (outsideEvaluations()).
+// job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
+// uploads is data the same way: nonprod and prod each list it and unpack it themselves, before the
+// credentials action (IMAGE_CHECK), and skopeo copies only from the folder they checked, never from an
+// archive it would unpack itself, writing a member through a link another made (over the CLI, say).
+// Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
+// reads, and hand it no secret. A canonical text is read whole, so it is held instead to bash's own
+// reading of it (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()).
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -866,10 +871,54 @@ if [ -n "$KEPT" ]; then
   exit 1
 fi`
 
+// The image check (C11-D50, C11-D79, DPW-13): check_image_archive and unpack_image, defined here and called by
+// nonprod's and prod's step that checks and unpacks the downloaded archive, before the credentials action,
+// and check_image_archive by the build on the archive buildx wrote. The archive is written by a job that runs
+// repository code, and skopeo's oci-archive source unpacks every member as it comes, following an absolute
+// symbolic link an earlier member made, so a member could rewrite the CLI CLI_CHECK checked or the assembly
+// ASSET_CHECK checked; skopeo is instead handed the folder GNU tar unpacked, an OCI layout it only reads,
+// once the listing and the folder hold only what buildx's OCI export writes.
+export const IMAGE_CHECK = sh`# The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
+# archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
+# from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
+# member as it comes and writes a later one through a link an earlier one made (over the CLI, say).
+# check_image_archive lists it with GNU tar and refuses any member that isn't a folder blobs/ or
+# blobs/sha256/, or a file oci-layout, index.json or blobs/sha256/<64 hex>, as buildx's OCI export writes
+# them: no symbolic or hard link, device, fifo, absolute, escaped or other name. unpack_image then has the
+# same tar unpack it into a folder it makes, and refuses unless that folder holds only those folders and
+# files, which skopeo reads as an OCI layout. Each count is compared whole, so a tool that fails refuses.
+# The build runs check_image_archive on the archive buildx wrote, so a change in buildx's export fails
+# there first; the deploy job's own check, of the file it downloaded, is the one its push rests on.
+check_image_archive() {
+  local listing
+  listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||
+    { echo "image-check: the image's archive can't be read"; exit 1; }
+  [ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||
+    { echo "image-check: the image's archive holds a member buildx's OCI export never writes"; exit 1; }
+}
+unpack_image() {
+  local entries
+  mkdir "$2"
+  tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions
+  entries=$(find "$2" -mindepth 1 -printf '%y %P\n')
+  [ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||
+    { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
+}`
+// The deploy jobs' step that checks and unpacks the image (DPW-13), before the credentials action, under the
+// push's if:: the archive the build uploaded, into the folder the push copies from.
+export const IMAGE_LAYOUT = '$RUNNER_TEMP/image-layout'
+export const IMAGE_UNPACK_RUN = [
+  'set -euo pipefail',
+  IMAGE_CHECK,
+  'check_image_archive "$RUNNER_TEMP/image/image.tar"',
+  `unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`,
+].join('\n')
+
 // The push (C11-D50, C11-D79, DPW-07, DPW-13): the login, the only skopeo line not through run, and the copy
-// of the build's own archive, its digest kept, to this run's own tag.
+// of the build's own image, its digest kept, to this run's own tag, from the OCI layout IMAGE_CHECK unpacked
+// and checked (never oci-archive:, whose source would unpack the archive itself).
 export const SKOPEO_LOGIN = `get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask`
-export const SKOPEO_COPY = `run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci-archive:$RUNNER_TEMP/image/image.tar:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"`
+export const SKOPEO_COPY = `run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci:${IMAGE_LAYOUT}:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"`
 
 // The pipeline's synth (C11-D51; TECH-SPEC T24 item 10, DPW-13): the release's, with a drill-break's
 // context or a restore up's restoreActive by mode, and each previous release's, each into its own folder.
@@ -907,7 +956,8 @@ export const INSTALL_RUN = 'npm ci --ignore-scripts'
 export const IMAGE_RUN = sh`set -euo pipefail
 # The image (C11-D50): built once for ARM, with no provenance or SBOM manifest, exported as an OCI
 # archive named hearth-server:build. Its digest is the build's metadata, which must be the archive's
-# one manifest; the very archive this job checks is the one the deploy jobs push.
+# one manifest, and its members must be the ones buildx's OCI export writes (IMAGE_CHECK); the very
+# archive this job checks is the one each deploy job checks again, unpacks itself and pushes.
 docker buildx build --platform linux/arm64 --provenance=false --sbom=false -f apps/server/Dockerfile --metadata-file "$RUNNER_TEMP/meta.json" --output "type=oci,dest=$RUNNER_TEMP/image.tar,name=hearth-server:build" .
 DIGEST=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/meta.json")
 INDEX=$(tar -xOf "$RUNNER_TEMP/image.tar" index.json | jq -er '.manifests | select(length == 1) | .[0].digest')
@@ -915,6 +965,8 @@ if [ "$DIGEST" != "$INDEX" ]; then
   echo "build: the build's digest isn't the archive's one manifest"
   exit 1
 fi
+${IMAGE_CHECK}
+check_image_archive "$RUNNER_TEMP/image.tar"
 echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
 echo "build: hearth-server@$DIGEST" >>"$GITHUB_STEP_SUMMARY"`
 export const LOAD_RUN = sh`set -euo pipefail
@@ -1401,6 +1453,7 @@ type Pinned = Readonly<
 >
 const deployRuns = (stage: Stage): Pinned => ({
   'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
+  'Check and unpack the image': { run: IMAGE_UNPACK_RUN, rule: 'DPW-13', if: PUSH_IF[stage] },
   'Push the image': { run: pushRun(stage), rule: 'DPW-13', if: PUSH_IF[stage] },
   Migrate: {
     run: [PREAMBLE, TASKS_OUTPUTS, ONE_OFF, migrateRun(stage), migrationRecord(stage)].join('\n'),
@@ -1549,6 +1602,28 @@ export const CI = '.github/workflows/ci.yml'
 export const RULESET = '.github/rulesets/protect-main.json'
 export const ENVIRONMENTS_DIR = '.github/environments'
 export const PROTECT_ENVIRONMENTS = 'scripts/protect-environments.sh'
+
+// The refusal protect-environments.sh makes first (C11-D56): every command but check, under any agent or
+// CI marker, before anything else runs, gh included. No coding agent runs apply by any route, so the test
+// proves it on the script run with no command, and DPW-09 holds the lines that make it the first code that
+// runs, after the five assignments it reads, with no other line naming AGENT_MARKERS.
+export const MARKER_REFUSAL = `if [ "\${1:-}" != check ]; then
+  for marker in "\${AGENT_MARKERS[@]}"; do
+    if [[ -v $marker ]]; then
+      echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
+      exit 1
+    fi
+  done
+fi`
+const markerHead = (markers: readonly string[]) => [
+  'set -euo pipefail',
+  'root=$(cd "$(dirname "$0")/.." && pwd)',
+  'dir="$root/.github/environments"',
+  'ENVIRONMENTS=(nonprod prod-plan prod)',
+  `AGENT_MARKERS=(${markers.join(' ')})`,
+  `CLAIM_KEYS='["repo","context","job_workflow_ref"]'`,
+  ...MARKER_REFUSAL.split('\n'),
+]
 
 // The fifteen jobs, in the workflow's order (C11-D47 to C11-D52, T24 item 20).
 export const JOB_IDS = [
@@ -2237,6 +2312,7 @@ export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   CDK_FOLDER,
   CLI_FETCH,
   CLI_CHECK,
+  IMAGE_CHECK,
   ASSET_CHECK,
   AWS_CHECK,
   TASKS_OUTPUTS,
@@ -4148,17 +4224,23 @@ export function deployStepFindings(workflows: Texts): Finding[] {
       add(id, GOES_ON)
     }
     const credentials = credentialsAt(steps)
-    // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped.
+    // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped: but
+    // the downloads, and the image check, which runs exactly when the push it guards does (DPW-13).
     if (ENVIRONMENT_JOBS[id] !== undefined) {
       const last = deploy === undefined ? credentials : credentials + 1
       if (
         steps
           .slice(0, last + 1)
-          .some(step => step.if !== undefined && !step.uses?.startsWith('actions/download-artifact@'))
+          .some(
+            step =>
+              step.if !== undefined &&
+              !step.uses?.startsWith('actions/download-artifact@') &&
+              !(step.run === IMAGE_UNPACK_RUN && step.if === PUSH_IF[id]),
+          )
       ) {
         add(
           id,
-          'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads',
+          'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:',
         )
       }
     }
@@ -4878,9 +4960,9 @@ function environmentFile(name: string, text: string): Record<string, unknown> | 
 // job after it starts its if: with the bot test, which no if: can then pass with a bot as either actor,
 // since a re-run of one job skips the gate; no if: of the prod jobs admits a drill; a job whose if: calls
 // a status function runs only once the jobs it relies on succeeded (REQUIRES); .github/environments
-// holds exactly the three files, each the environment file's shape: prod.json asks for at least one
-// reviewer and no admin bypass, prod-plan.json for none, nonprod.json for one exactly when non-prod
-// holds real data (C0.12's flip can't land half done); the script's agent markers are the Owner
+// holds exactly the three files, each the environment file's shape and none letting an admin bypass its
+// rules: prod.json asks for at least one reviewer, prod-plan.json for none, nonprod.json for one exactly
+// when non-prod holds real data (C0.12's flip can't land half done); the script's agent markers are the Owner
 // bootstrap script's; and the gate's reads of the records and main's ruleset, its check of the live
 // environments and its plan are pinned whole under their own if: (GATE_RECORDS, RULESET_CHECK,
 // ENVIRONMENTS_CHECK, PLAN_STEP), so no line of their own or if: ends or skips one, forges what the plan
@@ -4964,9 +5046,10 @@ export function gateFindings(
       continue
     }
     const reviewers = record.required_reviewers as number
-    if (name === 'prod.json' && (reviewers < 1 || record.can_admins_bypass !== false)) {
-      found.push(at(path, 'DPW-09', 'asks for at least one reviewer and no admin bypass'))
-    }
+    // No admin bypass in any environment: once non-prod holds real data its reviewer stands as prod's does,
+    // and a repo admin could otherwise force a deploy past either (GitHub lets admins bypass by default).
+    if (record.can_admins_bypass !== false) found.push(at(path, 'DPW-09', 'lets no admin bypass its rules'))
+    if (name === 'prod.json' && reviewers < 1) found.push(at(path, 'DPW-09', 'asks for at least one reviewer'))
     if (name === 'prod-plan.json' && reviewers !== 0) found.push(at(path, 'DPW-09', 'asks for no reviewer'))
     if (name === 'nonprod.json' && reviewers >= 1 !== nonprodHoldsRealData) {
       found.push(at(path, 'DPW-09', 'asks for a reviewer exactly when PROFILES.nonprod.holdsRealData is true'))
@@ -4976,6 +5059,22 @@ export function gateFindings(
   if (markers.length !== agentMarkers.length || agentMarkers.some((marker, i) => markers[i] !== marker)) {
     found.push(at(PROTECT_ENVIRONMENTS, 'DPW-09', "its agent markers are the Owner bootstrap script's AGENT_MARKERS"))
   }
+  // Its code lines (comments and blank lines aside) open with markerHead, and only the declaration and the
+  // refusal's loop name AGENT_MARKERS, so no line before the refusal runs anything else and no later
+  // assignment, unset or read empties the list it reads.
+  const code = protectEnvironments.split('\n').filter(line => line.trim() !== '' && !line.trim().startsWith('#'))
+  if (
+    markerHead(markers).some((line, i) => code[i] !== line) ||
+    code.filter(line => line.includes('AGENT_MARKERS')).length !== 2
+  ) {
+    found.push(
+      at(
+        PROTECT_ENVIRONMENTS,
+        'DPW-09',
+        'refuses every command but check under each agent marker, before anything else runs (MARKER_REFUSAL)',
+      ),
+    )
+  }
   return found
 }
 
@@ -4983,7 +5082,8 @@ export function gateFindings(
 
 // What a credentialed job may run (C11-D48): bash's own builtins and keywords, the functions its step
 // defines, gh, git and jq, the text tools it reads with, aws and skopeo (through run and get), the pinned
-// CLI (through run), and the fetch of the CLI on CLI_FETCH's own lines alone (FETCH_TOOLS); never npm.
+// CLI (through run), the fetch of the CLI on CLI_FETCH's own lines alone (FETCH_TOOLS), and the image's
+// listing and unpacking on IMAGE_CHECK's own lines alone (IMAGE_TOOLS); never npm.
 // Anything else, a script by path, a variable or quoted word run as a command, a wrapper (exec, command,
 // env, …) or a builtin that sets what runs (unset, wait -p, select), is refused, and so is a function
 // named as a program.
@@ -5075,6 +5175,18 @@ const FETCH_TOOLS: Readonly<Record<string, string>> = {
   openssl: HASH_LINE,
   base64: HASH_LINE,
   tar: fetchTextLine('tar '),
+}
+// The tools IMAGE_CHECK runs, each only on its own lines of that text and only in a run that is
+// IMAGE_UNPACK_RUN whole: tar lists the archive and then unpacks it into the folder mkdir makes, and find
+// lists what it unpacked. None writes anywhere but that folder, before the credentials action.
+const imageTextLines = (start: string) =>
+  IMAGE_CHECK.split('\n')
+    .map(line => line.trim())
+    .filter(line => line.startsWith(start))
+const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  tar: [...imageTextLines('listing=$(tar '), ...imageTextLines('tar ')],
+  mkdir: imageTextLines('mkdir '),
+  find: imageTextLines('entries=$(find '),
 }
 // openssl also makes the preamble's stop token (STOP_COMMANDS), on that line of the preamble alone: it only
 // prints random bytes.
@@ -5378,6 +5490,8 @@ const TABLE_HELD = [...Object.keys(SHELL_TABLE.builtins), 'if', 'for', 'case', '
 const CANONICAL_CALLS: ReadonlyMap<string, readonly string[]> = new Map([
   ['one_off_end', ['one_off_end migrate "$MIGRATE_LINES" "$RUN"']],
   ['aws_check', ['aws_check drill', 'aws_check "$MODE"', 'aws_check auto', 'aws_check restore']],
+  ['check_image_archive', ['check_image_archive "$RUNNER_TEMP/image/image.tar"']],
+  ['unpack_image', [`unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`]],
   ['check_assembly', ['check_assembly "$RUNNER_TEMP/assembly"', 'check_assembly "$RUNNER_TEMP/assembly-previous"']],
   [
     'check_release_in',
@@ -5528,7 +5642,7 @@ const DIFF_LINE = 'DIFF="$RUNNER_TEMP/diff.txt"'
 // The canonical texts that define functions, and the lines on which a credentialed run sets a variable by
 // printf -v, read, mapfile or for: the canonical texts' own, and the read-back's and the rollback jobs'
 // two loops, whose variables choose nothing that runs. "$@" runs only inside the preamble's run and get.
-const DEFINING_TEXTS = [PREAMBLE, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE] as const
+const DEFINING_TEXTS = [PREAMBLE, IMAGE_CHECK, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE] as const
 const SETTERS = ['read', 'mapfile', 'readarray', 'for', 'select', 'getopts']
 const isSetter = (command: ShellCommand) =>
   SETTERS.includes(command.word) || (command.word === 'printf' && /(?:^|\s)-/.test(command.rest))
@@ -5564,11 +5678,12 @@ function definitionsAreCanonical(run: string): boolean {
 // The shape of every job and step (DPW-10): the top level, each job's keys and runner, each step's keys,
 // each action's inputs and every env: key are the ones the workflow uses, so no shell, container,
 // service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
-// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; every env: and job's
-// outputs: is the guard's, whole, each a block mapping, and every step's id too (STEP_ENVS, JOB_OUTPUTS,
-// STEP_IDS below); every job's if: and needs: and every action step's if: are the guard's, whole (JOB_IFS,
-// JOB_NEEDS, ACTION_IFS), so no decision GitHub makes about running a job or an action is read only in
-// part; and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs names a file
+// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; every env:, every action
+// step's with: and every job's outputs: is the guard's, whole, each a block mapping, and every step's id too
+// (STEP_ENVS, STEP_WITHS, JOB_OUTPUTS, STEP_IDS below), so no checkout but synth's names a ref or a path and
+// synth's each check out their own commit into their own folder; every job's if: and needs: and every action
+// step's if: are the guard's, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no decision GitHub makes about
+// running a job or an action is read only in part; and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs names a file
 // command that hands a later step something (GITHUB_ENV, GITHUB_PATH, GITHUB_STATE).
 const TOP_KEYS = ['name', 'on', 'permissions', 'jobs']
 const JOB_KEYS = [
@@ -5798,6 +5913,84 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'resmoke-prod': smokeEnv('prod', true),
   'record-prod': recordEnv('prod'),
 }
+// Each action step's with:, by its job and its name, whole (DPW-10): which commit each checkout checks out
+// and into which folder, which .nvmrc sets Node, which artifact each download fetches into which folder,
+// what each upload sends and the credentials action's inputs. So no checkout of the gate, build, a deploy,
+// rollback or smoke job, prod-plan or prod-gate names a ref or a path (each checks out the run's commit,
+// which the gate holds to main, into the workspace), and synth's three check out exactly the release, nonprod's
+// and prod's previous release, each into its own folder: a ref added, dropped or pointed at another output
+// (an input, a branch, a commit) or two folders swapped would have the gate plan by, or the synth build,
+// another commit's code, under labels and checks that read only the env: (the pins read the folder by name).
+const TEMP = `${expr('runner.temp')}/`
+const CHECKOUT_FULL = { 'fetch-depth': '0', 'persist-credentials': 'false' }
+const CHECKOUT_SHALLOW = { 'persist-credentials': 'false' }
+const NODE_WITH = { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }
+const checkoutOf = (commit: string, folder: string) => ({
+  ref: gateOutput(commit),
+  path: folder,
+  'persist-credentials': 'false',
+})
+const downloadOf = (ids: string, folder: string) => ({ 'artifact-ids': expr(ids), path: `${TEMP}${folder}` })
+const uploadOf = (name: string) => ({
+  name,
+  path: `${TEMP}${name}`,
+  'include-hidden-files': 'false',
+  'retention-days': '14',
+  'if-no-files-found': 'error',
+})
+const CHECKOUT_NAME = "Check out the run's commit"
+const NODE_NAME = 'Node, from .nvmrc'
+const deployWiths = (credentials: string) => ({
+  [CHECKOUT_NAME]: CHECKOUT_FULL,
+  'Download the assembly': downloadOf('needs.synth.outputs.assembly', 'assembly'),
+  'AWS credentials': credentialsWith(credentials),
+})
+const rollbackWiths = (stage: Stage) => ({
+  [CHECKOUT_NAME]: CHECKOUT_FULL,
+  'Download the previous assembly': downloadOf(`needs.synth.outputs.assembly_previous_${stage}`, 'assembly-previous'),
+  'AWS credentials': credentialsWith('AWS_DEPLOY_ROLE'),
+})
+const SMOKE_WITHS = { [CHECKOUT_NAME]: CHECKOUT_FULL, [NODE_NAME]: NODE_WITH }
+export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
+  gate: { [CHECKOUT_NAME]: CHECKOUT_FULL, [NODE_NAME]: NODE_WITH },
+  build: {
+    [CHECKOUT_NAME]: CHECKOUT_SHALLOW,
+    [NODE_NAME]: NODE_WITH,
+    'Upload the image': {
+      path: `${TEMP}image.tar`,
+      archive: 'false',
+      'retention-days': '14',
+      'if-no-files-found': 'error',
+    },
+  },
+  synth: {
+    "Check out the release's commit": checkoutOf('commit', 'release'),
+    [NODE_NAME]: { ...NODE_WITH, 'node-version-file': 'release/.nvmrc' },
+    "Upload the release's assembly": uploadOf('assembly'),
+    "Check out nonprod's previous release": checkoutOf('previous_nonprod_commit', 'previous-nonprod'),
+    "Upload nonprod's previous assembly": uploadOf('assembly-previous-nonprod'),
+    "Check out prod's previous release": checkoutOf('previous_prod_commit', 'previous-prod'),
+    "Upload prod's previous assembly": uploadOf('assembly-previous-prod'),
+  },
+  nonprod: {
+    ...deployWiths('AWS_DEPLOY_ROLE'),
+    'Download the image': downloadOf('needs.build.outputs.image', 'image'),
+  },
+  'smoke-nonprod': SMOKE_WITHS,
+  'rollback-nonprod': rollbackWiths('nonprod'),
+  'resmoke-nonprod': SMOKE_WITHS,
+  'prod-plan': { ...deployWiths('AWS_DIFF_ROLE'), [CHECKOUT_NAME]: CHECKOUT_SHALLOW },
+  'prod-gate': SMOKE_WITHS,
+  prod: {
+    ...deployWiths('AWS_DEPLOY_ROLE'),
+    'Download the image': downloadOf('needs.build.outputs.image', 'image'),
+  },
+  'smoke-prod': SMOKE_WITHS,
+  'rollback-prod': rollbackWiths('prod'),
+  'resmoke-prod': SMOKE_WITHS,
+}
+const WITH =
+  'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
 const stepOutput = (step: string, name: string) => expr(`steps.${step}.outputs.${name}`)
 const deployOutputs = {
   digest: expr('steps.push.outputs.digest || steps.release.outputs.digest'),
@@ -6026,6 +6219,7 @@ const deploySteps = (stage: Stage): Steps => [
   ['The release this job deploys'],
   ['Download the assembly', 'actions/download-artifact'],
   ['Download the image', 'actions/download-artifact'],
+  ['Check and unpack the image'],
   ['Check the assembly'],
   ['The fast re-check'],
   ...CLI_STEPS,
@@ -6197,6 +6391,7 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       if (action !== undefined && !onceEach([...step.with.keys()], WITH_KEYS[action] ?? [])) {
         add(where, 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source')
       }
+      if (step.uses !== undefined && !sameMap(step.with, STEP_WITHS[id]?.[step.name ?? ''] ?? {})) add(where, WITH)
       const actionIf = ACTION_IFS[id]?.[step.name ?? '']
       if (step.uses !== undefined && (actionIf === undefined ? step.keyNames.includes('if') : step.if !== actionIf)) {
         add(where, ACTION_IF)
@@ -6287,6 +6482,8 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         if (word === '"$CDK"') return false
         if (word === '"$@"') return !PREAMBLE_RUNNERS.includes(raw(command))
         const fetchLine = FETCH_TOOLS[word]
+        const imageLines = IMAGE_TOOLS[word]
+        if (imageLines !== undefined && run === IMAGE_UNPACK_RUN && imageLines.includes(raw(command))) return false
         if (
           word === 'openssl' &&
           raw(command) === STOP_TOKEN_LINE &&
@@ -6311,7 +6508,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       ) {
         add(
           where,
-          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run',
+          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch, IMAGE_CHECK’s listing and unpacking and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run',
         )
       }
       // Its own lines are read by the table, each command held to its uses.
@@ -6566,7 +6763,11 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 // DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): build runs only when the gate says so (a
 // deploy, not a restore); no :latest and no image named by a tag but this run's own push; the push is
 // SKOPEO_COPY (--preserve-digests, --digestfile, the tag sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT), in
-// the deploy-mode push step of nonprod and prod alone, so no rollback, drill or restore pushes; the synth
+// the deploy-mode push step of nonprod and prod alone, so no rollback, drill or restore pushes, and it copies
+// from the OCI layout its job's own IMAGE_CHECK step listed and unpacked from the downloaded archive after
+// that download and before the credentials action, under the push's if: (no skopeo source names an archive,
+// which skopeo would unpack itself, writing through a link one member made), while the build checks the
+// archive buildx wrote (IMAGE_RUN); the synth
 // is the pipeline's own, by mode, never synth:ci, synth:lz, HEARTH_FAKE_RELEASE or cdk synth; release
 // records are written by record-nonprod and record-prod alone (and restore records by record-prod), the
 // migration record by nonprod's and prod's migrate steps alone, after migrate's own end, a write being
@@ -6604,6 +6805,30 @@ export function releaseFindings(workflows: Texts): Finding[] {
     steps.forEach((step, index) => {
       if (step.run !== undefined && pinnedRunOf(id, step) === undefined) add(`${id} (${label(step, index)})`, UNPINNED)
     })
+  }
+  // The push's archive is checked and unpacked by its own job, before the credentials action.
+  for (const id of ['nonprod', 'prod']) {
+    const steps = jobs.get(id)?.steps ?? []
+    const unpack = steps.findIndex(step => step.run === IMAGE_UNPACK_RUN)
+    const download = steps.findIndex(step => step.name === 'Download the image')
+    const credentials = credentialsAt(steps)
+    if (
+      unpack < 0 ||
+      download < 0 ||
+      unpack < download ||
+      credentials < 0 ||
+      unpack > credentials ||
+      steps[unpack]?.if !== PUSH_IF[id] ||
+      steps[download]?.with.get('path') !== `${expr('runner.temp')}/image`
+    ) {
+      add(
+        id,
+        'checks and unpacks the image archive it downloaded (IMAGE_CHECK) after the download and before the credentials action, under the push’s if:',
+      )
+    }
+  }
+  if (/\b(?:oci-archive|docker-archive):/.test(text)) {
+    add('deploy.yml', 'hands skopeo no archive, which it would unpack itself: the push copies from an OCI layout')
   }
   if (/:latest\b/i.test(text)) add('deploy.yml', 'names no image :latest')
   if (/synth:ci|synth:lz|HEARTH_FAKE_RELEASE|\bcdk\s+synth\b|"\$CDK"\s+synth/.test(text)) {

@@ -27,9 +27,10 @@
 #
 # apply is a repo admin's, run as the separate operating-system user that holds their gh login (never
 # the user Claude Code runs as: docs/runbooks/aws-account-set-up.md step E.4), never by a coding agent
-# or CI: it refuses while any of the markers the Owner bootstrap script refuses is set (AGENT_MARKERS
-# below, kept equal to scripts/owner-bootstrap/target.ts's by the deploy-workflow guard), and the deny
-# rules in .claude/settings.json name it. It needs the gh CLI logged in as a repo admin (Administration
+# or CI: it, like every command but check, refuses while any of the markers the Owner bootstrap script
+# refuses is set, before anything else runs (AGENT_MARKERS below, declared once and kept equal to
+# scripts/owner-bootstrap/target.ts's by the deploy-workflow guard), and the deny rules in
+# .claude/settings.json name it. It needs the gh CLI logged in as a repo admin (Administration
 # write). A file that asks for reviewers needs PROD_REVIEWERS, the reviewers' GitHub logins,
 # comma-separated, set for the one command: logins are given at run time and never committed, since
 # the repository is public. For each environment it sets the wait timer, self-review, reviewers
@@ -45,6 +46,19 @@ dir="$root/.github/environments"
 ENVIRONMENTS=(nonprod prod-plan prod)
 AGENT_MARKERS=(CLAUDECODE CLAUDE_CODE_ENTRYPOINT AI_AGENT CI GITHUB_ACTIONS)
 CLAIM_KEYS='["repo","context","job_workflow_ref"]'
+
+# Only check is a coding agent's or CI's. Every other command, apply or a word the script doesn't know
+# alike, refuses while any marker is set, before anything else runs (gh included). Since no coding
+# agent runs apply by any route, the deploy-workflow guard's test proves this refusal by running the
+# script with no command under each marker.
+if [ "${1:-}" != check ]; then
+  for marker in "${AGENT_MARKERS[@]}"; do
+    if [[ -v $marker ]]; then
+      echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
+      exit 1
+    fi
+  done
+fi
 
 usage() {
   echo 'usage: scripts/protect-environments.sh check [--from <dir>] [owner/repo] | apply [owner/repo]' >&2
@@ -190,13 +204,7 @@ reviewers() {
 }
 
 apply() {
-  local marker name want count people body policies id policy_name type has_main
-  for marker in "${AGENT_MARKERS[@]}"; do
-    if [[ -v $marker ]]; then
-      echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
-      exit 1
-    fi
-  done
+  local name want count people body policies id policy_name type has_main
   check_files || exit 1
   command -v gh >/dev/null || {
     echo 'protect-environments: needs the gh CLI' >&2

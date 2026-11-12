@@ -262,7 +262,8 @@ jobs:
           set -euo pipefail
           # The image (C11-D50): built once for ARM, with no provenance or SBOM manifest, exported as an OCI
           # archive named hearth-server:build. Its digest is the build's metadata, which must be the archive's
-          # one manifest; the very archive this job checks is the one the deploy jobs push.
+          # one manifest, and its members must be the ones buildx's OCI export writes (IMAGE_CHECK); the very
+          # archive this job checks is the one each deploy job checks again, unpacks itself and pushes.
           docker buildx build --platform linux/arm64 --provenance=false --sbom=false -f apps/server/Dockerfile --metadata-file "$RUNNER_TEMP/meta.json" --output "type=oci,dest=$RUNNER_TEMP/image.tar,name=hearth-server:build" .
           DIGEST=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$RUNNER_TEMP/meta.json")
           INDEX=$(tar -xOf "$RUNNER_TEMP/image.tar" index.json | jq -er '.manifests | select(length == 1) | .[0].digest')
@@ -270,6 +271,33 @@ jobs:
             echo "build: the build's digest isn't the archive's one manifest"
             exit 1
           fi
+          # The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
+          # archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
+          # from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
+          # member as it comes and writes a later one through a link an earlier one made (over the CLI, say).
+          # check_image_archive lists it with GNU tar and refuses any member that isn't a folder blobs/ or
+          # blobs/sha256/, or a file oci-layout, index.json or blobs/sha256/<64 hex>, as buildx's OCI export writes
+          # them: no symbolic or hard link, device, fifo, absolute, escaped or other name. unpack_image then has the
+          # same tar unpack it into a folder it makes, and refuses unless that folder holds only those folders and
+          # files, which skopeo reads as an OCI layout. Each count is compared whole, so a tool that fails refuses.
+          # The build runs check_image_archive on the archive buildx wrote, so a change in buildx's export fails
+          # there first; the deploy job's own check, of the file it downloaded, is the one its push rests on.
+          check_image_archive() {
+            local listing
+            listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||
+              { echo "image-check: the image's archive can't be read"; exit 1; }
+            [ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||
+              { echo "image-check: the image's archive holds a member buildx's OCI export never writes"; exit 1; }
+          }
+          unpack_image() {
+            local entries
+            mkdir "$2"
+            tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions
+            entries=$(find "$2" -mindepth 1 -printf '%y %P\n')
+            [ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||
+              { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
+          }
+          check_image_archive "$RUNNER_TEMP/image.tar"
           echo "digest=$DIGEST" >>"$GITHUB_OUTPUT"
           echo "build: hearth-server@$DIGEST" >>"$GITHUB_STEP_SUMMARY"
       - name: Check the image
@@ -928,6 +956,38 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.image }}
           path: ${{ runner.temp }}/image
+      - name: Check and unpack the image
+        if: ${{ needs.gate.outputs.mode == 'deploy' }}
+        run: |
+          set -euo pipefail
+          # The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
+          # archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
+          # from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
+          # member as it comes and writes a later one through a link an earlier one made (over the CLI, say).
+          # check_image_archive lists it with GNU tar and refuses any member that isn't a folder blobs/ or
+          # blobs/sha256/, or a file oci-layout, index.json or blobs/sha256/<64 hex>, as buildx's OCI export writes
+          # them: no symbolic or hard link, device, fifo, absolute, escaped or other name. unpack_image then has the
+          # same tar unpack it into a folder it makes, and refuses unless that folder holds only those folders and
+          # files, which skopeo reads as an OCI layout. Each count is compared whole, so a tool that fails refuses.
+          # The build runs check_image_archive on the archive buildx wrote, so a change in buildx's export fails
+          # there first; the deploy job's own check, of the file it downloaded, is the one its push rests on.
+          check_image_archive() {
+            local listing
+            listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||
+              { echo "image-check: the image's archive can't be read"; exit 1; }
+            [ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||
+              { echo "image-check: the image's archive holds a member buildx's OCI export never writes"; exit 1; }
+          }
+          unpack_image() {
+            local entries
+            mkdir "$2"
+            tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions
+            entries=$(find "$2" -mindepth 1 -printf '%y %P\n')
+            [ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||
+              { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
+          }
+          check_image_archive "$RUNNER_TEMP/image/image.tar"
+          unpack_image "$RUNNER_TEMP/image/image.tar" "$RUNNER_TEMP/image-layout"
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
@@ -1388,7 +1448,7 @@ jobs:
           # every commit that has migrated the database is one of them; ECR's push times are never the order.
           REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
           get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask
-          run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci-archive:$RUNNER_TEMP/image/image.tar:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci:$RUNNER_TEMP/image-layout:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           PUSHED=$(cat "$RUNNER_TEMP/pushed")
           if [ "$PUSHED" != "$DIGEST" ]; then
             echo "push: the pushed digest isn't the one the build made" | mask
@@ -3201,6 +3261,38 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.image }}
           path: ${{ runner.temp }}/image
+      - name: Check and unpack the image
+        if: ${{ needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' }}
+        run: |
+          set -euo pipefail
+          # The image's archive (IMAGE_CHECK; C11-D50, C11-D79, DPW-13). The build job runs repository code, so the
+          # archive it uploads is data: before any credential, a deploy job lists it, unpacks it itself and pushes
+          # from the folder it unpacked, never handing skopeo the archive, whose oci-archive source unpacks every
+          # member as it comes and writes a later one through a link an earlier one made (over the CLI, say).
+          # check_image_archive lists it with GNU tar and refuses any member that isn't a folder blobs/ or
+          # blobs/sha256/, or a file oci-layout, index.json or blobs/sha256/<64 hex>, as buildx's OCI export writes
+          # them: no symbolic or hard link, device, fifo, absolute, escaped or other name. unpack_image then has the
+          # same tar unpack it into a folder it makes, and refuses unless that folder holds only those folders and
+          # files, which skopeo reads as an OCI layout. Each count is compared whole, so a tool that fails refuses.
+          # The build runs check_image_archive on the archive buildx wrote, so a change in buildx's export fails
+          # there first; the deploy job's own check, of the file it downloaded, is the one its push rests on.
+          check_image_archive() {
+            local listing
+            listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||
+              { echo "image-check: the image's archive can't be read"; exit 1; }
+            [ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||
+              { echo "image-check: the image's archive holds a member buildx's OCI export never writes"; exit 1; }
+          }
+          unpack_image() {
+            local entries
+            mkdir "$2"
+            tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions
+            entries=$(find "$2" -mindepth 1 -printf '%y %P\n')
+            [ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||
+              { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
+          }
+          check_image_archive "$RUNNER_TEMP/image/image.tar"
+          unpack_image "$RUNNER_TEMP/image/image.tar" "$RUNNER_TEMP/image-layout"
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
@@ -3682,7 +3774,7 @@ jobs:
           # every commit that has migrated the database is one of them; ECR's push times are never the order.
           REGISTRY="$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com"
           get aws ecr get-login-password --region ap-southeast-1 | skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1 | mask
-          run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci-archive:$RUNNER_TEMP/image/image.tar:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          run skopeo copy --preserve-digests --digestfile "$RUNNER_TEMP/pushed" "oci:$RUNNER_TEMP/image-layout:build" "docker://$REGISTRY/hearth-server:sha-$COMMIT-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           PUSHED=$(cat "$RUNNER_TEMP/pushed")
           if [ "$PUSHED" != "$DIGEST" ] || [ "$PUSHED" != "$NONPROD_DIGEST" ]; then
             echo "push: the pushed digest isn't the one the build made" | mask

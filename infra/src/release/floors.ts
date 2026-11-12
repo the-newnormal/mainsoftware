@@ -9,9 +9,12 @@
 // expansion is off main, or at or after its contraction (already holding the file), the forward
 // deploy's check refuses. Name the expansion's own commit on main (the one its pull request landed as),
 // and merge the contraction only once both environments' newest release records, and what each runs
-// (its newest read-back), descend from it (deploy-and-rollback.md's Floors): the gate reads the records
-// alone, and a forward deploy deploys main's head alone, so once the contraction is on main no dispatch
-// takes an environment to the expansion by itself.
+// (its newest read-back), descend from it, and while no run of the deploy workflow is in any of the six
+// statuses its pause checks (deploy-and-rollback.md's Floors): the gate reads the records alone, so a
+// rollback or a drill-smoke already under way, whose record isn't written yet, could take an
+// environment below the expansion after the contraction's gate passed; and a forward deploy deploys
+// main's head alone, so once the contraction is on main no dispatch takes an environment to the
+// expansion by itself.
 //
 // The list starts empty: the first prod deploy already includes 0014, and a rollback reaches only a
 // release that environment has run. Removing a floor permits an unsafe rollback, so this file is on
