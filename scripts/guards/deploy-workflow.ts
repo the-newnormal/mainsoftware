@@ -93,28 +93,53 @@ export const PREAMBLE = sh`set -euo pipefail
 mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
 run() { "$@" 2>&1 | mask; }
 get() { "$@" 2> >(mask >&2); }
-CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
 export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true`
 
 // The CLI's folder (C11-D76, DPW-10, DPW-14): before any CDK line, an empty folder made for the run and a
 // fresh HOME, so no cdk.json (which could name a plugin or a build command) and no ~/.cdk.json waits there.
 export const CDK_FOLDER = sh`cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME`
 
-// The CLI check (C11-D48, C11-D76, DPW-10): the whole run of the step after `npm ci`, before the credentials
-// action. The CLI is the registry's aws-cdk at infra's pin, never a workspace's or a link.
+// The CLI's fetch (C11-D48, C11-D76, DPW-10): the whole run of the step that installs the CLI, before the
+// credentials action. No npm runs in a job that holds the OIDC request token: npm would read the repository's
+// .npmrc (whose git key names the program it runs for a git dependency) and lockfile, and the runner's npm 10
+// runs a git dependency's prepare script under --ignore-scripts, so either would run code no review of
+// deploy.yml sees. Instead the registry's aws-cdk tarball at infra's pin is fetched by its fixed URL into a
+// folder of the runner's temp folder that CLI_FETCH makes itself (so nothing a download left can stand
+// there), checked against the lockfile's sha512 integrity for it and unpacked there; aws-cdk has no
+// dependencies, so the tarball is the whole CLI.
+export const CLI_FETCH = sh`set -euo pipefail
+# The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+# and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+# package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+# entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+# for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+# reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+[[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+  { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+mkdir "$RUNNER_TEMP/aws-cdk"
+curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+[ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+  { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner`
+
+// The CLI check (C11-D48, C11-D76, DPW-10): the whole run of the step after CLI_FETCH, before the credentials
+// action. The CLI is the registry's aws-cdk at infra's pin as CLI_FETCH unpacked it, never a workspace's or a
+// link.
 export const CLI_CHECK = sh`set -euo pipefail
 # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-# infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-# integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-# and its bin stays inside it. One line names a failure.
+# infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+# version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+# it. One line names a failure.
 pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
 [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-  { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-[ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-  { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-  "$(readlink -f node_modules/aws-cdk)"/*) ;;
+[ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+  { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+  "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
   *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
 esac`
 
@@ -275,7 +300,7 @@ aws_check() {
       *) aws_refuse "the Services stack can't be read" ;;
     esac
   else
-    status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,40}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
+    status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,64}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
     release=$(jq -r '.[1] // ""' <<<"$out")
   fi
   if [ "$status" = NONE ] || { [ -z "$release" ] && [[ "$status" =~ ^(ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)$ ]]; }; then
@@ -635,8 +660,9 @@ echo "prod-gate: main's check and migrations passed on this commit" >>"$GITHUB_S
 
 // prod-gate's call of history.ts prod-gate (C11-D52, C11-D58, DPW-08), with the mode.
 export const PROD_GATE_CALL = sh`set -euo pipefail
-# history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release and its
-# image is the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
+# history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release, which
+# is at or after the expansion of every floor at this commit whose migration it lacks, and its image is
+# the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
 # the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
 # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
 if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
@@ -813,6 +839,10 @@ if ! jq -e '
   echo "gate: main's ruleset isn't live"
   exit 1
 fi`
+
+// The gate's check that the GitHub environments are live as .github/environments writes them (C11-D56,
+// DPW-09), before it plans.
+export const ENVIRONMENTS_CHECK = 'scripts/protect-environments.sh check "$REPO"'
 
 // prod-gate's read of prod's release records (C11-D52, DPW-08), which history.ts prod-gate reads as data.
 export const PROD_RECORDS = sh`set -euo pipefail
@@ -1130,10 +1160,9 @@ export const recordRun = (stage: Stage) =>
 // Every other run of the five jobs that hold the deploy role, or the OIDC request token that gets it
 // (C11-D48, C11-D61, C11-D76, DPW-10), pinned whole too, so no run there has a line of its own to read,
 // split, print or send what the job holds (the request token, the account id, an AWS answer) or to
-// hand a pinned line another input: the asset check on each folder its job downloaded, the install and
+// hand a pinned line another input: the asset check on each folder its job downloaded, CLI_FETCH and
 // CLI_CHECK, the account id's mask, AWS_CHECK with its job's call, each CLI step and the probe; the fast
 // re-checks are canonical texts standing whole.
-export const INSTALL = 'npm ci --ignore-scripts -w @hearth/infra'
 export const MASK_RUN = 'echo "::add-mask::$ACCOUNT_ID"'
 export const assetCheckRun = (folders: readonly string[], variable: string) =>
   [
@@ -1239,14 +1268,14 @@ const rollbackRuns = (): Pinned => ({
   'Rolled back': { run: DONE_RUN, rule: 'DPW-08', if: GO_IF },
 })
 // A credentialed job's other runs (DPW-10): before the credentials action its asset check, the fast
-// re-check (nonprod and prod), the install, CLI_CHECK and the mask; after them AWS_CHECK with its job's
+// re-check (nonprod and prod), CLI_FETCH, CLI_CHECK and the mask; after them AWS_CHECK with its job's
 // call, its CLI steps and its probe, each under its own if:.
 const checksBefore = (id: string, recheck?: string): Pinned => ({
   ...(DEPLOY_JOBS[id]?.rollback === true
     ? { 'Check the previous assembly': { run: assetCheckRun(['assembly-previous'], 'PREVIOUS'), rule: 'DPW-10' } }
     : { 'Check the assembly': { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-10' } }),
   ...(recheck === undefined ? {} : { 'The fast re-check': { run: recheck, rule: 'DPW-10' } }),
-  'The pinned CDK CLI': { run: INSTALL, rule: 'DPW-10' },
+  'The pinned CDK CLI': { run: CLI_FETCH, rule: 'DPW-10' },
   "The CLI is the registry's": { run: CLI_CHECK, rule: 'DPW-10' },
   'Mask the account id': { run: MASK_RUN, rule: 'DPW-10' },
 })
@@ -1287,6 +1316,7 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   gate: {
     'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
     "main's ruleset is live": { run: RULESET_CHECK, rule: 'DPW-09' },
+    'The environments are live as written': { run: ENVIRONMENTS_CHECK, rule: 'DPW-09' },
     Plan: { run: PLAN_STEP, rule: 'DPW-09' },
   },
   'prod-gate': { "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' } },
@@ -1996,6 +2026,7 @@ function runLines(
 export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   PREAMBLE,
   CDK_FOLDER,
+  CLI_FETCH,
   CLI_CHECK,
   ASSET_CHECK,
   AWS_CHECK,
@@ -3989,12 +4020,25 @@ function expandsOnlyItsOwn(run: string, read: ShellRead, env: readonly string[])
 const EXPANDS_ITS_OWN =
   "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
 
+// The secrets context and the job's token as GitHub reads them (actions/runner looks a context's name and a
+// property up ignoring case): secrets by property (secrets.NAME, a name captured) or by index (secrets['NAME'])
+// or whole (toJSON(secrets)), in any letter case; github.token or github['token'] in any case; and, in an
+// expression, the github context whole (toJSON(github), which holds the token). Only the workflow's own
+// spelling of a name its job may use passes (secrets.AWS_ACCOUNT_ID), and github.token only as a GH_TOKEN env
+// value, whose step env STEP_ENVS pins; any other spelling is refused, so an action's input, which no rule
+// pins by value, can't name a secret or the token another way.
+const SECRETS_NAMED = /\bsecrets\b(?:\s*\.\s*(\w+)\b(?!\s*[.[(]))?/gi
+const JOB_TOKEN = /\bgithub\s*(?:\.\s*token\b|\[)/i
+const GITHUB_CONTEXT = /\bgithub\b(\s*[.[])?/gi
+const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
+
 // DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, env as a word
 // outside quotes, bare set, printenv, export -p, declare -p or a declare, export, local or readonly given no
 // name; in a credentialed or record run's own lines no expansion but of its own names (EXPANDS_ITS_OWN), and
 // in a credentialed run no jq program's env or $ENV, /proc file or AWS_ variable's expansion; no ${{ }}
-// inside a run (inputs and outputs come through env:); secrets. names only the role and the account id in
-// the five environment jobs, and never GITHUB_TOKEN; in each environment job the account id is masked
+// inside a run (inputs and outputs come through env:); secrets, in any letter case or form, names only the
+// role and the account id, as secrets.NAME, in the five environment jobs, and never GITHUB_TOKEN; github.token
+// only as a GH_TOKEN env value, and the github context never whole; in each environment job the account id is masked
 // before the credentials action, every run after it starts with the preamble, whose mask, run and get no
 // later definition, alias or unset changes, every aws, CDK and skopeo command is run … or $(get …), get
 // only ever first in a $( … ), whose output is kept (the registry login alone piped into skopeo login,
@@ -4008,13 +4052,20 @@ export function maskingFindings(workflows: Texts): Finding[] {
   text.split('\n').forEach((line, index) => {
     const job = [...spans].find(([, [from, to]]) => index >= from && index < to)?.[0]
     const allowed = job === undefined ? [] : (SECRETS[job] ?? [])
-    for (const match of line.matchAll(/\bsecrets\b(?:\s*\.\s*(\w+))?/g)) {
-      if (match[1] === undefined || !allowed.includes(match[1])) {
+    for (const match of line.matchAll(SECRETS_NAMED)) {
+      if (match[1] === undefined || !allowed.includes(match[1]) || match[0] !== `secrets.${match[1]}`) {
         add(
           job ?? 'the top level',
           allowed.length === 0 ? 'names no secret' : `names no secret but ${allowed.join(' and ')}, never GITHUB_TOKEN`,
         )
       }
+    }
+    const expressions = line.indexOf('${{') < 0 ? '' : line.slice(line.indexOf('${{'))
+    if (
+      line.trim() !== GH_TOKEN_LINE &&
+      (JOB_TOKEN.test(line) || [...expressions.matchAll(GITHUB_CONTEXT)].some(each => each[1] === undefined))
+    ) {
+      add(job ?? 'the top level', 'names github.token only as a GH_TOKEN env value, and the github context never whole')
     }
   })
   for (const { id, job, steps } of jobsOf(text).values()) {
@@ -4045,11 +4096,14 @@ export function maskingFindings(workflows: Texts): Finding[] {
       ) {
         add(where, EXPANDS_ITS_OWN)
       }
-      // env or printenv, by name or path, as a command or a word handed to one.
+      // env or printenv, by name or path, as a command or a word handed to one (sudo printenv, xargs env,
+      // find -exec /usr/bin/env), quoted or not, since bash hands a program the word with its quotes taken
+      // off. A program the run starts is handed a script only as one word (bash -c "printenv X"), which DPW-07
+      // doesn't read: that is build's and synth's, which hold no secret and run repository code by design.
       const printsEnvironment = read.commands.some(
         command =>
           /(?:^|\/)(?:env|printenv)$/.test(command.name ?? '') ||
-          command.args.some(arg => !arg.quoted && /(?:^|\/)(?:env|printenv)$/.test(arg.value ?? '')),
+          command.args.some(arg => /(?:^|\/)(?:env|printenv)$/.test(arg.value ?? '')),
       )
       if (
         printsEnvironment ||
@@ -4402,7 +4456,8 @@ export const PLAN_CALL =
 // outputs and summarised, pinned whole so no line of its own writes an output or ends it early.
 export const PLAN_STEP = sh`set -euo pipefail
 # The plan (C11-D49, C11-D58): who started the run and where, the inputs, DOMAINS, a deploy's pull
-# request, each environment's current release and, for a deploy or a drill-smoke, the release each
+# request, each environment's current release (for a deploy, at or after the expansion of every floor
+# at this commit whose migration it lacks) and, for a deploy or a drill-smoke, the release each
 # automatic rollback goes back to and whether it may (above every floor at this commit). Every commit
 # it outputs is on main at this run's commit. A refusal is one line, \`history: refused <code>: <why>\`.
 # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
@@ -4432,7 +4487,6 @@ const PLAN_ENV: Readonly<Record<string, string>> = {
   RELEASE: expr('inputs.release'),
   RESTORE: expr('inputs.restore'),
 }
-const ENVIRONMENTS_CHECK = 'scripts/protect-environments.sh check "$REPO"'
 // The jobs whose if: no drill may pass (C11-D59): drills are non-prod's alone.
 const NO_DRILL = ['prod-plan', 'prod-gate', 'prod', 'rollback-prod', 'record-prod'] as const
 // The jobs each job runs only once they succeeded, with what else its if: is then told (DPW-09): an if:
@@ -4510,8 +4564,9 @@ function environmentFile(name: string, text: string): Record<string, unknown> | 
 // holds exactly the three files, each the environment file's shape: prod.json asks for at least one
 // reviewer and no admin bypass, prod-plan.json for none, nonprod.json for one exactly when non-prod
 // holds real data (C0.12's flip can't land half done); the script's agent markers are the Owner
-// bootstrap script's; and the gate's reads of the records and main's ruleset and its plan are pinned whole
-// (GATE_RECORDS, RULESET_CHECK, PLAN_STEP), so no line of their own ends one early, forges what the plan
+// bootstrap script's; and the gate's reads of the records and main's ruleset, its check of the live
+// environments and its plan are pinned whole under their own if: (GATE_RECORDS, RULESET_CHECK,
+// ENVIRONMENTS_CHECK, PLAN_STEP), so no line of their own or if: ends or skips one, forges what the plan
 // reads or writes a gate output.
 export function gateFindings(
   workflows: Texts,
@@ -4535,12 +4590,12 @@ export function gateFindings(
   }
   const check = gate.findIndex(step => step.run === ENVIRONMENTS_CHECK)
   if (check < 0 || plan < 0 || check > plan) add('gate', 'runs scripts/protect-environments.sh check before it plans')
-  // The steps the plan rests on, each pinned whole, so no line of its own ends one early, forges a file the
-  // plan reads or writes a gate output of its own.
+  // The steps the plan rests on, each pinned whole under its own if:, so no line of its own or if: ends or
+  // skips one, forges a file the plan reads or writes a gate output of its own.
   for (const place of unpinnedRuns(jobs, 'DPW-09')) {
     add(
       place,
-      "runs as written, whole and under its own if: (PINNED_RUNS): the records and main's ruleset the plan rests on and the plan itself, so no line of its own ends one early, forges what the plan reads or writes an output of its own",
+      "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own",
     )
   }
   for (const { id, job } of jobs.values()) {
@@ -4611,9 +4666,10 @@ export function gateFindings(
 
 // What a credentialed job may run (C11-D48): bash's own builtins and keywords, the functions its step
 // defines, gh, git and jq, the text tools it reads with, aws and skopeo (through run and get), the pinned
-// CLI (through run) and npm for the one install line. Anything else, a script by path, a variable or
-// quoted word run as a command, a wrapper (exec, command, env, …) or a builtin that sets what runs
-// (unset, wait -p, select), is refused, and so is a function named as a program.
+// CLI (through run), and the fetch of the CLI on CLI_FETCH's own lines alone (FETCH_TOOLS); never npm.
+// Anything else, a script by path, a variable or quoted word run as a command, a wrapper (exec, command,
+// env, …) or a builtin that sets what runs (unset, wait -p, select), is refused, and so is a function
+// named as a program.
 const BASH_OWN = [
   '[',
   '[[',
@@ -4678,7 +4734,8 @@ const TOOLS = [
 ]
 // The tools that could run another program or write a file, held to the one use each job makes of them:
 // git only to ask whether one commit is an ancestor of another, gh only as gh api, sed only as the
-// preamble's mask, find only in ASSET_CHECK's search for a symbolic link, sort only with its plain flags,
+// preamble's mask, find only in ASSET_CHECK's and CLI_CHECK's searches for a symbolic link, sort only with
+// its plain flags,
 // tee only appending to the summary, mapfile with no callback, aws only for the reads and one-offs the
 // workflow makes (no s3 cp, which would write a file), skopeo only as the registry login and the push,
 // set only as set -euo pipefail (no set --, which would hand "$@" a program), and local
@@ -4686,6 +4743,20 @@ const TOOLS = [
 // text, is no builtin a job may use.)
 const MASK_LINE = PREAMBLE.split('\n').find(line => line.startsWith('mask()')) ?? ''
 const FIND_LINE = ASSET_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
+const CLI_FIND_LINE = CLI_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
+// The tools CLI_FETCH alone runs, each only on its own line of that text and only in a run that is CLI_FETCH
+// whole: mkdir makes the CLI's folder, curl fetches the registry's tarball by its fixed URL (the one network
+// call a credentialed run makes outside aws, gh and skopeo), openssl and base64 hash it, and tar unpacks it
+// into the folder. None writes anywhere but the CLI's folder and its tarball, before CLI_CHECK.
+const fetchTextLine = (start: string) => CLI_FETCH.split('\n').find(line => line.startsWith(start)) ?? ''
+const HASH_LINE = fetchTextLine('[ "sha512-$(openssl ')
+const FETCH_TOOLS: Readonly<Record<string, string>> = {
+  mkdir: fetchTextLine('mkdir '),
+  curl: fetchTextLine('curl '),
+  openssl: HASH_LINE,
+  base64: HASH_LINE,
+  tar: fetchTextLine('tar '),
+}
 const AWS_CALLS =
   /^\s+(?:ecs\s+(?:run-task|describe-tasks|describe-services|list-tasks|stop-task|wait\s+tasks-stopped|describe-task-definition)|elbv2\s+describe-(?:target-groups|target-group-attributes|target-health|load-balancers|load-balancer-attributes)|cloudformation\s+describe-stacks|ecr\s+(?:describe-images|get-login-password)|logs\s+get-log-events)(?:\s|$)/
 const NO_FLAG = (command: ShellCommand) => !/(?:^|\s)[-+][A-Za-z]/.test(command.tail)
@@ -4693,7 +4764,7 @@ const TOOL_USES: Readonly<Record<string, (command: ShellCommand, raw: string) =>
   git: ({ rest }) => /^\s+merge-base\s+--is-ancestor\s/.test(rest),
   gh: ({ rest }) => /^\s+api\s/.test(rest),
   sed: (_, raw) => raw === MASK_LINE.trim(),
-  find: (_, raw) => raw === FIND_LINE.trim(),
+  find: (_, raw) => raw === FIND_LINE.trim() || raw === CLI_FIND_LINE.trim(),
   sort: ({ rest }) => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
   tee: ({ rest }) => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
   mapfile: ({ rest }) => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
@@ -4973,7 +5044,6 @@ const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
   run: wrapped,
   get: wrapped,
   skopeo: ({ raw, previous }) => raw === SKOPEO_LOGIN_COMMAND && previous === 'get',
-  npm: ({ raw }) => raw === INSTALL,
 }
 // The commands the table holds itself, and the compound ones.
 const TABLE_HELD = [...Object.keys(SHELL_TABLE.builtins), 'if', 'for', 'case', '{', '[[']
@@ -5125,8 +5195,8 @@ const LOADER_ASSIGNMENT = assigns(LOADER_NAMES)
 const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
 // What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff (DIFF, set
-// by its one line) and /dev/null, so no file the CLI or a tool then runs (node_modules/aws-cdk/bin/cdk,
-// say) is rewritten. A write is any redirection that opens its target for writing: >, >>, >|, &>, a
+// by its one line) and /dev/null, so no file the CLI or a tool then runs (the CLI CLI_FETCH unpacked, say)
+// is rewritten. A write is any redirection that opens its target for writing: >, >>, >|, &>, a
 // descriptor's (2>) and the read-write <> (1<>file, which rewrites the file in place).
 const REDIRECTION = /(?<![<>&])(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
 const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|DIFF)")$/
@@ -5676,7 +5746,7 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
   }
 }
 
-const PREAMBLE_CDK = 'CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"'
+const PREAMBLE_CDK = 'CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"'
 const ALLOWED_USES = /^(?:actions\/checkout|actions\/download-artifact|aws-actions\/configure-aws-credentials)@/
 const REFUSED_CLI =
   /(?<![\w-])(?:--no-rollback|-R|--express|--hotswap|--hotswap-fallback|--import-existing-resources|--force|--all|--method[= ](?:direct|prepare-change-set|execute-change-set)|--revert-drift|--outputs-file|--parameters|--notification-arns|--role-arn|--toolkit-stack-name|--plugin)(?![\w-])|"\$CDK"\s+(?:synth|destroy|bootstrap|import|publish-assets|watch|migrate|refactor|gc|drift|context|acknowledge|init|rollback)\b/
@@ -5696,13 +5766,15 @@ function cliLineIsSafe(line: string): boolean {
 }
 
 // DPW-10 (C11-D48, C11-D76): a credentialed job runs no repository code. Its uses: are only checkout,
-// download-artifact and the credentials action; npm runs only as the one install line, followed by
-// CLI_CHECK, both before the credentials action; it runs no npx, node, shell, source, eval, docker, tsx,
-// ts-node, npm exec, python, make, curl, wget, db:reset, check-server, script by path or wrapper, nor
+// download-artifact and the credentials action; the CLI is fetched only by CLI_FETCH (mkdir, curl, openssl,
+// base64 and tar only on its own lines, in its run whole), never by npm, which would read the repository's
+// .npmrc and lockfile and, as the runner's npm 10 does, run a git dependency's prepare script, followed by
+// CLI_CHECK, both before the credentials action; it runs no npm, npx, node, shell, source, eval, docker, tsx,
+// ts-node, python, make, curl or wget (but CLI_FETCH's), db:reset, check-server, script by path or wrapper, nor
 // anything outside its list; it defines a function only where a canonical text does, and calls only its
 // own step's (a function doesn't outlive its step); it sets a variable by printf -v, read, mapfile or for
 // only on SETTER_LINES, and never PATH, RUNNER_TEMP or another that chooses what runs; CDK is assigned
-// only by the preamble, as the registry package's own bin; the CLI runs only as deploy or diff with --app
+// only by the preamble, as the bin of the registry package CLI_FETCH unpacked; the CLI runs only as deploy or diff with --app
 // "$ASSEMBLY" (set once in its step to the folder it downloaded), after CDK_FOLDER, with no other change of
 // folder, and with its safe flags; no line anywhere passes a refused flag or subcommand; every run of it is
 // one PINNED_RUNS pins whole, under its own if: (its CLI steps, the probe, AWS_CHECK's step and the checks
@@ -5711,7 +5783,7 @@ function cliLineIsSafe(line: string): boolean {
 // and set no input a pinned line reads (SETS_INPUT). In every job, credentialed or not, its steps are
 // JOB_STEPS' and no run names GITHUB_ENV, GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the
 // repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
-// registry's at infra's pin.
+// registry's tarball at infra's pin, by its fixed URL, with a sha512 integrity and no link.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
@@ -5734,7 +5806,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         add(where, 'passes none of the CLI’s refused flags or subcommands')
       for (const line of lines) {
         if (CDK_ASSIGNMENT.test(line.code) && line.raw.trim() !== PREAMBLE_CDK) {
-          add(where, 'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk')
+          add(where, 'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked')
         }
       }
       if (!credentialed) return
@@ -5750,7 +5822,8 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         if (command.prefixes.some(prefix => WRAPPERS.includes(prefix))) return true
         if (word === '"$CDK"') return false
         if (word === '"$@"') return !PREAMBLE_RUNNERS.includes(raw(command))
-        if (word === 'npm') return run !== INSTALL
+        const fetchLine = FETCH_TOOLS[word]
+        if (fetchLine !== undefined) return run !== CLI_FETCH || raw(command) !== fetchLine
         if (/^["'$]|\/|\.(?:sh|ts|js|mjs|cjs|py)$/.test(word)) return true
         const use = TOOL_USES[word]
         if (use !== undefined && !use(command, raw(command))) return true
@@ -5758,11 +5831,15 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       })
       if (
         wrong ||
-        lines.some(line => RUNNER_WORDS.test(line.text) || /\bdb:reset\b|\bcheck-server\b/.test(line.text))
+        lines.some(
+          line =>
+            (RUNNER_WORDS.test(line.text) && !(run === CLI_FETCH && line.raw.trim() === FETCH_TOOLS.curl)) ||
+            /\bdb:reset\b|\bcheck-server\b/.test(line.text),
+        )
       ) {
         add(
           where,
-          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run',
+          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI and CLI_FETCH’s fetch, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run',
         )
       }
       // Its own lines are read by the table, each command held to its uses.
@@ -5829,14 +5906,11 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       }
     })
     if (!credentialed) continue
-    const install = steps.findIndex(step => step.run === INSTALL)
+    const install = steps.findIndex(step => step.run === CLI_FETCH)
     const cliCheck = steps.findIndex(step => step.run === CLI_CHECK)
     const credentials = credentialsAt(steps)
     if (install < 0 || cliCheck !== install + 1 || credentials < 0 || cliCheck > credentials) {
-      add(
-        id,
-        'installs only the pinned CLI (npm ci --ignore-scripts -w @hearth/infra), then runs CLI_CHECK, before the credentials action',
-      )
+      add(id, 'fetches only the pinned CLI (CLI_FETCH, never npm), then runs CLI_CHECK, before the credentials action')
     }
   }
   let pin: unknown
@@ -5864,20 +5938,22 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
   } catch {
     entry = undefined
   }
+  // As CLI_FETCH reads it, so a lockfile it would refuse fails here first: the registry's tarball at infra's
+  // pin, by its fixed URL, with a sha512 integrity and no link.
   if (
     entry === undefined ||
-    typeof entry.resolved !== 'string' ||
-    !entry.resolved.startsWith('https://registry.npmjs.org/aws-cdk/-/') ||
-    typeof entry.integrity !== 'string' ||
-    Object.hasOwn(entry, 'link') ||
     typeof pin !== 'string' ||
-    entry.version !== pin
+    entry.version !== pin ||
+    entry.resolved !== `https://registry.npmjs.org/aws-cdk/-/aws-cdk-${pin}.tgz` ||
+    typeof entry.integrity !== 'string' ||
+    !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity) ||
+    Object.hasOwn(entry, 'link')
   ) {
     found.add(
       at(
         'package-lock.json',
         'DPW-10',
-        "node_modules/aws-cdk is the registry's package at infra's pin, with an integrity and no link",
+        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link",
       ),
     )
   }

@@ -1,11 +1,13 @@
 // The release history's cases (C11-D58, C11-D61; TECH-SPEC T24 items 22 and 23): the records'
 // validation and order, both incident-rollback rules and their parity (rebuilds of one commit
-// included), a target's validation, the gate's plan mode by mode, prod-gate, the floors read through
-// git at the run's commit, the migration record, and what the command line prints, plan's lines past
-// DOMAINS among them. The commits are real ones in scratch git repositories (main, a branch off it, and
-// a second main whose floor lies between two releases), so ancestry and the floors are git's own
-// answers; every ARN, account id and address is built from parts at run time (IG-01). It holds what the
-// history must decide, so it is on the owner's-read list (C11-D74).
+// included, and ECS's deployments in any order), a target's validation, the gate's plan mode by mode,
+// prod-gate, the floors and their expansions read through git at the run's commit, the migration record,
+// and what the command line prints, plan's lines past DOMAINS among them. The commits are real ones in
+// scratch git repositories (main, a branch off it, and a second main whose floor lies between two
+// releases, after its expansion), so ancestry and the floors are git's own answers, and a developer's own
+// git settings (a global hook, signed tags) are set aside; every ARN, account id and address is built
+// from parts at run time (IG-01). It holds what the history must decide, so it is on the owner's-read
+// list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -18,6 +20,7 @@ import {
   chooseFromRecords,
   current,
   type EcsHistory,
+  gitExpansionsMet,
   gitFloorsAllowed,
   gitIsAncestor,
   type IsAncestor,
@@ -48,10 +51,15 @@ const m: string[] = []
 let branch = ''
 let isAncestor: IsAncestor = () => false
 
+// git with an identity, and none of the developer's commit and tag signing or hooks, so a global setting
+// can't refuse a commit.
 function git(args: readonly string[], cwd = repo): string {
   return execFileSync(
     'git',
-    ['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false', ...args],
+    [
+      ...['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false'],
+      ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+    ],
     { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   ).trim()
 }
@@ -151,6 +159,7 @@ function planInput(overrides: Partial<PlanInput> = {}): PlanInput {
     treeOf: commitSha => git(['rev-parse', `${commitSha}^{tree}`]),
     isAncestor,
     floorsAllowed: () => true,
+    expansionsMet: () => true,
     domains: DOMAINS_OK,
     ...overrides,
   }
@@ -494,6 +503,15 @@ const sameForAll = (entries: ReadonlyArray<readonly [number, string, number]>) =
   worker: ecsHistory('worker', entries),
 })
 
+// Each role's deployments in the order given by their indexes in time order (ECS promises none).
+const listedAs = (pages: ReturnType<typeof sameForAll>, order: readonly number[]): ReturnType<typeof sameForAll> => {
+  const reorder = (history: EcsHistory): EcsHistory => ({
+    ...history,
+    deployments: order.flatMap(i => history.deployments[i] ?? []),
+  })
+  return { api: reorder(pages.api), realtime: reorder(pages.realtime), worker: reorder(pages.worker) }
+}
+
 describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s deployments (GitHub down)', () => {
   it('C11-D58: takes the deployment before the current release’s first, not the newest whose image isn’t current', () => {
     // R2, R3 (current), then R4: the api updated, realtime failed and CloudFormation rolled the stack
@@ -521,9 +539,32 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
         services: { api: 'hearth-prod-api:2', realtime: 'hearth-prod-realtime:2', worker: 'hearth-prod-worker:2' },
       },
     })
-    // The pages come in no promised order.
-    const shuffled = { ...pages, api: { ...pages.api, deployments: [...pages.api.deployments].reverse() } }
-    expect(chooseFromEcs(shuffled, new Set([D.c]))).toEqual(chooseFromEcs(pages, new Set([D.c])))
+  })
+
+  it('C11-D58: chooses the same whatever order ECS lists the deployments in, which it doesn’t promise', () => {
+    // R1, R2, then R3 (current): read in time order the choice is R2; taken in the order listed, newest
+    // first, the deployment before R3's would be the last one listed, R1.
+    const pages = sameForAll([
+      [10, D.a, 1],
+      [20, D.b, 2],
+      [30, D.c, 3],
+    ])
+    const expected = {
+      ok: true,
+      value: {
+        digest: D.b,
+        services: { api: 'hearth-prod-api:2', realtime: 'hearth-prod-realtime:2', worker: 'hearth-prod-worker:2' },
+      },
+    }
+    expect(chooseFromEcs(pages, new Set([D.c]))).toEqual(expected)
+    // Newest first, and out of order with the current release listed first or between the others.
+    for (const order of [
+      [2, 1, 0],
+      [2, 0, 1],
+      [1, 2, 0],
+    ]) {
+      expect(chooseFromEcs(listedAs(pages, order), new Set([D.c])), order.join()).toEqual(expected)
+    }
   })
 
   it('C11-D58: counts every build of the current commit as the current release', () => {
@@ -581,13 +622,17 @@ describe('C11-D58, T24 item 22: both incident-rollback rules choose the same rel
       deployment(3, 'prod', at(3), D.c, 3),
       deployment(5, 'prod', at(3), D.c, 5, 'pipeline-rollback'),
     )
-    const pages = sameForAll([
-      [10, D.a, 1],
-      [20, D.b, 2],
-      [30, D.c, 3],
-      [40, D.d, 4],
-      [50, D.c, 5],
-    ])
+    // ECS lists them newest first.
+    const pages = listedAs(
+      sameForAll([
+        [10, D.a, 1],
+        [20, D.b, 2],
+        [30, D.c, 3],
+        [40, D.d, 4],
+        [50, D.c, 5],
+      ]),
+      [4, 3, 2, 1, 0],
+    )
     const fromRecords = chooseFromRecords(history, { commit: at(3), digest: D.c }, isAncestor)
     const fromEcs = chooseFromEcs(pages, new Set([D.c]))
     expect(fromRecords.ok && fromRecords.value.digest).toBe(D.b)
@@ -604,12 +649,16 @@ describe('C11-D58, T24 item 22: both incident-rollback rules choose the same rel
       deployment(3, 'prod', at(3), D.c, 3),
       deployment(4, 'prod', at(3), D.d, 4),
     )
-    const pages = sameForAll([
-      [10, D.a, 1],
-      [20, D.b, 2],
-      [30, D.c, 3],
-      [40, D.d, 4],
-    ])
+    // ECS lists them out of order.
+    const pages = listedAs(
+      sameForAll([
+        [10, D.a, 1],
+        [20, D.b, 2],
+        [30, D.c, 3],
+        [40, D.d, 4],
+      ]),
+      [3, 1, 2, 0],
+    )
     const fromRecords = chooseFromRecords(history, { commit: at(3), digest: D.d }, isAncestor)
     const fromEcs = chooseFromEcs(pages, new Set([D.c, D.d]))
     expect(fromRecords.ok && fromRecords.value.digest).toBe(D.b)
@@ -701,6 +750,40 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       records: { nonprod: records('nonprod', deployment(103, 'nonprod', at(6), D.f, 3)), prod: [] },
     })
     expect(await outputsOf(rebuild)).toMatchObject({ previous_nonprod_commit: at(6), previous_nonprod_digest: D.f })
+  })
+
+  it('C11-D58: a deploy is refused while a deployed environment runs a release older than a floor’s expansion, each asked with its release and the run’s commit', async () => {
+    const asked: Array<[string, string]> = []
+    const met = (release: string, floorsAt: string) => {
+      asked.push([release, floorsAt])
+      return release !== at(4)
+    }
+    // Prod runs m[4], which the stand-in counts as before an expansion; non-prod's m[5] isn't.
+    expect(await refusalOf(planInput({ expansionsMet: met }))).toBe('expansion-not-deployed')
+    expect(asked).toEqual([
+      [at(5), at(6)],
+      [at(4), at(6)],
+    ])
+    // A dispatch to non-prod alone asks of non-prod's release alone.
+    asked.length = 0
+    expect(await refusalOf(dispatch({}, { expansionsMet: met }))).toBe('allowed')
+    expect(asked).toEqual([[at(5), at(6)]])
+    // A first deploy runs no release; a rollback, a drill and a restore apply no migration the release
+    // they go to lacks, so none asks.
+    const never = () => false
+    expect(await refusalOf(planInput({ records: { nonprod: [], prod: [] }, expansionsMet: never }))).toBe('allowed')
+    const others: Array<Partial<Pick<PlanInput, 'target' | 'mode' | 'release' | 'restore'>>> = [
+      { mode: 'rollback', release: at(4) },
+      { target: 'prod', mode: 'rollback', release: at(3) },
+      { mode: 'drill-break' },
+      { target: 'restore', restore: 'up' },
+      { target: 'restore', restore: 'down' },
+    ]
+    for (const inputs of others) {
+      expect(await refusalOf(dispatch(inputs, { expansionsMet: never })), JSON.stringify(inputs)).toBe('allowed')
+    }
+    const drill = dispatch({ mode: 'drill-smoke' }, { expansionsMet: never })
+    expect(await refusalOf({ ...drill, records: { ...drill.records, nonprod: atHead() } })).toBe('allowed')
   })
 
   it('C11-D58: a rollback deploys its recorded target to its environment alone', async () => {
@@ -947,6 +1030,7 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
     nonprodDigest: D.f,
     isAncestor: (a: string, b: string) => isAncestor(a, b),
     floorsAllowed: () => true,
+    expansionsMet: () => true,
   })
 
   it('C11-D52: a deploy of the run’s commit descends from prod’s newest record and deploys the image non-prod deployed', async () => {
@@ -965,6 +1049,32 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
       ok: false,
       reason: 'digest-differs',
     })
+    // Prod's newest record, read afresh, must hold every floor's expansion it needs; a rollback and a
+    // restore don't ask.
+    expect(await prodGate({ ...base(), records: prodRecords(), expansionsMet: release => release !== at(4) })).toEqual({
+      ok: false,
+      reason: 'expansion-not-deployed',
+    })
+    expect(
+      await prodGate({
+        ...base(),
+        mode: 'rollback',
+        commit: at(3),
+        digest: D.c,
+        records: prodRecords(),
+        expansionsMet: () => false,
+      }),
+    ).toMatchObject({ ok: true })
+    expect(
+      await prodGate({
+        ...base(),
+        target: 'restore',
+        commit: at(4),
+        digest: D.d,
+        records: prodRecords(),
+        expansionsMet: () => false,
+      }),
+    ).toMatchObject({ ok: true })
     // A deploy's commit is the run's own: a commit the gate didn't output for this run is refused,
     // though it descends from prod's newest record.
     expect(await prodGate({ ...base(), commit: at(5), records: prodRecords() })).toEqual({
@@ -1016,10 +1126,11 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
   })
 })
 
-// The floors through git, never a stand-in (C11-D58, T24 item 22): a second main whose f[2] adds a
-// contracting migration and its floor, so a release at f[1] lies below it and one at f[3] above it,
-// with f[4] the run's commit. f[1]'s own floors.ts names no floor, so floors read at the target, or a
-// call that swaps the target and the run's commit, would allow what the run's commit refuses.
+// The floors through git, never a stand-in (C11-D58, T24 item 22): a second main whose f[1] is an
+// expansion and f[2] adds a contracting migration and its floor (its expansion f[1]), so a release at
+// f[1] lies below the floor and one at f[3] above it, one at f[0] predates the expansion, and f[4] is the
+// run's commit. f[1]'s own floors.ts names no floor, so floors read at the target, or a call that swaps
+// the target and the run's commit, would allow what the run's commit refuses.
 describe('C11-D58, T24 item 22: the floors read through git at the run’s commit', () => {
   let floorRepo = ''
   const f: string[] = []
@@ -1034,7 +1145,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     fgit(['commit', '-q', '-m', name])
     return fgit(['rev-parse', 'HEAD'])
   }
-  const floorsSource = (floors: ReadonlyArray<{ migration: string; why: string }>) =>
+  const floorsSource = (floors: ReadonlyArray<{ migration: string; expansion: string; why: string }>) =>
     `export const FLOORS = ${JSON.stringify(floors)}\n`
 
   beforeAll(() => {
@@ -1042,14 +1153,17 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     fgit(['init', '-q', '-b', 'main'])
     f.push(
       step('f0', { 'db/migrations/0015_base.sql': 'select 1;\n', 'infra/src/release/floors.ts': floorsSource([]) }),
-      step('f1', { 'f1.txt': 'f1\n' }),
+    )
+    f.push(step('f1', { 'f1.txt': 'f1 stops reading y\n' }))
+    f.push(
       step('f2', {
         'db/migrations/0016_drop_y.sql': 'select 1;\n',
-        'infra/src/release/floors.ts': floorsSource([{ migration: '0016_drop_y.sql', why: 'drops y' }]),
+        'infra/src/release/floors.ts': floorsSource([
+          { migration: '0016_drop_y.sql', expansion: fat(1), why: 'drops y, which f0 still reads' },
+        ]),
       }),
-      step('f3', { 'f3.txt': 'f3\n' }),
-      step('f4', { 'f4.txt': 'f4\n' }),
     )
+    f.push(step('f3', { 'f3.txt': 'f3\n' }), step('f4', { 'f4.txt': 'f4\n' }))
   })
 
   afterAll(() => {
@@ -1071,6 +1185,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     treeOf: commitSha => fgit(['rev-parse', `${commitSha}^{tree}`]),
     isAncestor: gitIsAncestor(floorRepo),
     floorsAllowed: gitFloorsAllowed(floorRepo, fat(4)),
+    expansionsMet: gitExpansionsMet(floorRepo, fat(4)),
     ...overrides,
   })
   const floorDispatch = (inputs: Partial<Pick<PlanInput, 'target' | 'mode' | 'release'>>, rest: Partial<PlanInput>) =>
@@ -1139,6 +1254,75 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
     })
   })
 
+  it('C11-D58: the gate refuses a deploy while an environment runs a release older than a floor’s expansion, and prod-gate refuses it again', async () => {
+    // Non-prod at f[3], above the floor; prod at f[0], before y's expansion: the migrate step would drop y
+    // under prod's release, and a failed Services deploy's own rollback would return it there.
+    const before = {
+      nonprod: records('nonprod', deployment(301, 'nonprod', fat(3), D.c, 1)),
+      prod: records('prod', deployment(401, 'prod', fat(0), D.a, 1)),
+    }
+    expect(await refusalOf(floorInput({ records: before }))).toBe('expansion-not-deployed')
+    // A dispatch to non-prod alone checks non-prod alone; non-prod before the expansion is refused too.
+    expect(await refusalOf(floorDispatch({}, { records: before }))).toBe('allowed')
+    const nonprodBefore = { nonprod: records('nonprod', deployment(301, 'nonprod', fat(0), D.a, 1)), prod: [] }
+    expect(await refusalOf(floorDispatch({}, { records: nonprodBefore }))).toBe('expansion-not-deployed')
+    // At the expansion (f[1]) prod may be deployed over, though below the floor its automatic rollback
+    // can't run; and a first deploy has no release to check.
+    const atExpansion = { ...before, prod: records('prod', deployment(401, 'prod', fat(1), D.b, 1)) }
+    expect(await outputsOf(floorInput({ records: atExpansion }))).toMatchObject({
+      previous_prod_commit: fat(1),
+      rollback_prod: 'false',
+    })
+    expect(await refusalOf(floorInput({ records: { ...before, prod: [] } }))).toBe('allowed')
+    // prod-gate reads prod's records afresh: one that went back before the expansion since the gate read
+    // them is refused there.
+    const gate = {
+      mode: 'deploy',
+      target: 'prod',
+      sha: fat(4),
+      commit: fat(4),
+      digest: '',
+      recordId: '401',
+      buildDigest: D.d,
+      nonprodDigest: D.d,
+      isAncestor: gitIsAncestor(floorRepo),
+      floorsAllowed: gitFloorsAllowed(floorRepo, fat(4)),
+      expansionsMet: gitExpansionsMet(floorRepo, fat(4)),
+    }
+    expect(await prodGate({ ...gate, records: before.prod })).toEqual({ ok: false, reason: 'expansion-not-deployed' })
+    expect(await prodGate({ ...gate, records: atExpansion.prod })).toEqual({
+      ok: true,
+      value: { current_prod_id: '401' },
+    })
+    // The same from the command line, every answer git's in the floors repository.
+    const folder = join(scratch, 'expansion-records')
+    const checks = writeJson(join(scratch, 'expansion-checks.json'), floorInput().checks)
+    writeJson(join(folder, 'release-nonprod.json'), [deployment(301, 'nonprod', fat(3), D.c, 1)])
+    writeJson(join(folder, 'release-prod.json'), [deployment(401, 'prod', fat(0), D.a, 1)])
+    const push = ['--event', 'push', '--target', '', '--mode', '', '--release', '', '--restore', '']
+    const plan = [
+      ...['plan', '--ref', 'refs/heads/main', '--actor', 'a-person', '--triggering-actor', 'a-person'],
+      ...['--sha', fat(4), ...push, '--records', folder, '--checks', checks, '--repo', floorRepo],
+    ]
+    const refused = {
+      code: 1,
+      out: [`history: refused expansion-not-deployed: ${REFUSALS['expansion-not-deployed']}`],
+      err: [],
+    }
+    expect(await cli(plan, DOMAINS_OK)).toEqual(refused)
+    const prodGateArgs = [
+      ...['prod-gate', '--mode', 'deploy', '--target', 'prod', '--sha', fat(4), '--commit', fat(4), '--digest', ''],
+      ...['--record-id', '401', '--build-digest', D.d, '--nonprod-digest', D.d, '--records', folder],
+      ...['--repo', floorRepo],
+    ]
+    expect(await cli(prodGateArgs)).toEqual(refused)
+    writeJson(join(folder, 'release-prod.json'), [deployment(401, 'prod', fat(1), D.b, 1)])
+    expect((await cli(plan, DOMAINS_OK)).out).toEqual(
+      expect.arrayContaining([`previous_prod_commit=${fat(1)}`, 'rollback_prod=false']),
+    )
+    expect(await cli(prodGateArgs)).toEqual({ code: 0, out: ['current_prod_id=401'], err: [] })
+  })
+
   it('C11-D58: prod-gate reads them for a rollback, in process and from the command line', async () => {
     const prodRecords = records(
       'prod',
@@ -1156,6 +1340,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
       records: prodRecords,
       isAncestor: gitIsAncestor(floorRepo),
       floorsAllowed: gitFloorsAllowed(floorRepo, fat(4)),
+      expansionsMet: gitExpansionsMet(floorRepo, fat(4)),
     }
     expect(await prodGate({ ...rollback, commit: fat(1), digest: D.a })).toEqual({ ok: false, reason: 'floor-crossed' })
     expect(await prodGate({ ...rollback, commit: fat(3), digest: D.c })).toEqual({
@@ -1596,6 +1781,33 @@ describe('C11-D58, C11-D61: the command line', () => {
     expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', D.c])).toMatchObject({
       code: 2,
       out: ["history: worker's deployment pages don't end where next is null"],
+    })
+  })
+
+  it('C11-D58: choose-ecs reads pages saved newest first, the newest on page 1, as it reads them in time order', async () => {
+    // R1, R2, then R3 (current), the same for each role, in two pages: page 1 holds R3 and R2.
+    const pages = join(scratch, 'pages-newest-first')
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [30, D.c, 3],
+      [20, D.b, 2],
+      [10, D.a, 1],
+    ]
+    for (const role of ['api', 'realtime', 'worker']) {
+      const rows = entries.map(([when, , revision]) => [
+        new Date(when * minute).toISOString(),
+        revisionArn(role, revision),
+      ])
+      writeJson(join(pages, `${role}-deployments-1.json`), { next: 'token', deployments: rows.slice(0, 2) })
+      writeJson(join(pages, `${role}-deployments-2.json`), { next: null, deployments: rows.slice(2) })
+      writeJson(
+        join(pages, `${role}-revisions-1.json`),
+        entries.map(([, digest, revision]) => [revisionArn(role, revision), taskDefinitionArn(role, revision), digest]),
+      )
+    }
+    expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', D.c])).toEqual({
+      code: 0,
+      out: [`digest ${D.b}`, 'api hearth-prod-api:2', 'realtime hearth-prod-realtime:2', 'worker hearth-prod-worker:2'],
+      err: [],
     })
   })
 

@@ -45,7 +45,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DOMAINS, isPlaceholderDomain } from '../../src/config/profiles.ts'
-import { checkFloors, FloorsError, readFlags, resolveCommit } from './floors-check.ts'
+import { checkExpansions, checkFloors, FloorsError, readFlags, resolveCommit } from './floors-check.ts'
 
 export const RECORD_ENVIRONMENTS = ['nonprod', 'prod'] as const
 export type RecordEnvironment = (typeof RECORD_ENVIRONMENTS)[number]
@@ -268,6 +268,8 @@ export const REFUSALS = {
   'not-recorded': 'the release has no release record in the environment',
   'not-on-main': "the release is not on main at the run's commit",
   'floor-crossed': 'a rollback floor lies between the release and the database',
+  'expansion-not-deployed':
+    "an environment runs a release older than a floor's expansion, so the migrate step would contract the database under it: that environment must run the expansion first",
   'no-earlier-release': 'no release ran before the current one',
   'not-an-ancestor': 'the release is not strictly older than the current one',
   'previous-not-older': 'the previous release is not strictly older than the current one',
@@ -456,6 +458,9 @@ export interface PlanInput {
   isAncestor: IsAncestor
   // Whether a rollback to the target crosses no floor, the floors read at floorsAt (floors-check.ts).
   floorsAllowed: (target: string, floorsAt: string) => boolean | Promise<boolean>
+  // Whether a forward deploy at floorsAt may migrate under the release an environment runs: no floor
+  // there whose migration the release lacks follows an expansion the release predates (floors-check.ts).
+  expansionsMet: (release: string, floorsAt: string) => boolean | Promise<boolean>
   domains: readonly string[]
 }
 
@@ -510,7 +515,10 @@ function readInputs(input: PlanInput): Outcome<{ target: Target; mode: Mode; rel
 // What the gate decides (C11-D49, C11-D58; TECH-SPEC T24 item 20): who started the run and where,
 // the inputs, DOMAINS, for a deploy the pull request that produced the commit, and from the records
 // each environment's current release, the release to deploy, and each deployed environment's previous
-// release with whether its automatic rollback may run (above every floor at the run's commit). Every
+// release with whether its automatic rollback may run (above every floor at the run's commit). A
+// deploy is refused while a deployed environment's current release predates the expansion of a floor
+// at the run's commit whose migration it lacks: the migrate step would contract the database under that
+// release while it still serves, and a failed Services deploy's own rollback would return it there. Every
 // commit it outputs is on main at the run's commit (an ancestor of it), so no code off main is checked
 // out or run, whatever a record names. An environment's current release here is its newest release
 // record when the gate read it, which is what runs unless a release went live unrecorded or another run
@@ -569,6 +577,12 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
     const tree = input.treeOf(sha)
     if (tree === undefined || tree !== checks.headTree) return no('pr-tree-differs')
     if (checks.check !== 'success' || checks.migrations !== 'success') return no('pr-checks-failed')
+    for (const env of RECORD_ENVIRONMENTS) {
+      const running = currents[env]
+      if (running !== undefined && !(await input.expansionsMet(running.commit, sha))) {
+        return no('expansion-not-deployed')
+      }
+    }
     outputs.commit = sha
     // Each deployed environment's previous release is its newest record (none on its first deploy),
     // which may be this very commit's earlier build; its automatic rollback runs only above every floor.
@@ -636,12 +650,15 @@ export interface ProdGateInput {
   records: readonly ReleaseRecord[]
   isAncestor: IsAncestor
   floorsAllowed: (target: string, floorsAt: string) => boolean | Promise<boolean>
+  expansionsMet: (release: string, floorsAt: string) => boolean | Promise<boolean>
 }
 
-// prod-gate's checks, before prod's approval: a deploy's commit descends from prod's newest record and
-// its image is the one non-prod deployed in this run; a rollback's target is still recorded, on main,
-// at the gate's digest and above every floor at the run's commit; a restore's record is the one the
-// gate read. It outputs prod's newest record id, which the prod job's fast re-check compares.
+// prod-gate's checks, before prod's approval: a deploy's commit descends from prod's newest record,
+// which holds the expansion of every floor at the run's commit whose migration it lacks (as the gate
+// checks it), and its image is the one non-prod deployed in this run; a rollback's target is still
+// recorded, on main, at the gate's digest and above every floor at the run's commit; a restore's record
+// is the one the gate read. It outputs prod's newest record id, which the prod job's fast re-check
+// compares.
 export async function prodGate(input: ProdGateInput): Promise<Outcome<{ current_prod_id: string }>> {
   const { mode, target, sha, commit, isAncestor } = input
   if (!COMMIT.test(sha) || !COMMIT.test(commit)) return no('bad-input')
@@ -650,6 +667,7 @@ export async function prodGate(input: ProdGateInput): Promise<Outcome<{ current_
   if (target === 'prod' && mode === 'deploy') {
     if (commit !== sha) return no('bad-input')
     if (newest !== undefined && !isAncestor(newest.commit, sha)) return no('older-than-prod')
+    if (newest !== undefined && !(await input.expansionsMet(newest.commit, sha))) return no('expansion-not-deployed')
     if (!DIGEST.test(input.buildDigest) || input.buildDigest !== input.nonprodDigest) return no('digest-differs')
     return ok(outputs)
   }
@@ -703,6 +721,13 @@ export const gitFloorsAllowed =
   (repo: string, main: string) =>
   async (target: string, floorsAt: string): Promise<boolean> =>
     (await checkFloors({ target, floorsAt, main, repo })).length === 0
+
+// Whether a forward deploy at floorsAt may migrate under the release, the floors and the migrations read
+// as gitFloorsAllowed reads them, each floor's expansion checked to be on main before its contraction.
+export const gitExpansionsMet =
+  (repo: string, main: string) =>
+  async (release: string, floorsAt: string): Promise<boolean> =>
+    (await checkExpansions({ release, floorsAt, main, repo })).length === 0
 
 // The ECS pages break-glass saves (break-glass.md's incident rollback, step 2): for each role,
 // <role>-deployments-<n>.json, each `{ next, deployments: [[finishedAt, revisionArn], …] }` with only
@@ -877,6 +902,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         treeOf: gitTreeOf(repo),
         isAncestor: gitIsAncestor(repo),
         floorsAllowed: gitFloorsAllowed(repo, required(flags, 'sha')),
+        expansionsMet: gitExpansionsMet(repo, required(flags, 'sha')),
         domains: io.domains ?? Object.values(DOMAINS),
       })
       if (!result.ok) return refuse(io, result.reason)
@@ -909,6 +935,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         records: releaseRecordsIn(io, required(flags, 'records'), 'prod'),
         isAncestor: gitIsAncestor(repo),
         floorsAllowed: gitFloorsAllowed(repo, required(flags, 'sha')),
+        expansionsMet: gitExpansionsMet(repo, required(flags, 'sha')),
       })
       if (!result.ok) return refuse(io, result.reason)
       io.write(`current_prod_id=${result.value.current_prod_id}\n`)

@@ -2,9 +2,9 @@
 // recorded answers, the read-back's validation, --profile-at in a scratch git repository, the command
 // line for each stage (the host, origin and profile each --env maps to), and the whole command against
 // a local TLS server with a certificate made for the test, so the network code runs too, its body limit
-// and its timeout among it. Commits are made by git or built as repeats, and an
-// ARN, account id or address is built from parts at run time (IG-01). It holds what the smoke must
-// decide, so it is on the owner's-read list (C11-D74).
+// and its timeout among it. Commits are made by git (a developer's own git settings, a global hook or
+// signed tags, set aside) or built as repeats, and an ARN, account id or address is built from parts at
+// run time (IG-01). It holds what the smoke must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { ServerResponse } from 'node:http'
@@ -467,10 +467,15 @@ let after = ''
 let prodUnset = ''
 let prodTwilio = ''
 
+// git with an identity, and none of the developer's commit and tag signing or hooks, so a global setting
+// can't refuse a commit.
 function git(args: readonly string[]): string {
   return execFileSync(
     'git',
-    ['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false', ...args],
+    [
+      ...['-c', 'user.name=hearth-test', '-c', `user.email=${EMAIL}`, '-c', 'commit.gpgsign=false'],
+      ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+    ],
     { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   ).trim()
 }

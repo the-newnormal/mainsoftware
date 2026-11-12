@@ -50,7 +50,13 @@
 //   header, counted as GFM counts them, and no unescaped | inside backticks, where GFM splits the row
 //   too, so a | in a command is written \| (the page shows a plain |); a delimiter row has its
 //   header's cells too, since GFM renders no table otherwise, and no table sits in a quote, which RB-08
-//   doesn't read.
+//   doesn't read;
+// - RB-09 (C0.11 PR 4 review 4 SCRIPTS-01): no git command in a runbook's code names main by a short
+//   name (`main` or `origin/main`), only by its full ref (refs/remotes/origin/main, read with
+//   git show-ref --verify, after git fetch origin +refs/heads/main:refs/remotes/origin/main): a tag of
+//   either short name, which anyone who can push a branch can push, wins a short name's lookup (git
+//   only warns that it is ambiguous), so a forged record's commit would read as on main, and a fetch or
+//   pull given `origin main` takes such a tag over the branch.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -1107,5 +1113,57 @@ describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cell
     const runbooks = repoFiles().filter(isRunbook).sort()
     expect(runbooks.length).toBeGreaterThan(1)
     expect(runbooks.flatMap(path => rowsOffHeader(readRepoFile(path)).map(row => `${path}:${row}`))).toEqual([])
+  })
+})
+
+// --- RB-09: main by its full ref in every git command ---------------------------------------------
+
+// A git command that reads or moves a revision, naming main or origin/main by its short name: never after
+// a /, so refs/heads/main and refs/remotes/origin/main pass, and never before a /, :, . or -, so a path,
+// a refspec's source or another word passes.
+const SHORT_MAIN =
+  /\bgit\s+(?:-C\s+\S+\s+)?(?:merge-base|rev-parse|rev-list|show|diff|log|checkout|switch|fetch|pull|cat-file|merge|reset)\b[^`]*?(?<![\w/.:+-])(?:origin\/)?main(?![\w/.:-])/
+
+// The code a text holds, each with the line it starts on: its fenced blocks (from the line after the fence),
+// then its inline spans of any backtick run.
+function codeOf(text: string): Array<[number, string]> {
+  const found: Array<[number, string]> = []
+  const fenced = /^(```|~~~)[^\n]*\n([\s\S]*?)^\1[^\n]*$/gm
+  const lineAt = (from: string, index: number | undefined) => from.slice(0, index).split('\n').length
+  for (const block of text.matchAll(fenced)) found.push([lineAt(text, block.index) + 1, block[2] ?? ''])
+  const rest = text.replace(fenced, block => block.replace(/[^\n]/g, ' '))
+  for (const span of rest.matchAll(/(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/g)) {
+    found.push([lineAt(rest, span.index), span[2] ?? ''])
+  }
+  return found
+}
+
+// The lines whose code names main by a short name in a git command.
+const shortMainAt = (text: string) =>
+  codeOf(text)
+    .filter(([, code]) => SHORT_MAIN.test(code))
+    .map(([line]) => line)
+
+describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01): every git command in a runbook names main by its full ref', () => {
+  it('finds main or origin/main by a short name in a fetch, a pull, an ancestry check or the floors loop, inline or fenced, on planted text, and passes the full ref', () => {
+    const text = [
+      'Fetch first (`git fetch origin main`), then check (`git merge-base --is-ancestor "<commit>" origin/main`).',
+      'Pull it: ``git pull origin main``.',
+      '```sh',
+      'n=; for c in "<commit>"; do git merge-base --is-ancestor "$c" origin/main && n=$c; done',
+      '```',
+      'Or `git -C clone rev-parse main`, or `git checkout main`.',
+      'Fetch (`git fetch origin +refs/heads/main:refs/remotes/origin/main`), then',
+      '`m=$(git show-ref --verify --hash refs/remotes/origin/main) && git merge-base --is-ancestor "$c" "$m"`.',
+      'A `git pull` on branch main, never a pull given `origin main`, and the file `infra/main.ts`.',
+      'A checkout of `main`, and `git log --oneline maintenance`.',
+    ].join('\n')
+    expect(shortMainAt(text)).toEqual([4, 1, 1, 2, 6, 6])
+  })
+
+  it('no runbook names main by a short name in a git command', () => {
+    const runbooks = repoFiles().filter(isRunbook).sort()
+    expect(runbooks.length).toBeGreaterThan(1)
+    expect(runbooks.flatMap(path => shortMainAt(readRepoFile(path)).map(line => `${path}:${line}`))).toEqual([])
   })
 })

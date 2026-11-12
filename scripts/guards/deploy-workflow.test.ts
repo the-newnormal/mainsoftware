@@ -7,9 +7,11 @@
 // planted copies of the workload's own assembly, protect-environments.sh check --from against planted
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
 // repository, and nothing names an account, a login or an address. Last, `.claude/settings.json`'s deny
-// rules are read for a `:*` anywhere but at a Bash rule's end (C11-D77), which Claude Code reads literally.
+// rules are read for a `:*` anywhere but at a Bash rule's end (C11-D77), which Claude Code reads literally,
+// and `.claude/` is held to carry no plugin and its settings to enable none and name no marketplace.
 // This file and deploy-workflow.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,6 +37,7 @@ import {
   CDK_FOLDER,
   CI,
   CLI_CHECK,
+  CLI_FETCH,
   canonicalTextFindings,
   checkoutFindings,
   credentialedCodeFindings,
@@ -189,7 +192,7 @@ const HELD =
 const PINNED_08 =
   "runs as written, whole and under its own if: (PINNED_RUNS): prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
 const PINNED_09 =
-  "runs as written, whole and under its own if: (PINNED_RUNS): the records and main's ruleset the plan rests on and the plan itself, so no line of its own ends one early, forges what the plan reads or writes an output of its own"
+  "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
 const PINNED_13 =
   'runs as written, whole and under its own if: (PINNED_RUNS): the release, the push, migrate with its record and the record job, so no line of its own tags, migrates or records by another commit, task or environment'
 const PINNED_10 =
@@ -232,7 +235,7 @@ describe('DPW: the guard reads the deploy workflow', () => {
   })
 
   it('reads the canonical texts back through parsedSteps exactly as written, comment and blank lines kept', () => {
-    const texts = { PREAMBLE, ASSET_CHECK, CDK_FOLDER, AWS_CHECK, CLI_CHECK, ONE_OFF, PROBE }
+    const texts = { PREAMBLE, ASSET_CHECK, CDK_FOLDER, AWS_CHECK, CLI_FETCH, CLI_CHECK, ONE_OFF, PROBE }
     const planted = [
       'jobs:',
       '  x:',
@@ -258,7 +261,17 @@ describe('DPW: the guard reads the deploy workflow', () => {
     }
     // And in the real file, where each sits whole in the steps that run it.
     const runs = workflowJobs(deployText).flatMap(each => parsedSteps(each).map(step => step.run ?? ''))
-    for (const text of [PREAMBLE, ASSET_CHECK, CDK_FOLDER, AWS_CHECK, CLI_CHECK, ONE_OFF, PROBE, TASKS_OUTPUTS]) {
+    for (const text of [
+      PREAMBLE,
+      ASSET_CHECK,
+      CDK_FOLDER,
+      AWS_CHECK,
+      CLI_FETCH,
+      CLI_CHECK,
+      ONE_OFF,
+      PROBE,
+      TASKS_OUTPUTS,
+    ]) {
       expect(runs.some(run => run.includes(text))).toBe(true)
     }
     for (const line of [
@@ -443,6 +456,7 @@ describe('DPW: the guard reads the deploy workflow', () => {
     for (const text of [
       PREAMBLE,
       CDK_FOLDER,
+      CLI_FETCH,
       CLI_CHECK,
       TASKS_OUTPUTS,
       ONE_OFF,
@@ -675,7 +689,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(nonprod === undefined ? [] : parsedSteps(nonprod).at(-1)?.run).toBeUndefined()
     expect(permissionFindings(unread)).toEqual(shape(DEPLOY))
     // A plain scalar YAML continues on the next line, which the reader would cut at its first.
-    const install = '        run: npm ci --ignore-scripts -w @hearth/infra\n'
+    const install = '        run: echo "::add-mask::$ACCOUNT_ID"\n'
     expect(permissionFindings(plant(install, `${install}          && npx cdk deploy --all\n`, job('nonprod')))).toEqual(
       shape(DEPLOY),
     )
@@ -683,7 +697,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
       permissionFindings(
         plant(
           install,
-          '        run: "npm ci --ignore-scripts -w @hearth/infra\n          && npx cdk deploy --all"\n',
+          '        run: "echo ::add-mask::$ACCOUNT_ID\n          && npx cdk deploy --all"\n',
           job('nonprod'),
         ),
       ),
@@ -1390,6 +1404,52 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     ).toEqual([at('nonprod', 'sets no AWS_ variable and no ROLE_TO_ASSUME')])
   }, 30_000)
 
+  // Round 4's GUARDS-01: GitHub reads a context's name in any letter case, by property or by index, and a whole
+  // context too, so an action's input (which no rule pins by value) can name a secret or the job's token in
+  // any of those spellings. An upload's name is listed on the public run page while the job runs.
+  it('finds a secret or the job token named in any spelling, in an action input', () => {
+    const SECRET = 'names no secret'
+    const NONPROD = 'names no secret but AWS_DEPLOY_ROLE and AWS_ACCOUNT_ID, never GITHUB_TOKEN'
+    const TOKEN = 'names github.token only as a GH_TOKEN env value, and the github context never whole'
+    // Each plant is an expression, written ${{ inner }} in the action's input.
+    const upload = (inner: string) =>
+      maskingFindings(plant('          name: assembly\n', `          name: \${{ ${inner} }}\n`, job('synth')))
+    for (const inner of [
+      'SECRETS.GITHUB_TOKEN',
+      'Secrets.AWS_DEPLOY_ROLE',
+      "secrets['AWS_ACCOUNT_ID']",
+      "SECRETS [ 'OTHER' ]",
+      'toJSON(SECRETS)',
+      'toJSON(secrets)',
+    ]) {
+      expect(upload(inner), inner).toEqual([at('synth', SECRET)])
+    }
+    for (const inner of [
+      'github.token',
+      'GITHUB.TOKEN',
+      'github . Token',
+      "github['token']",
+      'toJSON(github)',
+      'toJSON(GitHub)',
+      "format('{0}', github)",
+    ]) {
+      expect(upload(inner), inner).toEqual([at('synth', TOKEN)])
+    }
+    // In a credentialed job, a name the job may use is still refused in any spelling but the workflow's own.
+    const checkout = (inner: string) =>
+      maskingFindings(
+        plant(
+          '          fetch-depth: 0\n',
+          `          ref: \${{ ${inner} }}\n          fetch-depth: 0\n`,
+          job('nonprod'),
+        ),
+      )
+    for (const inner of ['Secrets.OTHER', 'SECRETS.AWS_DEPLOY_ROLE', 'secrets.aws_account_id']) {
+      expect(checkout(inner), inner).toEqual([at('nonprod', NONPROD)])
+    }
+    expect(checkout('GitHub.Token')).toEqual([at('nonprod', TOKEN)])
+  })
+
   // The preamble's filter undone after it, env in any use, and a wrapper or a redirection before aws: each
   // would print what the filter is there to hide.
   it('finds the preamble’s filter undone, env in any use, and a wrapper or a redirection before aws', () => {
@@ -1407,8 +1467,8 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     ]) {
       expect(added(line)).toEqual([at(readBack, FILTER)])
     }
-    for (const line of ['env -0', 'env -u X', 'X=1 env', 'jq -n env', 'declare -x']) {
-      expect(added(line)).toEqual([at(readBack, TRACE)])
+    for (const line of ['env -0', 'env -u X', 'X=1 env', 'jq -n env', 'declare -x', 'sudo /usr/bin/env']) {
+      expect(added(line), line).toEqual([at(readBack, TRACE)])
     }
     const smoke = (before: string) =>
       maskingFindings(
@@ -1434,9 +1494,11 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
   it('finds what prints the credentials from inside quoted text in a credentialed run', () => {
     const PRINTS =
       'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+    // A quoted env handed to jq whole is env handed to a program too (round 4's GUARDS-02).
+    for (const line of ["jq -n 'env' >/dev/null", 'jq -n "env" >/dev/null']) {
+      expect(added(line), line).toEqual([at(readBack, TRACE), at(readBack, PRINTS)])
+    }
     for (const line of [
-      "jq -n 'env' >/dev/null",
-      'jq -n "env" >/dev/null',
       `jq -n '$ENV' | mask | tee -a "$GITHUB_STEP_SUMMARY"`,
       "jq -rn 'env.AWS_SESSION_TOKEN' | mask",
       'cat /proc/self/environ | mask',
@@ -1448,13 +1510,14 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     // Round 2's GUARDS-01: a # right after a substitution's ) hides nothing that prints.
     expect(added('echo $(true)#;set -x')).toEqual([at(readBack, TRACE)])
     expect(added('echo $(true)#;env | base64 -w0')).toEqual([at(readBack, TRACE)])
-    // env as an object's key prints nothing, and a job with no credentials is no concern of this rule.
+    // env as an object's key prints nothing, and a job with no credentials is no concern of this rule (a jq
+    // program that is env alone is env handed to a program, which TRACE finds in every job).
     expect(added("jq -n '{env: 1}' >/dev/null")).toEqual([])
     expect(
       maskingFindings(
         plant(
           `          printf '%s' "$READBACK"`,
-          `          jq -n 'env' >/dev/null\n          printf '%s' "$READBACK"`,
+          `          jq -rn 'env.HOME' >/dev/null\n          printf '%s' "$READBACK"`,
           job('smoke-nonprod'),
         ),
       ),
@@ -1470,10 +1533,22 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
         addedBefore('gate', 'Plan', `          printf '%s\\n' "$PLAN" >>"$GITHUB_OUTPUT"\n`, `          ${line}\n`),
       )
     for (const line of ['eval "$x"', 'source x', 'echo "$(<x)"', `echo "\${x/a/b}"`, 'echo a |& cat', 'echo a{b,c}']) {
-      expect(plan(line), line).toEqual([at('gate (Plan), line 17', AS_BASH)])
+      expect(plan(line), line).toEqual([at('gate (Plan), line 18', AS_BASH)])
     }
     expect(plan('/usr/bin/env')).toEqual([at('gate (Plan)', TRACE)])
-    expect(plan('( printenv )')).toEqual([at('gate (Plan), line 17', AS_BASH), at('gate (Plan)', TRACE)])
+    // Round 4's GUARDS-04 and GUARDS-02: env or printenv handed to a program by its path, or quoted, which bash
+    // hands on with its quotes taken off; only the words a command is given read them.
+    for (const line of [
+      'sudo /usr/bin/env',
+      'xargs /usr/bin/env </dev/null',
+      'sudo "printenv"',
+      "xargs 'env' </dev/null",
+      "find . -maxdepth 0 -exec 'printenv' ';'",
+      'sudo "/usr/bin/env"',
+    ]) {
+      expect(plan(line), line).toEqual([at('gate (Plan)', TRACE)])
+    }
+    expect(plan('( printenv )')).toEqual([at('gate (Plan), line 18', AS_BASH), at('gate (Plan)', TRACE)])
   })
 
   it('holds the repository', () => {
@@ -1498,7 +1573,7 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     const result = spawnSync('bash', ['-c', `${PREAMBLE}\nmask`], {
       input: `${lines.join('\n')}\n`,
       encoding: 'utf8',
-      env: { PATH: process.env.PATH ?? '', GITHUB_WORKSPACE: '/nowhere' },
+      env: { PATH: process.env.PATH ?? '', RUNNER_TEMP: '/nowhere' },
     })
     expect(result.status).toBe(0)
     expect(result.stdout.split('\n')).toEqual([
@@ -1753,6 +1828,10 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
             `user.email=${['test', 'example.invalid'].join('@')}`,
             '-c',
             'commit.gpgsign=false',
+            '-c',
+            'tag.gpgSign=false',
+            '-c',
+            'core.hooksPath=/dev/null',
             ...args,
           ],
           { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
@@ -1962,6 +2041,27 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         ),
       ),
     ).toEqual([at('record-nonprod', BOT)])
+    // Round 4's GUARDS-03: an if: that a person's re-run of a bot's run passes (a re-run keeps github.actor,
+    // the bot, while github.triggering_actor is the person), read with the bot as github.actor alone.
+    const actorOnly = "|| !endsWith(github.triggering_actor, '[bot]') && endsWith(github.actor, '[bot]') }}"
+    expect(
+      gate(
+        plant(
+          "needs.gate.outputs.mode != 'drill-break' }}",
+          `needs.gate.outputs.mode != 'drill-break' ${actorOnly}`,
+          job('record-nonprod'),
+        ),
+      ),
+    ).toEqual([at('record-nonprod', BOT)])
+    expect(
+      gate(
+        plant(
+          "needs.rollback-nonprod.outputs.rolled == 'true' }}",
+          `needs.rollback-nonprod.outputs.rolled == 'true' ${actorOnly}`,
+          job('resmoke-nonprod'),
+        ),
+      ),
+    ).toEqual([at('resmoke-nonprod', BOT)])
     expect(
       gate(
         plant(
@@ -1973,7 +2073,21 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     ).toEqual([at('prod-gate', 'its if: admits no drill: drills are non-prod’s alone')])
     expect(gate(removedStep('gate', 'The environments are live as written'))).toEqual([
       at('gate', 'runs scripts/protect-environments.sh check before it plans'),
+      at('gate (The environments are live as written)', PINNED_09),
     ])
+    // An if: that skips the check on a push lets every push plan with no comparison of the live environments.
+    for (const condition of ["github.event_name == 'workflow_dispatch'", 'false']) {
+      expect(
+        gate(
+          plant(
+            '      - name: The environments are live as written\n',
+            `      - name: The environments are live as written\n        if: \${{ ${condition} }}\n`,
+            job('gate'),
+          ),
+        ),
+        condition,
+      ).toEqual([at('gate (The environments are live as written)', PINNED_09)])
+    }
     expect(gate(plant('--release "$RELEASE" --restore', '--release "" --restore', job('gate')))).toEqual([
       at('gate', 'plans through history.ts plan, every input and actor through env:'),
       at('gate (Plan)', PINNED_09),
@@ -2075,7 +2189,10 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     const git = (args: readonly string[]) =>
       execFileSync(
         'git',
-        ['-c', 'user.name=hearth-test', '-c', `user.email=${email}`, '-c', 'commit.gpgsign=false', ...args],
+        [
+          ...['-c', 'user.name=hearth-test', '-c', `user.email=${email}`, '-c', 'commit.gpgsign=false'],
+          ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+        ],
         {
           cwd: repo,
           encoding: 'utf8',
@@ -2146,6 +2263,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       treeOf: sha => git(['rev-parse', `${sha}^{tree}`]),
       isAncestor: gitIsAncestor(repo),
       floorsAllowed: () => true,
+      expansionsMet: () => true,
       domains: ['app.hearth.example', 'content.hearth.example'],
       ...overrides,
     })
@@ -2331,7 +2449,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
 describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials are', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const RUNS =
-    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo and the pinned CLI, and names no npx, node, shell, source, eval, docker, python, make, curl, wget or script: no tool is handed a program to run'
+    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI and CLI_FETCH’s fetch, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
   // Every run of a credentialed job is pinned whole, so a plant in any of them is that finding too.
   const pinned = (where: string) => at(where, PINNED_10)
@@ -2383,6 +2501,33 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(added('nonprod', 'X=$(curl -s x)')).toEqual(runsHeld)
     expect(added('nonprod', './scripts/x.ts')).toEqual(runsHeld)
     expect(added('nonprod', '"$TOOL" x')).toEqual([at(readBack('nonprod'), RUNS), refused('nonprod')])
+    // Round 4's ACTIONS-01 and SECURITY-01: no npm where the OIDC request token is (it would read the
+    // repository's .npmrc and lockfile, and the runner's npm 10 runs a git dependency's prepare script), and
+    // CLI_FETCH's tools only on its own lines, in its run whole.
+    const npmInstead = find(
+      CLI_FETCH.split('\n').slice(1).join('\n          '),
+      'npm ci --ignore-scripts -w @hearth/infra',
+      job('nonprod'),
+    )
+    expect(npmInstead).toContain(pinned('nonprod (The pinned CDK CLI)'))
+    expect(npmInstead).toContain(at('nonprod (The pinned CDK CLI)', RUNS))
+    expect(npmInstead).toContain(
+      at(
+        'nonprod',
+        'fetches only the pinned CLI (CLI_FETCH, never npm), then runs CLI_CHECK, before the credentials action',
+      ),
+    )
+    const curl = CLI_FETCH.split('\n').find(line => line.startsWith('curl ')) ?? ''
+    expect(added('nonprod', curl)).toContain(at(readBack('nonprod'), RUNS))
+    const tar = CLI_FETCH.split('\n').find(line => line.startsWith('tar ')) ?? ''
+    expect(added('nonprod', tar)).toContain(at(readBack('nonprod'), RUNS))
+    const elsewhere = find(
+      'https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"',
+      'https://registry.example.invalid/aws-cdk-$pin.tgz"',
+      job('nonprod'),
+    )
+    expect(elsewhere).toContain(pinned('nonprod (The pinned CDK CLI)'))
+    expect(elsewhere).toContain(at('nonprod (The pinned CDK CLI)', RUNS))
     expect(added('nonprod', 'jq() { :; }')).toEqual([refused('nonprod'), at(readBack('nonprod'), DEFINES)])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --no-rollback', services)).toEqual([
       pinned('nonprod (Deploy Services)'),
@@ -2441,7 +2586,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ])
     expect(
       find(
-        'CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"',
+        'CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"',
         'CDK="$GITHUB_WORKSPACE/node_modules/.bin/cdk"',
         '      - name: What runs\n',
       ),
@@ -2449,7 +2594,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       pinned('nonprod (What runs)'),
       at(
         'nonprod (What runs)',
-        'assigns CDK only in the preamble, as the registry package’s node_modules/aws-cdk/bin/cdk',
+        'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked',
       ),
       // The preamble changed is no preamble, so its lines are the run's own, the table refusing the first
       // function the table doesn't name, and its mask, run and get are functions of the run's own.
@@ -2471,7 +2616,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       pinned("nonprod (The CLI is the registry's)"),
       at(
         'nonprod',
-        'installs only the pinned CLI (npm ci --ignore-scripts -w @hearth/infra), then runs CLI_CHECK, before the credentials action',
+        'fetches only the pinned CLI (CLI_FETCH, never npm), then runs CLI_CHECK, before the credentials action',
       ),
     ])
   }, 30_000)
@@ -2836,7 +2981,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const lock = JSON.parse(lockfile) as { packages: Record<string, Record<string, unknown>> }
     const entry = lock.packages['node_modules/aws-cdk'] ?? {}
     const LOCK =
-      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's package at infra's pin, with an integrity and no link"
+      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link"
     const withEntry = (changed: Record<string, unknown>) =>
       credentialedCodeFindings(
         workflows,
@@ -2846,6 +2991,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(withEntry({ ...entry, link: true })).toEqual([LOCK])
     expect(withEntry({ ...entry, resolved: 'https://registry.example.invalid/aws-cdk.tgz' })).toEqual([LOCK])
     expect(withEntry({ ...entry, version: '0.0.1' })).toEqual([LOCK])
+    // Round 4's ACTIONS-01 and SECURITY-01: as CLI_FETCH reads it, the registry's tarball at the pin by its fixed
+    // URL, never a git dependency or another version's tarball, with a sha512 integrity.
+    expect(withEntry({ ...entry, resolved: 'git+ssh://git@github.com/aws/aws-cdk-cli.git#0123456' })).toEqual([LOCK])
+    expect(withEntry({ ...entry, resolved: 'https://registry.npmjs.org/aws-cdk/-/aws-cdk-0.0.1.tgz' })).toEqual([LOCK])
+    expect(withEntry({ ...entry, integrity: 'sha1-0123456789abcdef0123456789abcdef01234567' })).toEqual([LOCK])
+    expect(withEntry({ ...entry, integrity: undefined })).toEqual([LOCK])
   }, 30_000)
 
   // Round 4: a run's own lines (each outside a canonical text standing whole) are read through SHELL_TABLE, an
@@ -3098,6 +3249,193 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect([...manifests.keys()]).toEqual(
       expect.arrayContaining(['package.json', 'infra/package.json', 'apps/server/package.json', 'demo/package.json']),
     )
+  })
+})
+
+// CLI_FETCH and CLI_CHECK (C11-D48, C11-D76; round 4's ACTIONS-01 and SECURITY-01), each run as written with
+// bash, jq, openssl and tar against a stand-in curl that serves a planted tarball, in a scratch checkout with
+// its own infra/package.json and lockfile: the CLI is the tarball whose sha512 is the lockfile's integrity,
+// fetched by its fixed URL and unpacked into a folder of its own, and no npm runs, so neither an .npmrc nor a
+// git dependency in the lockfile can run code where the OIDC request token is.
+describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted tarball', () => {
+  let scratch = ''
+  const PIN = '9.9.9'
+  const URL = `https://registry.npmjs.org/aws-cdk/-/aws-cdk-${PIN}.tgz`
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw10-cli-'))
+  })
+  afterAll(() => {
+    if (scratch !== '') rmSync(scratch, { recursive: true, force: true })
+  })
+  // A tarball of package/ holding the given manifest, a bin/cdk and, if asked, a link; its sha512 integrity.
+  let tarballs = 0
+  function tarball(manifest: Record<string, unknown>, link = false): { path: string; integrity: string } {
+    const folder = join(scratch, `tarball-${++tarballs}`)
+    execFileSync('mkdir', ['-p', join(folder, 'package', 'bin')])
+    writeFileSync(join(folder, 'package', 'package.json'), JSON.stringify(manifest))
+    writeFileSync(join(folder, 'package', 'bin', 'cdk'), '#!/bin/sh\necho cdk\n', { mode: 0o755 })
+    if (link) symlinkSync('/bin/sh', join(folder, 'package', 'bin', 'sh'))
+    const path = join(scratch, `aws-cdk-${tarballs}.tgz`)
+    execFileSync('tar', ['-czf', path, '-C', folder, 'package'])
+    const integrity = `sha512-${createHash('sha512').update(readFileSync(path)).digest('base64')}`
+    return { path, integrity }
+  }
+  const CLI = { name: 'aws-cdk', version: PIN, bin: { cdk: 'bin/cdk' } }
+  interface Plant {
+    served: string
+    entry?: Record<string, unknown>
+    pin?: string
+    // The folder the CLI is unpacked into, made beforehand.
+    made?: boolean
+  }
+  // The checkout, the runner's temp folder and a stand-in curl that logs its arguments and serves the
+  // planted tarball to its --output; npm on PATH would leave a mark, as would a git program an .npmrc names.
+  function fetched(plant: Plant): { status: number | null; said: string; curl: string[]; npm: boolean; cdk: boolean } {
+    const run = mkdtempSync(join(scratch, 'run-'))
+    const repo = join(run, 'repo')
+    const temp = join(run, 'temp')
+    const bin = join(run, 'bin')
+    execFileSync('mkdir', ['-p', join(repo, 'infra'), temp, bin])
+    writeFileSync(
+      join(repo, 'infra', 'package.json'),
+      JSON.stringify({ devDependencies: { 'aws-cdk': plant.pin ?? PIN } }),
+    )
+    const entry = plant.entry ?? { version: PIN, resolved: URL, integrity: '' }
+    writeFileSync(join(repo, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/aws-cdk': entry } }))
+    writeFileSync(join(repo, '.npmrc'), `git=${join(bin, 'git-mark')}\n`)
+    const mark = join(run, 'npm-ran')
+    for (const name of ['npm', 'git-mark']) {
+      writeFileSync(join(bin, name), `#!/bin/sh\ntouch '${mark}'\n`, { mode: 0o755 })
+    }
+    if (plant.made) execFileSync('mkdir', [join(temp, 'aws-cdk')])
+    const log = join(run, 'curl.log')
+    writeFileSync(log, '')
+    const STUB = `curl() {
+  local out='' previous=''
+  printf '%s\\n' "$@" >>"$CURL_LOG"
+  for word in "$@"; do
+    if [ "$previous" = --output ]; then out=$word; fi
+    previous=$word
+  done
+  cp "$SERVED" "$out"
+}`
+    const result = spawnSync('bash', ['-c', `${STUB}\n${CLI_FETCH}\n${CLI_CHECK}`], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        HOME: run,
+        RUNNER_TEMP: temp,
+        CURL_LOG: log,
+        SERVED: plant.served,
+      },
+    })
+    let cdk = false
+    try {
+      cdk = readFileSync(join(temp, 'aws-cdk', 'package', 'bin', 'cdk'), 'utf8').startsWith('#!/bin/sh')
+    } catch {
+      cdk = false
+    }
+    let npm = true
+    try {
+      readFileSync(mark)
+    } catch {
+      npm = false
+    }
+    return {
+      status: result.status,
+      said: result.stdout.trim().split('\n').at(-1) ?? '',
+      curl: readFileSync(log, 'utf8').split('\n').filter(Boolean),
+      npm,
+      cdk,
+    }
+  }
+  const lockOf = (integrity: string, more: Record<string, unknown> = {}) => ({
+    version: PIN,
+    resolved: URL,
+    integrity,
+    ...more,
+  })
+
+  it('fetches the registry tarball by its fixed URL, checks its sha512 and unpacks it, and runs no npm', () => {
+    const good = tarball(CLI)
+    const done = fetched({ served: good.path, entry: lockOf(good.integrity) })
+    expect(done).toEqual({ status: 0, said: '', curl: done.curl, npm: false, cdk: true })
+    const temp = done.curl[done.curl.indexOf('--output') + 1] ?? ''
+    expect(done.curl).toEqual([
+      '-q',
+      '--fail',
+      '--silent',
+      '--show-error',
+      '--proto',
+      '=https',
+      '--tlsv1.2',
+      '--max-time',
+      '300',
+      '--max-filesize',
+      '104857600',
+      '--output',
+      temp,
+      URL,
+    ])
+    expect(temp.endsWith('/temp/aws-cdk/aws-cdk.tgz')).toBe(true)
+  })
+
+  it('refuses a tarball whose sha512 isn’t the lockfile’s integrity, and unpacks nothing', () => {
+    const good = tarball(CLI)
+    const other = tarball({ ...CLI, description: 'another' })
+    const refused = fetched({ served: other.path, entry: lockOf(good.integrity) })
+    expect(refused).toMatchObject({ status: 1, cdk: false, npm: false })
+    expect(refused.said).toBe("cli-fetch: the tarball's sha512 isn't the lockfile's integrity")
+  })
+
+  it('refuses a lockfile entry that isn’t the registry’s tarball at the pin, and a pin that isn’t one version, before fetching', () => {
+    const good = tarball(CLI)
+    const LOCK = "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"
+    for (const entry of [
+      lockOf(good.integrity, { resolved: 'git+ssh://git@github.com/aws/aws-cdk-cli.git#0123456' }),
+      lockOf(good.integrity, { resolved: 'https://registry.npmjs.org/aws-cdk/-/aws-cdk-0.0.1.tgz' }),
+      lockOf(good.integrity, { link: true }),
+      lockOf(good.integrity, { version: '0.0.1' }),
+      lockOf(good.integrity.replace('sha512-', 'sha1-')),
+      lockOf(`${good.integrity}\n`),
+    ]) {
+      const refused = fetched({ served: good.path, entry })
+      expect(refused, JSON.stringify(entry)).toMatchObject({ status: 1, said: LOCK, curl: [], npm: false, cdk: false })
+    }
+    const unpinned = fetched({ served: good.path, entry: lockOf(good.integrity), pin: '^9.9.9' })
+    expect(unpinned).toMatchObject({
+      status: 1,
+      said: "cli-fetch: infra's aws-cdk isn't pinned to one version",
+      curl: [],
+    })
+    // A folder already there for the CLI is never written into.
+    expect(fetched({ served: good.path, entry: lockOf(good.integrity), made: true })).toMatchObject({
+      status: 1,
+      curl: [],
+      cdk: false,
+    })
+  })
+
+  it('CLI_CHECK refuses an unpacked CLI that holds a link, or whose manifest isn’t aws-cdk at the pin alone', () => {
+    const linked = tarball(CLI, true)
+    expect(fetched({ served: linked.path, entry: lockOf(linked.integrity) })).toMatchObject({
+      status: 1,
+      said: 'cli-check: the unpacked CLI holds a symbolic link',
+    })
+    const PACKAGE = "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"
+    for (const manifest of [
+      { ...CLI, name: 'not-aws-cdk' },
+      { ...CLI, version: '0.0.1' },
+      { ...CLI, bin: { cdk: 'bin/other' } },
+      { ...CLI, dependencies: { other: '1.0.0' } },
+    ]) {
+      const planted = tarball(manifest)
+      expect(
+        fetched({ served: planted.path, entry: lockOf(planted.integrity) }),
+        JSON.stringify(manifest),
+      ).toMatchObject({ status: 1, said: PACKAGE })
+    }
   })
 })
 
@@ -4277,7 +4615,10 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
   const git = (args: readonly string[]) =>
     execFileSync(
       'git',
-      ['-c', 'user.name=hearth-test', '-c', `user.email=${email}`, '-c', 'commit.gpgsign=false', ...args],
+      [
+        ...['-c', 'user.name=hearth-test', '-c', `user.email=${email}`, '-c', 'commit.gpgsign=false'],
+        ...['-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+      ],
       {
         cwd: repo,
         encoding: 'utf8',
@@ -4368,6 +4709,7 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
         PATH: process.env.PATH ?? '',
         HOME: scratch,
         GITHUB_WORKSPACE: scratch,
+        RUNNER_TEMP: scratch,
         GITHUB_SHA: c.C,
         GITHUB_OUTPUT: output,
         GITHUB_STEP_SUMMARY: join(scratch, 'summary'),
@@ -4463,6 +4805,19 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
       stack: stack('UPDATE_IN_PROGRESS', release('B', D.B)),
     })
     expect(moving).toEqual(two)
+    // CloudFormation's longest status, 44 characters, is a deployment in progress too, in every mode.
+    const cleanup = stack('UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS', release('B', D.B))
+    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), stack: cleanup })).toEqual(two)
+    expect(
+      awsCheck({
+        mode: 'auto',
+        release: release('C', D.C),
+        previous: release('B', D.B),
+        ...runsB(),
+        stack: cleanup,
+        ecr: all(),
+      }),
+    ).toEqual(two)
   })
 
   it('finds no release only on a first deploy, with no stack or a failed first create and no services', () => {
@@ -4710,7 +5065,7 @@ describe('DPW-06 (C11-D45): restore=down and its read-back against planted AWS a
   let scratch = ''
   beforeAll(() => {
     scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw06-down-'))
-    const bin = join(scratch, 'workspace', 'node_modules', 'aws-cdk', 'bin')
+    const bin = join(scratch, 'aws-cdk', 'package', 'bin')
     execFileSync('mkdir', ['-p', bin])
     writeFileSync(join(bin, 'cdk'), '#!/bin/bash\necho "$1 $4" >>"$CDK_LOG"\n', { mode: 0o755 })
   })
@@ -5141,5 +5496,65 @@ describe('C11-D77: the deny rules in .claude/settings.json', () => {
     const deny = settings.permissions?.deny
     expect(Array.isArray(deny) && deny.length > 0 && deny.every(rule => typeof rule === 'string')).toBe(true)
     expect(midRule(deny as string[])).toEqual([])
+  })
+})
+
+// The repository carries no plugin (C11-D77; T24 item 21; the owner's answer of 12 Nov 2026 and review 4
+// RULES-02). A folder under .claude/skills/ holding a .claude-plugin/plugin.json loads as <name>@skills-dir,
+// its hooks and any mod included, for every collaborator who trusts the folder, and a mod that handles
+// tool.check can approve a call a deny rule refuses; a settings file there that enables a plugin or names
+// a marketplace brings one in from outside. So no file under .claude/ is a plugin's manifest (any
+// .claude-plugin/ folder) or a plugin's hooks file (hooks/hooks.json), and no settings file there, the
+// local one included should it be committed, holds enabledPlugins or extraKnownMarketplaces.
+describe('C11-D77: the repository carries and enables no plugin', () => {
+  const pluginFindings = (texts: ReadonlyArray<readonly [string, string]>) =>
+    texts.flatMap(([path, text]) => {
+      if (!path.startsWith('.claude/')) return []
+      if (/(?:^|\/)\.claude-plugin(?:\/|$)/.test(path)) return [`${path}: a plugin's manifest`]
+      if (/(?:^|\/)hooks\/hooks\.json$/.test(path)) return [`${path}: a plugin's hooks file`]
+      if (!/^\.claude\/settings(?:\.local)?\.json$/.test(path)) return []
+      let settings: unknown
+      try {
+        settings = JSON.parse(text)
+      } catch {
+        return [`${path}: isn't JSON`]
+      }
+      if (typeof settings !== 'object' || settings === null || Array.isArray(settings))
+        return [`${path}: isn't an object`]
+      return ['enabledPlugins', 'extraKnownMarketplaces']
+        .filter(key => Object.hasOwn(settings, key))
+        .map(key => `${path}: names ${key}`)
+    })
+
+  it('finds a plugin manifest, a plugin hooks file and a plugin or marketplace in settings, on planted files', () => {
+    const settings = JSON.parse(readRepoFile('.claude/settings.json')) as Record<string, unknown>
+    expect(
+      pluginFindings([
+        ['.claude/skills/tidy/.claude-plugin/plugin.json', '{"name":"tidy"}'],
+        ['.claude/skills/tidy/hooks/hooks.json', '{}'],
+        ['.claude/skills/tidy/SKILL.md', 'A skill.'],
+        ['.claude/hooks/auto-push.sh', '#!/bin/sh'],
+        [
+          '.claude/settings.json',
+          JSON.stringify({ ...settings, enabledPlugins: { 'tidy@market': true }, extraKnownMarketplaces: {} }),
+        ],
+        ['.claude/settings.local.json', JSON.stringify({ enabledPlugins: {} })],
+        ['.claude/settings.json', '{'],
+        ['docs/.claude-plugin/plugin.json', '{}'],
+      ]),
+    ).toEqual([
+      ".claude/skills/tidy/.claude-plugin/plugin.json: a plugin's manifest",
+      ".claude/skills/tidy/hooks/hooks.json: a plugin's hooks file",
+      '.claude/settings.json: names enabledPlugins',
+      '.claude/settings.json: names extraKnownMarketplaces',
+      '.claude/settings.local.json: names enabledPlugins',
+      ".claude/settings.json: isn't JSON",
+    ])
+  })
+
+  it('holds the repository', () => {
+    const claude = files.filter(path => path.startsWith('.claude/'))
+    expect(claude).toContain('.claude/settings.json')
+    expect(pluginFindings(claude.map(path => [path, readRepoFile(path)] as const))).toEqual([])
   })
 })

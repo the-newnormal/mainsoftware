@@ -186,7 +186,8 @@ jobs:
         run: |
           set -euo pipefail
           # The plan (C11-D49, C11-D58): who started the run and where, the inputs, DOMAINS, a deploy's pull
-          # request, each environment's current release and, for a deploy or a drill-smoke, the release each
+          # request, each environment's current release (for a deploy, at or after the expansion of every floor
+          # at this commit whose migration it lacks) and, for a deploy or a drill-smoke, the release each
           # automatic rollback goes back to and whether it may (above every floor at this commit). Every commit
           # it outputs is on main at this run's commit. A refusal is one line, `history: refused <code>: <why>`.
           # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
@@ -950,22 +951,37 @@ jobs:
             exit 1
           fi
       - name: The pinned CDK CLI
-        run: npm ci --ignore-scripts -w @hearth/infra
+        run: |
+          set -euo pipefail
+          # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+          # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+          # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+          # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+          # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+          [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+          integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+            { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+          mkdir "$RUNNER_TEMP/aws-cdk"
+          curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+            { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-          # infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-          # integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-          # and its bin stays inside it. One line names a failure.
+          # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-          jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-            { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-          [ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-            { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-          case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-            "$(readlink -f node_modules/aws-cdk)"/*) ;;
+          [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+            { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+          case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+            "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
             *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
           esac
       - name: Mask the account id
@@ -995,7 +1011,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; TECH-SPEC T24 items 4, 15 and 22): AWS's own
           # answer, which no GitHub actor can write, read before anything moves: the Services stack's status and
@@ -1051,7 +1067,7 @@ jobs:
                 *) aws_refuse "the Services stack can't be read" ;;
               esac
             else
-              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,40}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
+              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,64}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
               release=$(jq -r '.[1] // ""' <<<"$out")
             fi
             if [ "$status" = NONE ] || { [ -z "$release" ] && [[ "$status" =~ ^(ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)$ ]]; }; then
@@ -1187,7 +1203,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The push (C11-D50, C11-D79): the build's own archive, to a tag of its own, sha-<commit>-<run>-<attempt>,
           # so no push collides, keeping its digest; the pushed digest must be the build's, and ECR must name it
@@ -1218,7 +1234,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # A forward deploy's first call (C11-D52; TECH-SPEC T24 item 11): the stacks the services stand on,
           # by their stage ids, each change set from the downloaded assembly alone.
@@ -1238,7 +1254,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
           # probe groups and definitions, and whether the environment has its database yet, each checked by
@@ -1334,7 +1350,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # From here a failure of this job starts its rollback job, as a failed smoke does.
           echo "services_started=true" >>"$GITHUB_OUTPUT"
@@ -1347,7 +1363,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # Services (C11-D52; TECH-SPEC T24 item 11): the release's services alone, after the stacks they stand
           # on (and after migrate, from C0.12).
@@ -1363,7 +1379,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # A rollback a person dispatched (C11-D52, C11-D58): the target's Tasks and Services alone, over the
           # Platform and Data that run; never a push and never migrate.
@@ -1379,7 +1395,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # drill-break (C11-D59): a Services deploy whose realtime can't start must fail, the circuit breaker
           # and CloudFormation must put realtime back on the revision it ran, one deployment, PRIMARY and
@@ -1417,7 +1433,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           TOKEN="probe-nonprod-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
@@ -1528,7 +1544,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The read-back (C11-D54, C11-D61): what runs, for the smoke to judge as SMK-06 and SMK-07 read it,
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
@@ -1834,22 +1850,37 @@ jobs:
           check_assembly "$RUNNER_TEMP/assembly-previous"
           check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
       - name: The pinned CDK CLI
-        run: npm ci --ignore-scripts -w @hearth/infra
+        run: |
+          set -euo pipefail
+          # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+          # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+          # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+          # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+          # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+          [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+          integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+            { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+          mkdir "$RUNNER_TEMP/aws-cdk"
+          curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+            { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-          # infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-          # integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-          # and its bin stays inside it. One line names a failure.
+          # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-          jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-            { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-          [ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-            { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-          case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-            "$(readlink -f node_modules/aws-cdk)"/*) ;;
+          [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+            { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+          case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+            "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
             *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
           esac
       - name: Mask the account id
@@ -1880,7 +1911,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; TECH-SPEC T24 items 4, 15 and 22): AWS's own
           # answer, which no GitHub actor can write, read before anything moves: the Services stack's status and
@@ -1936,7 +1967,7 @@ jobs:
                 *) aws_refuse "the Services stack can't be read" ;;
               esac
             else
-              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,40}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
+              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,64}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
               release=$(jq -r '.[1] // ""' <<<"$out")
             fi
             if [ "$status" = NONE ] || { [ -z "$release" ] && [[ "$status" =~ ^(ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)$ ]]; }; then
@@ -2064,7 +2095,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The pipeline's rollback (C11-D52, C11-D58): the previous release's Tasks and Services, from its own
           # assembly; never a push and never migrate.
@@ -2080,7 +2111,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           TOKEN="probe-nonprod-rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
@@ -2192,7 +2223,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The read-back (C11-D54, C11-D61): what runs, for the smoke to judge as SMK-06 and SMK-07 read it,
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
@@ -2297,7 +2328,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           echo "rolled=true" >>"$GITHUB_OUTPUT"
 
@@ -2572,22 +2603,37 @@ jobs:
           check_assembly "$RUNNER_TEMP/assembly"
           check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
       - name: The pinned CDK CLI
-        run: npm ci --ignore-scripts -w @hearth/infra
+        run: |
+          set -euo pipefail
+          # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+          # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+          # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+          # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+          # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+          [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+          integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+            { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+          mkdir "$RUNNER_TEMP/aws-cdk"
+          curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+            { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-          # infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-          # integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-          # and its bin stays inside it. One line names a failure.
+          # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-          jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-            { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-          [ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-            { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-          case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-            "$(readlink -f node_modules/aws-cdk)"/*) ;;
+          [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+            { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+          case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+            "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
             *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
           esac
       - name: Mask the account id
@@ -2614,7 +2660,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
           # the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
@@ -2728,8 +2774,9 @@ jobs:
           NONPROD_DIGEST: ${{ needs.nonprod.outputs.digest }}
         run: |
           set -euo pipefail
-          # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release and its
-          # image is the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
+          # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release, which
+          # is at or after the expansion of every floor at this commit whose migration it lacks, and its image is
+          # the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
           # the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
           # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
           if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
@@ -2975,22 +3022,37 @@ jobs:
             fi
           fi
       - name: The pinned CDK CLI
-        run: npm ci --ignore-scripts -w @hearth/infra
+        run: |
+          set -euo pipefail
+          # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+          # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+          # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+          # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+          # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+          [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+          integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+            { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+          mkdir "$RUNNER_TEMP/aws-cdk"
+          curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+            { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-          # infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-          # integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-          # and its bin stays inside it. One line names a failure.
+          # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-          jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-            { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-          [ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-            { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-          case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-            "$(readlink -f node_modules/aws-cdk)"/*) ;;
+          [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+            { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+          case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+            "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
             *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
           esac
       - name: Mask the account id
@@ -3022,7 +3084,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; TECH-SPEC T24 items 4, 15 and 22): AWS's own
           # answer, which no GitHub actor can write, read before anything moves: the Services stack's status and
@@ -3078,7 +3140,7 @@ jobs:
                 *) aws_refuse "the Services stack can't be read" ;;
               esac
             else
-              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,40}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
+              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,64}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
               release=$(jq -r '.[1] // ""' <<<"$out")
             fi
             if [ "$status" = NONE ] || { [ -z "$release" ] && [[ "$status" =~ ^(ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)$ ]]; }; then
@@ -3216,7 +3278,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The push (C11-D50, C11-D79): the build's own archive, to a tag of its own, sha-<commit>-<run>-<attempt>,
           # so no push collides, keeping its digest; the pushed digest must be the build's, and ECR must name it
@@ -3247,7 +3309,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # A forward deploy's first call (C11-D52; TECH-SPEC T24 item 11): the stacks the services stand on,
           # by their stage ids, each change set from the downloaded assembly alone.
@@ -3267,7 +3329,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
           # probe groups and definitions, and whether the environment has its database yet, each checked by
@@ -3363,7 +3425,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # From here a failure of this job starts its rollback job, as a failed smoke does.
           echo "services_started=true" >>"$GITHUB_OUTPUT"
@@ -3376,7 +3438,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # Services (C11-D52; TECH-SPEC T24 item 11): the release's services alone, after the stacks they stand
           # on (and after migrate, from C0.12).
@@ -3392,7 +3454,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # A rollback a person dispatched (C11-D52, C11-D58): the target's Tasks and Services alone, over the
           # Platform and Data that run; never a push and never migrate.
@@ -3408,7 +3470,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # restore=down (C11-D45; TECH-SPEC T24 item 18): Services, then Data, then Platform, one call each, since
           # one call would order them by dependency; each only for a restore stack that exists and has settled.
@@ -3463,7 +3525,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           TOKEN="probe-prod-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
@@ -3574,7 +3636,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The read-back (C11-D54, C11-D61): what runs, for the smoke to judge as SMK-06 and SMK-07 read it,
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
@@ -3883,22 +3945,37 @@ jobs:
           check_assembly "$RUNNER_TEMP/assembly-previous"
           check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
       - name: The pinned CDK CLI
-        run: npm ci --ignore-scripts -w @hearth/infra
+        run: |
+          set -euo pipefail
+          # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
+          # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
+          # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
+          # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
+          # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
+          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
+          [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
+          integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
+            { echo "cli-fetch: the lockfile's aws-cdk isn't the registry's tarball at infra's pin"; exit 1; }
+          mkdir "$RUNNER_TEMP/aws-cdk"
+          curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"
+          [ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||
+            { echo "cli-fetch: the tarball's sha512 isn't the lockfile's integrity"; exit 1; }
+          tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner
       - name: The CLI is the registry's
         run: |
           set -euo pipefail
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
-          # infra's pin, never a workspace's or a link. The lockfile's entry resolves from the registry with an
-          # integrity hash and no link, the installed package is aws-cdk at that version and no link itself,
-          # and its bin stays inside it. One line names a failure.
+          # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
+          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
-          jq -e --arg pin "$pin" '.packages["node_modules/aws-cdk"] | type == "object" and .version == $pin and (.resolved | type == "string" and startswith("https://registry.npmjs.org/aws-cdk/-/")) and (.integrity | type == "string" and startswith("sha512-")) and (has("link") | not)' package-lock.json >/dev/null ||
-            { echo "cli-check: the lockfile's aws-cdk isn't the registry's at infra's pin"; exit 1; }
-          [ ! -L node_modules/aws-cdk ] && jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin' node_modules/aws-cdk/package.json >/dev/null ||
-            { echo "cli-check: the installed aws-cdk isn't the registry's package at infra's pin"; exit 1; }
-          case "$(readlink -f node_modules/aws-cdk/bin/cdk)" in
-            "$(readlink -f node_modules/aws-cdk)"/*) ;;
+          [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+            { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
+          case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
+            "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
             *) echo 'cli-check: the CLI resolves outside the aws-cdk package'; exit 1 ;;
           esac
       - name: Mask the account id
@@ -3929,7 +4006,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; TECH-SPEC T24 items 4, 15 and 22): AWS's own
           # answer, which no GitHub actor can write, read before anything moves: the Services stack's status and
@@ -3985,7 +4062,7 @@ jobs:
                 *) aws_refuse "the Services stack can't be read" ;;
               esac
             else
-              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,40}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
+              status=$(jq -er '.[0] | select(type == "string" and test("^[A-Z_]{1,64}$"))' <<<"$out") || aws_refuse "the Services stack's status can't be read"
               release=$(jq -r '.[1] // ""' <<<"$out")
             fi
             if [ "$status" = NONE ] || { [ -z "$release" ] && [[ "$status" =~ ^(ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS)$ ]]; }; then
@@ -4113,7 +4190,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The pipeline's rollback (C11-D52, C11-D58): the previous release's Tasks and Services, from its own
           # assembly; never a push and never migrate.
@@ -4129,7 +4206,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           TOKEN="probe-prod-rollback-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The Tasks stack's outputs (C11-D40, C11-D53): the cluster, the isolated subnets, the migrate and
@@ -4241,7 +4318,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The read-back (C11-D54, C11-D61): what runs, for the smoke to judge as SMK-06 and SMK-07 read it,
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
@@ -4346,7 +4423,7 @@ jobs:
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
-          CDK="$GITHUB_WORKSPACE/node_modules/aws-cdk/bin/cdk"
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           echo "rolled=true" >>"$GITHUB_OUTPUT"
 
