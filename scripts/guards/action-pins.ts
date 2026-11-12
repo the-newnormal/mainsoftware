@@ -16,6 +16,21 @@ export const ACTION_PINS: Readonly<Record<string, string>> = {
   'aws-actions/configure-aws-credentials': 'e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0',
 }
 
+// The two actions ci.yml's job action-pins runs before the check (DPW-04): checkout, which brings the
+// repository in, and setup-node. They run before the check can read anything, so the check can't prove
+// them: one at a commit pushed only to a fork would own the workspace, the check and the git it calls. So
+// they are held here, apart from ACTION_PINS (moving a pin there moves neither of these), and a person who
+// reads a change to them proves it against the action's own repository before it merges, from a folder
+// outside any repository and with git reading no configuration of theirs:
+//   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git ls-remote https://github.com/<action>.git \
+//     refs/tags/<version> 'refs/tags/<version>^{}'
+// names the commit (the ^{} line, for an annotated tag). The check reads them too, which catches a mistake,
+// never a fork's commit, which would already have run.
+export const PINS_JOB_ACTIONS: Readonly<Record<string, string>> = {
+  'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+  'actions/setup-node': '949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',
+}
+
 // An entry's commit and version: a 40-hex commit, then its version in a comment.
 export const PIN_SHAPE = /^([0-9a-f]{40}) # (v\d+\.\d+\.\d+)$/
 // An action's name: an owner and a repository, each of GitHub's own name characters.

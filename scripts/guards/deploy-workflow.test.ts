@@ -21,7 +21,7 @@ import { PROFILES } from '../../infra/src/config/profiles.ts'
 import { synthWorkload } from '../../infra/src/testing/workload.ts'
 import { gitEnvironment, pinProblems, readTagRefs, tagCommit } from '../check-action-pins.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
-import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE } from './action-pins'
+import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins'
 import {
   ASSET_CHECK,
   AWS_CHECK,
@@ -83,6 +83,7 @@ import {
   releaseFindings,
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
+  STOP_COMMANDS,
   shellCommands,
   shellViews,
   TARGETS_QUERY,
@@ -196,6 +197,9 @@ const PINNED_08 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the pull request's checks, main's CI, the prod gate, prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
 const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
+// DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
+const PINS_JOB_FINDING =
+  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
 const PINNED_13 =
   'runs as written, whole and under its own if: (PINNED_RUNS) and in its own folder: the build, the synth, the release, the push, migrate with its record and the record job, so no line of its own builds, synthesises, tags, migrates or records by another commit, context, task or environment, or runs, prints or writes what a rule reading the text would miss'
 const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
@@ -1045,6 +1049,9 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
       expect(ACTION_SHAPE.test(action), action).toBe(true)
       expect(PIN_SHAPE.test(entry), action).toBe(true)
     }
+    // ci.yml's job action-pins runs checkout and setup-node alone before the check, each at its entry here.
+    expect(Object.keys(PINS_JOB_ACTIONS).sort()).toEqual(['actions/checkout', 'actions/setup-node'])
+    for (const entry of Object.values(PINS_JOB_ACTIONS)) expect(PIN_SHAPE.test(entry), entry).toBe(true)
   })
 })
 
@@ -1507,6 +1514,8 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${line}\n`),
     )
   const MASK = 'masks secrets.AWS_ACCOUNT_ID (::add-mask::) before the credentials action'
+  const STOPS =
+    "stops the runner reading workflow commands (STOP_COMMANDS) before anything it runs prints, so no ##[add-mask] or other command in what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the approver's diff or drops a job output"
   const TRACE =
     'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
   const OWN =
@@ -1537,6 +1546,7 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     ).toEqual([at('record-nonprod', 'names no secret')])
     expect(maskingFindings(movedStep('nonprod', 'Mask the account id', 'What runs'))).toEqual([
       at('nonprod (Mask the account id)', 'a run after the credentials action starts with the preamble'),
+      at('nonprod (Mask the account id)', STOPS),
       at('nonprod', MASK),
     ])
     expect(added('aws sts get-caller-identity')).toEqual([
@@ -1764,7 +1774,9 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       env: { PATH: process.env.PATH ?? '', RUNNER_TEMP: '/nowhere' },
     })
     expect(result.status).toBe(0)
-    expect(result.stdout.split('\n')).toEqual([
+    const [stop, ...shown] = result.stdout.split('\n')
+    expect(stop).toMatch(/^::stop-commands::[0-9a-f]{32}$/)
+    expect(shown).toEqual([
       ['arn', 'aws', 'iam', '', '***', 'role/x'].join(':'),
       '***.dkr.ecr.ap-southeast-1.amazonaws.com/hearth-server',
       ':***:***:***:',
@@ -1774,6 +1786,57 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       `tag sha-${commit}-11-1`,
       '',
     ])
+  })
+
+  // Round 5's fourth attack (EXPAND-A4-01, A4-02). The runner reads ##[name] anywhere in a line, and ::name::
+  // at its start, as a workflow command, and add-mask hides its value in every later line and in the step
+  // summary and drops any job output it would change. The CLI prints a template's text as it is: a release
+  // whose stack description ended ##[add-mask] and a host hid that host in prod-plan's diff, the one thing
+  // the approver reads, and a Tasks output ##[add-mask]true dropped services_started, and with it the
+  // pipeline's rollback. So every run after the credentials action stops the runner reading commands, under
+  // a token of its own, before anything it runs prints.
+  it('stops the runner reading workflow commands before a credentialed run prints anything (EXPAND-A4-01, A4-02)', () => {
+    expect(STOP_COMMANDS).toBe('stop_token=$(openssl rand -hex 16)\necho "::stop-commands::$stop_token"')
+    let runs = 0
+    for (const each of workflowJobs(deployText)) {
+      const steps = parsedSteps(each)
+      const credentials = steps.findIndex(step => step.uses?.startsWith('aws-actions/configure-aws-credentials@'))
+      if (credentials < 0) continue
+      for (const step of steps.slice(credentials + 1)) {
+        if (step.run === undefined) continue
+        runs += 1
+        const code = step.run.split('\n').filter(line => line.trim() !== '' && !line.trimStart().startsWith('#'))
+        expect(code.slice(0, 3), `${each.id} (${step.name})`).toEqual([
+          'set -euo pipefail',
+          ...STOP_COMMANDS.split('\n'),
+        ])
+      }
+    }
+    expect(runs).toBe(31)
+    // The token is new each run, and the line naming it is the first the run prints.
+    const tokens = [0, 1].map(() => {
+      const result = spawnSync('bash', ['-c', `${PREAMBLE}\necho after`], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH ?? '', RUNNER_TEMP: '/nowhere' },
+      })
+      expect(result.status).toBe(0)
+      const [first, second] = result.stdout.split('\n')
+      expect(second).toBe('after')
+      return /^::stop-commands::([0-9a-f]{32})$/.exec(first ?? '')?.[1]
+    })
+    expect(tokens[0]).toBeDefined()
+    expect(tokens[0]).not.toBe(tokens[1])
+    // A run that drops the two lines, or stops them only after its first command, is refused.
+    const services = stepText(deployText, 'nonprod', 'Deploy Services')
+    const indented = (text: string) => text.replace(/^/gm, '          ')
+    for (const changed of [
+      edited(services, `${indented(STOP_COMMANDS)}\n`, ''),
+      edited(services, `${indented(STOP_COMMANDS)}\n`, `          echo starting\n${indented(STOP_COMMANDS)}\n`),
+    ]) {
+      expect(maskingFindings(withText(DEPLOY, edited(deployText, services, changed, job('nonprod'))))).toContain(
+        at('nonprod (Deploy Services)', STOPS),
+      )
+    }
   })
 })
 
@@ -2641,7 +2704,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
 describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials are', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const RUNS =
-    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI and CLI_FETCH’s fetch, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
+    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
   // Every run of a credentialed job is pinned whole, so a plant in any of them is that finding too.
   const pinned = (where: string) => at(where, PINNED_10)
@@ -2666,9 +2729,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
   const FILES =
     'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
-  // A planted line refused by the table, at its line in the read-back's run (16, where added() plants), and a
-  // command it reads that isn't held to its uses.
-  const refused = (id: string, line = 16) => at(`${readBack(id)}, line ${line}`, AS_BASH)
+  // A planted line refused by the table, at its line in the read-back's run (eight lines after the preamble,
+  // where added() plants), and a command it reads that isn't held to its uses.
+  const PLANTED_AT = PREAMBLE.split('\n').length + 8
+  const refused = (id: string, line = PLANTED_AT) => at(`${readBack(id)}, line ${line}`, AS_BASH)
   const held = (id: string) => at(readBack(id), HELD)
   const added = (id: string, line: string) =>
     credentialedCodeFindings(
@@ -2769,7 +2833,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       find(`          ${CDK_FOLDER}\n`, `          ${CDK_FOLDER}\n          cd "$GITHUB_WORKSPACE/infra"\n`, services),
     ).toEqual([
       pinned('nonprod (Deploy Services)'),
-      at('nonprod (Deploy Services), line 13', AS_BASH),
+      at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 5}`, AS_BASH),
       at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('ASSEMBLY="$RUNNER_TEMP/assembly"', 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"', services)).toEqual([
@@ -2788,9 +2852,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         'nonprod (What runs)',
         'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked',
       ),
-      // The preamble changed is no preamble, so its lines are the run's own, the table refusing the first
-      // function the table doesn't name, and its mask, run and get are functions of the run's own.
-      at('nonprod (What runs), line 4', AS_BASH),
+      // The preamble changed is no preamble, so its lines are the run's own: its openssl, held to the
+      // preamble's stop-token line, is refused, the table refuses the first function it doesn't name, and
+      // its mask, run and get are functions of the run's own.
+      at('nonprod (What runs)', RUNS),
+      at(`nonprod (What runs), line ${PREAMBLE.split('\n').findIndex(line => line.startsWith('mask()')) + 1}`, AS_BASH),
+      at('nonprod (What runs)', HELD),
       at('nonprod (What runs)', DEFINES),
     ])
     expect(
@@ -2812,6 +2879,14 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       ),
     ])
   }, 30_000)
+
+  // openssl makes the preamble's stop token (EXPAND-A4-01), on that line of the preamble alone; anywhere
+  // else in a credentialed run it is refused, as it was, whatever it is given.
+  it('admits openssl only on the preamble’s stop-token line (EXPAND-A4-01)', () => {
+    for (const line of ['X=$(openssl rand -hex 16)', 'openssl enc -d -in x -out y']) {
+      expect(added('nonprod', line), line).toContain(at(readBack('nonprod'), RUNS))
+    }
+  })
 
   // A tool allowed for its plain use handed a program to run, a file the CLI then runs rewritten, or a
   // variable set that chooses what a later command runs: each with the credentials in hand.
@@ -2944,18 +3019,18 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ])
     expect(deployServices(assembly, "          printf -v RUNNER_TEMP '%s' x\n")).toEqual([
       pinned('nonprod (Deploy Services)'),
-      at('nonprod (Deploy Services), line 11', AS_BASH),
+      at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 3}`, AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
     const folder = `          ${CDK_FOLDER}\n`
     expect(deployServices(folder, '          read -r ASSEMBLY <<<"x"\n')).toEqual([
       pinned('nonprod (Deploy Services)'),
-      at('nonprod (Deploy Services), line 12', AS_BASH),
+      at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 4}`, AS_BASH),
       at('nonprod (Deploy Services)', SETS),
     ])
     expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([
       pinned('nonprod (Deploy Services)'),
-      at('nonprod (Deploy Services), line 12', AS_BASH),
+      at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 4}`, AS_BASH),
       at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('DIFF="$RUNNER_TEMP/diff.txt"', 'DIFF=node_modules/aws-cdk/bin/cdk', job('prod-plan'))).toEqual([
@@ -3118,13 +3193,16 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       lines(`x=${quoted}`, 'local "$x=1"'),
       lines(`x='[$(${cp})]'`, 'local a"$x"=1'),
     ]) {
-      expect(added('nonprod', line), line).toEqual([refused('nonprod', 17)])
+      expect(added('nonprod', line), line).toEqual([refused('nonprod', PLANTED_AT + 1)])
     }
     expect(added('nonprod', 'X=$(true) $(echo cp) "$RUNNER_TEMP/assembly/x.js" node_modules/aws-cdk/bin/cdk')).toEqual([
       refused('nonprod'),
     ])
     // A compound assignment over three lines, whose subscript line also reads as a command of its own.
-    expect(added('nonprod', lines(`y=${quoted}`, 'a=(', '  [y]=1', ')'))).toEqual([...runs, refused('nonprod', 17)])
+    expect(added('nonprod', lines(`y=${quoted}`, 'a=(', '  [y]=1', ')'))).toEqual([
+      ...runs,
+      refused('nonprod', PLANTED_AT + 1),
+    ])
     for (const blank of ['\u00a0', '\ufeff', '\u2003', '\u000b', '\u000c']) {
       expect(added('nonprod', `echo ok${blank}#;${cp}`), blank).toEqual([...runs, refused('nonprod')])
     }
@@ -3306,7 +3384,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       lines(`y='a[$(${cp})]'`, 'a=([y]=1)'),
     ]) {
       expect(added('nonprod', line), line).toContain(
-        line.startsWith('cat') ? refused('nonprod') : refused('nonprod', 17),
+        line.startsWith('cat') ? refused('nonprod') : refused('nonprod', PLANTED_AT + 1),
       )
     }
   }, 30_000)
@@ -5007,9 +5085,7 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
   // test could leave a git configuration, a file or a variable behind for it, or write over it. It runs in a
   // job of its own now, before any of the repository's code, and check needs it; each way back is found.
   it('runs the pins check in a job of its own, before any of the repository’s code, which check needs (FETCH-A3-01)', () => {
-    const PINS =
-      "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials, Node from .nvmrc with no cache and the check, so nothing of the repository's runs before it on its runner; check needs it, runs under always() and first fails when a job it needs didn't succeed"
-    const finding = `${CI}: DPW-04 ${PINS}`
+    const finding = `${CI}: DPW-04 ${PINS_JOB_FINDING}`
     const ci = workflows.get(CI) ?? ''
     const pinsJob = '  action-pins:\n'
     const checkRun = '      - run: node scripts/check-action-pins.ts\n'
@@ -5045,6 +5121,79 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
       expect(actionPinFindings(planted), what).toContain(finding)
     }
     expect(actionPinFindings(workflows)).toEqual([])
+  })
+})
+
+// Round 5's fourth attack. The job that proves deploy.yml's pins ran two actions before the check whose refs
+// DPW-04 never held (FETCH-A4-01): checkout at a commit pushed only to a fork, which GitHub resolves under
+// the action's name, would own the workspace, the check and the git it calls, and could pass a pin moved
+// with ACTION_PINS to that fork. And a workflow's own env: or defaults:, which no rule read in ci.yml,
+// reaches every step of every job (COMMANDS-A4-01, YAML-A4-01): BASH_ENV runs a file before the check's
+// line, NODE_OPTIONS a module before the check, PATH chooses its git, and a default shell or folder changes
+// how it runs. So the two actions are held to PINS_JOB_ACTIONS, apart from ACTION_PINS, and ci.yml holds only
+// name, on, permissions and jobs at its top.
+describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
+  const finding = `${CI}: DPW-04 ${PINS_JOB_FINDING}`
+  const ci = workflows.get(CI) ?? ''
+  const top = 'permissions:\n  contents: read\n'
+  const atTop = (lines: string) => withText(CI, edited(ci, top, `${top}${lines}`))
+  const inJob = (from: string, to: string) => plant(from, to, '  action-pins:\n', CI)
+  const fork = 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12'
+
+  it('holds the job’s checkout and setup-node to their commits in PINS_JOB_ACTIONS (FETCH-A4-01)', () => {
+    const checkout = `actions/checkout@${PINS_JOB_ACTIONS['actions/checkout']}`
+    const setupNode = `actions/setup-node@${PINS_JOB_ACTIONS['actions/setup-node']}`
+    expect(ci).toContain(`      - uses: ${checkout}\n`)
+    expect(ci).toContain(`      - uses: ${setupNode}\n`)
+    for (const [what, planted] of [
+      ['checkout at a fork’s commit', inJob(checkout, `actions/checkout@${fork} # v5.0.0`)],
+      ['checkout at a fork’s commit under its version', inJob(checkout, checkout.replace(/@[0-9a-f]{40}/, `@${fork}`))],
+      ['checkout at a tag', inJob(checkout, 'actions/checkout@v7.0.1')],
+      ['checkout at a branch', inJob(checkout, 'actions/checkout@main')],
+      ['checkout with another version comment', inJob(checkout, checkout.replace(/# v[\d.]+$/, '# v7.0.2'))],
+      ['checkout with no version comment', inJob(checkout, checkout.replace(/ # v[\d.]+$/, ''))],
+      ['setup-node at a fork’s commit', inJob(setupNode, setupNode.replace(/@[0-9a-f]{40}/, `@${fork}`))],
+      ['setup-node at a tag', inJob(setupNode, 'actions/setup-node@v7.1.0')],
+      ['setup-node with its cache', inJob('          package-manager-cache: false\n', '')],
+      ['checkout and setup-node swapped', inJob(checkout, setupNode)],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+  })
+
+  it('refuses a workflow-level env: or defaults: in ci.yml, which reaches the check’s step (COMMANDS-A4-01, YAML-A4-01)', () => {
+    for (const [what, planted] of [
+      ['NODE_OPTIONS', atTop('env:\n  NODE_OPTIONS: --import=data:text/javascript,process.exit(0)\n')],
+      ['BASH_ENV', atTop('env:\n  BASH_ENV: scripts/ci-prep.sh\n')],
+      ['PATH', atTop('env:\n  PATH: /home/runner/work/x/x/bin:/usr/bin:/bin\n')],
+      [
+        'a default shell',
+        atTop('defaults:\n  run:\n    shell: bash --noprofile --norc -e -o pipefail -O expand_aliases {0}\n'),
+      ],
+      ['a default folder', atTop('defaults:\n  run:\n    working-directory: scripts\n')],
+      ['a workflow concurrency', atTop('concurrency: ci\n')],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+    // Another spelling of the key is no key workflow.ts reads, which DPW-02 refuses in every workflow.
+    for (const key of ['"env"', "'env'", 'env ']) {
+      const planted = atTop(`${key}:\n  BASH_ENV: scripts/ci-prep.sh\n`)
+      expect(
+        [...actionPinFindings(planted), ...permissionFindings(planted)].some(each => each.startsWith(`${CI}: DPW-0`)),
+        key,
+      ).toBe(true)
+    }
+  })
+
+  it('holds check’s first step to its if: and exit 1, so nothing lets it pass a job that failed', () => {
+    const first = '        run: exit 1\n'
+    for (const [what, planted] of [
+      ['continue-on-error', plant(first, `${first}        continue-on-error: true\n`, '\n  check:\n', CI)],
+      ['a shell of its own', plant(first, `${first}        shell: sh\n`, '\n  check:\n', CI)],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+    expect(actionPinFindings(workflows, files)).toEqual([])
   })
 })
 
@@ -5994,6 +6143,85 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ).toBe(PLAIN)
     }
   }, 60_000)
+
+  // Round 5's fourth attack (FLOW-A4-01). A template can hand CloudFormation another template by reference:
+  // a nested stack's TemplateURL names an object the asset manifests upload, while the CLI's diff reads the
+  // file its aws:asset:path names (any file ../ reaches) and the release check reads neither. A stack set, a
+  // Service Catalog product, a transform (a macro, SAM, AWS::Include) and a module do the same, and a
+  // registered type runs a handler no template shows. So a template holds CloudFormation's own sections
+  // alone, no Transform or Fn::Transform, and resource types of AWS's own (the VPC's default-group custom
+  // resource aside) outside CloudFormation's, SAM's and Service Catalog's, in any letter case.
+  it('refuses a template that hands CloudFormation a template or a handler the diff and release check never read (FLOW-A4-01)', () => {
+    const HANDS = refused(
+      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read',
+    )
+    const planted = (change: (template: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(nonprod(dir), 'Services', '.template.json'), change)
+      rekey(nonprod(dir), 'Services')
+    }
+    const resource = (value: unknown) =>
+      planted(template => {
+        const resources = template.Resources as Record<string, unknown>
+        resources.Extra = value
+      })
+    const nested = (path: string) => ({
+      Type: 'AWS::CloudFormation::Stack',
+      Properties: { TemplateURL: `https://s3.ap-southeast-1.amazonaws.com/${BUCKET}/${'a'.repeat(64)}.json` },
+      Metadata: { 'aws:asset:path': path },
+    })
+    // The layout re-keyed alone passes, and so does a resource of AWS's own the synth doesn't write today,
+    // so each refusal below is its plant's.
+    expect(check(planted(() => {}))).toBe('passed')
+    expect(check(resource({ Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'x' } }))).toBe('passed')
+    for (const [plant, label] of [
+      [
+        resource(nested('nonprodServicesExtra.nested.template.json')),
+        'a nested stack whose metadata names another file',
+      ],
+      [resource(nested('../../outside.json')), 'a nested stack whose metadata names a file outside the assembly'],
+      [resource({ Type: 'AWS::Cloudformation::Stack', Properties: {} }), 'a nested stack in another letter case'],
+      [resource({ Type: 'AWS::CloudFormation::StackSet', Properties: {} }), 'a stack set'],
+      [resource({ Type: 'AWS::CloudFormation::Macro', Properties: {} }), 'a macro'],
+      [resource({ Type: 'AWS::CloudFormation::CustomResource', Properties: {} }), 'a custom resource'],
+      [resource({ Type: 'Custom::Other', Properties: {} }), 'another custom resource'],
+      [resource({ Type: 'AWS::Serverless::Application', Properties: {} }), 'a SAM application'],
+      [resource({ Type: 'AWS::ServiceCatalog::CloudFormationProvisionedProduct', Properties: {} }), 'a product'],
+      [resource({ Type: 'Hearth::Plant::Thing::MODULE', Properties: {} }), 'a module'],
+      [resource({ Type: 'Hearth::Plant::Thing', Properties: {} }), 'a registered type'],
+      [resource({ Properties: {} }), 'a resource with no type'],
+      [resource('x'), 'a resource that is not an object'],
+      [
+        planted(template => {
+          template.Transform = 'AWS::Serverless-2016-10-31'
+        }),
+        'a top-level Transform',
+      ],
+      [
+        resource({
+          Type: 'AWS::SSM::Parameter',
+          Properties: {
+            Type: 'String',
+            Value: { 'Fn::Transform': { Name: 'AWS::Include', Parameters: { Location: 'x' } } },
+          },
+        }),
+        'an Fn::Transform',
+      ],
+      [
+        planted(template => {
+          template.Hooks = { Hook: { Type: 'AWS::CodeDeploy::BlueGreen' } }
+        }),
+        'a Hooks section',
+      ],
+      [
+        planted(template => {
+          template.Resources = []
+        }),
+        'Resources that are not an object',
+      ],
+    ] as const) {
+      expect(check(plant), label).toBe(HANDS)
+    }
+  }, 120_000)
 
   // Round 5's second attack (COMMANDS-A2-01). The CLI publishes every asset of every stack it deploys,
   // resolves a destination's placeholders before it publishes, and uploads nothing to a key that already

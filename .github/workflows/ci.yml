@@ -42,18 +42,22 @@ jobs:
   # repository's code before it, since a test, an install script or a build in check could otherwise leave
   # a git configuration (a url.<base>.insteadOf that sends the read to a fork), a file or a variable behind
   # on the runner, or write over the check; the script also reads git with no configuration but its
-  # defaults. DPW-04 holds this job to these three steps and check to needing it. Each read is tried three
-  # times; a tag that names another commit fails.
+  # defaults. The checkout and setup-node before it run first, so the check can't prove them: each is held
+  # to its commit in action-pins.ts's PINS_JOB_ACTIONS, apart from deploy.yml's pins, and a person proves a
+  # change to them by hand. This workflow sets no env: or defaults: at its top, which would reach this job's
+  # steps too. DPW-04 holds this job to these three steps, the workflow's top to name, on, permissions and
+  # jobs, and check to needing it. Each read is tried three times; a tag that names another commit fails.
   action-pins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
       - run: node scripts/check-action-pins.ts
   # Every npm workspace from the root (apps/*, packages/*, infra and demo/): what `npm run check`
   # runs locally (typecheck, lint, test), as separate steps so a failure names its step, then a

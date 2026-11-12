@@ -14,7 +14,16 @@
 // Every action the workflow uses is pinned to the one commit ACTION_PINS (action-pins.ts) names, which
 // CI proves against the action's own repository (scripts/check-action-pins.ts) in a job of its own that
 // check needs, before any of the repository's code and with git reading no configuration, so no commit
-// that exists only in a fork, which GitHub resolves under the action's name, runs in a job.
+// that exists only in a fork, which GitHub resolves under the action's name, runs in a job. That job's own
+// checkout and setup-node run before the check can prove anything, so they are held to PINS_JOB_ACTIONS,
+// apart from ACTION_PINS, which a person proves by hand when they move, and ci.yml sets no env: or
+// defaults: at its top, which would reach the check's step.
+// Every run after the credentials action starts by stopping the runner reading workflow commands for the
+// rest of its step (STOP_COMMANDS, the preamble's first command), so no ##[add-mask] or other command in
+// what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the
+// approver's diff or drops a job output; and ASSET_CHECK refuses a template that hands CloudFormation
+// another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
+// type, a transform), which neither the CLI's diff nor the release check reads.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
@@ -63,7 +72,7 @@
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
-import { ACTION_PINS } from './action-pins'
+import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins'
 import {
   type BlockValue,
   blockScalarProblems,
@@ -96,11 +105,28 @@ function sh(strings: TemplateStringsArray, ...values: readonly string[]): string
 
 // --- The canonical texts ------------------------------------------------------------------------------
 
-// The preamble (C11-D61): the first lines of every run step after the credentials action. Every aws,
-// cdk and skopeo command then runs as `run …`, its output shown through the account-id filter (a run
-// of twelve digits with no digit or lowercase hex letter beside it, so a commit or digest stays whole),
-// or inside `$(get …)`, its output kept and never printed and its errors filtered (DPW-07).
+// The preamble's first command (DPW-07, the fifth review's fourth attack): the runner reads ##[name] anywhere in a
+// line, and ::name:: at its start, as a workflow command, on stdout and stderr, and drops a line it
+// processes from the log. add-mask, one of them, is job-wide: it hides its value in every later line and in
+// the step summary, and the runner drops any job output whose value it would change. The CLI prints a
+// template's description, outputs and properties as they are, so a release's own template could hide what
+// prod-plan's diff shows the approver, or drop services_started and with it the pipeline's rollback. So the
+// step stops reading commands before anything runs, under a token of its own (which the runner masks), and
+// reads none for the rest of the step; the account id's mask is its own step's, before.
+export const STOP_COMMANDS = sh`stop_token=$(openssl rand -hex 16)
+echo "::stop-commands::$stop_token"`
+
+// The preamble (C11-D61): the first lines of every run step after the credentials action. It stops the
+// runner reading workflow commands for the step (STOP_COMMANDS); then every aws, cdk and skopeo command
+// runs as `run …`, its output shown through the account-id filter (a run of twelve digits with no digit
+// or lowercase hex letter beside it, so a commit or digest stays whole), or inside `$(get …)`, its output
+// kept and never printed and its errors filtered (DPW-07).
 export const PREAMBLE = sh`set -euo pipefail
+# The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+# (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+# so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+# included, is only shown. The token that would resume them is made here, and the runner masks it.
+${STOP_COMMANDS}
 # Every aws, cdk and skopeo command runs as \`run …\` (its output shown through the account-id filter)
 # or inside \`$(get …)\` (its output kept for use and never printed, its errors filtered) (C11-D61).
 mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -181,8 +207,14 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
 # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
 # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-# object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-# symbolic link.
+# object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+# template holding a section, a transform or a resource type a workload synth never writes (a section
+# other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+# VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+# Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+# template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+# nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+# its TemplateURL names); any symbolic link.
 # The release check then requires every Services template's Release output to be the release this
 # job deploys, and every container image in the Tasks and Services templates to be the server image
 # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -222,6 +254,10 @@ check_assembly() {
       asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
     jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+    while IFS= read -r file; do
+      jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+    done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
     jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -3754,13 +3790,31 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[]):
 // The job that proves the pins: a step before it in its job (a test that wrote url.<fork>.insteadOf to
 // $HOME/.gitconfig, say, or wrote the check over, or a GITHUB_PATH that put another git first) would decide
 // what it reads. A job runs on a runner of its own, so this one, whose only steps are GitHub's checkout and
-// setup-node and the check, runs it before any of the repository's code.
+// setup-node and the check, runs it before any of the repository's code. Those two actions run first, so
+// the check can't prove them: an action at a commit pushed only to a fork, there, would own the workspace,
+// the check itself and the git it calls. So each is held to its commit in PINS_JOB_ACTIONS
+// (action-pins.ts), apart from ACTION_PINS, so moving a pin there moves neither, and a change to them is one
+// a person proves against the action's own repository (the fifth review's fourth attack). And ci.yml holds only
+// name, on, permissions and jobs at its top: a workflow's env: reaches every step of every job (BASH_ENV,
+// which bash reads before the check's line, NODE_OPTIONS, which node runs before the check, PATH, which
+// chooses its git), and so does its defaults: (a shell, a folder).
 export const PINS_JOB = 'action-pins'
 export const PINS_RUN = 'node scripts/check-action-pins.ts'
 const NEEDS_FAILED = expr(
   "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
 )
-const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials, Node from .nvmrc with no cache and the check, so nothing of the repository's runs before it on its runner; check needs it, runs under always() and first fails when a job it needs didn't succeed`
+const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
+// A step that runs the action at its commit in PINS_JOB_ACTIONS, its version comment on its line.
+function atJobPin(step: WorkflowStep | undefined, action: string): boolean {
+  const pin = PINS_JOB_ACTIONS[action] ?? ''
+  const commit = PIN_SHAPE.exec(pin)?.[1]
+  return (
+    step !== undefined &&
+    commit !== undefined &&
+    step.uses === `${action}@${commit}` &&
+    step.lines.some(line => /^\s*(?:- )?uses: (.*)$/.exec(line)?.[1] === `${action}@${pin}`)
+  )
+}
 function pinsJobHolds(ci: string): boolean {
   const jobs = workflowJobs(ci)
   const pins = jobs.filter(job => job.id === PINS_JOB)
@@ -3773,19 +3827,21 @@ function pinsJobHolds(ci: string): boolean {
     step !== undefined && onceEach(step.keyNames, keys)
   const first = parsedSteps(check)[0]
   return (
+    onceEach([...workflowTop(ci).keys()], ['name', 'on', 'permissions', 'jobs']) &&
     onceEach(job.keyNames, ['runs-on', 'timeout-minutes', 'steps']) &&
     jobScalar(job, 'runs-on') === 'ubuntu-24.04' &&
     steps.length === 3 &&
     only(checkout, ['name', 'uses', 'with']) &&
-    /^actions\/checkout@[\w.-]+$/.test(checkout?.uses ?? '') &&
+    atJobPin(checkout, 'actions/checkout') &&
     sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false' }) &&
     only(node, ['name', 'uses', 'with']) &&
-    /^actions\/setup-node@[\w.-]+$/.test(node?.uses ?? '') &&
-    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc' }) &&
+    atJobPin(node, 'actions/setup-node') &&
+    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }) &&
     only(run, ['name', 'run']) &&
     run?.run === PINS_RUN &&
     jobNeeds(check).includes(PINS_JOB) &&
     jobScalar(check, 'if') === 'always()' &&
+    only(first, ['if', 'run']) &&
     first?.if === NEEDS_FAILED &&
     first.run === 'exit 1'
   )
@@ -4218,6 +4274,13 @@ const PRINTS_VARIABLES = ['declare', 'typeset', 'export', 'readonly', 'local']
 // and never unsets or shadows by an alias, so every later run …, $(get …) and summary write is filtered.
 const FILTER_FUNCTIONS = ['mask', 'run', 'get', 'sed']
 const PREAMBLE_LINES = PREAMBLE.split('\n').length
+// A run that stops the runner reading workflow commands before anything it runs can print: its commands,
+// comments and blank lines aside, are set -euo pipefail and then STOP_COMMANDS' two lines, first.
+const STOP_LINES = STOP_COMMANDS.split('\n')
+function stopsCommandsFirst(run: string): boolean {
+  const code = run.split('\n').filter(line => line.trim() !== '' && !line.trimStart().startsWith('#'))
+  return code[0] === 'set -euo pipefail' && STOP_LINES.every((line, i) => code[i + 1] === line)
+}
 // What comes right before a write to the job summary: mask as a command after a pipe (or first on its line,
 // a pipe's next line), then tee -a or >>.
 const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
@@ -4406,6 +4469,12 @@ export function maskingFindings(workflows: Texts): Finding[] {
       const preambled = run === PREAMBLE || run.startsWith(`${PREAMBLE}\n`)
       if (credentials >= 0 && index > credentials && !preambled) {
         add(where, 'a run after the credentials action starts with the preamble')
+      }
+      if (credentials >= 0 && index > credentials && !stopsCommandsFirst(run)) {
+        add(
+          where,
+          "stops the runner reading workflow commands (STOP_COMMANDS) before anything it runs prints, so no ##[add-mask] or other command in what the CLI, aws or skopeo print, a template's text among it, hides a line of the log or the approver's diff or drops a job output",
+        )
       }
       if (
         definitionsOf(run, read).some(
@@ -5007,6 +5076,10 @@ const FETCH_TOOLS: Readonly<Record<string, string>> = {
   base64: HASH_LINE,
   tar: fetchTextLine('tar '),
 }
+// openssl also makes the preamble's stop token (STOP_COMMANDS), on that line of the preamble alone: it only
+// prints random bytes.
+const STOP_TOKEN_LINE = STOP_COMMANDS.split('\n')[0] ?? ''
+const STOP_TOKEN_AT = PREAMBLE.split('\n').indexOf(STOP_TOKEN_LINE)
 const AWS_CALLS =
   /^\s+(?:ecs\s+(?:run-task|describe-tasks|describe-services|list-tasks|stop-task|wait\s+tasks-stopped|describe-task-definition)|elbv2\s+describe-(?:target-groups|target-group-attributes|target-health|load-balancers|load-balancer-attributes)|cloudformation\s+describe-stacks|ecr\s+(?:describe-images|get-login-password)|logs\s+get-log-events)(?:\s|$)/
 const NO_FLAG = (command: ShellCommand) => !/(?:^|\s)[-+][A-Za-z]/.test(command.tail)
@@ -6214,6 +6287,14 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         if (word === '"$CDK"') return false
         if (word === '"$@"') return !PREAMBLE_RUNNERS.includes(raw(command))
         const fetchLine = FETCH_TOOLS[word]
+        if (
+          word === 'openssl' &&
+          raw(command) === STOP_TOKEN_LINE &&
+          command.line === STOP_TOKEN_AT &&
+          run.startsWith(`${PREAMBLE}\n`)
+        ) {
+          return false
+        }
         if (fetchLine !== undefined) return run !== CLI_FETCH || raw(command) !== fetchLine
         if (/^["'$]|\/|\.(?:sh|ts|js|mjs|cjs|py)$/.test(word)) return true
         const use = TOOL_USES[word]
@@ -6230,7 +6311,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       ) {
         add(
           where,
-          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI and CLI_FETCH’s fetch, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run',
+          'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run',
         )
       }
       // Its own lines are read by the table, each command held to its uses.

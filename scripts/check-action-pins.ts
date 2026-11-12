@@ -1,5 +1,5 @@
 // deploy.yml's action pins against each action's own repository (C11-D48, C11-D79, DPW-04; TECH-SPEC T24
-// item 28). It runs in CI's check job, which has the network, and before a PR that moves a pin:
+// item 28). It runs in CI's job action-pins, which has the network, and before a PR that moves a pin:
 //
 //   node scripts/check-action-pins.ts
 //
@@ -19,11 +19,14 @@
 // url.<base>.insteadOf a test wrote to $HOME/.gitconfig, say, would otherwise send the read to a fork whose
 // tag names the fork's commit. CI runs this in a job of its own, before any repository code (ci.yml's
 // action-pins, which DPW-04 holds), so nothing earlier on its runner can change the check itself either.
+// That job's checkout and setup-node run before this, each at its commit in PINS_JOB_ACTIONS, which this
+// reads too: that catches a mistake there, though never a fork's commit, which would already have run, so a
+// person proves a change to them by hand (action-pins.ts says how).
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE } from './guards/action-pins.ts'
+import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './guards/action-pins.ts'
 
 // The commit a version's tag names, from git ls-remote's answer for its two refs: the peeled line of an
 // annotated tag, otherwise the tag's own line; undefined when the answer names neither exactly.
@@ -116,16 +119,26 @@ function lsRemote(action: string, version: string): string {
 }
 
 function main(): void {
-  const problems = pinProblems(ACTION_PINS, lsRemote)
-  for (const [action, pin] of Object.entries(ACTION_PINS)) {
-    if (!problems.some(problem => problem.startsWith(`${action}:`))) console.log(`  ${action} ${pin}: its tag's commit`)
+  const problems: string[] = []
+  for (const [where, pins] of [
+    ['deploy.yml', ACTION_PINS],
+    ["ci.yml's action-pins job", PINS_JOB_ACTIONS],
+  ] as const) {
+    const found = pinProblems(pins, lsRemote)
+    for (const [action, pin] of Object.entries(pins)) {
+      if (!found.some(problem => problem.startsWith(`${action}:`)))
+        console.log(`  ${where}: ${action} ${pin}: its tag's commit`)
+    }
+    problems.push(...found.map(problem => `${where}: ${problem}`))
   }
   if (problems.length > 0) {
     console.error(`\n${problems.length} problem(s):`)
     for (const problem of problems) console.error(`  - ${problem}`)
     process.exit(1)
   }
-  console.log('Every action deploy.yml pins is at the commit its version names in its own repository.')
+  console.log(
+    "Every action deploy.yml pins, and each ci.yml's action-pins job runs first, is at the commit its version names in its own repository.",
+  )
 }
 
 if (import.meta.main) main()

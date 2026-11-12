@@ -375,8 +375,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -416,6 +422,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -543,8 +553,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -584,6 +600,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -712,8 +732,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -753,6 +779,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -926,8 +956,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -967,6 +1003,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -1130,6 +1170,12 @@ jobs:
           FIRST: ${{ needs.gate.outputs.first_nonprod }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1322,6 +1368,12 @@ jobs:
           DIGEST: ${{ steps.release.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1353,6 +1405,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1373,6 +1431,12 @@ jobs:
           COMMIT: ${{ steps.release.outputs.commit }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1469,6 +1533,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode != 'drill-break' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1482,6 +1552,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1498,6 +1574,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'rollback' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1514,6 +1596,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'drill-break' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1552,6 +1640,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode != 'drill-break' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1663,6 +1757,12 @@ jobs:
           RESTORE: ${{ needs.gate.outputs.restore }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -1896,8 +1996,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -1937,6 +2043,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -2061,6 +2171,12 @@ jobs:
           FIRST: ${{ needs.gate.outputs.first_nonprod }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -2245,6 +2361,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -2261,6 +2383,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -2373,6 +2501,12 @@ jobs:
           RESTORE: ${{ needs.gate.outputs.restore }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -2478,6 +2612,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -2680,8 +2820,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -2721,6 +2867,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -2841,6 +2991,12 @@ jobs:
           MODE: ${{ needs.gate.outputs.mode }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3073,8 +3229,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -3114,6 +3276,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -3296,6 +3462,12 @@ jobs:
           FIRST: ${{ needs.gate.outputs.first_prod }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3490,6 +3662,12 @@ jobs:
           NONPROD_DIGEST: ${{ needs.nonprod.outputs.digest }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3521,6 +3699,12 @@ jobs:
         if: ${{ (needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod') || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'up') }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3541,6 +3725,12 @@ jobs:
           COMMIT: ${{ steps.release.outputs.commit }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3637,6 +3827,12 @@ jobs:
         if: ${{ needs.gate.outputs.target == 'prod' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3650,6 +3846,12 @@ jobs:
         if: ${{ (needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod') || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'up') }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3666,6 +3868,12 @@ jobs:
         if: ${{ needs.gate.outputs.mode == 'rollback' && needs.gate.outputs.target == 'prod' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3682,6 +3890,12 @@ jobs:
         if: ${{ needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3737,6 +3951,12 @@ jobs:
         if: ${{ !(needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down') }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -3848,6 +4068,12 @@ jobs:
           RESTORE: ${{ needs.gate.outputs.restore }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -4084,8 +4310,14 @@ jobs:
           # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
           # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
-          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); any
-          # symbolic link.
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
           # The release check then requires every Services template's Release output to be the release this
           # job deploys, and every container image in the Tasks and Services templates to be the server image
           # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -4125,6 +4357,10 @@ jobs:
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
@@ -4249,6 +4485,12 @@ jobs:
           FIRST: ${{ needs.gate.outputs.first_prod }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -4433,6 +4675,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -4449,6 +4697,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -4561,6 +4815,12 @@ jobs:
           RESTORE: ${{ needs.gate.outputs.restore }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
@@ -4666,6 +4926,12 @@ jobs:
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
           set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what the CLI, aws and skopeo print, a template's text
+          # included, is only shown. The token that would resume them is made here, and the runner masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
           mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
