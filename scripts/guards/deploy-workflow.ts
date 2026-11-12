@@ -13,7 +13,8 @@
 // unseen. A shell text here is a raw template in which a backtick is written \` and a dollar-brace $\{,
 // the one way it differs from the workflow's own text.
 //
-// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02). Each run is
+// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
+// scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
 // read twice. Its own lines, every line outside a canonical text standing whole, are read by readShell()
 // through SHELL_TABLE, an allowlist of the shell forms the workflow uses (blanks, word characters, quoting,
 // expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions,
@@ -21,27 +22,33 @@
 // (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
 // and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, every aws
-// word as aws reads it, a canonical text's function or a record job's own only as the workflow calls it),
-// and no line of its own sets an input a pinned line reads (its step's or job's env:, a canonical text's
-// variable, REGISTRY or RUN). The wiring between the runs is pinned too: every env: and every job's
-// outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS), written as a block mapping and never as
-// one expression GitHub would read as the whole mapping, and every step's id is the guard's (STEP_IDS),
-// so no step of its own answers for a pinned step's outputs; and each run a gate, an approval, a smoke, a
-// rollback or a record rests on is pinned whole with its step's if: (PINNED_RUNS), so no line of its own
-// or if: ends or skips one early, writes an output, a file or a record of its own, or hands it another
-// input; outside build and synth no other step writes an output. A canonical text is read whole, so it is
-// held instead to bash's own reading of it (readsAsBash()) and to evaluating only what it sets itself
-// (outsideEvaluations()). Beside that, the regex reader shellViews() and shellCommands() still reads
-// every run as a second layer that only ever adds a command: it sets aside what bash reads as data
-// (comments, quoted text outside its command substitutions, a test's operands and a case's patterns) and
-// reads through what comes before a command (an assignment, a redirection, a wrapper such as exec, command
-// or env), so a word a rule forbids as a command is found where bash would run it and not where it is a
-// jq path, a message or a URL; the words no credentialed job may name at all (an interpreter's, say) are
-// found anywhere outside a comment. An if: is read by evaluateIf(), which asks whether any value it
-// doesn't know could let a bot, a drill or a failed job through. This file decides who and what may
-// deploy, so it is on the owner's-read list (C11-D74).
+// word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
+// whole, a canonical text's function or a record job's own only as the workflow calls it), and no line of
+// its own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable,
+// REGISTRY or RUN, or, outside a step whose run is pinned whole, a name an aws value reads). The wiring
+// between the runs is pinned too: every job's steps are the guard's, in order, by name and action
+// (JOB_STEPS), so no step of its own stands before a pinned run in any job, and no run of any job names
+// GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a
+// path or a state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES,
+// JOB_OUTPUTS), written as a block mapping and never as one expression GitHub would read as the whole
+// mapping, and every step's id is the guard's (STEP_IDS), so no step of its own answers for a pinned
+// step's outputs; and each run a gate, an approval, a smoke, a rollback or a record rests on is pinned
+// whole with its step's if: (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an
+// output, a file or a record of its own, or hands it another input; outside build and synth no other
+// step writes an output. A canonical text is read whole, so it is held instead to bash's own reading of it
+// (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()). Beside that, the
+// regex reader shellViews() and shellCommands() still reads every run as a second layer that only ever
+// adds a command: it sets aside what bash reads as data (comments, quoted text outside its command
+// substitutions, a test's operands and a case's patterns) and reads through what comes before a command
+// (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids as a
+// command is found where bash would run it and not where it is a jq path, a message or a URL; the words
+// no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment. An
+// if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or a
+// failed job through. This file decides who and what may deploy, so it is on the owner's-read list
+// (C11-D74).
 import {
   type BlockValue,
+  blockScalarProblems,
   blockValue,
   commentLines,
   concurrencyOf,
@@ -3151,6 +3158,8 @@ const escaped = (text: string) => yamlLines(text).some(line => ESCAPE.test(line.
 
 const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
+const BLOCK_SCALARS =
+  "writes a block scalar only as a run:, never as an env: entry, an output, an input or any other value, whose last line break GitHub keeps and the guard's reader drops"
 // An if: as GitHub reads an expression: a plain scalar that is one ${{ … }} and nothing else (a comment
 // aside), with no ${{ or }} inside it.
 const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:\s+#.*)?$/
@@ -3181,12 +3190,13 @@ function unreadCharacter(text: string): string | undefined {
 // DPW-02 (C11-D55): deploy.yml's top-level permissions are contents: read alone; each job's are exactly
 // its own, an id-token in the five environment jobs alone and nowhere else in the file; no write-all,
 // read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, anchor,
-// alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems), every
-// if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an escape. Every
-// workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow mapping but
-// {}), so none is read wrong, and holds only tabs, newlines and printable text (unreadCharacter). Every
-// other workflow holds the id-token clause, spells nothing with an escape, names no environment, and gives
-// no block scalar an indentation indicator (indicatorProblems).
+// alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems) and only
+// a run: (blockScalarProblems, since GitHub keeps a block scalar's last line break in any other
+// value), every if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an
+// escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow
+// mapping but {}), so none is read wrong, and holds only tabs, newlines and printable text
+// (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
+// no environment, and gives no block scalar an indentation indicator (indicatorProblems).
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -3257,6 +3267,12 @@ export function permissionFindings(workflows: Texts): Finding[] {
         'writes every block scalar literal (|, |- or |+), never folded (>) or with an indentation indicator',
       ),
     )
+  }
+  // A block scalar on any key but run: GitHub keeps its last line break in the value (an env:
+  // entry's, an output's, an input's, a group's), which the reader drops, so the value the guard pins
+  // isn't the one a step reads.
+  if (blockScalarProblems(deploy).length > 0) {
+    found.push(at(DEPLOY, 'DPW-02', BLOCK_SCALARS))
   }
   // Every workflow holds only tabs, newlines and printable text, read before anything else, so nothing
   // after a line break workflow.ts doesn't split at, or a blank bash doesn't, passes unread.
@@ -4660,9 +4676,15 @@ function wordSkeleton(raw: string): string | undefined {
   }
   return out
 }
-// The words a value of an aws call on a run's own lines starts with when it starts with an expansion: the
-// variables the workflow passes there, each set by a canonical text from AWS's own answers or on the
-// line the guard pins (DPW-06), never one an own line may set (DPW-10's SETS_INPUT).
+// The words an aws value on a run's own lines may hold an expansion in, each exactly as the workflow
+// writes it: the variables it passes whole (the cluster, the task definition, the network and the token
+// migrate runs with, set by a canonical text from AWS's own answers or by a run the guard pins whole; the
+// read-back's tasks, target group and load balancer, from AWS's answers in the read-back), and the names
+// it builds from the stage (STAGES' job env), the release's digest, a role the read-back loops over and
+// the run's own ids. No own line outside a step whose run the guard pins whole sets a name they read
+// (AWS_VALUE_LINES), and no other word holds an expansion, so neither a value the CLI loads from a file
+// (file://, fileb://) nor a shorthand file load (imageTag@=file://…, built from a glue variable after a
+// literal key) is put together at run time.
 const AWS_VALUE_WORDS = [
   '"$CLUSTER"',
   '"$MIGRATE_TD"',
@@ -4671,11 +4693,34 @@ const AWS_VALUE_WORDS = [
   sh`"$\{TASK_ARNS[@]}"`,
   '"$GROUP_ARN"',
   '"$BALANCER"',
+  '"imageDigest=$DIGEST"',
+  '"gha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
+  '"hearth-$STAGE"',
+  '"hearth-$STAGE-api"',
+  '"hearth-$STAGE-realtime"',
+  '"hearth-$STAGE-$ROLE"',
+  '"Hearth-$STAGE-Services"',
+]
+// The names those words read that a run's own lines could set, which no own line sets outside a step whose
+// run the guard pins whole, but TOKEN on the lines DPW-06 pins (a literal and the run's ids). STAGE is the
+// job's env and the GITHUB_ names the runner's, which no own line sets either (SETS_INPUT, the loader
+// names).
+const AWS_VALUE_NAMES = [
+  'CLUSTER',
+  'MIGRATE_TD',
+  'NET_MIGRATE',
+  'TOKEN',
+  'TASK_ARNS',
+  'GROUP_ARN',
+  'BALANCER',
+  'DIGEST',
+  'ROLE',
 ]
 // aws on a run's own lines: the call (AWS_CALLS) and each option, written plainly, from AWS_OPTIONS, the
 // options told apart from values as aws tells them, by the text it is handed (so a quoted '--debug' is
 // an option too); each value, as aws reads it, holding no scheme (file://, fileb://, https://) or
-// shorthand file load (key@=) anywhere, and starting with an expansion only as one of AWS_VALUE_WORDS.
+// shorthand file load (key@=) anywhere, and holding an expansion, anywhere in it, only as one of
+// AWS_VALUE_WORDS, whole.
 function awsIsHeld(args: readonly ShellWord[]): boolean {
   if (!AWS_CALLS.test(` ${argText(args)}`)) return false
   let option = ''
@@ -4687,7 +4732,7 @@ function awsIsHeld(args: readonly ShellWord[]): boolean {
       return arg.raw === value && AWS_OPTIONS.includes(arg.raw)
     }
     if (option === '' || /:\/\/|@=/.test(value) || /^(?:file|fileb|https?):/i.test(value)) return false
-    return !value.startsWith('\0') || AWS_VALUE_WORDS.includes(arg.raw)
+    return !value.includes('\0') || AWS_VALUE_WORDS.includes(arg.raw)
   })
 }
 // The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
@@ -4820,22 +4865,47 @@ const ASSIGNED_ONLY_BY: ReadonlyMap<string, readonly string[]> = new Map([
   ['REGISTRY', [REGISTRY_LINE]],
   ['RUN', [RUN_TASK_MIGRATE]],
 ])
+// Every name an aws value reads (AWS_VALUE_NAMES) is set on a run's own lines only in a step whose run
+// the guard pins whole (the release's DIGEST, the read-back's tasks, target group, load balancer and
+// roles, migrate's network), whose own lines are the guard's text and any change to which is the pin's
+// finding, but TOKEN, also on the lines DPW-06 pins; a name a canonical text sets (CLUSTER, the task
+// definitions) never on an own line.
+const AWS_VALUE_LINES: ReadonlyMap<string, readonly string[]> = new Map(
+  AWS_VALUE_NAMES.map((name): [string, readonly string[]] => [
+    name,
+    name === 'TOKEN'
+      ? (['migrate', 'probe'] as const).flatMap(kind =>
+          (['nonprod', 'prod'] as const).flatMap(stage =>
+            (['deploy', 'rollback'] as const).map(job => tokenLine(kind, stage, job)),
+          ),
+        )
+      : [],
+  ]),
+)
+// The steps whose runs the guard pins whole (PINNED_RUNS), by their job and their name.
+const PINNED_STEPS: ReadonlySet<string> = new Set(
+  Object.entries(PINNED_RUNS()).flatMap(([id, pinned]) => Object.keys(pinned).map(name => `${id}\n${name}`)),
+)
+const isPinnedStep = (id: string, step: WorkflowStep) => PINNED_STEPS.has(`${id}\n${step.name ?? ''}`)
 // Whether a run's own lines set an input its pinned lines read (DPW-10, DPW-13): a name its step's or its
-// job's env: sets, one a canonical text standing in the run sets, or one ASSIGNED_ONLY_BY names on any
-// line but its own.
-function setsAnInput(run: string, read: ShellRead, env: readonly string[]): boolean {
+// job's env: sets, one a canonical text standing in the run sets, one ASSIGNED_ONLY_BY names on any line
+// but its own, or, outside a step whose run the guard pins whole, one an aws value reads on any line but
+// AWS_VALUE_LINES' own.
+function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinned: boolean): boolean {
   const canonical = new Set(canonicalPlaces(run).flatMap(place => NAMES_SET_BY(place.text)))
+  const onlyOn = (lines: readonly string[] | undefined, raw: string) => lines !== undefined && !lines.includes(raw)
   return read.commands.some(command =>
     namesSet(command).some(
       name =>
         env.includes(name) ||
         canonical.has(name) ||
-        (ASSIGNED_ONLY_BY.has(name) && !(ASSIGNED_ONLY_BY.get(name) ?? []).includes(command.raw)),
+        onlyOn(ASSIGNED_ONLY_BY.get(name), command.raw) ||
+        (!pinned && onlyOn(AWS_VALUE_LINES.get(name), command.raw)),
     ),
   )
 }
 const SETS_INPUT =
-  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
 // the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
@@ -4896,9 +4966,10 @@ function definitionsAreCanonical(run: string): boolean {
 // The shape of every job and step (DPW-10): the top level, each job's keys and runner, each step's keys,
 // each action's inputs and every env: key are the ones the workflow uses, so no shell, container,
 // service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
-// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; and every env: and
-// job's outputs: is the guard's, whole, each a block mapping, and every step's id too (STEP_ENVS,
-// JOB_OUTPUTS, STEP_IDS below).
+// variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; every env: and job's
+// outputs: is the guard's, whole, each a block mapping, and every step's id too (STEP_ENVS, JOB_OUTPUTS,
+// STEP_IDS below); and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs
+// names a file command that hands a later step something (GITHUB_ENV, GITHUB_PATH, GITHUB_STATE).
 const TOP_KEYS = ['name', 'on', 'permissions', 'jobs']
 const JOB_KEYS = [
   'needs',
@@ -5210,6 +5281,120 @@ export const STEP_IDS: Readonly<Record<string, Readonly<Record<string, string>>>
   'rollback-prod': rollbackIds,
 }
 const IDS = "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's"
+// Each job's steps, in order, each by its name and, for a step that uses an action, the action (its pin is
+// DPW-04's; a run step uses none). With STEP_ENVS, STEP_IDS and the pinned runs, no step of its own stands
+// before, between or after them, in any job, credentialed or not: none can write GITHUB_ENV (a BASH_ENV
+// that bash reads before a pinned smoke, gate or prod gate runs, say, and which no rule of the run itself
+// would see), GITHUB_PATH or a file a later step reads, and none of the job's own steps is dropped or
+// moved.
+type Steps = ReadonlyArray<readonly [name: string, action?: string]>
+const CHECKOUT_STEP = ["Check out the run's commit", 'actions/checkout'] as const
+const NODE_STEP = ['Node, from .nvmrc', 'actions/setup-node'] as const
+const CLI_STEPS: Steps = [
+  ['The pinned CDK CLI'],
+  ["The CLI is the registry's"],
+  ['Mask the account id'],
+  ['AWS credentials', 'aws-actions/configure-aws-credentials'],
+]
+const SMOKE_STEPS: Steps = [CHECKOUT_STEP, NODE_STEP, ['Smoke']]
+const synthSteps = (release: string, assembly: string): Steps => [
+  [`Install ${release}`],
+  [`Synthesise ${release}`],
+  [`Check ${assembly}`],
+  [`Upload ${assembly}`, 'actions/upload-artifact'],
+]
+const deploySteps = (stage: Stage): Steps => [
+  CHECKOUT_STEP,
+  ['The release this job deploys'],
+  ['Download the assembly', 'actions/download-artifact'],
+  ['Download the image', 'actions/download-artifact'],
+  ['Check the assembly'],
+  ['The fast re-check'],
+  ...CLI_STEPS,
+  ['What runs'],
+  ['Push the image'],
+  ['Deploy Platform, Data and Tasks'],
+  ['Migrate'],
+  ['Services are about to change'],
+  ['Deploy Services'],
+  ['Roll back to the target'],
+  [stage === 'prod' ? 'Take the restore stage down' : 'drill-break'],
+  ['Probe'],
+  ['Read back what runs'],
+]
+const ROLLBACK_STEPS: Steps = [
+  CHECKOUT_STEP,
+  ["This run's release and the previous one"],
+  ['Download the previous assembly', 'actions/download-artifact'],
+  ['Check the previous assembly'],
+  ...CLI_STEPS,
+  ['What runs'],
+  ['Roll back Tasks and Services'],
+  ['Probe'],
+  ['Read back what runs'],
+  ['Rolled back'],
+]
+export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
+  gate: [
+    CHECKOUT_STEP,
+    NODE_STEP,
+    ['The release, migration and restore records'],
+    ['The pull request that made this commit, and its checks'],
+    ["main's ruleset is live"],
+    ['The environments are live as written'],
+    ['Plan'],
+  ],
+  build: [
+    CHECKOUT_STEP,
+    NODE_STEP,
+    ["Docker's containerd image store"],
+    ['The PostgreSQL client'],
+    ['Install'],
+    ['The local stack'],
+    ['The local database'],
+    ['Build the image'],
+    ['Check the image'],
+    ["The image's migrate step"],
+    ['Upload the image', 'actions/upload-artifact'],
+  ],
+  synth: [
+    ["Check out the release's commit", 'actions/checkout'],
+    NODE_STEP,
+    ...synthSteps('the release', "the release's assembly"),
+    ["Check out nonprod's previous release", 'actions/checkout'],
+    ...synthSteps("nonprod's previous release", "nonprod's previous assembly"),
+    ["Check out prod's previous release", 'actions/checkout'],
+    ...synthSteps("prod's previous release", "prod's previous assembly"),
+  ],
+  nonprod: deploySteps('nonprod'),
+  'smoke-nonprod': SMOKE_STEPS,
+  'rollback-nonprod': ROLLBACK_STEPS,
+  'resmoke-nonprod': SMOKE_STEPS,
+  'record-nonprod': [['Write the record']],
+  'prod-plan': [
+    CHECKOUT_STEP,
+    ['The release this job deploys'],
+    ['Download the assembly', 'actions/download-artifact'],
+    ['Check the assembly'],
+    ...CLI_STEPS,
+    ['Diff'],
+  ],
+  'prod-gate': [CHECKOUT_STEP, NODE_STEP, ["Prod's release records"], ["main's own CI"], ['The prod gate']],
+  prod: deploySteps('prod'),
+  'smoke-prod': SMOKE_STEPS,
+  'rollback-prod': ROLLBACK_STEPS,
+  'resmoke-prod': SMOKE_STEPS,
+  'record-prod': [['Write the record']],
+}
+const STEPS =
+  'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
+// No run of any job names a file command that hands a later step of its job something: GITHUB_ENV (a
+// variable, BASH_ENV say, which bash reads before the next step's run), GITHUB_PATH (a folder searched
+// first for every command) or GITHUB_STATE. Only GITHUB_OUTPUT (DPW-08's) and GITHUB_STEP_SUMMARY are
+// written. Read in the whole run, comments included, so no spelling of the name passes.
+const FILE_COMMANDS = /GITHUB_(?:ENV|PATH|STATE)(?![A-Za-z0-9_])/
+const FILES =
+  'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
 // A mapping as a block of its lines alone: a key whose value the reader reads as a mapping (a step's env:
 // or with:, a job's env: or outputs:) holds nothing on its own line but a comment, since GitHub reads one
 // expression there (env: ${{ fromJSON(…) }}) as the whole mapping, which the reader would read as none.
@@ -5255,8 +5440,19 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
     if (['env', 'outputs'].some(key => inlineMappings((job.keys.get(key) ?? []).slice(0, 1), 4, [key]))) {
       add(id, MAPPING)
     }
+    const want = (JOB_STEPS as Readonly<Record<string, Steps>>)[id] ?? []
+    if (
+      steps.length !== want.length ||
+      steps.some((step, index) => {
+        const [name, action] = want[index] ?? []
+        return step.name !== name || step.uses?.split('@')[0] !== action
+      })
+    ) {
+      add(id, STEPS)
+    }
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
+      if (FILE_COMMANDS.test(step.run ?? '')) add(where, FILES)
       if (!onceEach(step.keyNames, id === 'synth' ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
         add(
           where,
@@ -5304,8 +5500,9 @@ function cliLineIsSafe(line: string): boolean {
 // "$ASSEMBLY" (set once in its step to the folder it downloaded), after CDK_FOLDER, with no other change of
 // folder, and with its safe flags; no line anywhere passes a refused flag or subcommand; its own lines
 // are read by SHELL_TABLE, each command held to GLUE_USES, and set no input a pinned line reads
-// (SETS_INPUT). Across the repository no workspace is named aws-cdk or declares a cdk bin, and the
-// lockfile's aws-cdk is the registry's at infra's pin.
+// (SETS_INPUT). In every job, credentialed or not, its steps are JOB_STEPS' and no run names GITHUB_ENV,
+// GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the repository no workspace is named aws-cdk
+// or declares a cdk bin, and the lockfile's aws-cdk is the registry's at infra's pin.
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
@@ -5358,7 +5555,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const refused = refusedAt(where, read)
       if (refused !== undefined) add(refused, AS_BASH)
       if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS))) add(where, HELD)
-      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()])) add(where, SETS_INPUT)
+      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], isPinnedStep(id, step))) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
@@ -5667,7 +5864,7 @@ export function releaseFindings(workflows: Texts): Finding[] {
     if (read.commands.some(command => !glueIsHeld(command, recordCalls(id)))) add(where, HELD)
     const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
     const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
-    if (setsAnInput(run, read, envNames)) add(where, SETS_INPUT)
+    if (setsAnInput(run, read, envNames, steps[0] !== undefined && isPinnedStep(id, steps[0]))) add(where, SETS_INPUT)
   }
   for (const { id, steps } of jobs.values()) {
     steps.forEach((step, index) => {

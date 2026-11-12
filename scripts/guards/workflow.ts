@@ -11,19 +11,20 @@
 // YAML reads as structure (starting with -, ? or : and a blank), a flow item YAML reads otherwise than
 // split at its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other
 // indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
-// lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, so
-// literalProblems() names each block scalar folded (>) or given an indentation indicator, which YAML
-// reads otherwise, and indicatorProblems() each given an indentation indicator alone. commentLines()
-// names the YAML comment lines, never a line starting with # inside a block scalar, which is the
-// scalar's. It splits a file into lines only at a newline, so a carriage return, NEL, LS or PS,
-// which YAML readers break lines at too, would hide what follows it on its line from every rule: the
-// deploy-workflow guard refuses any of them, and any other control or format character or blank but a
-// space or a tab, in every workflow before anything else reads it. It also refuses every line
-// shapeProblems() names in every workflow, every one literalProblems() names in deploy.yml and every one
-// indicatorProblems() names in every other, a double-quoted scalar holding an escape in every workflow,
-// and in deploy.yml any flow mapping and quoted item too (DPW-02). That guard
-// (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this file is on
-// the owner's-read list (C11-D74).
+// lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, and drops its
+// last line break, so literalProblems() names each block scalar folded (>) or given an indentation
+// indicator, which YAML reads otherwise, indicatorProblems() each given an indentation indicator alone,
+// and blockScalarProblems() each on a key but run:, whose value GitHub reads with that line
+// break. commentLines() names the YAML comment lines, never a line starting with # inside a block
+// scalar, which is the scalar's. It splits a file into lines only at a newline, so a carriage return,
+// NEL, LS or PS, which YAML readers break lines at too, would hide what follows it on its line from
+// every rule: the deploy-workflow guard refuses any of them, and any other control or format character
+// or blank but a space or a tab, in every workflow before anything else reads it. It also refuses every
+// line shapeProblems() names in every workflow, every one literalProblems() or blockScalarProblems()
+// names in deploy.yml and every one indicatorProblems() names in every other, a double-quoted scalar
+// holding an escape in every workflow, and in deploy.yml any flow mapping and quoted item too (DPW-02).
+// That guard (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this
+// file is on the owner's-read list (C11-D74).
 
 // One job: its id, its runner, its timeout in minutes, and its steps, each as its own lines with
 // the indent and the step's leading "- " taken off (so `run: npm test`, or `uses: …` then `with:`
@@ -438,6 +439,19 @@ export function literalProblems(text: string): number[] {
   return yamlLines(text).flatMap(({ index, text: line }) => {
     const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
     return BLOCK_SCALAR.test(value) && !LITERAL_SCALAR.test(value) ? [index] : []
+  })
+}
+
+// The lines (by index) whose key's value is a block scalar and whose key isn't run: (DPW-02 refuses each
+// in deploy.yml, whose tables refuse a run: anywhere but on a step). This reader drops a block scalar's
+// last line break, which YAML's clip chomping (|) keeps and GitHub hands on as part of the value: an env:
+// entry, an output, an input, a concurrency group or a name written so would read one way here and
+// another to GitHub (TARGET: | over `prod` reaches bash as prod and a newline, so [ "$TARGET" = prod ] is
+// false). Only a run's last line break is nothing to bash.
+export function blockScalarProblems(text: string): number[] {
+  return yamlLines(text).flatMap(({ index, text: line }) => {
+    const key = KEY_LINE.exec(line)
+    return BLOCK_SCALAR.test((key?.[3] ?? '').trim()) && key?.[2] !== 'run' ? [index] : []
   })
 }
 

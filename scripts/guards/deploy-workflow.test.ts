@@ -2342,6 +2342,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const CLI =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively'
   const readBack = (id: string) => `${id} (Read back what runs)`
+  const STEPS =
+    'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
+  const FILES =
+    'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
   // A planted line refused by the table, at its line in the read-back's run (16, where added() plants), and a
   // command it reads that isn't held to its uses.
   const refused = (id: string, line = 16) => at(`${readBack(id)}, line ${line}`, AS_BASH)
@@ -2435,8 +2439,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         manifests,
         lockfile,
       ),
-    ).toEqual([at('prod (Node, from .nvmrc)', 'uses only checkout, download-artifact and the credentials action')])
+    ).toEqual([
+      at('prod', STEPS),
+      at('prod (Node, from .nvmrc)', 'uses only checkout, download-artifact and the credentials action'),
+    ])
     expect(credentialedCodeFindings(removedStep('nonprod', "The CLI is the registry's"), manifests, lockfile)).toEqual([
+      at('nonprod', STEPS),
       at(
         'nonprod',
         'installs only the pinned CLI (npm ci --ignore-scripts -w @hearth/infra), then runs CLI_CHECK, before the credentials action',
@@ -2467,6 +2475,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       at(readBack('nonprod'), WRITES),
     ])
     expect(added('nonprod', 'echo "BASH_ENV=$RUNNER_TEMP/x" >> "$GITHUB_ENV"')).toEqual([
+      at(readBack('nonprod'), FILES),
       refused('nonprod'),
       at(readBack('nonprod'), WRITES),
       at(readBack('nonprod'), LOADER),
@@ -3469,7 +3478,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
 describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-13)', () => {
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
   const ENV =
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const MAPPING =
@@ -3685,6 +3694,11 @@ describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-
     ).toEqual([
       at(
         'DPW-10',
+        'gate',
+        'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved',
+      ),
+      at(
+        'DPW-10',
         'gate (Forge)',
         "names each step's id as STEP_IDS does, so every output a job hands on is its pinned step's",
       ),
@@ -3801,6 +3815,167 @@ describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-
         ),
       ),
     ).toContain(at('DPW-10', 'nonprod (Download the assembly)', MAPPING))
+  }, 30_000)
+})
+
+describe('Round 4, attack 2: the ways past the allowlist (DPW-02, DPW-10)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const STEPS =
+    'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
+  const FILES =
+    'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
+  const SETS_INPUT =
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads outside a step whose run the guard pins whole (TOKEN only on its own lines), and REGISTRY and RUN only on their own lines, so no line the guard holds is handed another input"
+  const BLOCK_SCALARS = `${DEPLOY}: DPW-02 writes a block scalar only as a run:, never as an env: entry, an output, an input or any other value, whose last line break GitHub keeps and the guard's reader drops`
+  const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
+  // deploy.yml with a run step of its own, named name, before one of a job's steps.
+  const stepBefore = (id: string, before: string, name: string, ...run: string[]) =>
+    plant(
+      `      - name: ${before}\n`,
+      `      - name: ${name}\n        run: |\n${lines(...run)}      - name: ${before}\n`,
+      job(id),
+    )
+
+  // YAML-A2-01: a step of its own, before a pinned run in a job that holds no credentials, writes BASH_ENV to
+  // GITHUB_ENV, so bash runs a file of its own before the smoke, the gate's plan or prod-gate's read of
+  // main's CI (a trap that exits 0, or writes an output again), though every line of the pinned run is as
+  // written. Every job's steps are now the guard's, and no run of any job names a file command.
+  it('holds every job to its own steps, none naming GITHUB_ENV, GITHUB_PATH or GITHUB_STATE (YAML-A2-01)', () => {
+    const bashEnv = [
+      `echo "trap 'exit 0' EXIT" >"$RUNNER_TEMP/env.sh"`,
+      'echo "BASH_ENV=$RUNNER_TEMP/env.sh" >>"$GITHUB_ENV"',
+    ]
+    // One of each class of job: the smokes, the gates, a job that runs repository code by design, a record
+    // job and a credentialed job.
+    for (const [id, before] of [
+      ['smoke-prod', 'Smoke'],
+      ['gate', 'Plan'],
+      ['prod-gate', "main's own CI"],
+      ['build', 'Build the image'],
+      ['record-nonprod', 'Write the record'],
+      ['nonprod', 'What runs'],
+    ] as const) {
+      const found = credentialed(stepBefore(id, before, 'Prepare', ...bashEnv))
+      expect(found, id).toContain(at('DPW-10', id, STEPS))
+      expect(found, id).toContain(at('DPW-10', `${id} (Prepare)`, FILES))
+    }
+    // A step of its own that names no file command, and a step dropped, moved or run in place of an action.
+    expect(credentialed(stepBefore('smoke-prod', 'Smoke', 'Prepare', 'echo ready'))).toEqual([
+      at('DPW-10', 'smoke-prod', STEPS),
+    ])
+    expect(credentialed(removedStep('smoke-prod', 'Node, from .nvmrc'))).toEqual([at('DPW-10', 'smoke-prod', STEPS)])
+    expect(credentialed(movedStep('prod-gate', "main's own CI", "Prod's release records"))).toEqual([
+      at('DPW-10', 'prod-gate', STEPS),
+    ])
+    const node = stepText(deployText, 'smoke-prod', 'Node, from .nvmrc')
+    expect(
+      credentialed(
+        withText(
+          DEPLOY,
+          edited(deployText, node, '      - name: Node, from .nvmrc\n        run: echo ready\n', job('smoke-prod')),
+        ),
+      ),
+    ).toEqual([at('DPW-10', 'smoke-prod', STEPS)])
+    // A file command in a step the job has, in any spelling, a comment included.
+    const client = '          sudo apt-get update\n'
+    for (const line of [
+      'echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"',
+      `echo "BASH_ENV=$RUNNER_TEMP/env.sh" >>"\${GITHUB_ENV}"`,
+      'echo "x=1" >>"$GITHUB_STATE"',
+      '# GITHUB_ENV',
+    ]) {
+      expect(credentialed(addedBefore('build', 'The PostgreSQL client', client, lines(line))), line).toEqual([
+        at('DPW-10', 'build (The PostgreSQL client)', FILES),
+      ])
+    }
+  }, 30_000)
+
+  // YAML-A2-02: an env: value written as a literal block scalar keeps its last line break in GitHub's reading
+  // (YAML's clip chomping), which the reader drops, so TARGET reaches prod's fast re-check as prod and a
+  // newline and its attempt, ancestry and digest checks are skipped, though the value equals STEP_ENVS'.
+  it('refuses a block scalar on any key but run:, whose last line break GitHub keeps (YAML-A2-02)', () => {
+    const block = (from: string, key: string, value: string, indicator: string, after: string) =>
+      plant(
+        from,
+        from.replace(`${key}: ${value}`, `${key}: ${indicator}\n${' '.repeat(from.indexOf(key) + 2)}${value}`),
+        after,
+      )
+    for (const indicator of ['|', '|+', '|-']) {
+      // A step's env:, as the attack wrote it, which the env pin alone doesn't see.
+      const target = `          TARGET: \${{ needs.gate.outputs.target }}\n`
+      const planted = block(target, 'TARGET', `\${{ needs.gate.outputs.target }}`, indicator, job('prod'))
+      expect(permissionFindings(planted), indicator).toEqual([BLOCK_SCALARS])
+      expect(credentialed(planted), indicator).toEqual([])
+      // A job's env:, a job's output, an action's input and a concurrency group.
+      for (const [from, key, value, after] of [
+        ['      STAGE: nonprod\n', 'STAGE', 'nonprod', job('nonprod')],
+        [`      mode: \${{ steps.plan.outputs.mode }}\n`, 'mode', `\${{ steps.plan.outputs.mode }}`, job('gate')],
+        ['          persist-credentials: false\n', 'persist-credentials', 'false', job('smoke-prod')],
+        ['      group: deploy-nonprod\n', 'group', 'deploy-nonprod', job('nonprod')],
+      ] as const) {
+        expect(permissionFindings(block(from, key, value, indicator, after)), `${key} ${indicator}`).toContain(
+          BLOCK_SCALARS,
+        )
+      }
+    }
+  })
+
+  // FLOW-A2-01: an aws value built from a variable a run's own lines set, whole ("$CLUSTER" set to file://…)
+  // or joined to a literal key (imageTag$X with X set to @=file://…), makes aws load a local file (the
+  // registry login's auth file, or the environment through /dev/fd/../environ), though the guard read no
+  // scheme in its literal text.
+  it('builds no aws value from a variable its own lines set (FLOW-A2-01)', () => {
+    const forward = 'Deploy Platform, Data and Tasks'
+    const assembly = '          ASSEMBLY="$RUNNER_TEMP/assembly"\n'
+    const describeServices = (value: string) =>
+      `STATUS=$(get aws ecs describe-services --cluster ${value} --services hearth-nonprod-api --query 'services[0].status' --output text)`
+    const inForward = (...each: string[]) => credentialed(addedBefore('nonprod', forward, assembly, lines(...each)))
+    for (const set of ['CLUSTER=file://$XDG_RUNTIME_DIR/containers/auth.json', 'CLUSTER=file:///dev/fd/../environ']) {
+      expect(inForward(set, describeServices('"$CLUSTER"')), set).toContain(
+        at('DPW-10', `nonprod (${forward})`, SETS_INPUT),
+      )
+    }
+    expect(
+      inForward(
+        'X=@=file://$XDG_RUNTIME_DIR/containers/auth.json',
+        `TAGS=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$DIGEST,imageTag$X" --query 'imageDetails[0].imageTags' --output json)`,
+      ),
+    ).toContain(at('DPW-10', `nonprod (${forward})`, HELD))
+    expect(
+      credentialed(
+        addedBefore(
+          'nonprod',
+          'Deploy Services',
+          assembly,
+          lines(
+            'TASK_ARNS=("file:///dev/fd/../environ")',
+            `ENDED=$(get aws ecs describe-tasks --cluster "hearth-$STAGE" --tasks "\${TASK_ARNS[@]}" --query 'tasks[0].lastStatus' --output text)`,
+          ),
+        ),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Deploy Services)', SETS_INPUT))
+    // Every other name an aws value reads, set on a line of its own by any setter the table admits.
+    for (const set of [
+      'MIGRATE_TD=x',
+      'NET_MIGRATE=x',
+      'TOKEN=x',
+      'GROUP_ARN=x',
+      'BALANCER=x',
+      'DIGEST=x',
+      'ROLE=x',
+      'for ROLE in x; do echo "$ROLE"; done',
+      'mapfile -t TASK_ARNS < <(echo x)',
+    ]) {
+      expect(inForward(set), set).toContain(at('DPW-10', `nonprod (${forward})`, SETS_INPUT))
+    }
+    // Any other word holding an expansion, even of a name the guard pins, or after a literal part.
+    for (const value of ['"x-$STAGE"', `"hearth-\${STAGE}"`, '"$CLUSTER$STAGE"', '"arn:$STAGE"']) {
+      expect(inForward(describeServices(value)), value).toContain(at('DPW-10', `nonprod (${forward})`, HELD))
+    }
+    // The workflow's own words and its token's line still pass, outside a pinned step too.
+    expect(inForward(describeServices('"hearth-$STAGE"'))).toEqual([])
+    expect(inForward('TOKEN="probe-nonprod-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"')).toEqual([])
   }, 30_000)
 })
 
