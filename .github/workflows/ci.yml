@@ -35,18 +35,21 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm audit signatures
   # deploy.yml's action pins (C0.11 PR 4, DPW-04): DPW-04, in check's npm test, holds every uses: in
-  # deploy.yml to its entry in scripts/guards/action-pins.ts, and this reads each entry's version tag from
-  # the action's own repository (git ls-remote), which must name exactly the pinned commit, so no commit
-  # that exists only in a fork (GitHub resolves one under the action's name) and no older release's commit
-  # under a newer version's comment passes. It runs in a job of its own, with no install and none of the
-  # repository's code before it, since a test, an install script or a build in check could otherwise leave
-  # a git configuration (a url.<base>.insteadOf that sends the read to a fork), a file or a variable behind
-  # on the runner, or write over the check; the script also reads git with no configuration but its
-  # defaults. The checkout and setup-node before it run first, so the check can't prove them: each is held
-  # to its commit in action-pins.ts's PINS_JOB_ACTIONS, apart from deploy.yml's pins, and a person proves a
-  # change to them by hand. This workflow sets no env: or defaults: at its top, which would reach this job's
-  # steps too. DPW-04 holds this job to these three steps, the workflow's top to name, on, permissions and
-  # jobs, and check to needing it. Each read is tried three times; a tag that names another commit fails.
+  # deploy.yml to its entry in scripts/guards/action-pins.ts, and this reads each entry's version tag from the
+  # action's own repository (git ls-remote), which must name exactly the pinned commit, so no commit that
+  # exists only in a fork (GitHub resolves one under the action's name) and no older release's commit under a
+  # newer version's comment passes; it also reads deploy.yml itself and requires every uses: there to be its
+  # entry, so it proves what runs whatever table a test run loads. It runs in a job of its own, with no
+  # install and none of the repository's code before it, since a test, an install script or a build in check
+  # could otherwise leave a git configuration (a url.<base>.insteadOf that sends the read to a fork), a file
+  # or a variable behind on the runner, or write over the check; the script also reads git with no
+  # configuration but its defaults. The checkout and setup-node before it run first, so the check can't prove
+  # them: each is held to its commit in action-pins.ts's PINS_JOB_ACTIONS, apart from deploy.yml's pins, and a
+  # person proves a change to them by hand. This workflow sets no env: or defaults: at its top, which would
+  # reach this job's steps too. DPW-04 holds this job to these three steps, the workflow's top to name, on,
+  # permissions and jobs, and check to needing it with no key of its own but needs, if, runs-on,
+  # timeout-minutes and steps, since a job's env:, defaults:, container or runner would decide how its first
+  # step's exit 1 runs. Each read is tried three times; a tag that names another commit fails.
   action-pins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

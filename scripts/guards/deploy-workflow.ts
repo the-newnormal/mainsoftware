@@ -11,15 +11,19 @@
 // the CLI's lines, the push and the synth's lines, and every run of every job whole (PINNED_RUNS), so
 // the workflow and its guard can't drift apart unseen. A shell text here is a raw template in which a
 // backtick is written \` and a dollar-brace $\{, the one way it differs from the workflow's own text.
-// Every action the workflow uses is pinned to the one commit ACTION_PINS (action-pins.ts) names, which
-// CI proves against the action's own repository (scripts/check-action-pins.ts) in a job of its own that
-// check needs, before any of the repository's code and with git reading no configuration, so no commit
-// that exists only in a fork, which GitHub resolves under the action's name, runs in a job. That job's own
-// checkout and setup-node run before the check can prove anything, so they are held to PINS_JOB_ACTIONS,
-// apart from ACTION_PINS, which a person proves by hand when they move, and ci.yml sets no env: or
-// defaults: at its top, which would reach the check's step. .nvmrc, which chooses that job's Node and every
-// deploy job's, is 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart
-// gives one job a Node on which a script's entry runs nothing and exits 0.
+// Every action the workflow uses is pinned to the one commit ACTION_PINS (action-pins.ts) names, which CI
+// proves against the action's own repository (scripts/check-action-pins.ts) in a job of its own that check
+// needs, before any of the repository's code and with git reading no configuration, so no commit that exists
+// only in a fork, which GitHub resolves under the action's name, runs in a job. The check reads deploy.yml's
+// uses: itself too, as Node reads the file, and this guard and its tests import every module by its .ts
+// file, in a scripts/ that holds no other module flavour (SHADOW_FILE), so the table the guard binds
+// deploy.yml to under Vitest is the one the check proves. That job's own checkout and setup-node run before
+// the check can prove anything, so they are held to PINS_JOB_ACTIONS, apart from ACTION_PINS, which a person
+// proves by hand when they move, and ci.yml sets no env: or defaults: at its top, which would reach the
+// check's step, and check no key of its own but needs, if, runs-on, timeout-minutes and steps, so nothing
+// decides how its first step's exit 1 runs. .nvmrc, which chooses that job's Node and every deploy job's, is
+// 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one job a
+// Node on which a script's entry runs nothing and exits 0.
 // Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
 // id's mask starts by stopping the runner reading workflow commands for the rest of its step (STOP_HEAD,
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
@@ -82,7 +86,7 @@
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
-import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins'
+import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
   type BlockValue,
   blockScalarProblems,
@@ -104,7 +108,7 @@ import {
   workflowJobs,
   workflowTop,
   yamlLines,
-} from './workflow'
+} from './workflow.ts'
 
 // A shell text written as a raw template: \` stands for a backtick and $\{ for a dollar-brace, which a
 // template can't hold as written; nothing else changes.
@@ -3893,6 +3897,7 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
         ),
       )
     }
+    if (SHADOW_FILE.test(path)) found.add(at(SCRIPTS, 'DPW-04', SHADOW_RULE))
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
   if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
@@ -3915,13 +3920,20 @@ const NVMRC_RULE =
 // a person proves against the action's own repository (the fifth review's fourth attack). And ci.yml holds only
 // name, on, permissions and jobs at its top: a workflow's env: reaches every step of every job (BASH_ENV,
 // which bash reads before the check's line, NODE_OPTIONS, which node runs before the check, PATH, which
-// chooses its git), and so does its defaults: (a shell, a folder).
+// chooses its git), and so does its defaults: (a shell, a folder). check, which gates merging on the job
+// only by failing first, holds no key of its own but needs, if, runs-on (GitHub's ubuntu-24.04),
+// timeout-minutes and steps: a job's env: reaches each of its steps as a workflow's does (a BASH_ENV whose
+// command substitution, which bash runs before the step, turns its exit 1 into exit 0, or a SHELLOPTS of
+// noexec, under which bash reads the line and runs nothing), and so does its defaults: (a shell that skips
+// the line), a container: (another bash) or a self-hosted runner, and continue-on-error: keeps the run
+// from failing when check fails, so any of them would let check pass when the pins check failed (the sixth
+// review's second attack).
 export const PINS_JOB = 'action-pins'
 export const PINS_RUN = 'node scripts/check-action-pins.ts'
 const NEEDS_FAILED = expr(
   "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
 )
-const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
+const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
 // A step that runs the action at its commit in PINS_JOB_ACTIONS, its version comment on its line.
 function atJobPin(step: WorkflowStep | undefined, action: string): boolean {
   const pin = PINS_JOB_ACTIONS[action] ?? ''
@@ -3957,6 +3969,8 @@ function pinsJobHolds(ci: string): boolean {
     sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }) &&
     only(run, ['name', 'run']) &&
     run?.run === PINS_RUN &&
+    onceEach(check.keyNames, ['needs', 'if', 'runs-on', 'timeout-minutes', 'steps']) &&
+    jobScalar(check, 'runs-on') === 'ubuntu-24.04' &&
     jobNeeds(check).includes(PINS_JOB) &&
     jobScalar(check, 'if') === 'always()' &&
     only(first, ['if', 'run']) &&
@@ -3966,6 +3980,19 @@ function pinsJobHolds(ci: string): boolean {
 }
 // A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows.
 export const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/
+// The folder the guard's own modules live in (this file, action-pins.ts, workflow.ts, the tests) and the pins
+// check beside them, and a file there that a module resolver could load in place of a .ts one: JavaScript,
+// another TypeScript flavour, or a name with no extension. Vitest resolves an import that names a module
+// without its extension to a file of that very name first, then .mjs, .js and .mts before .ts (Vite's
+// DEFAULT_EXTENSIONS), while Node loads the .ts a full name gives; so an action-pins.mjs beside
+// action-pins.ts, holding a moved pin, was the table DPW-04 read under Vitest while the pins check proved
+// the .ts (the sixth review's second attack). The guard and its tests name every module they import by its
+// .ts file, which the test holds, the pins check reads deploy.yml's uses: itself, and scripts/ holds none
+// of these, so no such file stands beside any guard's module either.
+const SCRIPTS = 'scripts'
+const SHADOW_FILE = /^scripts\/(?:[^/]+\/)*(?:[^/.]+|[^/]+\.(?:[cm]?js|jsx|[cm]ts|tsx))$/
+const SHADOW_RULE =
+  'holds no JavaScript, no other TypeScript flavour (.js, .mjs, .cjs, .jsx, .mts, .cts, .tsx) and no file without an extension, any of which Vitest would load in place of a guard module named without its .ts'
 
 // --- DPW-05: timeouts and concurrency ---------------------------------------------------------------------
 

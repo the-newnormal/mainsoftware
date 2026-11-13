@@ -13,6 +13,12 @@
 // network can blip; a pin that differs fails at once. It prints one line per action and exits 1 on any
 // problem.
 //
+// It reads deploy.yml itself too, as Node reads the file and GitHub runs it (deployPinProblems), and
+// requires every uses: there to be its action's entry in that table, so the commits it proves are the ones
+// deploy.yml runs, whatever a test run loads in the table's place: DPW-04, under Vitest, binds deploy.yml to
+// the table Vite resolves, which a sibling file Vite tries before action-pins.ts (an action-pins.mjs with a
+// moved pin, say) or a test configuration's alias could make another file than the one this proves.
+//
 // git reads the repository from a folder of its own and with no configuration but its defaults (readTagRefs),
 // whatever a step before it in its job, a person's machine or the runner left behind: no system, global or
 // repository configuration file, none given in the environment, no other git folder, helper or askpass. A
@@ -26,10 +32,11 @@
 // owner's-read list (C11-D74); DPW-04's tests run its decision (run) and its address (actionUrl) on planted
 // answers.
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './guards/action-pins.ts'
+import { shapeProblems } from './guards/workflow.ts'
 
 // The commit a version's tag names, from git ls-remote's answer for its two refs: the peeled line of an
 // annotated tag, otherwise the tag's own line; undefined when the answer names neither exactly.
@@ -60,6 +67,36 @@ export function pinProblems(
     if (named === undefined) problems.push(`${action}: the repository has no tag ${version}`)
     else if (named !== commit) problems.push(`${action}: tag ${version} names another commit than the pin's`)
   }
+  return problems
+}
+
+// deploy.yml, beside this script wherever it runs from.
+export const DEPLOY_FILE = new URL('../.github/workflows/deploy.yml', import.meta.url)
+// A step's uses: as DPW-02 and DPW-04 hold deploy.yml to write it: the key alone, the action, @, a 40-hex
+// commit and its version in a comment, and nothing else on the line.
+const USES_LINE = /^ +(?:- )?uses: ([^\s@]+)@([0-9a-f]{40} # v\d+\.\d+\.\d+)$/
+
+// Each problem with what deploy.yml runs, read from its own text: a line in none of the shapes the workflow
+// reader reads (a quoted key, which can spell uses with an escape, a flow mapping, an anchor or a tag), a
+// line holding the word uses in any other shape than a step's pinned uses:, or an action at another commit
+// or version than its ACTION_PINS entry, and no pinned uses: at all. Every line is read, comments and runs
+// included, so no uses: stands where a reader of the YAML would miss it; a line that only mentions the word
+// is refused too, and is reworded.
+export function deployPinProblems(text: string): string[] {
+  const problems = shapeProblems(text).map(
+    index => `line ${index + 1}: in none of the shapes the workflow reader reads`,
+  )
+  let pinned = 0
+  text.split('\n').forEach((line, index) => {
+    if (!/\buses\b/i.test(line)) return
+    const uses = USES_LINE.exec(line)
+    const [, action = '', pin = ''] = uses ?? []
+    if (uses === null) problems.push(`line ${index + 1}: names uses in another shape than a step's pinned uses:`)
+    else if (!Object.hasOwn(ACTION_PINS, action) || ACTION_PINS[action] !== pin)
+      problems.push(`line ${index + 1}: runs ${action} at another commit or version than its ACTION_PINS entry`)
+    else pinned++
+  })
+  if (pinned === 0) problems.push('names no pinned uses:')
   return problems
 }
 
@@ -129,11 +166,16 @@ export function lsRemote(
   throw new Error(`check-action-pins: couldn't read ${action}'s tags: ${String(failure)}`)
 }
 
-// The check, given a reader of an action's tag refs (lsRemote, in CI): it reads both tables, prints a line
-// for each pin it proves and each problem, and answers the exit code, 1 on any problem or a read that fails
-// and 0 only when every pin is its version's tag's commit. The script exits with it.
-export function run(read: (action: string, version: string) => string): number {
-  const problems: string[] = []
+// The check, given a reader of an action's tag refs (lsRemote, in CI) and deploy.yml's text (the file's own
+// unless a test plants another): it holds deploy.yml's every uses: to ACTION_PINS, reads both tables, prints
+// a line for each pin it proves and each problem, and answers the exit code, 1 on any problem or a read that
+// fails and 0 only when every uses: in deploy.yml is its table entry and every pin is its version's tag's
+// commit. The script exits with it.
+export function run(
+  read: (action: string, version: string) => string,
+  deploy: string = readFileSync(DEPLOY_FILE, 'utf8'),
+): number {
+  const problems = deployPinProblems(deploy).map(problem => `deploy.yml ${problem}`)
   for (const [where, pins] of [
     ['deploy.yml', ACTION_PINS],
     ["ci.yml's action-pins job", PINS_JOB_ACTIONS],

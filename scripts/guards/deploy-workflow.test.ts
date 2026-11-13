@@ -12,9 +12,9 @@
 // This file and deploy-workflow.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { gitIsAncestor, type PlanInput, parseReleaseRecords, plan } from '../../infra/scripts/deploy/history.ts'
 import { PROFILES } from '../../infra/src/config/profiles.ts'
@@ -22,6 +22,7 @@ import { synthWorkload } from '../../infra/src/testing/workload.ts'
 import {
   actionUrl,
   run as checkActionPins,
+  deployPinProblems,
   gitEnvironment,
   lsRemote,
   pinProblems,
@@ -29,7 +30,7 @@ import {
   tagCommit,
 } from '../check-action-pins.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
-import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins'
+import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
   ASSET_CHECK,
   AWS_CHECK,
@@ -106,8 +107,9 @@ import {
   TASKS_OUTPUTS,
   timeoutAndGroupFindings,
   triggerFindings,
-} from './deploy-workflow'
-import { readRepoFile, repoFiles, root } from './repo-files'
+} from './deploy-workflow.ts'
+import { moduleImports } from './imports.ts'
+import { readRepoFile, repoFiles, root } from './repo-files.ts'
 import {
   jobConcurrency,
   jobEnvironment,
@@ -117,7 +119,7 @@ import {
   parsedSteps,
   workflowJobs,
   workflowTop,
-} from './workflow'
+} from './workflow.ts'
 
 const files = repoFiles()
 const workflows: ReadonlyMap<string, string> = new Map(
@@ -224,7 +226,7 @@ const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
 // DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
 const PINS_JOB_FINDING =
-  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
+  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
 const PINNED_13 =
   'runs as written, whole and under its own if: (PINNED_RUNS) and in its own folder: the build, the synth, the release, the push, migrate with its record and the record job, so no line of its own builds, synthesises, tags, migrates or records by another commit, context, task or environment, or runs, prints or writes what a rule reading the text would miss'
 const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
@@ -1065,6 +1067,100 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     expect(actionPinFindings(workflows, [...real, '.github/workflows/x.yml.bak'])).toEqual([FOLDER])
   })
 
+  // FETCH-A2-01 (round 6). The guard imported './action-pins' with no extension, which Vitest resolves to a
+  // file of that very name first, then .mjs, .js and .mts before .ts, while the pins check imports the .ts by
+  // its full name, as Node does. So an action-pins.mjs beside action-pins.ts, holding a pin moved with
+  // deploy.yml's to a commit no tag names, was the table DPW-04 bound deploy.yml to, while the check proved the
+  // .ts's real pins, and both passed. The guard now names every module by its .ts file, and scripts/ holds no
+  // file a resolver could load in place of a .ts one.
+  it('finds a file a module resolver would load in place of a guard’s .ts module (FETCH-A2-01, round 6)', () => {
+    const SHADOW = `scripts: DPW-04 holds no JavaScript, no other TypeScript flavour (.js, .mjs, .cjs, .jsx, .mts, .cts, .tsx) and no file without an extension, any of which Vitest would load in place of a guard module named without its .ts`
+    const real = [...workflows.keys()]
+    for (const path of [
+      'scripts/guards/action-pins.mjs',
+      'scripts/guards/action-pins.js',
+      'scripts/guards/action-pins.mts',
+      'scripts/guards/action-pins.cjs',
+      'scripts/guards/action-pins.cts',
+      'scripts/guards/action-pins.jsx',
+      'scripts/guards/action-pins.tsx',
+      'scripts/guards/action-pins',
+      'scripts/guards/workflow.mjs',
+      'scripts/guards/sub/deploy-workflow.js',
+      'scripts/check-action-pins.mjs',
+      'scripts/owner-bootstrap/target.js',
+    ]) {
+      expect(actionPinFindings(workflows, [...real, path]), path).toEqual([SHADOW])
+    }
+    for (const path of [
+      'scripts/guards/action-pins.ts',
+      'scripts/check-server.sh',
+      'scripts/schema-digest.sql',
+      'apps/web/vite.config.js',
+      'scripts-other/x.mjs',
+    ]) {
+      expect(actionPinFindings(workflows, [...real, path]), path).toEqual([])
+    }
+  })
+
+  it('names every module the guard, its tests and the pins check import by its .ts file (FETCH-A2-01, round 6)', () => {
+    const relative = (path: string, source: string) =>
+      moduleImports(source, path).flatMap(each =>
+        each.specifier !== undefined && /^\.\.?\//.test(each.specifier) ? [each.specifier] : [],
+      )
+    const named = (path: string, source: string) =>
+      relative(path, source).filter(
+        specifier => !specifier.endsWith('.ts') || !existsSync(join(root, dirname(path), specifier)),
+      )
+    for (const path of [
+      'scripts/guards/deploy-workflow.ts',
+      'scripts/guards/deploy-workflow.test.ts',
+      'scripts/guards/action-pins.ts',
+      'scripts/guards/workflow.ts',
+      'scripts/guards/repo-files.ts',
+      'scripts/guards/imports.ts',
+      'scripts/check-action-pins.ts',
+    ]) {
+      expect(named(path, readRepoFile(path)), path).toEqual([])
+    }
+    expect(relative('scripts/guards/deploy-workflow.ts', readRepoFile('scripts/guards/deploy-workflow.ts'))).toEqual([
+      './action-pins.ts',
+      './workflow.ts',
+    ])
+    const planted = "import { ACTION_PINS } from './action-pins'\nimport { x } from './missing.ts'\n"
+    expect(named('scripts/guards/deploy-workflow.ts', planted)).toEqual(['./action-pins', './missing.ts'])
+  })
+
+  // Run through Vitest's own resolver: the guard's import line, in a folder where action-pins.ts stands beside
+  // a file Vitest would resolve first for a name without its extension, loads the .ts, while the same line
+  // without its extension loads the other file, as the guard did before.
+  it('loads action-pins.ts by the guard’s own import line whatever stands beside it (FETCH-A2-01, round 6)', async () => {
+    const line =
+      readRepoFile('scripts/guards/deploy-workflow.ts')
+        .split('\n')
+        .find(each => each.startsWith('import ') && each.includes("from './action-pins")) ?? ''
+    expect(line).toBe("import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'")
+    const moved = `export const ACTION_PINS = { 'actions/checkout': 'moved' }\nexport const PIN_SHAPE = /x/\nexport const PINS_JOB_ACTIONS = {}\n`
+    for (const shadow of ['action-pins.mjs', 'action-pins.js', 'action-pins.mts']) {
+      const folder = mkdtempSync(join(tmpdir(), 'guard-shadow-'))
+      try {
+        writeFileSync(join(folder, 'action-pins.ts'), readRepoFile('scripts/guards/action-pins.ts'))
+        writeFileSync(join(folder, shadow), moved)
+        writeFileSync(join(folder, 'guard.ts'), `${line}\nexport { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS }\n`)
+        writeFileSync(
+          join(folder, 'bare.ts'),
+          `${line.replace("'./action-pins.ts'", "'./action-pins'")}\nexport { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS }\n`,
+        )
+        const guard = (await import(join(folder, 'guard.ts'))) as { ACTION_PINS: unknown }
+        const bare = (await import(join(folder, 'bare.ts'))) as { ACTION_PINS: unknown }
+        expect(guard.ACTION_PINS, shadow).toEqual(ACTION_PINS)
+        expect(bare.ACTION_PINS, shadow).toEqual({ 'actions/checkout': 'moved' })
+      } finally {
+        rmSync(folder, { recursive: true, force: true })
+      }
+    }
+  })
+
   // FETCH-A6-01 (round 6). .nvmrc chooses the pins job's Node and every deploy job's. A JSON .nvmrc that
   // setup-node 7.1 (the pins job's and deploy.yml's) reads by devEngines.runtime, 24.1.0, and setup-node 5
   // (check's) by engines.node, 24, gave the pins job a Node without import.meta.main, on which the check
@@ -1169,6 +1265,40 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     expect(asked).toEqual(['actions/checkout v7.0.1'])
   })
 
+  // FETCH-A2-01 (round 6): the check reads deploy.yml's uses: itself, as Node reads the file and GitHub runs
+  // it, so the commits it proves are the ones deploy.yml runs, whatever table a test run binds it to.
+  it('holds every uses: in deploy.yml, read from the file, to its ACTION_PINS entry (FETCH-A2-01, round 6)', () => {
+    expect(deployPinProblems(deployText)).toEqual([])
+    const real = `actions/checkout@${ACTION_PINS['actions/checkout']}`
+    const shadow = 'actions/checkout@a81bbbf8298c0fa03ea29cdc473d45769f953675 # v7.0.1'
+    const lines = deployText.split(real).length - 1
+    expect(lines).toBeGreaterThan(1)
+    expect(deployPinProblems(deployText.replaceAll(real, shadow))).toHaveLength(lines)
+    // The first checkout's line, edited alone.
+    const first = `        uses: ${real}\n`
+    const at = deployText.slice(0, deployText.indexOf(first)).split('\n').length
+    const once = (to: string) => deployPinProblems(edited(deployText, first, to))
+    const other = `line ${at}: runs actions/checkout at another commit or version than its ACTION_PINS entry`
+    const shape = `line ${at}: names uses in another shape than a step's pinned uses:`
+    const unread = `line ${at}: in none of the shapes the workflow reader reads`
+    expect(once(`        uses: ${shadow}\n`)).toEqual([other])
+    expect(once(`        uses: ${real.replace('v7.0.1', 'v7.0.2')}\n`)).toEqual([other])
+    expect(once(`        uses: ${real.replace('actions/', 'action/')}\n`)).toEqual([
+      `line ${at}: runs action/checkout at another commit or version than its ACTION_PINS entry`,
+    ])
+    expect(once(`        uses: ${real} \n`)).toEqual([shape])
+    expect(once(`        uses: '${real}'\n`)).toEqual([shape])
+    expect(once('        uses: ./.github/actions/x\n')).toEqual([shape])
+    expect(once(`        Uses: ${real}\n`)).toEqual([shape])
+    expect(once(`        "uses": ${shadow}\n`)).toEqual([unread, shape])
+    // A key spelled with an escape holds no word uses, and is refused as a key the reader doesn't read.
+    expect(once(`        "u\\x73es": ${shadow}\n`)).toEqual([unread])
+    expect(once(`${first}          # pinned uses: above\n`)).toEqual([
+      `line ${at + 1}: names uses in another shape than a step's pinned uses:`,
+    ])
+    expect(deployPinProblems('')).toEqual(['names no pinned uses:'])
+  })
+
   // RULES-01 (review 5): CI's proof of the pins is the script's own decision, which nothing but the owner's read
   // held, so a pull request could move a pin to a fork's commit and, beside it, have the check skip a read or
   // exit 0 with every test green. Its decision runs here end to end on planted answers, for each entry of both
@@ -1181,11 +1311,11 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     const tagOf = (pin: string) => PIN_SHAPE.exec(pin) ?? []
     const commits = new Map(entries.map(([, action, pin]) => [`${action} ${tagOf(pin)[2]}`, tagOf(pin)[1]]))
     const answer = (action: string, version: string) => `${commits.get(`${action} ${version}`)}\trefs/tags/${version}\n`
-    const quietly = (read: (action: string, version: string) => string) => {
+    const quietly = (read: (action: string, version: string) => string, deploy?: string) => {
       const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
       const error = vi.spyOn(console, 'error').mockImplementation(() => undefined)
       try {
-        return checkActionPins(read)
+        return checkActionPins(read, deploy)
       } finally {
         log.mockRestore()
         error.mockRestore()
@@ -1195,6 +1325,16 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     it('exits 0 only when every pin of both tables is its tag’s commit', () => {
       expect(entries.length).toBe(7)
       expect(quietly(answer)).toBe(0)
+    })
+
+    // FETCH-A2-01 (round 6): deploy.yml's checkout moved to a commit no tag names, every table entry still its
+    // tag's commit (the table a shadow file stood in for under Vitest), fails the check on deploy.yml's own text.
+    it('exits 1 when deploy.yml runs a pin its table doesn’t name, every entry its tag’s commit (FETCH-A2-01, round 6)', () => {
+      const real = `actions/checkout@${ACTION_PINS['actions/checkout']}`
+      const moved = deployText.replaceAll(real, 'actions/checkout@a81bbbf8298c0fa03ea29cdc473d45769f953675 # v7.0.1')
+      expect(quietly(answer, deployText)).toBe(0)
+      expect(quietly(answer, moved)).toBe(1)
+      expect(quietly(answer, '')).toBe(1)
     })
 
     it('exits 1 for each entry alone at another commit, with no tag, or whose read fails', () => {
@@ -5789,6 +5929,56 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
     for (const [what, planted] of [
       ['continue-on-error', plant(first, `${first}        continue-on-error: true\n`, '\n  check:\n', CI)],
       ['a shell of its own', plant(first, `${first}        shell: sh\n`, '\n  check:\n', CI)],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+    expect(actionPinFindings(workflows, files)).toEqual([])
+  })
+
+  // YAML-A2-01 (round 6). check gates merging on the pins job only by failing first, and a job's own keys
+  // reach that step as the workflow's do: a BASH_ENV whose command substitution, which bash runs before the
+  // step, turns its exit 1 into exit 0; SHELLOPTS=noexec, under which bash reads the line and runs nothing; a
+  // default shell that skips it; another bash in a container; a self-hosted runner; or continue-on-error,
+  // which keeps the run from failing when check fails. Each let check pass with action-pins failed, with every
+  // later step and test run and green. So check holds no key of its own but needs, if, runs-on (GitHub's
+  // ubuntu-24.04), timeout-minutes and steps.
+  it('holds check’s own keys, so nothing decides how its first step runs or whether its failure counts (YAML-A2-01, round 6)', () => {
+    const always = '    if: always()\n'
+    const onCheck = (lines: string) => plant(always, `${always}${lines}`, '\n  check:\n', CI)
+    const runsOn = (to: string) => plant('    runs-on: ubuntu-24.04\n', `    runs-on: ${to}\n`, '\n  check:\n', CI)
+    expect(workflowJobs(ci).find(each => each.id === 'check')?.keyNames).toEqual([
+      'needs',
+      'if',
+      'runs-on',
+      'timeout-minutes',
+      'steps',
+    ])
+    for (const [what, planted] of [
+      [
+        'a BASH_ENV that turns exit 1 into exit 0',
+        onCheck(
+          `    env:\n      BASH_ENV: '$(f=$(mktemp); grep -qx "exit 1" "$0" && echo "exit 0" >"$f"; echo "$f")'\n`,
+        ),
+      ],
+      ['SHELLOPTS of noexec', onCheck('    env:\n      SHELLOPTS: noexec\n')],
+      [
+        'a default shell that skips exit 1',
+        onCheck(`    defaults:\n      run:\n        shell: bash -c "grep -qx 'exit 1' $0 || exec bash -e $0" {0}\n`),
+      ],
+      ['a default folder', onCheck('    defaults:\n      run:\n        working-directory: scripts\n')],
+      ['a container', onCheck('    container: ubuntu:24.04\n')],
+      ['a container with its image', onCheck('    container:\n      image: ubuntu:24.04\n')],
+      ['a service', onCheck('    services:\n      shell:\n        image: ubuntu:24.04\n')],
+      ['a matrix', onCheck('    strategy:\n      matrix:\n        shard: [1, 2]\n')],
+      ['continue-on-error', onCheck('    continue-on-error: true\n')],
+      ['a name', onCheck('    name: check\n')],
+      ['permissions of its own', onCheck('    permissions:\n      contents: read\n')],
+      ['a concurrency of its own', onCheck('    concurrency: check\n')],
+      ['an environment', onCheck('    environment: ci\n')],
+      ['a self-hosted runner', runsOn('self-hosted')],
+      ['a runner by labels', runsOn('[self-hosted, linux]')],
+      ['another image', runsOn('ubuntu-latest')],
+      ['a runner by expression', runsOn(`\${{ vars.RUNNER }}`)],
     ] as const) {
       expect(actionPinFindings(planted), what).toContain(finding)
     }
