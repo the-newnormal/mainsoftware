@@ -89,9 +89,11 @@ import {
   PROBE,
   PROBE_LINES,
   PROD_GATE_CALL,
+  PROTECT_ENVIRONMENTS_SHA256,
   PROTECT_ENVIRONMENTS_SHEBANG,
   PULL_CHECKS,
   permissionFindings,
+  pinnedScriptText,
   prodPathFindings,
   RESTORE_DOWN,
   RULESET,
@@ -2868,13 +2870,18 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     ).toEqual([
       `${dir}/prod.json: DPW-09 is an environment file: its name, required_reviewers, prevent_self_review, wait_timer 0, can_admins_bypass, the custom branch policy and main alone`,
     ])
+    // Every change to the code the gate's check runs also moves it off its pin (EXPAND-A4-02, round 6).
+    const pinned =
+      'scripts/protect-environments.sh: DPW-09 runs in the gate the code pinned whole from its first code line (PROTECT_ENVIRONMENTS_SHA256), which moves only with it'
     expect(gate(workflows, environments, holds, protectEnvironments.replace('AI_AGENT CI', 'CI'))).toEqual([
       "scripts/protect-environments.sh: DPW-09 its agent markers are the Owner bootstrap script's AGENT_MARKERS",
+      pinned,
     ])
     // The refusal comes first and reads the declared list alone: a second assignment, an unset, a narrowed
     // condition or a line run before it each make a finding.
     const refuses = [
       'scripts/protect-environments.sh: DPW-09 refuses every command but check under each agent marker, before anything else runs (MARKER_REFUSAL)',
+      pinned,
     ]
     const plants: [string, string][] = [
       ["CLAIM_KEYS='", "AGENT_MARKERS=()\nCLAIM_KEYS='"],
@@ -2932,6 +2939,39 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         holds,
         protectEnvironments.replace('\nset -euo pipefail\n', '\n \t# indented \\\n\t#\n\nset -euo pipefail\n'),
       ),
+    ).toEqual([])
+  })
+
+  // The gate runs check with its step's environment and a gh that answers; the tests run it with neither. So
+  // the code it runs is pinned whole (PROTECT_ENVIRONMENTS_SHA256): a line keyed on anything the two differ in
+  // (GH_TOKEN or a runner's variable, a folder only a runner has, what gh answers beyond the reads, jq's env),
+  // which would let the gate's check pass whatever GitHub answers, makes a finding, and so does any other change
+  // past the head, apply's included. The comments above the first code line stay free (EXPAND-A4-02, round 6).
+  it('pins the code the gate’s check runs, so no line can tell the gate from a test', () => {
+    const pinned = [
+      'scripts/protect-environments.sh: DPW-09 runs in the gate the code pinned whole from its first code line (PROTECT_ENVIRONMENTS_SHA256), which moves only with it',
+    ]
+    const dispatch = '  check) check ;;'
+    const plants: [string, string][] = [
+      [dispatch, `  check) check || [ -n "\${GH_TOKEN:-}" ] ;;`],
+      ['  return "$status"', `  return $(( \${GH_TOKEN:+0*}status ))`],
+      [dispatch, `  check) check || [ -n "\${RUNNER_NAME:-}" ] ;;`],
+      [dispatch, '  check) check || [ -d /home/runner ] ;;'],
+      [dispatch, '  check) check || gh api user >/dev/null 2>&1 ;;'],
+      ['    if [ -z "$fields" ]; then', `    if [ -z "$fields" ] || jq -en 'env.GH_TOKEN' >/dev/null; then`],
+      ['  check_files || exit 1', '  check_files || exit 0'],
+    ]
+    for (const [from, to] of plants) {
+      expect(protectEnvironments.split(from).length).toBe(2)
+      expect(gate(workflows, environments, holds, protectEnvironments.replace(from, to))).toEqual(pinned)
+    }
+    expect(createHash('sha256').update(pinnedScriptText(protectEnvironments)).digest('hex')).toBe(
+      PROTECT_ENVIRONMENTS_SHA256,
+    )
+    const header = "# check only reads: the deploy workflow's gate"
+    expect(protectEnvironments.includes(header)).toBe(true)
+    expect(
+      gate(workflows, environments, holds, protectEnvironments.replace(header, '# check reads only: the gate')),
     ).toEqual([])
   })
 
@@ -3212,6 +3252,91 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         ])
       } finally {
         rmSync(calls, { force: true })
+      }
+    })
+
+    // The gate's own command again, now as the gate runs it: with its step's env (GH_TOKEN, REPO), the runner's
+    // markers and variables, and a gh that answers from the planted answers. The pinned code reads exactly the
+    // nine environment reads and the subject template, refuses prod with admin bypass on or no reviewer, and
+    // passes the answers as written, in this environment as with none (EXPAND-A4-02, round 6).
+    it("reads, refuses and passes the same in the gate's own environment as with none", () => {
+      const serving = mkdtempSync(join(tmpdir(), 'hearth-dpw09-serve-'))
+      const calls = join(serving, 'gh-calls')
+      try {
+        writeFileSync(
+          join(serving, 'gh'),
+          [
+            '#!/bin/sh',
+            `printf '%s\\n' "$*" >>'${calls}'`,
+            '[ "$1" = api ] || exit 1',
+            `p=$(printf '%s' "$2" | sed 's|^repos/example/hearth/||')`,
+            'case "$p" in',
+            `  environments/*/deployment-branch-policies) f=$(printf '%s' "$p" | cut -d/ -f2)-branch-policies.json ;;`,
+            `  environments/*/deployment_protection_rules) f=$(printf '%s' "$p" | cut -d/ -f2)-protection-rules.json ;;`,
+            `  environments/*) f=$(printf '%s' "$p" | cut -d/ -f2).json ;;`,
+            '  actions/oidc/customization/sub) f=oidc.json ;;',
+            '  *) exit 1 ;;',
+            'esac',
+            `exec cat '${dir}'/"$f"`,
+            '',
+          ].join('\n'),
+          { mode: 0o755 },
+        )
+        const bare = { PATH: `${serving}:${process.env.PATH ?? ''}`, HOME: serving }
+        const gateStep = {
+          ...bare,
+          GH_TOKEN: 'a-token-the-stand-in-ignores',
+          REPO: 'example/hearth',
+          CI: 'true',
+          GITHUB_ACTIONS: 'true',
+          GITHUB_JOB: 'gate',
+          GITHUB_WORKFLOW: 'deploy',
+          GITHUB_REPOSITORY: 'example/hearth',
+          GITHUB_EVENT_NAME: 'push',
+          GITHUB_REF: 'refs/heads/main',
+          GITHUB_RUN_ID: '1',
+          GITHUB_RUN_ATTEMPT: '1',
+          RUNNER_OS: 'Linux',
+          RUNNER_NAME: 'runner',
+          RUNNER_TEMP: serving,
+        }
+        const run = (env: Record<string, string>) => {
+          rmSync(calls, { force: true })
+          const result = spawnSync(join(root, 'scripts/protect-environments.sh'), ['check', 'example/hearth'], {
+            encoding: 'utf8',
+            env,
+          })
+          return {
+            status: result.status,
+            lines: result.stdout.trim().split('\n'),
+            calls: readFileSync(calls, 'utf8').trim().split('\n'),
+          }
+        }
+        const reads = [
+          ...['nonprod', 'prod-plan', 'prod'].flatMap(name => [
+            `api repos/example/hearth/environments/${name}`,
+            `api repos/example/hearth/environments/${name}/deployment-branch-policies`,
+            `api repos/example/hearth/environments/${name}/deployment_protection_rules`,
+          ]),
+          'api repos/example/hearth/actions/oidc/customization/sub',
+        ]
+        const ok = ['nonprod', 'prod-plan', 'prod', 'oidc'].map(name => `protect-environments: ${name} ok`)
+        const drifted = (line: string) => ({
+          status: 1,
+          lines: ok.map(each => (each.includes(' prod ') ? line : each)),
+          calls: reads,
+        })
+        good()
+        expect(run(gateStep)).toEqual({ status: 0, lines: ok, calls: reads })
+        expect(run(bare)).toEqual({ status: 0, lines: ok, calls: reads })
+        write('prod.json', { ...settings('prod', 1), can_admins_bypass: true })
+        expect(run(gateStep)).toEqual(drifted('protect-environments: prod can_admins_bypass differs'))
+        expect(run(bare)).toEqual(drifted('protect-environments: prod can_admins_bypass differs'))
+        write('prod.json', settings('prod', 0))
+        expect(run(gateStep)).toEqual(drifted('protect-environments: prod required_reviewers differs'))
+        expect(run(bare)).toEqual(drifted('protect-environments: prod required_reviewers differs'))
+      } finally {
+        rmSync(serving, { recursive: true, force: true })
       }
     })
 

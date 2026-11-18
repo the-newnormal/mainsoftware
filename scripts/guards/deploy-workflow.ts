@@ -35,7 +35,10 @@
 // type, a transform), which neither the CLI's diff nor the release check reads, and a file asset whose id,
 // which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
-// and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal.
+// and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
+// the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
+// the tests run it with neither the gate step's environment nor a gh that answers, so no line keyed on what
+// they differ in can pass the gate's check over environments that have drifted.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
@@ -89,6 +92,7 @@
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
+import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
   type BlockValue,
@@ -1673,6 +1677,20 @@ export function codeLinesAsBash(lines: readonly string[]): string[] {
     joined = line.endsWith('\\')
   }
   return code
+}
+
+// What the gate's check runs of protect-environments.sh, pinned whole: its text from the first line bash runs
+// (past the interpreter line and the comments under it, which bash skips) to its end, by its SHA-256. The
+// head and the refusal are held line by line above; the rest (the comparison, its status, the dispatch and the
+// gh calls) runs in the gate with the gate step's environment and a gh that answers, and the tests run it with
+// neither, so a line keyed on anything the two differ in (a variable, a file, what gh answers) would end the
+// check differently in the gate and in every test. Pinned, the code changes only with the pin, in the same PR,
+// an owner's read (EXPAND-A4-02, round 6). The comments above the first code line stay free to edit.
+export const PROTECT_ENVIRONMENTS_SHA256 = 'd24fe31b649dd85533a83f4687a261685f1771ae589fcfea5d2ca18935227562'
+export function pinnedScriptText(script: string): string {
+  const lines = script.split('\n')
+  const first = lines.findIndex((line, i) => i > 0 && !/^[ \t]*(?:#[\s\S]*)?$/.test(line))
+  return first < 0 ? '' : lines.slice(first).join('\n')
 }
 
 const markerHead = (markers: readonly string[]) => [
@@ -5178,6 +5196,17 @@ export function gateFindings(
         PROTECT_ENVIRONMENTS,
         'DPW-09',
         'refuses every command but check under each agent marker, before anything else runs (MARKER_REFUSAL)',
+      ),
+    )
+  }
+  if (
+    createHash('sha256').update(pinnedScriptText(protectEnvironments)).digest('hex') !== PROTECT_ENVIRONMENTS_SHA256
+  ) {
+    found.push(
+      at(
+        PROTECT_ENVIRONMENTS,
+        'DPW-09',
+        'runs in the gate the code pinned whole from its first code line (PROTECT_ENVIRONMENTS_SHA256), which moves only with it',
       ),
     )
   }

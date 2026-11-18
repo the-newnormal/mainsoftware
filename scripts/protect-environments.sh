@@ -3,7 +3,9 @@
 # .github/environments/nonprod.json, prod-plan.json and prod.json say what each environment must be,
 # and this script applies them to GitHub or checks GitHub's live settings against them. Mirrors
 # scripts/protect-main.sh. It holds who may approve a deploy, so it is on the owner's-read list
-# (C11-D74).
+# (C11-D74), and the deploy-workflow guard pins its code whole, from its first code line to its end
+# (DPW-09, PROTECT_ENVIRONMENTS_SHA256), so a change to that code moves the pin in the same PR; these
+# comments above it stay free to edit.
 #
 #   scripts/protect-environments.sh check [owner/repo]
 #   scripts/protect-environments.sh check --from <dir> [owner/repo]
