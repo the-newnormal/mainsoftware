@@ -51,6 +51,7 @@ import {
   CLI_FETCH,
   canonicalTextFindings,
   checkoutFindings,
+  codeLinesAsBash,
   credentialedCodeFindings,
   credentialJobFindings,
   DEPLOY,
@@ -88,6 +89,7 @@ import {
   PROBE,
   PROBE_LINES,
   PROD_GATE_CALL,
+  PROTECT_ENVIRONMENTS_SHEBANG,
   PULL_CHECKS,
   permissionFindings,
   prodPathFindings,
@@ -2885,6 +2887,91 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       expect(protectEnvironments.includes(from)).toBe(true)
       expect(gate(workflows, environments, holds, protectEnvironments.replace(from, to))).toEqual(refuses)
     }
+    // The gate and a person run the script as a file, so its first line is the interpreter: env -S unsetting
+    // every marker, bash -n (bash reads and runs nothing, exiting 0) or another shell each make a finding
+    // (EXPAND-A3-01, round 6).
+    const shebang = [
+      `scripts/protect-environments.sh: DPW-09 runs as a file under ${PROTECT_ENVIRONMENTS_SHEBANG} alone, its first line (PROTECT_ENVIRONMENTS_SHEBANG)`,
+    ]
+    expect(protectEnvironments.startsWith(`${PROTECT_ENVIRONMENTS_SHEBANG}\n`)).toBe(true)
+    for (const line of [
+      `#!/usr/bin/env -S -u ${AGENT_MARKERS.join(' -u ')} bash`,
+      '#!/bin/bash -n',
+      '#!/usr/bin/env -S bash -n',
+      '#!/bin/sh',
+      `${PROTECT_ENVIRONMENTS_SHEBANG} `,
+      `${PROTECT_ENVIRONMENTS_SHEBANG}\r`,
+      `﻿${PROTECT_ENVIRONMENTS_SHEBANG}`,
+    ]) {
+      const planted = protectEnvironments.replace(PROTECT_ENVIRONMENTS_SHEBANG, line)
+      expect(gate(workflows, environments, holds, planted)).toEqual(shebang)
+    }
+    expect(gate(workflows, environments, holds, `\n${protectEnvironments}`)).toEqual(shebang)
+    // A line JavaScript's trim() reads as a comment that bash runs (a no-break space, a carriage return, a
+    // vertical tab or an ideographic space before the #, then ; and a command), or a # line joined to the line
+    // before by its backslash, is code: before the refusal it makes a finding, whatever the command does.
+    const hidden = `[ "\${1:-}" = check ] && [ "\${2:-}" != --from ] && exit 0`
+    for (const prefix of [' #;', '\r#;', '\v#;', '\f#;', '　#;', '﻿#;', ' #;']) {
+      const planted = protectEnvironments.replace('\nset -euo pipefail\n', `\n${prefix}${hidden}\nset -euo pipefail\n`)
+      expect(gate(workflows, environments, holds, planted)).toEqual(refuses)
+    }
+    expect(
+      gate(
+        workflows,
+        environments,
+        holds,
+        protectEnvironments.replace("CLAIM_KEYS='", `NOTE=\\\n#;${hidden}\nCLAIM_KEYS='`),
+      ),
+    ).toEqual(refuses)
+    // Comments bash skips stay skipped: indented by spaces and tabs, or ending in a backslash, which a comment
+    // swallows.
+    expect(
+      gate(
+        workflows,
+        environments,
+        holds,
+        protectEnvironments.replace('\nset -euo pipefail\n', '\n \t# indented \\\n\t#\n\nset -euo pipefail\n'),
+      ),
+    ).toEqual([])
+  })
+
+  // codeLinesAsBash drops exactly the lines bash skips: each sample runs under bash, and the sample's
+  // `echo ran` is among the code lines the guard reads exactly when bash printed it.
+  it('reads comment and blank lines as bash does (codeLinesAsBash)', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-dpw09-comments-'))
+    try {
+      const samples = [
+        '#;echo ran',
+        ' \t # a comment;echo ran',
+        '',
+        ' \t ',
+        ' #;echo ran',
+        '\r#;echo ran',
+        '\v#;echo ran',
+        '\f#;echo ran',
+        '　#;echo ran',
+        '﻿#;echo ran',
+        ' #;echo ran',
+        'x=\\\n#;echo ran',
+        'x=\\\n\\\n#;echo ran',
+        '# a comment \\\n#;echo ran',
+        '# a comment \\\necho ran',
+        'echo ran # a comment',
+      ]
+      for (const [index, sample] of samples.entries()) {
+        const file = join(folder, `sample-${index}.sh`)
+        writeFileSync(file, `${sample}\n`)
+        const result = spawnSync('bash', [file], {
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH ?? '', HOME: folder, LC_ALL: 'C.UTF-8' },
+        })
+        const ran = result.stdout.split('\n').includes('ran')
+        const read = codeLinesAsBash(sample.split('\n')).some(line => line.includes('echo ran'))
+        expect({ sample, read }).toEqual({ sample, read: ran })
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
   })
 
   it('holds the repository', () => {
@@ -3004,13 +3091,14 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
 
   // No coding agent runs apply by any route (CLAUDE.md), so the refusal every command but check makes under
   // an agent or CI marker is proved on the script run with no command: under each marker, set empty, it
-  // refuses before anything else runs, gh included; under none it prints its usage.
+  // refuses before anything else runs, gh included; under none it prints its usage. It runs as a file, as the
+  // gate and a person run it, so the interpreter its first line names is the one tested (EXPAND-A3-01, round 6).
   it('refuses every command but check under each agent marker, first', () => {
     const folder = mkdtempSync(join(tmpdir(), 'hearth-dpw09-markers-'))
     try {
       writeFileSync(join(folder, 'gh'), `#!/bin/sh\necho "$@" >>'${join(folder, 'gh-calls')}'\n`, { mode: 0o755 })
       const run = (marker?: string) => {
-        const result = spawnSync('bash', [join(root, 'scripts/protect-environments.sh')], {
+        const result = spawnSync(join(root, 'scripts/protect-environments.sh'), [], {
           encoding: 'utf8',
           env: {
             PATH: `${folder}:${process.env.PATH ?? ''}`,
@@ -3070,17 +3158,61 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       }
       write('oidc.json', { use_default: false, include_claim_keys: ['repo', 'context', 'job_workflow_ref'] })
     }
+    // Run as a file, as the gate runs it, with a gh that records its arguments and answers nothing: --from
+    // reads the saved answers alone.
+    let ghFolder = ''
     const check = () => {
-      const result = spawnSync('bash', [join(root, 'scripts/protect-environments.sh'), 'check', '--from', dir], {
+      const result = spawnSync(join(root, 'scripts/protect-environments.sh'), ['check', '--from', dir], {
         encoding: 'utf8',
+        env: { PATH: `${ghFolder}:${process.env.PATH ?? ''}`, HOME: ghFolder },
       })
+      expect(readdirSync(ghFolder)).toEqual(['gh'])
       return { status: result.status, lines: result.stdout.trim().split('\n') }
     }
     beforeAll(() => {
       dir = mkdtempSync(join(tmpdir(), 'hearth-dpw09-answers-'))
+      ghFolder = mkdtempSync(join(tmpdir(), 'hearth-dpw09-gh-'))
+      writeFileSync(join(ghFolder, 'gh'), `#!/bin/sh\necho "$@" >>'${join(ghFolder, 'gh-calls')}'\nexit 1\n`, {
+        mode: 0o755,
+      })
     })
     afterAll(() => {
       if (dir !== '') rmSync(dir, { recursive: true, force: true })
+      if (ghFolder !== '') rmSync(ghFolder, { recursive: true, force: true })
+    })
+
+    // The gate's own command, check with no --from, reads GitHub through gh for every environment and the
+    // subject template: with a gh that answers nothing, every read differs and it exits 1, so a script that
+    // reads nothing (a shebang's bash -n, an early exit 0) fails here (EXPAND-A3-01, round 6).
+    it("reads every answer through gh in the gate's mode, and refuses when gh answers nothing", () => {
+      const calls = join(ghFolder, 'gh-calls')
+      try {
+        const result = spawnSync(join(root, 'scripts/protect-environments.sh'), ['check', 'example/hearth'], {
+          encoding: 'utf8',
+          env: { PATH: `${ghFolder}:${process.env.PATH ?? ''}`, HOME: ghFolder },
+        })
+        expect({ status: result.status, lines: result.stdout.trim().split('\n') }).toEqual({
+          status: 1,
+          lines: [
+            ...['nonprod', 'prod-plan', 'prod'].flatMap(name => [
+              `protect-environments: ${name} settings differs`,
+              `protect-environments: ${name} branch_policies differs`,
+              `protect-environments: ${name} custom_deployment_protection_rules differs`,
+            ]),
+            'protect-environments: oidc subject_template differs',
+          ],
+        })
+        expect(readFileSync(calls, 'utf8').trim().split('\n')).toEqual([
+          ...['nonprod', 'prod-plan', 'prod'].flatMap(name => [
+            `api repos/example/hearth/environments/${name}`,
+            `api repos/example/hearth/environments/${name}/deployment-branch-policies`,
+            `api repos/example/hearth/environments/${name}/deployment_protection_rules`,
+          ]),
+          'api repos/example/hearth/actions/oidc/customization/sub',
+        ])
+      } finally {
+        rmSync(calls, { force: true })
+      }
     })
 
     it('passes the answers as written and names the field of each planted mismatch', () => {
@@ -6815,6 +6947,9 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder",
   )
   const KEY = refused("a file asset's key isn't the sha256 of its bytes")
+  const ID = refused(
+    "a file asset's id isn't its key's 64 hex digits (the CLI packages a zip at, and uploads one it finds at, .cache/<id>.zip)",
+  )
   const FACTS = refused(
     "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property",
   )
@@ -6825,15 +6960,20 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   const keyOf = (path: string) => `${createHash('sha256').update(readFileSync(path)).digest('hex')}.json`
   const BUCKET = `cdk-hearthapp-assets-\${AWS::AccountId}-ap-southeast-1`
   // Re-keys a stack's template asset after a plant edits its template, as the synth would (the key is the
-  // sha256 of the template's bytes), so the check reaches the rule the plant is for.
+  // sha256 of the template's bytes, and the asset's id the key's digits), so the check reaches the rule the
+  // plant is for.
   const rekey = (folder: string, part: string) => {
     const template = named(folder, part, '.template.json')
     const file = template.slice(folder.length + 1)
     const key = keyOf(template)
     edit(named(folder, part, '.assets.json'), json => {
-      for (const entry of entries(json))
-        if (entry.source.path === file)
+      const assets = json.files as Record<string, Entry>
+      for (const [id, entry] of Object.entries(assets))
+        if (entry.source.path === file) {
           for (const destination of Object.values(entry.destinations)) destination.objectKey = key
+          delete assets[id]
+          assets[key.slice(0, 64)] = entry
+        }
     })
     edit(join(folder, 'manifest.json'), json => {
       for (const artifact of Object.values(artifacts(json)))
@@ -6849,6 +6989,53 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     expect(readdirSync(source).some(name => name.startsWith('asset.'))).toBe(true)
     expect(check(() => {})).toBe('passed')
   }, 30_000)
+
+  // FLOW-A3-01 (round 6). A file asset's id, its key in the manifest's files, is a path to the CLI: it writes
+  // the zip it packages to .cache/<id>.zip beside the manifest, or uploads the file already there, so an id
+  // with a / or .. had it write into its own folder or the runner's home and upload a .zip from outside the
+  // assembly. Each id is now its key's 64 hex digits, as the synth writes it.
+  it('refuses a file asset whose id isn’t its key’s 64 hex digits (FLOW-A3-01, round 6)', () => {
+    // Adds the Platform manifest's zip asset again under id, at a fresh key of letter.
+    const another = (id: string, letter: string) => (dir: string) =>
+      edit(named(nonprod(dir), 'Platform', '.assets.json'), json => {
+        const assets = json.files as Record<string, Entry>
+        const zip = Object.values(assets).find(entry => entry.source.packaging === 'zip')
+        if (zip === undefined) throw new Error('no zip asset in Platform')
+        const copy = structuredClone(zip)
+        for (const destination of Object.values(copy.destinations)) destination.objectKey = `${letter.repeat(64)}.zip`
+        assets[id] = copy
+      })
+    // The synth writes every id as its key's digits.
+    const ids = (dir: string) =>
+      readdirSync(dir, { recursive: true, encoding: 'utf8' })
+        .filter(path => path.endsWith('.assets.json'))
+        .flatMap(path =>
+          Object.entries((read(join(dir, path)).files ?? {}) as Record<string, Entry>).map(([id, entry]) =>
+            Object.values(entry.destinations).every(destination => destination.objectKey === `${id}.json`)
+              ? 'json'
+              : Object.values(entry.destinations).every(destination => destination.objectKey === `${id}.zip`)
+                ? 'zip'
+                : id,
+          ),
+        )
+    expect(new Set(ids(source))).toEqual(new Set(['json', 'zip']))
+    expect(check(another('a'.repeat(64), 'a'))).toBe('passed')
+    for (const id of [
+      '../../../aws-cdk/package/lib/written-by-the-assembly',
+      '../../../../../written-in-home',
+      '../../../outside',
+      'x/y',
+      '..',
+      'b'.repeat(64),
+      'A'.repeat(64),
+      `${'a'.repeat(64)}/`,
+    ]) {
+      expect(check(another(id, 'a'))).toBe(ID)
+    }
+    // An id that is another asset's key, or the key's digits with its extension, is refused too.
+    expect(check(another('a'.repeat(64), 'c'))).toBe(ID)
+    expect(check(another(`${'a'.repeat(64)}.zip`, 'a'))).toBe(ID)
+  })
 
   it('refuses each planted breakage of the assets, with one line naming its rule', () => {
     const executable = (path: string) =>
@@ -6953,20 +7140,31 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       }),
     ).toBe(TEMPLATE)
     // A second asset on the template's key, from another file (whose bytes aren't the key's), and from a copy
-    // of the template (whose are, but which isn't the stack's templateFile).
-    const second = (path: string) => (dir: string) =>
-      edit(assets(dir), json => {
-        const [first] = entries(json)
-        if (first !== undefined)
-          (json.files as Record<string, unknown>).second = { ...first, source: { path, packaging: 'file' } }
+    // of the template (whose are, but which isn't the stack's templateFile). In the template's own manifest it
+    // needs an id other than the key's digits, which the id rule refuses; in another of the stage's manifests,
+    // under the key's digits as the synth would write it, the key and the template rules do.
+    const second = (path: string, manifest: (dir: string) => string) => (dir: string) => {
+      const [first] = entries(read(assets(dir)))
+      const [destination] = Object.values(first?.destinations ?? {})
+      edit(manifest(dir), json => {
+        const id = manifest(dir) === assets(dir) ? 'second' : String(destination?.objectKey).slice(0, 64)
+        ;(json.files as Record<string, unknown>)[id] = { ...first, source: { path, packaging: 'file' } }
       })
-    expect(check(second('tree.json'))).toBe(KEY)
-    expect(
-      check(dir => {
-        cpSync(template(dir), join(nonprod(dir), 'copy.json'))
-        second('copy.json')(dir)
-      }),
-    ).toBe(TEMPLATE)
+    }
+    const tasks = (dir: string) => named(nonprod(dir), 'Tasks', '.assets.json')
+    expect(check(second('tree.json', assets))).toBe(ID)
+    expect(check(second('tree.json', tasks))).toBe(KEY)
+    for (const [manifest, refusal] of [
+      [assets, ID],
+      [tasks, TEMPLATE],
+    ] as const) {
+      expect(
+        check(dir => {
+          cpSync(template(dir), join(nonprod(dir), 'copy.json'))
+          second('copy.json', manifest)(dir)
+        }),
+      ).toBe(refusal)
+    }
     // The template uploaded as a zip (a .json key no zip has), a URL naming no asset's key and one that isn't
     // s3; and no URL at all, which is no longer the synth's set of properties.
     expect(
@@ -7144,7 +7342,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     }
     const addAsset = (folder: string, part: string, path: string, destination: Record<string, unknown>) =>
       edit(named(folder, part, '.assets.json'), json => {
-        ;(json.files as Record<string, unknown>)['0'.repeat(64)] = {
+        ;(json.files as Record<string, unknown>)[String(destination.objectKey).slice(0, 64)] = {
           displayName: 'an asset of its own',
           source: { path, packaging: 'file' },
           destinations: { 'current_account-ap-southeast-1-00000000': destination },
@@ -7178,8 +7376,12 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     expect(
       check(dir => {
         edit(named(nonprod(dir), 'Services', '.assets.json'), json => {
-          for (const entry of entries(json))
+          const assets = json.files as Record<string, Entry>
+          for (const [id, entry] of Object.entries(assets)) {
             for (const destination of Object.values(entry.destinations)) destination.objectKey = Q
+            delete assets[id]
+            assets[Q.slice(0, 64)] = entry
+          }
         })
         edit(join(nonprod(dir), 'manifest.json'), json => {
           for (const artifact of Object.values(artifacts(json)))

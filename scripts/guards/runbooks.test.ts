@@ -51,22 +51,28 @@
 //   too, so a | in a command is written \| (the page shows a plain |); a delimiter row has its
 //   header's cells too, since GFM renders no table otherwise, and no table sits in a quote, which RB-08
 //   doesn't read;
-// - RB-09 (C0.11 PR 4 review 4 SCRIPTS-01): no git command in a runbook's code names main by a short
-//   name (`main` or `origin/main`), only by its full ref (refs/remotes/origin/main, read with
-//   git show-ref --verify, after git fetch origin +refs/heads/main:refs/remotes/origin/main): a tag of
-//   either short name, which anyone who can push a branch can push, wins a short name's lookup (git
-//   only warns that it is ambiguous), so a forged record's commit would read as on main, and a fetch or
-//   pull given `origin main` takes such a tag over the branch. Each code span and fenced block is split
-//   into commands as bash splits it (quotes and escapes taken off, a line ended by \ joined to the next,
-//   a $(…) or `…` read as commands of its own, a comment skipped), so a later command that only says main
-//   isn't one (review 5 GUARDS-02). In a command that runs git (git, or a path ending in /git, anywhere
-//   in it), every word after git is read, whatever the subcommand, but the value of git's own -C, -c,
-//   --git-dir, --work-tree, --namespace or --config-env ahead of the subcommand; and in a block or span
-//   that runs git, so is the value a variable is set to and a for loop's list. A word names main when a
-//   part of it between =, : or .. (an option's value, a refspec's or a tree-ish's two sides, a range's
-//   ends), past a leading -, + or ^ and a trailing }, and cut at ^, ~ or @{, is main or origin/main. A
-//   name that reaches git another way (read from a file, built from parts) isn't seen: review keeps
-//   that out.
+// - RB-09 (C0.11 PR 4 review 4 SCRIPTS-01): no git command in a runbook's code names main by a short name
+//   (`main`, `origin/main`, `origin/HEAD` or `origin`), only by its full ref (refs/remotes/origin/main, read
+//   with git show-ref --verify, after git fetch origin +refs/heads/main:refs/remotes/origin/main): a tag of
+//   any short name, which anyone who can push a branch can push and a plain git pull brings, wins its lookup
+//   (git only warns that it is ambiguous), so a forged record's commit would read as on main, and a fetch or
+//   pull given `origin main` takes such a tag over the branch. Each code span and fenced block is split into
+//   commands as bash splits it (quotes and escapes taken off, a line ended by \ joined to the next, a $(…) or
+//   `…` read as commands of its own, a comment skipped), so a later command that only says main isn't one
+//   (review 5 GUARDS-02). Code that runs git (a word, or a variable's value, that is git or a path ending in
+//   /git) takes git's input as literal words, so where bash would compute text no word holds the line is
+//   found: a here-document, a process substitution, ANSI-C or locale quoting, an unquoted brace expansion,
+//   arithmetic, any ${…} but a plain ${NAME}, a function's definition, a command named by an expansion, and
+//   eval, source, read, mapfile, readarray, alias, let and printf -v (EXPAND-A3-02, round 6). In a command
+//   that runs git every word after git is read, whatever the subcommand, but the value of git's own -C, -c,
+//   --git-dir, --work-tree, --namespace or --config-env ahead of the subcommand and the repository a fetch,
+//   pull, push or ls-remote names first; in code that runs git, so is the value a variable is set to, a for
+//   loop's list and set's words, and every word of a command whose output reaches git (piped into it, or
+//   substituted into its words or into such a value). A word names main when a part of it between =, : or ..
+//   (an option's value, a refspec's or a tree-ish's two sides, a range's ends), past a leading -, + or ^ and a
+//   trailing }, and cut at ^, ~ or @{, is main, origin, or a name ending /main or /HEAD that doesn't start
+//   refs/. A name that reaches git another way (read from a file, git's own configuration or aliases, the
+//   environment, or a git built from parts) isn't seen: review keeps that out.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -1129,34 +1135,64 @@ describe('RB-08 (C0.11 review 12 CR-19): every table row has its header’s cell
 // --- RB-09: main by its full ref in every git command ---------------------------------------------
 
 // A shell command as bash splits it: its words with their quotes and escapes taken off, and where it starts in
-// the code. A command substitution's commands ($(…), `…`, <(…)) are commands of their own, and its place in the
-// outer word holds a stand-in that names nothing. A word starting with # begins a comment, which runs nothing.
-type ShellCommand = { at: number; words: string[] }
+// the code. A command substitution's commands ($(…), `…`) are commands of their own whose output is part of
+// the command they sit in (parent), and its place in the outer word holds a stand-in that names nothing; a
+// command whose output a pipe hands to the next names that one (pipeTo). A word starting with # begins a
+// comment, which runs nothing.
+type ShellCommand = { at: number; words: string[]; parent?: ShellCommand; pipeTo?: ShellCommand }
 
-function commandsIn(code: string): ShellCommand[] {
+// A span's or block's commands, and where bash computes text the reader can't take as written (computed): a
+// here-document's body, a process substitution, ANSI-C or locale quoting ($'…', $"…"), an unquoted brace
+// expansion ({a,b}, {a..b}), an arithmetic expansion or command ($((…)), ((…))), a function's definition, and
+// any ${…} but a plain ${NAME} (a default, an alternative, a substitution, a slice, a case change or an
+// indirection all hand git text no word holds).
+type ShellCode = { commands: ShellCommand[]; computed: number[] }
+
+function shellCode(code: string): ShellCode {
   const commands: ShellCommand[] = []
+  const computed: number[] = []
   let i = 0
-  // Reads commands to the end of the code, or to close (the ) of a $(…), or the ` that ends a `…`).
-  const list = (close?: string): void => {
-    let words: string[] = []
+  // ${…} at i (the $): appended as written, refused unless it holds a name alone.
+  const parameter = (append: (text: string) => void) => {
+    const close = code.indexOf('}', i + 2)
+    if (close < 0) {
+      append('$')
+      i++
+      return
+    }
+    if (!/^(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+)$/.test(code.slice(i + 2, close))) computed.push(i)
+    append(code.slice(i, close + 1))
+    i = close + 1
+  }
+  // Reads commands to the end of the code, or to close (the ) of a $(…), or the ` that ends a `…`), each a
+  // part of parent when it sits in one's word.
+  const list = (close?: string, parent?: ShellCommand): void => {
+    let current: ShellCommand = { at: -1, words: [], parent }
     let word: string | undefined
-    let at = -1
+    let piped: ShellCommand | undefined
+    let brace = 0
+    let braceList = false
     const append = (text: string) => {
-      if (at < 0) at = i
+      if (current.at < 0) current.at = i
       word = (word ?? '') + text
     }
     const endWord = () => {
-      if (word !== undefined) words.push(word)
+      if (word !== undefined) current.words.push(word)
       word = undefined
+      brace = 0
+      braceList = false
     }
-    const endCommand = () => {
+    // Ends the command; with pipe, its output goes to the next command this list reads.
+    const endCommand = (pipe = false) => {
       endWord()
-      if (words.length > 0) commands.push({ at, words })
-      words = []
-      at = -1
+      if (current.words.length === 0) return
+      commands.push(current)
+      if (piped !== undefined) piped.pipeTo = current
+      piped = pipe ? current : undefined
+      current = { at: -1, words: [], parent }
     }
     const substitution = (end: string) => {
-      list(end)
+      list(end, current)
       return '\0'
     }
     while (i < code.length) {
@@ -1172,18 +1208,31 @@ function commandsIn(code: string): ShellCommand[] {
       } else if (ch === ' ' || ch === '\t') {
         endWord()
         i++
-      } else if (ch === '\n' || ch === ';' || ch === '|' || ch === '(' || ch === ')' || (ch === '&' && next !== '>')) {
+      } else if (ch === '|') {
+        // A pipe hands its output on; || and |& are a list's and a pipe's own operators.
+        const pipe = next !== '|'
+        endCommand(pipe)
+        i += next === '|' || next === '&' ? 2 : 1
+      } else if (ch === '(' && (next === ')' || next === '(')) {
+        computed.push(i)
+        endCommand()
+        i++
+      } else if (ch === '\n' || ch === ';' || ch === '(' || ch === ')' || (ch === '&' && next !== '>')) {
         endCommand()
         i++
       } else if (ch === '<' || ch === '>' || ch === '&') {
-        // A redirection's operator (<, >>, >&, &>, <<<, >|): its target is a word of the command.
+        // A redirection's operator (<, >>, >&, &>, <<<, >|): its target is a word of the command. A
+        // here-document (<<, <<-) and a process substitution (<(…), >(…)) are computed.
         endWord()
-        i++
+        const from = i
         while (i < code.length && '<>&|'.includes(code[i] ?? '')) i++
+        const operator = code.slice(from, i)
+        if ((operator.startsWith('<<') && !operator.startsWith('<<<')) || code[i] === '(') computed.push(from)
       } else if (ch === '#' && word === undefined) {
         while (i < code.length && code[i] !== '\n') i++
       } else if (ch === "'" || (ch === '$' && next === "'")) {
         const ansi = ch === '$'
+        if (ansi) computed.push(i)
         append('')
         i += ansi ? 2 : 1
         while (i < code.length && code[i] !== "'") {
@@ -1192,7 +1241,11 @@ function commandsIn(code: string): ShellCommand[] {
           i += escaped ? 2 : 1
         }
         i++
-      } else if (ch === '"') {
+      } else if (ch === '"' || (ch === '$' && next === '"')) {
+        if (ch === '$') {
+          computed.push(i)
+          i++
+        }
         append('')
         i++
         while (i < code.length && code[i] !== '"') {
@@ -1202,7 +1255,10 @@ function commandsIn(code: string): ShellCommand[] {
           else if (c === '\\' && n !== '' && '$`"\\'.includes(n)) {
             append(n)
             i += 2
+          } else if (c === '$' && n === '{') {
+            parameter(append)
           } else if (c === '$' && n === '(') {
+            if (code[i + 2] === '(') computed.push(i)
             i += 2
             append(substitution(')'))
           } else if (c === '`') {
@@ -1214,7 +1270,10 @@ function commandsIn(code: string): ShellCommand[] {
           }
         }
         i++
+      } else if (ch === '$' && next === '{') {
+        parameter(append)
       } else if (ch === '$' && next === '(') {
+        if (code[i + 2] === '(') computed.push(i)
         append('')
         i += 2
         append(substitution(')'))
@@ -1223,6 +1282,13 @@ function commandsIn(code: string): ShellCommand[] {
         i++
         append(substitution('`'))
       } else {
+        // An unquoted {…} holding a , or a .. is a brace expansion.
+        if (ch === '{') brace++
+        else if (brace > 0 && (ch === ',' || (ch === '.' && next === '.'))) braceList = true
+        else if (brace > 0 && ch === '}') {
+          if (braceList) computed.push(i)
+          brace--
+        }
         append(ch)
         i++
       }
@@ -1230,20 +1296,23 @@ function commandsIn(code: string): ShellCommand[] {
     endCommand()
   }
   list()
-  return commands
+  return { commands, computed }
 }
 
 // Whether a word names main by a short name as a revision: any part of it between =, : or .. (an option's
-// value, either side of a refspec or a tree-ish's path, either end of a range, a ${…:-…} default), past a
-// leading -, + or ^ and a trailing }, and cut at ^, ~ or @{, is main or origin/main. refs/heads/main,
-// refs/remotes/origin/main, a path such as infra/main.ts and another word such as maintenance pass.
+// value, either side of a refspec or a tree-ish's path, either end of a range), past a leading -, + or ^ and a
+// trailing }, and cut at ^, ~ or @{, is main, origin (refs/remotes/origin/HEAD's shortest name), or any name
+// ending /main or /HEAD that isn't a full ref (origin/main, origin/HEAD): a tag of any of these wins its lookup.
+// refs/heads/main, refs/remotes/origin/main, HEAD, a path such as infra/main.ts and another word such as
+// maintenance pass.
 const namesShortMain = (word: string) =>
   word.split(/=|:|\.\.\.?/).some(part => {
-    const name = part
-      .replace(/^[-+^]+/, '')
-      .replace(/\}+$/, '')
-      .split(/[\^~]|@\{/, 1)[0]
-    return name === 'main' || name === 'origin/main'
+    const name =
+      part
+        .replace(/^[-+^]+/, '')
+        .replace(/\}+$/, '')
+        .split(/[\^~]|@\{/, 1)[0] ?? ''
+    return name === 'main' || name === 'origin' || (/\/(?:main|HEAD)$/.test(name) && !name.startsWith('refs/'))
   })
 
 const isGit = (word: string) => word === 'git' || word.endsWith('/git')
@@ -1251,9 +1320,13 @@ const isGit = (word: string) => word === 'git' || word.endsWith('/git')
 // git's own options, before the subcommand, whose value is a folder, a namespace or a setting, never a revision.
 const GIT_PATH_OPTIONS = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env']
 
+// The subcommands whose first word that isn't an option names the repository (origin), never a revision.
+const REPOSITORY_FIRST = ['fetch', 'pull', 'push', 'ls-remote']
+
 // The words a command gives git, whatever its subcommand (merge-base, ls-tree, worktree, archive, describe…):
 // every word after git (git itself as a word or a path's last part, after a keyword, an assignment or another
-// program such as xargs) but the value of one of GIT_PATH_OPTIONS before the subcommand.
+// program such as xargs) but the value of one of GIT_PATH_OPTIONS before the subcommand, and the repository a
+// fetch, pull, push or ls-remote names first.
 function gitArguments(words: readonly string[]): string[] {
   const start = words.findIndex(isGit)
   if (start < 0) return []
@@ -1265,16 +1338,53 @@ function gitArguments(words: readonly string[]): string[] {
     else if (!GIT_PATH_OPTIONS.some(option => option.startsWith('--') && word.startsWith(`${option}=`)))
       found.push(word)
   }
-  return [...found, ...words.slice(j)]
+  const rest = words.slice(j)
+  if (REPOSITORY_FIRST.includes(rest[0] ?? '')) {
+    const repository = rest.findIndex((word, k) => k > 0 && !word.startsWith('-'))
+    if (repository > 0) rest.splice(repository, 1)
+  }
+  return [...found, ...rest]
 }
 
-// The values a command sets a variable to (NAME=value, alone or as an export's word) and a for loop's list,
-// which code that runs git can hand to it.
+// The values a command sets a variable to (NAME=value, alone or as an export's word), a for loop's list and
+// set's positional parameters, which code that runs git can hand to it.
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
 const variableValues = (words: readonly string[]): string[] => [
   ...words.filter(word => ASSIGNMENT.test(word)).map(word => word.replace(ASSIGNMENT, '')),
   ...(words[0] === 'for' && words[2] === 'in' ? words.slice(3) : []),
+  ...(words[0] === 'set' ? words.slice(1) : []),
 ]
+
+// A command's name, past the keywords and assignments ahead of it; none for a for, select or case header.
+const KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'do', 'done', 'while', 'until', '!', '{', '}', 'time'])
+const commandName = (words: readonly string[]): string | undefined =>
+  ['for', 'select', 'case'].includes(words[0] ?? '')
+    ? undefined
+    : words.find(word => !KEYWORDS.has(word) && !ASSIGNMENT.test(word))
+
+// The builtins that set a variable from input, run text as code or define a command, none of which the reader
+// sees as the words git gets; printf -v joins them.
+const COMPUTING = new Set(['alias', 'eval', 'source', '.', 'read', 'mapfile', 'readarray', 'function', 'let'])
+const computes = (words: readonly string[]) => {
+  const name = commandName(words)
+  if (name === undefined) return false
+  return (
+    /[$\0]/.test(name) ||
+    COMPUTING.has(name) ||
+    (name === 'printf' && words.slice(words.indexOf(name) + 1).some(word => word.startsWith('-v')))
+  )
+}
+
+// Whether a command's output reaches git: it runs git, a pipe hands its output to one that does, or it sits in
+// the word of one that does or of a variable's value or a for list.
+const runsGit = (command: ShellCommand) => command.words.some(isGit)
+const reachesGit = (command: ShellCommand): boolean =>
+  runsGit(command) ||
+  (command.pipeTo !== undefined && reachesGit(command.pipeTo)) ||
+  (command.parent !== undefined &&
+    (reachesGit(command.parent) ||
+      command.parent.words.some(word => ASSIGNMENT.test(word)) ||
+      ['for', 'set'].includes(command.parent.words[0] ?? '')))
 
 // The code a text holds, each with the line it starts on: its fenced blocks (from the line after the fence),
 // then its inline spans of any backtick run.
@@ -1290,19 +1400,25 @@ function codeOf(text: string): Array<[number, string]> {
   return found
 }
 
-// The lines on which code that runs git names main by a short name: in a git command's words, or in a value a
-// variable or a for loop's list takes in the same block or span. Each command is read alone, so a later line or
-// command that merely says main isn't one.
+// The lines on which code that runs git (a word that is git, or a value that is) names main by a short name or
+// computes text the reader can't take as written. A git command's words are read, and so are the values a
+// variable, a for loop's list or set takes in the same block or span, and every word of a command whose output
+// reaches git (piped into it, or substituted into its words or into such a value). Each command is read alone,
+// so a later line or command that merely says main isn't one.
 function shortMainAt(text: string): number[] {
   const lines: number[] = []
   for (const [line, code] of codeOf(text)) {
-    const commands = commandsIn(code)
-    if (!commands.some(({ words }) => words.some(isGit))) continue
-    const found = new Set<number>()
-    for (const { at, words } of commands) {
-      if ([...gitArguments(words), ...variableValues(words)].some(namesShortMain)) {
-        found.add(line + code.slice(0, at).split('\n').length - 1)
-      }
+    const { commands, computed } = shellCode(code)
+    if (!commands.some(({ words }) => words.some(isGit) || variableValues(words).some(isGit))) continue
+    const lineOf = (at: number) => line + code.slice(0, at).split('\n').length - 1
+    const found = new Set<number>(computed.map(lineOf))
+    for (const command of commands) {
+      const { at, words } = command
+      const read = [
+        ...(runsGit(command) ? gitArguments(words) : reachesGit(command) ? words : []),
+        ...variableValues(words),
+      ]
+      if (computes(words) || read.some(namesShortMain)) found.add(lineOf(at))
     }
     lines.push(...[...found].sort((a, b) => a - b))
   }
@@ -1361,6 +1477,48 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       '`git ls-remote origin refs/heads/main`, `git log origin/main-next maintenance`, `main=1 git log`',
       '`git --work-tree=main --git-dir=main/.git --namespace main log refs/remotes/origin/main`',
       'A `git pull` on branch main, and `ref=origin/main` with no git in its span.',
+    ].join('\n')
+    expect(shortMainAt(text)).toEqual([])
+  })
+
+  // main's other short names, and every way bash hands git text no word holds: an expansion's default or
+  // alternative, a here-document, brace expansion, ANSI-C or locale quoting, output piped or substituted into
+  // git or into a value, printf -v, read, set, eval, a function and a command named by a variable (EXPAND-A3-02,
+  // round 6).
+  it('finds main by its other short names and each way bash computes what git gets, on planted text', () => {
+    const text = [
+      `\`git merge-base --is-ancestor "$c" "\${ref-origin/main}"\``,
+      `\`ref=1; git merge-base --is-ancestor "$c" "\${ref+origin/main}"\``,
+      '`git merge-base --is-ancestor "$c" origin/HEAD`, `git log upstream/main`',
+      '`git merge-base --is-ancestor "$c" origin`, `git rev-parse origin^{commit}`',
+      '`git merge-base --is-ancestor "$c" origin/{main,}`, `git log origin/ma{i..i}n`',
+      `\`git merge-base --is-ancestor "$c" $'origin/\\x6dain'\`, \`git log $"origin/main"\``,
+      '`echo origin/main | xargs git merge-base --is-ancestor "$c"`, `printf %s origin/main | git rev-parse --stdin`',
+      '`git log "$(echo origin/main)"`, `m=$(printf %s origin/main); git log "$m"`, `set -- origin/main; git log "$1"`',
+      `\`git log "\${ref/x/y}"\`, \`git log "\${!ref}"\`, \`git log $((1))\`, \`git rev-parse --stdin < <(echo x)\``,
+      '`f() { git log "$1"; }; f x`, `G=git; "$G" log x`, `eval git log x`',
+      '```sh',
+      'git rev-parse --verify --end-of-options --stdin <<EOF',
+      'origin/main',
+      'EOF',
+      '```',
+      '```sh',
+      'printf -v m %s origin/main',
+      'git merge-base --is-ancestor "$c" "$m"',
+      'read -r m',
+      '```',
+    ].join('\n')
+    expect(shortMainAt(text)).toEqual([12, 17, 19, 1, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10])
+  })
+
+  it('passes a repository named first, plain variables, HEAD and @{u}, and output that never reaches git, on planted text', () => {
+    const text = [
+      '`git fetch origin`, `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`, `git pull origin`',
+      '`git ls-remote origin refs/heads/main`, `git push origin refs/heads/topic`',
+      `\`git rev-parse HEAD\`, \`git log "\${c}"\`, \`git cat-file -e <commit>^{commit}\`, \`git log -1 @{u}\``,
+      '`git log refs/remotes/origin/HEAD`, `git log "$c"; echo origin/main`',
+      `\`printf '%s\\n' "$c" | grep -qxE '[0-9a-f]{40}' && git log "$c"\``,
+      `\`printf 'protocol=https\\nhost=github.com\\n\\n' | git credential reject\``,
     ].join('\n')
     expect(shortMainAt(text)).toEqual([])
   })

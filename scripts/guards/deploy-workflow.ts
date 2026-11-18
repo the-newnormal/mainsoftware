@@ -32,7 +32,10 @@
 // writes the diff into its summary as an indented code block, which no line of a release's own text can
 // end or turn into HTML that hides the rest; and ASSET_CHECK refuses a template that hands CloudFormation
 // another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
-// type, a transform), which neither the CLI's diff nor the release check reads.
+// type, a transform), which neither the CLI's diff nor the release check reads, and a file asset whose id,
+// which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
+// protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
+// and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal.
 //
 // The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
@@ -221,7 +224,10 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
 # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
 # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
-# with keys held to their bytes that is the template itself; no asset manifest at all; a stack whose
+# with keys held to their bytes that is the template itself; a file asset whose id, its key in the
+# manifest's files, isn't its key's 64 hex digits (the CLI writes the zip it packages to
+# .cache/<id>.zip beside the manifest, or uploads the file already there, so a / or .. in an id would
+# have it write or read a file outside the tree); no asset manifest at all; a stack whose
 # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
 # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
 # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
@@ -305,6 +311,8 @@ check_assembly() {
       done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
       jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-$\{AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+      jq -e '(.files // {}) | to_entries | all(.[]; .key as $id | ($id | test("\\A[0-9a-f]{64}\\z")) and all(.value.destinations[]; .objectKey == $id + ".json" or .objectKey == $id + ".zip"))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a file asset's id isn't its key's 64 hex digits (the CLI packages a zip at, and uploads one it finds at, .cache/<id>.zip)"
       while IFS=$'\t' read -r path key; do
         [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
         [ "$(sha256sum <"$dir/$path")" = "$\{key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
@@ -1636,8 +1644,9 @@ export const PROTECT_ENVIRONMENTS = 'scripts/protect-environments.sh'
 
 // The refusal protect-environments.sh makes first (C11-D56): every command but check, under any agent or
 // CI marker, before anything else runs, gh included. No coding agent runs apply by any route, so the test
-// proves it on the script run with no command, and DPW-09 holds the lines that make it the first code that
-// runs, after the five assignments it reads, with no other line naming AGENT_MARKERS.
+// proves it on the script run as a file with no command, and DPW-09 holds its first line (the interpreter the
+// kernel runs) and the lines that make it the first code that runs, read as bash reads them, after the five
+// assignments it reads, with no other line naming AGENT_MARKERS.
 export const MARKER_REFUSAL = `if [ "\${1:-}" != check ]; then
   for marker in "\${AGENT_MARKERS[@]}"; do
     if [[ -v $marker ]]; then
@@ -1646,6 +1655,26 @@ export const MARKER_REFUSAL = `if [ "\${1:-}" != check ]; then
     fi
   done
 fi`
+// The script's first line, which the kernel reads and bash skips as a comment: DPW-09 holds it whole.
+export const PROTECT_ENVIRONMENTS_SHEBANG = '#!/usr/bin/env bash'
+
+// A script's lines as bash runs them, comments and blank lines dropped as bash drops them and nothing else:
+// a comment is a # after spaces and tabs alone (bash reads any other blank, a no-break space, a carriage
+// return or a vertical tab, as part of a word, so a line JavaScript's trim() would call a comment runs
+// whatever follows a ; on it), and a line after a code line that ends in a backslash is joined to it
+// (bash reads `x=\` then `#;cmd` as `x=#;cmd`), so it is code whatever it starts with. A comment's own
+// trailing backslash joins nothing.
+export function codeLinesAsBash(lines: readonly string[]): string[] {
+  const code: string[] = []
+  let joined = false
+  for (const line of lines) {
+    if (!joined && /^[ \t]*(?:#[\s\S]*)?$/.test(line)) continue
+    code.push(line)
+    joined = line.endsWith('\\')
+  }
+  return code
+}
+
 const markerHead = (markers: readonly string[]) => [
   'set -euo pipefail',
   'root=$(cd "$(dirname "$0")/.." && pwd)',
@@ -5123,10 +5152,23 @@ export function gateFindings(
   if (markers.length !== agentMarkers.length || agentMarkers.some((marker, i) => markers[i] !== marker)) {
     found.push(at(PROTECT_ENVIRONMENTS, 'DPW-09', "its agent markers are the Owner bootstrap script's AGENT_MARKERS"))
   }
-  // Its code lines (comments and blank lines aside) open with markerHead, and only the declaration and the
-  // refusal's loop name AGENT_MARKERS, so no line before the refusal runs anything else and no later
-  // assignment, unset or read empties the list it reads.
-  const code = protectEnvironments.split('\n').filter(line => line.trim() !== '' && !line.trim().startsWith('#'))
+  // The gate and a person run the script as a file, so its first line is the interpreter the kernel runs it
+  // with: exactly PROTECT_ENVIRONMENTS_SHEBANG (an env -S that unsets a marker, bash -n, another shell or an
+  // option would skip the refusal, or the whole check). Its code lines, read as bash reads them, open with
+  // markerHead, and only the declaration and the refusal's loop name AGENT_MARKERS, so no line before the
+  // refusal runs anything else and no later assignment, unset or read empties the list it reads. A line is a
+  // comment or blank only as bash sees one (codeLinesAsBash).
+  const lines = protectEnvironments.split('\n')
+  if (lines[0] !== PROTECT_ENVIRONMENTS_SHEBANG) {
+    found.push(
+      at(
+        PROTECT_ENVIRONMENTS,
+        'DPW-09',
+        `runs as a file under ${PROTECT_ENVIRONMENTS_SHEBANG} alone, its first line (PROTECT_ENVIRONMENTS_SHEBANG)`,
+      ),
+    )
+  }
+  const code = codeLinesAsBash(lines.slice(1))
   if (
     markerHead(markers).some((line, i) => code[i] !== line) ||
     code.filter(line => line.includes('AGENT_MARKERS')).length !== 2
