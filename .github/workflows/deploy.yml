@@ -1658,7 +1658,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs
@@ -1873,7 +1876,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs
@@ -2653,7 +2659,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs
@@ -4324,7 +4333,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs
@@ -4556,7 +4568,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs
@@ -5339,7 +5354,10 @@ jobs:
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
-              printf -v "${kind^^}_TD" '%s' "${definition##*/}"
+              case "$kind" in
+                migrate) MIGRATE_TD="${definition##*/}" ;;
+                probe) PROBE_TD="${definition##*/}" ;;
+              esac
             done
           }
           tasks_outputs

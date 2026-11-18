@@ -91,12 +91,21 @@
 // assignment counting as the name's, and a line it can't read that plainly is refused), to running only the
 // commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, with no
 // environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to local or
-// export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, so no
-// TAR_OPTIONS or other variable a held tool reads reaches it), to handing jq and gh only their held flags,
-// as bash reads each word, and a program written on the line, printf only a single-quoted format or a plain
-// -v, and sed, tar, find, curl, openssl, base64, mkdir, sha256sum and tr only their lines as the guard
-// writes them (canonicalToolLines()); the lines the tool holds compare against (TOOL_LINE_TEXTS) are the
-// guard's own literals, never read from a canonical text, so a text can't widen what it is held to.
+// export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and no
+// name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS
+// or other variable a held tool reads reaches it), and to every program it runs being held by what it is
+// handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written
+// on the line and, for jq, data under the assembly's or the temp folder or a path in the checkout; printf
+// only a single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and
+// options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug); tee
+// only appending to the summary; no word of these bash splits or globs, nor any that expands to several words
+// but PROBE's task list and ASSET_CHECK's list of templates; and every other program
+// CANONICAL_COMMANDS names (grep, wc, readlink, realpath, git, node, sort, sleep, mktemp, cd and pwd as much
+// as sed, tar, find, curl, openssl, base64, mkdir and sha256sum) only on its lines as the guard writes them,
+// as is any read of a file by a redirection; the lines the tool holds compare against (TOOL_LINE_TEXTS) are
+// the guard's own literals, never read from a canonical text, so a text can't widen what it is held to. What
+// a variable a held line names holds is the text's own, set from AWS's answers, the job's env or a literal
+// in every text the guard writes, which a change to the text shows.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -581,7 +590,10 @@ tasks_outputs() {
       echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
       exit 1
     fi
-    printf -v "$\{kind^^}_TD" '%s' "$\{definition##*/}"
+    case "$kind" in
+      migrate) MIGRATE_TD="$\{definition##*/}" ;;
+      probe) PROBE_TD="$\{definition##*/}" ;;
+    esac
   done
 }
 tasks_outputs`
@@ -2871,6 +2883,34 @@ export function wordAsRead(word: string): string {
   }
   return out
 }
+// Whether bash could make a word into several, or into another program's option, as it runs: an expansion or a
+// substitution outside double quotes (split at blanks), or a glob or a brace outside any quotes (* ? [ {),
+// each read as wordAsRead() reads quotes, escapes and the expansions inside double quotes.
+export function wordSplits(word: string): boolean {
+  let quote: '"' | "'" | undefined
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+    } else if (c === "'" && quote === undefined) quote = "'"
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === '\\') i++
+    else if (c === '$' || c === '`') {
+      if (quote === undefined) return true
+      const open = word[i + 1] ?? ''
+      if (c === '`') i = word.indexOf('`', i + 1) < 0 ? word.length : word.indexOf('`', i + 1)
+      else if (open === '(' || open === '{') {
+        const close = open === '(' ? ')' : '}'
+        let depth = 0
+        for (i++; i < word.length; i++) {
+          if (word[i] === open) depth++
+          else if (word[i] === close && --depth === 0) break
+        }
+      }
+    } else if (quote === undefined && /[*?[{]/.test(c)) return true
+  }
+  return false
+}
 // A redirection's word (<<<"$x", >/dev/null, 2>&1), with its target when the target is a word of its own.
 const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])/
 function withoutRedirections(words: readonly string[]): string[] {
@@ -2886,16 +2926,23 @@ function withoutRedirections(words: readonly string[]): string[] {
 // What a canonical text hands jq and gh, which could take a program from a file, read a file or the
 // environment, or send a file (DPW-10): jq only -e, -r, -c, -n and -s (in any mix) and --arg and --argjson
 // with a name and a value, each written plainly, then its program written on the line (one single-quoted
-// string, or a .field path), then only data: files named from a literal or under a folder's variable
-// ("$dir/…"), or a list of them ("${files[@]}"), never a word that, as jq receives it, starts with - (jq
-// reads an option after its program too), nor one an expansion starts that no / follows, which could be one;
-// gh only as gh api on a double-quoted path under repos/, with at most --jq and a program written the same
-// way; and neither's program holding a word of JQ_REACH or reading as an option. Each word is judged as the
-// program receives it (wordAsRead), so a quoted or escaped flag ('-f', "--from-file", \-f) in the program's
-// place or after it is the flag it is (the seventh review's second attack). These are the ways a canonical
-// text's line changed by a review that reads it alone could still hand either a file, the environment or a
-// program from elsewhere: jq's -f, --from-file, -L, --rawfile, --slurpfile, --args and --jsonargs, gh's
-// --input, -F and -f among them.
+// string, or a .field path), then only data: files under the assembly's folder or the runner's temp folder
+// ("$dir/…", "$RUNNER_TEMP/…", naming no other variable but by $name or ${name}), ASSET_CHECK's list of them
+// ("${stackfiles[@]}", the one array, whose words could otherwise be jq's options after its program), or a
+// path in the checkout written plainly (infra/package.json), none with a .. part,
+// so never a file elsewhere (the registry login skopeo keeps under $XDG_RUNTIME_DIR, say, which jq would
+// print in slices no mask matches; the seventh review's third attack); gh only as gh api on a double-quoted
+// path under repos/, with at most --jq and a program written the same way; neither's program holding a word
+// of JQ_REACH or reading as an option; and no word of either that bash splits or globs (wordSplits()) or that
+// expands to several words but that list (an --arg's "$@", say), so no expansion hands jq an option after its
+// program. Each word is judged as the program receives it
+// (wordAsRead), so a quoted or escaped flag ('-f', "--from-file", \-f) in the program's place or after it is
+// the flag it is (the seventh review's second attack). These are the ways a canonical text's line changed by
+// a review that reads it alone could still hand either a file, the environment or a program from elsewhere:
+// jq's -f, --from-file, -L, --rawfile, --slurpfile, --args and --jsonargs, gh's --input, -F and -f among them.
+const JQ_FILE =
+  /^"\$(?:dir|RUNNER_TEMP)\/(?:[^"$`\\]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*"$|^"\$\{stackfiles\[@\]\}"$|^[A-Za-z0-9][\w.-]*(?:\/[\w.-]+)*$/
+const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/
 const JQ_FLAG = /^-[cenrs]+$/
 const JQ_PROGRAM = /^'[^']*'?$|^\.(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?$/
 const JQ_REACH =
@@ -2903,6 +2950,7 @@ const JQ_REACH =
 const programHeld = (program: string | undefined) =>
   program !== undefined && JQ_PROGRAM.test(program) && !JQ_REACH.test(program) && !wordAsRead(program).startsWith('-')
 function jqHeld(words: readonly string[]): boolean {
+  if (words.some(word => wordSplits(word) || (expandsToMany(word) && word !== sh`"$\{stackfiles[@]}"`))) return false
   let i = 0
   for (; i < words.length; i++) {
     const word = words[i] ?? ''
@@ -2912,53 +2960,113 @@ function jqHeld(words: readonly string[]): boolean {
     i += 2
   }
   if (!programHeld(words[i])) return false
-  return words.slice(i + 1).every(word => {
-    if (/^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(word)) return true
-    const read = wordAsRead(word)
-    return read !== '' && !read.startsWith('-') && (!read.startsWith('\0') || read.startsWith('\0/'))
-  })
+  return words.slice(i + 1).every(word => JQ_FILE.test(word) && !DOT_DOT.test(wordAsRead(word)))
 }
 function ghHeld(words: readonly string[]): boolean {
+  if (words.some(word => wordSplits(word) || expandsToMany(word))) return false
   const [api, path, ...rest] = words
   if (api !== 'api' || path === undefined || !/^"repos\/[^"]*"$/.test(path)) return false
   if (rest.length === 0) return true
   return rest.length === 2 && rest[0] === '--jq' && programHeld(rest[1])
 }
 // printf in a canonical text: a format first, one whole single-quoted string that reads as no option, or -v
-// written plainly as a word of its own, then the name (held by outsideEvaluations()) and such a format; never
-// -v joined to its name (-vNAME, -v"a[…]"), quoted ("-v") or escaped, and never a format an expansion gives,
-// each of which bash reads as -v and a name whose subscript it evaluates (the seventh review's second
-// attack).
+// written plainly as a word of its own, then a plain name written as it is and such a format; never -v joined
+// to its name (-vNAME, -v"a[…]"), quoted ("-v") or escaped, never a format an expansion gives, each of which
+// bash reads as -v and a name whose subscript it evaluates (the seventh review's second attack), and never a
+// name built from an expansion ("${kind^^}_TD"), which sets a name no rule that reads assignments sees, one
+// the text later evaluates or PATH among them (the seventh review's third attack).
 const PRINTF_FORMAT = /^'[^'-][^']*'$/
 function printfHeld(words: readonly string[]): boolean {
+  if (words[0] === '-v' && !PLAIN_NAME.test(words[1] ?? '')) return false
   const format = words[0] === '-v' ? words[2] : words[0]
   return format !== undefined && PRINTF_FORMAT.test(format)
 }
-// The tools in a canonical text that could run a program, write a file or fetch one, each only on a line
-// written as TOOL_LINE_TEXTS holds it (the preamble's mask, the CLI's fetch, the image's listing and
-// unpacking, the assembly's and the CLI's link searches, a file asset's hash, the stop token), so no flag
-// that runs a program per member or checkpoint (tar's --to-command, --checkpoint-action, -I), per file
-// (find's -exec) or per line (sed's e), or writes a file (sed's w), reaches any job.
-const LINE_HELD_TOOLS = ['sed', 'tar', 'find', 'curl', 'openssl', 'base64', 'mkdir', 'sha256sum', 'tr']
-// The lines of a canonical text on which jq, gh, printf or a line-held tool is handed what the rules above
-// don't hold it to.
+// Every command CANONICAL_COMMANDS names is held by what it is handed (the seventh review's third attack, where
+// a grep added to AWS_CHECK read the job's environment by /dev/fd/../environ and printed it in pieces no mask
+// joins, and an aws line in it took --endpoint-url, which no rule read): bash's keywords and the builtins
+// SHELL_OWN names, which read no file and run nothing by their words (what they set and evaluate is
+// outsideEvaluations()'s and canonicalCommandLines()'s, and what they read by a redirection is below); jq,
+// gh and printf by the rules above, aws by awsTextHeld() (its calls and options, AWS_TEXT_OPTIONS) and tee
+// only appending to the summary (RULE_HELD); and every other, the plain tools (grep, wc, readlink, realpath,
+// git, node, sort, sleep, mktemp, cd, pwd) as much as those that could run a program, write a file or fetch
+// one (sed, tar, find, curl, openssl, base64, mkdir, sha256sum), only on a line written as TOOL_LINE_TEXTS
+// holds it, so no flag that runs a program per member or checkpoint (tar's --to-command,
+// --checkpoint-action, -I), per file (find's -exec) or per line (sed's e), writes a file (sed's w) or reads
+// one the guard can't see (grep's operands), reaches any job. A tool a later change adds to
+// CANONICAL_COMMANDS is line-held until a rule says otherwise.
+const SHELL_OWN = [
+  ':',
+  '[',
+  '[[',
+  '{',
+  '}',
+  'break',
+  'case',
+  'continue',
+  'done',
+  'echo',
+  'esac',
+  'exit',
+  'export',
+  'fi',
+  'for',
+  'local',
+  'mapfile',
+  'read',
+  'return',
+  'set',
+  'true',
+]
+const RULE_HELD: Readonly<Record<string, (words: readonly string[]) => boolean>> = {
+  jq: jqHeld,
+  gh: ghHeld,
+  printf: printfHeld,
+  aws: words => awsTextHeld(words),
+  tee: words => words.length === 2 && words[0] === '-a' && words[1] === '"$GITHUB_STEP_SUMMARY"',
+}
+const lineHeld = (word: string) =>
+  CANONICAL_COMMANDS.includes(word) && !SHELL_OWN.includes(word) && !Object.hasOwn(RULE_HELD, word)
+// A redirection that reads a file (DPW-10): < or <> with a descriptor or none, $(< …) among them, but a
+// here-string (<<<), a process substitution (< <( … )) and a duplicated descriptor (<&), with the start of its
+// target. A < that compares, in (( … )) or [[ … ]], reads as one too: a canonical text compares numbers with -lt
+// or -gt in [ … ].
+const FILE_READ = /(?<![<\w$])\d*(?:<>|<(?![<(&]))[ \t]*(<\()?/g
+// The lines of a text that read a file by a redirection, but from /dev/null.
+function fileReadLines(views: ShellViews): number[] {
+  const text = views.text.split('\n')
+  return views.code
+    .split('\n')
+    .flatMap((line, n) =>
+      [...line.matchAll(FILE_READ)].some(
+        match =>
+          match[1] === undefined &&
+          /^[^\s;&|()<>]*/.exec((text[n] ?? '').slice(match.index + match[0].length))?.[0] !== '/dev/null',
+      )
+        ? [n]
+        : [],
+    )
+}
+// The lines of a canonical text on which a command is handed what the rules above don't hold it to, or a file
+// is read by a redirection on a line TOOL_LINE_TEXTS doesn't hold (the one such read the texts make outside a
+// held tool's line is prod-gate's ignored lines into the summary).
 export function canonicalToolLines(text: string): number[] {
   const views = shellViews(text)
   const raw = text.split('\n')
   const held = new Set(TOOL_LINE_TEXTS().map(([line]) => line))
+  const isHeld = (n: number) => held.has(raw[n]?.trim() ?? '')
   const lines = new Set<number>()
   let offset = 0
   for (const [n, line] of views.code.split('\n').entries()) {
-    for (const match of line.matchAll(/(?<![\w$/.{-])(jq|gh|printf)(?![\w-])/g)) {
+    for (const match of line.matchAll(/(?<![\w$/.{-])(jq|gh|printf|aws|tee)(?![\w-])/g)) {
       const words = withoutRedirections(commandWords(views.text, offset + match.index + match[0].length))
-      const kept = match[1] === 'jq' ? jqHeld(words) : match[1] === 'gh' ? ghHeld(words) : printfHeld(words)
-      if (!kept) lines.add(n)
+      if (!RULE_HELD[match[1] ?? '']?.(words)) lines.add(n)
     }
     offset += line.length + 1
   }
   for (const command of shellCommands(text)) {
-    if (LINE_HELD_TOOLS.includes(command.word) && !held.has(raw[command.line]?.trim() ?? '')) lines.add(command.line)
+    if (lineHeld(command.word) && !isHeld(command.line)) lines.add(command.line)
   }
+  for (const n of fileReadLines(views)) if (!isHeld(n)) lines.add(n)
   return [...lines].sort((a, b) => a - b)
 }
 
@@ -3024,6 +3132,15 @@ const CANONICAL_COMMANDS = [
 // reads (LOADER_NAMES) but CDK_FOLDER's HOME. A held tool's line is held with its environment.
 const EXPORT_LINES = (): ReadonlySet<string> => new Set([PREAMBLE.split('\n').at(-1) ?? '', CDK_FOLDER])
 const IFS_PREFIXES = ['IFS=', "IFS=$'__'"]
+// The names a builtin sets by a word it is handed rather than by NAME=, which LOADER_ASSIGNMENT doesn't read:
+// read's, mapfile's and readarray's names, a for loop's and printf -v's (each a plain word, by the rules above),
+// so none is PATH, HOME or another of LOADER_NAMES (the seventh review's third attack).
+const builtinNames = ({ word, tail }: ShellCommand): string[] => {
+  const given = words(tail)
+  if (word === 'read' || word === 'mapfile' || word === 'readarray') return given.filter(each => PLAIN_NAME.test(each))
+  if (word === 'for') return given.slice(0, 1)
+  return word === 'printf' && given[0] === '-v' ? given.slice(1, 2) : []
+}
 // The lines of a canonical text that run a command CANONICAL_COMMANDS doesn't name (or no function the
 // canonical texts define), or that hand what they run an environment of their own.
 export function canonicalCommandLines(text: string, functions: ReadonlySet<string>): number[] {
@@ -3044,7 +3161,8 @@ export function canonicalCommandLines(text: string, functions: ReadonlySet<strin
       ((word === 'local' || word === 'export') && /(?:^|\s)[-+][A-Za-z]/.test(command.tail)) ||
       (word === 'set' && !/^\s+-euo\s+pipefail\s*$/.test(command.tail)) ||
       (assigned.length > 0 && !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix)))) ||
-      wrapped.some(prefix => prefix !== 'run' && prefix !== 'get')
+      wrapped.some(prefix => prefix !== 'run' && prefix !== 'get') ||
+      builtinNames(command).some(name => LOADER_NAME.test(name))
     if (!allowed || environment) lines.add(command.line)
   }
   const code = shellViews(text).code.split('\n')
@@ -3083,7 +3201,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of canonicalToolLines(text)) {
       found.push(
-        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, and the tools that could run a program or write a file only their lines as written`,
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
       )
     }
     for (const line of canonicalCommandLines(text, functions)) {
@@ -5070,10 +5188,12 @@ const TRACE =
 const ENV_WORD = /(?<![\w.$/-])env(?![\w./=-])/
 // What prints the environment in a credentialed run beyond ENV_WORD, which reads no quoted text (C11-D61):
 // in quoted text, jq's env builtin and $ENV in a program (env as an object's key, env: …, prints nothing);
-// anywhere, a /proc file (environ) and an AWS_ variable's expansion, whose value is a credential. No run
-// uses any.
+// anywhere, a /proc file (environ), or /proc reached through /dev/fd or /dev/stdin, /dev/stdout or
+// /dev/stderr (/dev/fd/../environ is the run's own; the seventh review's third attack), and an AWS_
+// variable's expansion, whose value is a credential. No run uses any. A path built from parts is the
+// canonical rule's to refuse, which reads a file only on a line the guard writes (canonicalToolLines()).
 const QUOTED_ENV = /(?<![\w.$"-])env(?![\w"-])(?!\s*:)|\$ENV\b/
-const CREDENTIAL_READ = /\/proc\/|\$\{?!?AWS_/
+const CREDENTIAL_READ = /\/proc(?![\w.-])|\/dev\/(?:fd|std(?:in|out|err))(?![\w.-])|\$\{?!?AWS_/
 // A line's quoted text alone, everything else blanked: the code view writes quoted text as underscores.
 const quotedText = (line: { text: string; code: string }) =>
   [...line.text].map((c, i) => (line.code[i] === '_' ? c : ' ')).join('')
@@ -5960,8 +6080,53 @@ const DIFF_RUNS: readonly string[] = [DIFF_RUN, ROLLBACK_DIFF_RUN]
 // only prints random bytes.
 export const STOP_TOKEN_LINE = 'stop_token=$(openssl rand -hex 16)'
 const STOP_TOKEN_AT = STOP_HEAD.split('\n').indexOf(STOP_TOKEN_LINE)
+// The lines on which the canonical texts run their plain tools, or read a file by a redirection outside a line
+// above (the seventh review's third attack): grep and wc count the image's listing and its unpacked entries
+// and keep a one-off's log lines that match its pattern, readlink and realpath resolve the CLI's paths and a
+// file asset's, git asks whether one commit is an ancestor of another, node runs prod-gate's history.ts,
+// sort sorts the running digests, sleep waits for main's CI, mktemp and cd make and enter CDK_FOLDER's folder,
+// cd and pwd find an assembly's root, and tee reads prod-gate's ignored lines into the summary. Each runs only
+// the program it names (node only history.ts, which the owner's read holds), writes only the summary or
+// prod-gate's own file of ignored lines, and reads only the file it names.
+export const TEXT_TOOL_LINES = (): ReadonlyArray<readonly [string, string]> => [
+  [
+    String.raw`[ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||`,
+    IMAGE_CHECK,
+  ],
+  [
+    String.raw`[ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||`,
+    IMAGE_CHECK,
+  ],
+  [`shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)`, ONE_OFF],
+  [
+    `withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)`,
+    ONE_OFF,
+  ],
+  ['case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in', CLI_CHECK],
+  ['"$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;', CLI_CHECK],
+  ['case "$(realpath -m -- "$dir/$path")" in', ASSET_CHECK],
+  ['root=$(cd "$1" && pwd -P)', ASSET_CHECK],
+  ['is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }', AWS_CHECK],
+  [
+    'if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then',
+    FAST_RECHECK_NONPROD,
+  ],
+  [
+    'if [ "$newest" != null ] && ! git merge-base --is-ancestor "$(jq -r .commit <<<"$newest")" "$GITHUB_SHA"; then',
+    FAST_RECHECK_PROD,
+  ],
+  [sh`running=$(printf '%s\n' "$\{digests[@]}" | sort -u)`, AWS_CHECK],
+  ['sleep 30', MAIN_CI],
+  [
+    'if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then',
+    PROD_GATE_CALL,
+  ],
+  ['tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2', PROD_GATE_CALL],
+  ['cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME', CDK_FOLDER],
+]
 // Where the tests find each line above standing whole, trimmed, in its canonical text.
 export const TOOL_LINE_TEXTS = (): ReadonlyArray<readonly [string, string]> => [
+  ...TEXT_TOOL_LINES(),
   [MASK_LINE, PREAMBLE],
   [FIND_LINE, ASSET_CHECK],
   [CLI_FIND_LINE, CLI_CHECK],
@@ -6218,6 +6383,39 @@ function awsIsHeld(args: readonly ShellWord[]): boolean {
     return !value.includes('\0') || AWS_VALUE_WORDS.includes(arg.raw)
   })
 }
+// aws in a canonical text (DPW-10; the seventh review's third attack, where an aws line in AWS_CHECK took
+// --endpoint-url and sent the deploy role's signed request elsewhere, since no rule read a canonical text's aws
+// options): one of the calls the workflow makes (AWS_CALLS) but the registry password, which only the push's own
+// line asks for, written plainly; then each option written plainly, from AWS_OPTIONS and the one-offs' and the
+// log's own (--task, --reason, --overrides, --log-group-name, --log-stream-name and the flag --start-from-head),
+// so never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile, --debug, --cli-input-json or another that
+// sends the request elsewhere, reads a file or prints the signed request; and each value after an option, as
+// aws reads it, with no scheme (file://, fileb://, https://) or shorthand file load (key@=), and no word bash
+// splits or globs (wordSplits()) and no expansion of more than one word but PROBE's "${TASK_ARNS[@]}" (an
+// array or "$@" would hand aws each of its words, an option among them), so no value becomes another option as
+// it runs. What a value's variable holds is the text's own: AWS's answers and the job's env in every text the
+// guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
+const AWS_TEXT_OPTIONS = [...AWS_OPTIONS, '--task', '--reason', '--overrides', '--log-group-name', '--log-stream-name']
+const AWS_TEXT_FLAGS = ['--start-from-head']
+// An expansion bash makes into as many words as it holds: "$@", "$*", "${@…}", "${*…}" and an array's [@] or [*],
+// outside single quotes (a jq program's own text is no expansion).
+const MANY_WORDS = /\$[@*]|\$\{[@*]|\[[@*]\]/
+const expandsToMany = (word: string) => MANY_WORDS.test(word.replace(/'[^']*'?/g, ''))
+function awsTextHeld(words: readonly string[]): boolean {
+  const call = words[1] === 'wait' ? 3 : 2
+  const head = words.slice(0, call).join(' ')
+  if (!AWS_CALLS.test(` ${head}`) || /^ecr\s+get-login-password$/.test(head) || words.some(wordSplits)) return false
+  if (words.some(word => expandsToMany(word) && word !== sh`"$\{TASK_ARNS[@]}"`)) return false
+  let option = ''
+  return words.slice(call).every(word => {
+    const read = wordAsRead(word)
+    if (read.startsWith('-')) {
+      option = AWS_TEXT_FLAGS.includes(word) ? '' : word
+      return word === read && (AWS_TEXT_FLAGS.includes(word) || AWS_TEXT_OPTIONS.includes(word))
+    }
+    return option !== '' && !/:\/\/|@=/.test(read) && !/^(?:file|fileb|https?):/i.test(read)
+  })
+}
 // The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
 // the password by get, its errors to the filter).
 const CLI_LINES = [
@@ -6357,12 +6555,12 @@ const namesSet = (command: GlueCommand): string[] => [
   ...(command.name === 'local' ? command.args.map(arg => arg.raw) : []),
 ]
 // The names each canonical text sets, read on its code view (quoted text blanked): its assignments, its
-// locals, its for loops' variables and its arrays read by mapfile or read; TASKS_OUTPUTS sets MIGRATE_TD
-// and PROBE_TD by printf -v on a name it builds.
-const BUILT_NAMES: ReadonlyMap<string, readonly string[]> = new Map([[TASKS_OUTPUTS, ['MIGRATE_TD', 'PROBE_TD']]])
+// locals, its for loops' variables, its arrays read by mapfile or read, and printf -v's names, each a plain word
+// (printfHeld(); TASKS_OUTPUTS sets MIGRATE_TD and PROBE_TD by a literal assignment for each kind).
 const NAMES_SET_BY = keptByText((text: string): readonly string[] => {
-  const names = new Set<string>(BUILT_NAMES.get(text) ?? [])
+  const names = new Set<string>()
   for (const line of shellViews(text).code.split('\n')) {
+    for (const match of line.matchAll(/\bprintf\s+-v\s+([A-Za-z_]\w*)/g)) names.add(match[1] ?? '')
     for (const match of line.matchAll(/(?:^|[\s;&|(!{])([A-Za-z_]\w*)(?:\[[^\]]*\])?\+?=(?!=)/g))
       names.add(match[1] ?? '')
     for (const match of line.matchAll(/\blocal\s+([^;&|]*)/g)) {
