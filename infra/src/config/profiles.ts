@@ -10,8 +10,9 @@
 // smsProvider starts real texts, DOMAINS names prod's zones, NONPROD_NAME_SERVERS decides who answers
 // for `nonprod.`, which is same-site with prod (C11-D43), and the deploy pipeline loads the file: the
 // gate and prod-gate import it, and each smoke loads the release's own and runs its host functions. So
-// its top level is data alone (IG-08): types, function declarations and consts of plain data, and no
-// import but import type, since anything else would run as a deploy script loads it.
+// its top level is data alone (IG-08): types, function declarations and consts of plain data, none
+// named then (a dynamic import calls a then export as it settles), and no import but import type, since
+// anything else would run as a deploy script loads it.
 
 // Every stack is in ap-southeast-1 (D37, B.6), C0.12's Hearth-<env>-Edge alone in us-east-1 (IG-05).
 export const REGION = 'ap-southeast-1'

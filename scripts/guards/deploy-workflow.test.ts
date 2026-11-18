@@ -876,9 +876,10 @@ describe('DPW-02 (C11-D55): permissions', () => {
   })
 
   // GUARDS-03: an anchor, alias, tag or flow mapping (but {}) in any workflow is a shape workflow.ts reads
-  // wrong, and an escape anywhere could spell a word a rule looks for: each would have hidden a checkout from
-  // DPW-11, pull_request_target from DPW-01, an id-token from this case or a group from DPW-05.
-  it('finds an anchor, alias, tag or flow mapping in any workflow, and an escape anywhere on a YAML line', () => {
+  // wrong, and an escape in a double-quoted scalar anywhere on a line could spell a word a rule looks for:
+  // each would have hidden a checkout from DPW-11, pull_request_target from DPW-01, an id-token from this
+  // case or a group from DPW-05.
+  it('finds an anchor, alias, tag or flow mapping in any workflow, and a double-quoted escape anywhere on a YAML line', () => {
     const shape = (path: string) => `${path}: DPW-02 ${SHAPE}`
     const escaped = `${CI}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`
     const checkout = '      - uses: actions/checkout@v5\n'
@@ -909,6 +910,41 @@ describe('DPW-02 (C11-D55): permissions', () => {
     ])
     // The empty flow mapping ci.yml's pull_request: {} uses still reads.
     expect(permissionFindings(plant('  pull_request: {}\n', '  pull_request: { }\n', '', CI))).toEqual([])
+  })
+
+  // Round 6's GUARDS-02: YAML reads escapes in a double-quoted scalar alone, so a backslash after a double
+  // quote in a plain scalar (a step's one-line run), a single-quoted one or a comment is the same text to
+  // GitHub as to the guard and passes, while one in a double-quoted scalar is found wherever YAML starts
+  // it on a line: after a key of more than one word, a quoted key, a tag or a complex key's ?, and in one
+  // not closed on its line, read on to its close over lines the reader takes for comments. One with no
+  // escape over two lines is only a shape the reader refuses (the case above).
+  it('finds an escape only in a double-quoted scalar, wherever YAML starts one on a line', () => {
+    const escaped = `${CI}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`
+    const audit = '      - run: npm audit signatures\n'
+    const ci = (lines: string) => permissionFindings(plant(audit, `${audit}${lines}`, '', CI))
+    for (const lines of [
+      `      - run: printf '%s\\n' "audited\\n"\n`,
+      '      - run: grep -E "^v[0-9]+\\." .nvmrc || true\n',
+      `      - run: echo 'a "b\\c"'\n`,
+      '      - run: npm audit # "id\\x2Dtoken"\n',
+      '      - run: echo "a" # "b\\c"\n',
+      `      - name: 'it''s "x\\y"'\n        run: npm audit\n`,
+    ]) {
+      expect(ci(lines), lines).toEqual([])
+    }
+    for (const lines of [
+      '      - name: "audit\\x20signatures"\n        run: npm audit signatures\n',
+      '      - foo bar: "id\\x2Dtoken"\n',
+      '      - "name": "id\\x2Dtoken"\n        run: npm audit\n',
+      `      - 'name': "id\\x2Dtoken"\n        run: npm audit\n`,
+      '      - name: !!str "id\\x2Dtoken"\n        run: npm audit\n',
+      '      - ? "id\\x2Dtoken"\n',
+      '      - run: "npm audit\n          sign\\x61tures"\n',
+      '      - run: "npm audit\n          #sign\\x61tures"\n',
+      '      - run: "npm audit\\\n          signatures"\n',
+    ]) {
+      expect(ci(lines), lines).toContain(escaped)
+    }
   })
 
   // GUARDS-05: a folded block scalar's lines are joined by YAML, and an indentation indicator sets an indent
@@ -1170,8 +1206,8 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
   // (check's) by engines.node, 24, gave the pins job a Node without import.meta.main, on which the check
   // ran nothing and exited 0, while check ran a Node new enough to pass: a pin moved with its table entry to
   // a fork's commit passed CI, and every deploy job's smoke would have passed a broken release the same way.
-  it('holds .nvmrc to 24 alone, which every setup-node reads as the latest Node 24 (FETCH-A6-01, round 6)', () => {
-    const NODE = `.nvmrc: DPW-04 is 24 alone, a line of its own, which every setup-node reads as the latest Node 24, so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0`
+  it('holds .nvmrc to 24 alone, which every setup-node reads as a Node 24 (FETCH-A6-01, round 6)', () => {
+    const NODE = `.nvmrc: DPW-04 is 24 alone, a line of its own, which every setup-node reads as a Node 24 (the newest the runner caches, or the newest in the manifest when it caches none), so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0`
     for (const planted of [
       '{"devEngines":{"runtime":{"name":"node","version":"24.1.0"}},"engines":{"node":"24"}}\n',
       '{"volta":{"node":"24.1.0"}}\n',
@@ -2888,12 +2924,52 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       ['apply() {\n', 'apply() {\n  unset AGENT_MARKERS\n'],
       [`if [ "\${1:-}" != check ]; then`, `if [ "\${1:-}" != check ] && [ "\${1:-}" != apply ]; then`],
       ["CLAIM_KEYS='", "gh auth status\nCLAIM_KEYS='"],
-      ['    if [[ -v $marker ]]; then', '    if [[ -v marker ]]; then'],
+      [`    if [ -n "\${!marker+x}" ]; then`, `    if [ -n "\${!marker:+x}" ]; then`],
     ]
     for (const [from, to] of plants) {
       expect(protectEnvironments.includes(from)).toBe(true)
       expect(gate(workflows, environments, holds, protectEnvironments.replace(from, to))).toEqual(refuses)
     }
+    // A repo admin may run the script on a Mac, whose /bin/bash is 3.2, which stops on a parse error before
+    // the refusal runs: each construct bash added later, planted alone, is found, and so is an array expanded
+    // bare, which bash before 4.4 calls unbound when it is empty under set -u (review 6 ENVS-01).
+    const later = (what: string) =>
+      `scripts/protect-environments.sh: DPW-09 keeps to bash 3.2's syntax (BASH_AFTER_3_2): ${what}`
+    const applyHead = 'apply() {\n'
+    expect(protectEnvironments.split(applyHead).length).toBe(2)
+    for (const [line, what] of [
+      ['  [ -v PROD_REVIEWERS ] || true', 'test -v or -R'],
+      ['  mapfile -t seen <"$dir/prod.json"', 'mapfile or readarray'],
+      ['  declare -A seen=()', 'an associative array, nameref, global or case attribute'],
+      ['  local -n ref=name', 'an associative array, nameref, global or case attribute'],
+      [`  echo "\${repo,,}"`, 'a case change or @ transformation'],
+      [`  echo "\${repo@Q}"`, 'a case change or @ transformation'],
+      [`  echo "\${ENVIRONMENTS[-1]}"`, 'a negative subscript'],
+      ['  coproc gh api user', 'coproc'],
+      ['  gh api user |& cat', '|& or &>>'],
+      ['  echo applying &>>"$dir/log"', '|& or &>>'],
+      ['  case "$repo" in *) echo one ;& esac', 'a case fall-through'],
+      ['  exec {out}>/dev/null', 'a named file descriptor'],
+      ['  wait -n || true', 'wait -n, -f or -p'],
+      ['  read -r -N 1 key <<<"$repo"', 'read -i or -N'],
+      ["  printf '%(%F)T\\n' -1", 'printf %(…)T'],
+      ['  shopt -s globstar', 'shopt'],
+      ['  echo "$BASHPID"', 'a variable bash 3.2 lacks'],
+      [`  for name in "\${names[@]}"; do :; done`, 'an unguarded array expansion'],
+    ] as const) {
+      const planted = protectEnvironments.replace(applyHead, `${applyHead}${line}\n`)
+      expect(gate(workflows, environments, holds, planted)).toEqual([pinned, later(what)])
+    }
+    // The two lines bash 3.2 stopped on before: the refusal's test and the loop over PROD_REVIEWERS's logins.
+    const guarded = `for login in \${logins[@]+"\${logins[@]}"}; do`
+    const refusalTest = `    if [ -n "\${!marker+x}" ]; then`
+    expect(protectEnvironments.includes(guarded) && protectEnvironments.includes(refusalTest)).toBe(true)
+    expect(
+      gate(workflows, environments, holds, protectEnvironments.replace(guarded, `for login in "\${logins[@]}"; do`)),
+    ).toEqual([pinned, later('an unguarded array expansion')])
+    expect(
+      gate(workflows, environments, holds, protectEnvironments.replace(refusalTest, '    if [[ -v $marker ]]; then')),
+    ).toEqual([...refuses, later('test -v or -R')])
     // The gate and a person run the script as a file, so its first line is the interpreter: env -S unsetting
     // every marker, bash -n (bash reads and runs nothing, exiting 0) or another shell each make a finding
     // (EXPAND-A3-01, round 6).
@@ -6198,7 +6274,9 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
   // default shell that skips it; another bash in a container; a self-hosted runner; or continue-on-error,
   // which keeps the run from failing when check fails. Each let check pass with action-pins failed, with every
   // later step and test run and green. So check holds no key of its own but needs, if, runs-on (GitHub's
-  // ubuntu-24.04), timeout-minutes and steps.
+  // ubuntu-24.04), timeout-minutes and steps. This case runs in check's own npm test, so in a pull request's
+  // own CI it finds only a change that leaves that test running: a SHELLOPTS of noexec on check stops the
+  // test too and passes there, and the owner's read of ci.yml is what holds it (round 6's SECURITY-01).
   it('holds check’s own keys, so nothing decides how its first step runs or whether its failure counts (YAML-A2-01, round 6)', () => {
     const always = '    if: always()\n'
     const onCheck = (lines: string) => plant(always, `${always}${lines}`, '\n  check:\n', CI)

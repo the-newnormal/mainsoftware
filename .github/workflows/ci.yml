@@ -46,10 +46,13 @@ jobs:
   # configuration but its defaults. The checkout and setup-node before it run first, so the check can't prove
   # them: each is held to its commit in action-pins.ts's PINS_JOB_ACTIONS, apart from deploy.yml's pins, and a
   # person proves a change to them by hand. This workflow sets no env: or defaults: at its top, which would
-  # reach this job's steps too. DPW-04 holds this job to these three steps, the workflow's top to name, on,
-  # permissions and jobs, and check to needing it with no key of its own but needs, if, runs-on,
-  # timeout-minutes and steps, since a job's env:, defaults:, container or runner would decide how its first
-  # step's exit 1 runs. Each read is tried three times; a tag that names another commit fails.
+  # reach this job's steps too. What holds this job, the workflow's top and check's own keys is the owner's
+  # read of this file (CLAUDE.md's list). DPW-04 is a second layer: it holds this job to these three steps,
+  # the workflow's top to name, on, permissions and jobs, and check to needing it with no key of its own but
+  # needs, if, runs-on, timeout-minutes and steps, since a job's env:, defaults:, container or runner would
+  # decide how its first step's exit 1 runs; but it runs in check's own npm test, so a pull request that also
+  # stops that test running (a SHELLOPTS at this file's top or on check, say) passes it in its own CI. Each
+  # read is tried three times; a tag that names another commit fails.
   action-pins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

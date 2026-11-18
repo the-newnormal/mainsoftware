@@ -4,11 +4,12 @@
 // workflow's gate and prod-gate, which hold no credentials and run no npm ci, and in a person's clone
 // for break-glass's incident rollback, so it imports no npm package (IG-08): Node's built-ins, and
 // floors.ts for its type alone. The floors are read at a named commit (`git show`, into a temporary
-// file it imports), never from the working copy, which can predate the floor that refuses. Both
-// commits must be on main (main's head or an ancestor of it), checked before anything is read at
-// either: the release and migration records a person's choice of commit draws on are data that
-// anything with Deployments write can add, a branch's workflow included, so a commit off main is
-// refused and no floors.ts main never reviewed is imported, in the gate or in the break-glass shell.
+// file loaded through a wrapper, importData), never from the working copy, which can predate the floor
+// that refuses. Both commits must be on main (main's head or an ancestor of it), checked before
+// anything is read at either: the release and migration records a person's choice of commit draws on
+// are data that anything with Deployments write can add, a branch's workflow included, so a commit off
+// main is refused and no floors.ts main never reviewed is imported, in the gate or in the break-glass
+// shell.
 // Main is the clone's `refs/remotes/origin/main` by default, read by that full name alone (`git show-ref
 // --verify`) so no branch or tag called origin/main, nor a tag called refs/remotes/origin/main where the
 // ref is missing, stands in for it, or the commit --main names (the gate gives the run's own).
@@ -111,8 +112,37 @@ export function isOnMain(commit: string, mainCommit: string, repo: string): bool
   }
 }
 
-// FLOORS as the commit has it: floors.ts read by `git show` into a temporary folder, imported from
-// there (it imports nothing), and the folder removed whatever happens.
+// A data file a deploy script loads at a commit (floors.ts here, profiles.ts for smoke.ts), from the
+// text `git show` gave: written into a temporary folder beside a wrapper module that imports it and
+// holds its exports as a property, the wrapper imported, and the folder removed whatever happens. An
+// import() resolves with the namespace of the module it loads, and a namespace with an export named
+// `then` is a thenable, whose `then` the promise calls as it settles and whose answer it takes for the
+// file's exports: imported by itself, such a file would run its own code as it loads and decide what
+// the script reads (no floors, say). The wrapper's namespace has no `then`, so the file's own exports
+// are read and none of them is called as it loads. They come back in a box of this function's own,
+// since an async function's value settles its promise the same way.
+export async function importData(
+  file: string,
+  source: string,
+  prefix: string,
+): Promise<{ data: Record<string, unknown> }> {
+  if (!/^[a-z]+\.ts$/.test(file)) throw new Error('importData: the data file is named as a plain .ts file')
+  const folder = mkdtempSync(join(tmpdir(), prefix))
+  try {
+    writeFileSync(join(folder, file), source)
+    const wrapper = join(folder, 'wrapper.mjs')
+    writeFileSync(wrapper, `import * as data from './${file}'\nexport const box = { data }\n`)
+    const loaded: unknown = await import(pathToFileURL(wrapper).href)
+    const box = isRecord(loaded) ? loaded.box : undefined
+    const data = isRecord(box) ? box.data : undefined
+    return { data: isRecord(data) ? data : {} }
+  } finally {
+    rmSync(folder, { recursive: true, force: true })
+  }
+}
+
+// FLOORS as the commit has it: floors.ts read by `git show` and loaded through importData (it imports
+// nothing).
 export async function floorsAt(commit: string, repo: string): Promise<Floor[]> {
   let source: string
   try {
@@ -120,15 +150,8 @@ export async function floorsAt(commit: string, repo: string): Promise<Floor[]> {
   } catch {
     throw new FloorsError(`${commit} has no infra/src/release/floors.ts`)
   }
-  const folder = mkdtempSync(join(tmpdir(), 'hearth-floors-'))
-  try {
-    const file = join(folder, 'floors.ts')
-    writeFileSync(file, source)
-    const module: unknown = await import(pathToFileURL(file).href)
-    return parseFloors(isRecord(module) ? module.FLOORS : undefined)
-  } finally {
-    rmSync(folder, { recursive: true, force: true })
-  }
+  const { data } = await importData('floors.ts', source, 'hearth-floors-')
+  return parseFloors(data.FLOORS)
 }
 
 // The migration files the commit holds, by name.
@@ -278,8 +301,8 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
 }
 
 // Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never run and the
-// script would exit 0 having checked no floor: it refuses such a Node instead. history.ts loads this file,
-// so on such a Node history refuses with this line before its own.
+// script would exit 0 having checked no floor: it refuses such a Node instead. history.ts and smoke.ts
+// load this file, so on such a Node either refuses with this line before its own.
 if (typeof import.meta.main !== 'boolean') {
   process.stderr.write('floors-check: Node 24.2 or later is needed (import.meta.main), so no floor was checked\n')
   process.exit(1)

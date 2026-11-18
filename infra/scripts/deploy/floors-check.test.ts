@@ -332,6 +332,35 @@ describe('C11-D58: the rollback floors check', () => {
     }
   })
 
+  // An export named `then` makes a module's namespace a thenable, so an import() of floors.ts itself
+  // would call it as the promise settles and take what it answers for the file's exports: here no
+  // floors, so every rollback would be allowed. The check loads floors.ts through a wrapper instead, and
+  // reads the FLOORS the file holds without calling its `then`. The case runs the script under Node, as
+  // the gate, prod-gate and break-glass do: Vitest's own module runner rewrites every import into an
+  // await of the module, so in process the namespace is awaited whatever the script does.
+  it('C11-D58: a floors.ts that exports `then` is read for its FLOORS, and its `then` never runs as it loads', () => {
+    const answer = [
+      '(resolve: (value: unknown) => void): void {',
+      "  process.stderr.write('then ran\\n')",
+      '  resolve({ FLOORS: [] })',
+      '}',
+    ].join('\n')
+    const refused = [DROP_Y, DROP_Z].map(floor => `floors-check: refused ${floor.migration} (${floor.why})\n`).join('')
+    for (const then of [`export function then${answer}`, `function answer${answer}\nexport const then = answer`]) {
+      const at = commit({ 'infra/src/release/floors.ts': `${floorsSource([DROP_Y, DROP_Z])}${then}\n` }, 'then')
+      try {
+        const node = spawnSync(process.execPath, [SCRIPT, '--target', c.c2, '--floors-at', at, '--main', at], {
+          cwd: repo,
+          encoding: 'utf8',
+          timeout: 30_000,
+        })
+        expect([node.status, node.stdout, node.stderr], then).toEqual([1, refused, ''])
+      } finally {
+        run(['reset', '-q', '--hard', c.c4])
+      }
+    }
+  }, 60_000)
+
   // A commit on main past c4 whose floors.ts holds the given floors, run and then dropped, so main
   // returns to c4. It is named as main's head.
   async function withFloorsOnMain(floors: Parameters<typeof floorsSource>[0], body: (at: string) => Promise<void>) {

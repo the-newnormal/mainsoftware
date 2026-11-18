@@ -72,21 +72,24 @@
 //   in git's words or a for list (which bash splits and matches against file names), and output that reaches git
 //   but git show-ref --hash's (a printf that joins words, rev-parse --abbrev-ref or a file can print a short name;
 //   only git credential takes piped input) are computed (EXPAND-A4-01, round 6). Code that runs git (a word that is
-//   git, a path ending /git or git-<command>, a value that is, or a command named by an expansion of one) is also
-//   found where bash computes text no word holds: a here-document, a process substitution, ANSI-C or locale
-//   quoting, an unquoted brace expansion, arithmetic, a ( inside a word (an array's list or an extended pattern),
-//   any ${…} but a plain ${NAME}, a function's definition, a command named by an expansion, and eval, source, read,
-//   mapfile, readarray, alias, let, getopts, hash, enable, trap, coproc, printf -v and a declaration with an option
-//   (EXPAND-A3-02, round 6). In a command that runs git every word after git is read, whatever the subcommand, but
-//   the value of git's own -C, -c, --git-dir, --work-tree, --namespace or --config-env ahead of the subcommand and
-//   the repository a fetch, pull, push or ls-remote names first; in code that runs git, so is the value a variable
-//   is set to, a for loop's list and set's words as written, and every word of a command substituted into git's
-//   words or into such a value. A word names main when a part of it between =, :, .., a blank, < or > (an option's
-//   value, a refspec's or a tree-ish's two sides, a range's ends, a word bash would split), past a leading -, + or
-//   ^ and a trailing }, and cut at ^, ~ or @{, is main, origin, or a name ending /main or /HEAD that doesn't start
-//   refs/. A name that reaches git another way (read from a file, git's own configuration or aliases, the person's
-//   own shell aliases and functions, or a git put on the PATH under another name) isn't seen: review keeps that
-//   out.
+//   git, a path ending /git or git-<command>, a value that is, a command named by an expansion of one, or one whose
+//   name bash computes and may make git: a ${…} operator, ANSI-C or locale quoting or arithmetic in it, or a brace
+//   expansion or a *, ? or [ outside quotes any of whose words could name git or git-<command>, a pattern only with
+//   a word after it, so a lone * in prose runs none; review 6 GUARDS-01) is also found where bash computes text no
+//   word holds: a here-document, a process substitution, ANSI-C or locale quoting, an unquoted brace expansion,
+//   arithmetic, a ( inside a word (an array's list or an extended pattern), any ${…} but a plain ${NAME}, a
+//   function's definition, a command named by an expansion, and eval, source, read, mapfile, readarray, alias, let,
+//   getopts, hash, enable, trap, coproc, printf -v and a declaration with an option (EXPAND-A3-02, round 6). In a
+//   command that runs git every word after git (or after a computed name that may be git) is read, whatever the
+//   subcommand, but the value of git's own -C, -c, --git-dir, --work-tree, --namespace or --config-env ahead of the
+//   subcommand and the repository a fetch, pull, push or ls-remote names first; in code that runs git, so is the
+//   value a variable is set to, a for loop's list and set's words as written, and every word of a command
+//   substituted into git's words or into such a value. A word names main when a part of it between =, :, .., a
+//   blank, < or > (an option's value, a refspec's or a tree-ish's two sides, a range's ends, a word bash would
+//   split), past a leading -, + or ^ and a trailing }, and cut at ^, ~ or @{, is main, origin, or a name ending
+//   /main or /HEAD that doesn't start refs/. A name that reaches git another way (read from a file, git's own
+//   configuration or aliases, the person's own shell aliases and functions, a command named by a plain variable the
+//   runbook never sets, or a git put on the PATH under another name) isn't seen: review keeps that out.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -1159,12 +1162,14 @@ type WordPart = { text: string; quoted: boolean } | { name: string; quoted: bool
 // commands of their own whose output is part of the command they sit in (parent); a command whose output a
 // pipe hands to the next names that one (pipeTo). A word starting with # begins a comment, which runs nothing.
 // A placeholder a runbook asks the person to fill in (<commit>, <chosen commit>: a < and a lower-case word or
-// words, without a / or a quote, and a >) is a word's text, never a redirection.
+// words, without a / or a quote, and a >) is a word's text, never a redirection. A command whose name bash
+// computes and that may make git (computedGit, computedGitName) is read as one that runs git.
 type ShellCommand = {
   at: number
   words: string[]
   parts: WordPart[][]
   spans: Array<[number, number]>
+  computedGit: boolean
   parent?: ShellCommand
   pipeTo?: ShellCommand
 }
@@ -1185,6 +1190,8 @@ const ARRAY_TARGET = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=$/
 function shellCode(code: string): ShellCode {
   const commands: ShellCommand[] = []
   const computed: number[] = []
+  // Where an unquoted brace expansion ends, each also in computed.
+  const braces: number[] = []
   const arrays: string[] = []
   const operated: string[] = []
   let i = 0
@@ -1192,7 +1199,7 @@ function shellCode(code: string): ShellCode {
   // part of parent when it sits in one's word; returns the commands it read, its substitutions' included.
   const list = (close?: string, parent?: ShellCommand): ShellCommand[] => {
     const first = commands.length
-    const fresh = (): ShellCommand => ({ at: -1, words: [], parts: [], spans: [], parent })
+    const fresh = (): ShellCommand => ({ at: -1, words: [], parts: [], spans: [], computedGit: false, parent })
     let current = fresh()
     let word: string | undefined
     let parts: WordPart[] = []
@@ -1227,6 +1234,7 @@ function shellCode(code: string): ShellCode {
     const endCommand = (pipe = false) => {
       endWord()
       if (current.words.length === 0) return
+      current.computedGit = computedGitName(current, computed, braces)
       commands.push(current)
       if (piped !== undefined) piped.pipeTo = current
       piped = pipe ? current : undefined
@@ -1364,7 +1372,10 @@ function shellCode(code: string): ShellCode {
         if (ch === '{') brace++
         else if (brace > 0 && (ch === ',' || (ch === '.' && next === '.'))) braceList = true
         else if (brace > 0 && ch === '}') {
-          if (braceList) computed.push(i)
+          if (braceList) {
+            computed.push(i)
+            braces.push(i)
+          }
           brace--
         }
         append(ch, false)
@@ -1406,9 +1417,12 @@ const REPOSITORY_FIRST = ['fetch', 'pull', 'push', 'ls-remote']
 // Where the words a command gives git stand, whatever its subcommand (merge-base, ls-tree, worktree, archive,
 // describe…): every word after git (git itself as a word or a path's last part, after a keyword, an assignment
 // or another program such as xargs) but the value of one of GIT_PATH_OPTIONS before the subcommand, and the
-// repository a fetch, pull, push or ls-remote names first.
-function gitArguments(words: readonly string[]): number[] {
-  const start = words.findIndex(isGit)
+// repository a fetch, pull, push or ls-remote names first. A command that may run git through a name bash
+// computes (computedGit) gives git every word after that name.
+function gitArguments(command: ShellCommand): number[] {
+  const { words } = command
+  const named = words.findIndex(isGit)
+  const start = named < 0 && command.computedGit ? nameAt(words) : named
   if (start < 0) return []
   const found: number[] = []
   let j = start + 1
@@ -1485,9 +1499,169 @@ const computes = (words: readonly string[]) => {
   return /[$\0]/.test(name) || COMPUTING.has(name) || setByName(words).length > 0
 }
 
-// Whether a command runs git; whether a pipe hands its output to one that does (through others too); and the
-// one that receives it.
-const runsGit = (command: ShellCommand) => command.words.some(isGit)
+// Whether bash computes a command's name, so that it may run git though no word is git (computedGit): a computed
+// text in the name other than a brace expansion (a ${…} operator such as ${G:-git}, ANSI-C or locale quoting,
+// arithmetic) may make anything; a brace expansion or a *, ? or [ outside quotes ({git,merge-base},
+// git-{merge-base,}, /usr/bin/g[i]t) may make git when one of the words it expands to could name git or one of
+// git's own commands (mayNameGit). A pattern that can't (cdk-*, ./check-{a,b}.sh, the [ of a test) runs no git,
+// and a name a plain variable gives is read by its values (namedByExpansion). Only a name with a brace expansion
+// (whose words may hand git its arguments) counts without a word after it, so a lone * or /hearth/* in prose is
+// no git.
+function computedGitName(command: ShellCommand, computed: readonly number[], braces: readonly number[]): boolean {
+  const at = nameAt(command.words)
+  const [from, to] = command.spans[at] ?? [0, 0]
+  const inName = (position: number) => position >= from && position < to
+  if (!braces.some(inName) && command.words.length <= at + 1) return false
+  if (computed.some(position => inName(position) && !braces.includes(position))) return true
+  const parts = command.parts[at] ?? []
+  const pattern = parts.some(part => 'text' in part && !part.quoted && /[*?[]/.test(part.text))
+  if (!pattern && !braces.some(inName)) return false
+  // The name as a pattern: quoted text taken literally (each character after a \), and an expansion's place
+  // (EXPANDED) any text at all.
+  const written = parts
+    .map(part => ('text' in part ? (part.quoted ? part.text.replace(/[\s\S]/g, '\\$&') : part.text) : EXPANDED))
+    .join('')
+  return braceWords(written)?.some(mayNameGit) ?? true
+}
+
+// Where an expansion stands in a pattern mayNameGit reads: any text, a / included.
+const EXPANDED = '\u0001'
+
+// A pattern's words after brace expansion as bash expands an unquoted {a,b} (nested too) or {a..e} / {1..9..2}
+// (\ quoting the character after it); a { that opens neither is text. Undefined past VALUES_LIMIT words.
+function braceWords(pattern: string): string[] | undefined {
+  for (let i = 0; i < pattern.length; i++) {
+    if (pattern[i] === '\\') {
+      i++
+      continue
+    }
+    if (pattern[i] !== '{') continue
+    let depth = 0
+    let end = -1
+    const commas: number[] = []
+    for (let j = i; j < pattern.length && end < 0; j++) {
+      const ch = pattern[j]
+      if (ch === '\\') j++
+      else if (ch === '{') depth++
+      else if (ch === '}' && --depth === 0) end = j
+      else if (ch === ',' && depth === 1) commas.push(j)
+    }
+    if (end < 0) continue
+    const inner = pattern.slice(i + 1, end)
+    const choices =
+      commas.length > 0
+        ? [i, ...commas].map((start, k) => pattern.slice(start + 1, [...commas, end][k]))
+        : sequence(inner)
+    if (choices === undefined) continue
+    if (choices.length > VALUES_LIMIT) return undefined
+    const words: string[] = []
+    for (const choice of choices) {
+      const more = braceWords(pattern.slice(0, i) + choice + pattern.slice(end + 1))
+      if (more === undefined) return undefined
+      words.push(...more)
+      if (words.length > VALUES_LIMIT) return undefined
+    }
+    return words
+  }
+  return [pattern]
+}
+
+// A brace expansion's sequence ({1..9}, {01..10..3}, {a..e}), or undefined when the text between the braces is
+// none; past VALUES_LIMIT items, one item more than the limit.
+function sequence(inner: string): string[] | undefined {
+  const match = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/.exec(inner)
+  if (match === null) return undefined
+  const [, first = '', last = ''] = match
+  const numeric = /\d/.test(first)
+  if (numeric !== /\d/.test(last)) return undefined
+  const from = numeric ? Number(first) : first.charCodeAt(0)
+  const to = numeric ? Number(last) : last.charCodeAt(0)
+  const step = Math.abs(Number(match[3] ?? 1)) || 1
+  const width = numeric && [first, last].some(end => /^-?0\d/.test(end)) ? Math.max(first.length, last.length) : 0
+  const items: string[] = []
+  for (let n = from; from <= to ? n <= to : n >= to; n += from <= to ? step : -step) {
+    items.push(numeric ? String(n).padStart(width, '0') : String.fromCharCode(n))
+    if (items.length > VALUES_LIMIT) break
+  }
+  return items
+}
+
+// Whether a pattern (\ quoting the character after it, EXPANDED any text) could name git or one of git's own
+// commands, as isGit reads a word: whether the part after its last / (or after an expansion, which may end in
+// one) can match git or git-<command>, with a * matching any text, a ? any character and a […] any character
+// it lists, as bash matches them against file names.
+const GIT_NAME_CHARACTERS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
+// git(-[A-Za-z0-9-]+)? read a character at a time: g, i and t lead to 3, which ends git; a - then any of
+// GIT_NAME_CHARACTERS lead to 5, which ends git-<command> and takes more.
+function gitStep(state: number, ch: string): number | undefined {
+  if (state < 3) return 'git'[state] === ch ? state + 1 : undefined
+  if (state === 3) return ch === '-' ? 4 : undefined
+  return GIT_NAME_CHARACTERS.includes(ch) ? 5 : undefined
+}
+type PatternToken = 'any text' | ((ch: string) => boolean)
+function mayNameGit(pattern: string): boolean {
+  let tokens: PatternToken[] = []
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i] ?? ''
+    if (ch === '\\') {
+      const literal = pattern[++i] ?? ''
+      tokens.push(c => c === literal)
+    } else if (ch === '/') tokens = []
+    else if (ch === EXPANDED) tokens = ['any text']
+    else if (ch === '*') tokens.push('any text')
+    else if (ch === '?') tokens.push(() => true)
+    else if (ch === '[') {
+      // A bracket expression, to its first ] past a leading ! or ^ and a ] after it; a character class
+      // ([:alpha:]) may be any character. Without a closing ], the [ is text.
+      let j = i + 1
+      const negated = pattern[j] === '!' || pattern[j] === '^'
+      if (negated) j++
+      if (pattern[j] === ']') j++
+      while (j < pattern.length && pattern[j] !== ']') j += pattern[j] === '\\' ? 2 : 1
+      if (j >= pattern.length) {
+        tokens.push(c => c === '[')
+        continue
+      }
+      const body = pattern.slice(i + (negated ? 2 : 1), j).replace(/\\([\s\S])/g, '$1')
+      const ranges: Array<[string, string]> = []
+      for (let k = 0; k < body.length; k++) {
+        const low = body[k] ?? ''
+        if (body[k + 1] === '-' && k + 2 < body.length) {
+          ranges.push([low, body[k + 2] ?? ''])
+          k += 2
+        } else ranges.push([low, low])
+      }
+      const classed = body.includes('[:')
+      tokens.push(c => (classed || ranges.some(([low, high]) => c >= low && c <= high)) !== negated)
+      i = j
+    } else tokens.push(c => c === ch)
+  }
+  // Every (token, state) pair the pattern can reach while reading a name that git(-[A-Za-z0-9-]+)? accepts.
+  const seen = new Set<string>()
+  const queue: Array<[number, number]> = [[0, 0]]
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    const [k, state] = next
+    if (seen.has(`${k},${state}`)) continue
+    seen.add(`${k},${state}`)
+    const token = tokens[k]
+    if (token === undefined) {
+      if (state === 3 || state === 5) return true
+      continue
+    }
+    if (token === 'any text') queue.push([k + 1, state])
+    for (const ch of GIT_NAME_CHARACTERS) {
+      const after = gitStep(state, ch)
+      if (after === undefined) continue
+      if (token === 'any text') queue.push([k, after])
+      else if (token(ch)) queue.push([k + 1, after])
+    }
+  }
+  return false
+}
+
+// Whether a command runs git (or may: computedGit); whether a pipe hands its output to one that does (through
+// others too); and the one that receives it.
+const runsGit = (command: ShellCommand) => command.words.some(isGit) || command.computedGit
 const receivingGit = (command: ShellCommand): ShellCommand | undefined =>
   command.pipeTo === undefined ? undefined : runsGit(command.pipeTo) ? command.pipeTo : receivingGit(command.pipeTo)
 // Whether a command sits in the word of one that runs git or hands git its output, or of a variable's value or
@@ -1506,7 +1680,7 @@ const feedsGit = (command: ShellCommand): boolean =>
 // be main's short name.
 function printsHashes(command: ShellCommand): boolean {
   if (!isGit(commandName(command.words) ?? '')) return false
-  const words = gitArguments(command.words).map(k => command.words[k] ?? '')
+  const words = gitArguments(command).map(k => command.words[k] ?? '')
   return words[0] === 'show-ref' && words.some(word => /^--hash(?:=\d+)?$/.test(word))
 }
 
@@ -1786,10 +1960,10 @@ function shortMainAt(text: string): number[] {
       const fed =
         receiver !== undefined &&
         !printsHashes(command) &&
-        receiver.words[gitArguments(receiver.words)[0] ?? -1] !== 'credential'
+        receiver.words[gitArguments(receiver)[0] ?? -1] !== 'credential'
       const expanded =
         runsGit(command) &&
-        gitArguments(words).some(k => {
+        gitArguments(command).some(k => {
           const values = inWord(k) ? undefined : expand(parts[k] ?? [], true, variables, new Set())
           return values === undefined || values.some(namesShortMain)
         })
@@ -1910,7 +2084,10 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
   // variable or hash -p, or run as git-merge-base; a reference, a read, a ${…} operator or an eval elsewhere; a
   // pattern bash matches against file names; an indented code block (in a list, a quote, a quote in a list, by a
   // tab, or opened by a list marker's fifth blank), a tilde fence in a list item or a quote, a longer fence that a
-  // shorter run doesn't close, one a deeper run doesn't close, and HTML.
+  // shorter run doesn't close, one a deeper run doesn't close, and HTML. Then a command whose name bash computes
+  // and may make git (review 6 GUARDS-01): a brace expansion (in a path, after git-, a sequence, or holding git's
+  // words itself), a pattern (?, […], one with quoted characters), a ${…} operator and ANSI-C quoting, and such a
+  // git given a value set elsewhere, piped into, fed a here-document or beside a git command.
   it('finds each way bash or Markdown hands git a short name that the reader once missed, on planted text', () => {
     const sh = (...lines: string[]) => ['```sh', ...lines, '```'].join('\n')
     const found = {
@@ -1960,6 +2137,24 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       longerFence: '````sh\n```\ngit log origin/main\n````\n',
       deepClosing: '```sh\n    ```\ngit log origin/main\n```\n',
       html: 'Run <code>git log origin/main</code> first.',
+      braceName: sh('c="<commit>"', '{git,merge-base} --is-ancestor "$c" origin/main'),
+      braceInPath: sh('c="<commit>"', '/usr/bin/{git,merge-base} --is-ancestor "$c" origin/main'),
+      braceAfterDash: sh('c="<commit>"', 'git-{merge-base,} --is-ancestor "$c" origin/main'),
+      braceSequence: sh('c="<commit>"', '/usr/bin/{f..h}it merge-base --is-ancestor "$c" origin/main'),
+      braceHoldsWords: '`{git,log,origin/main}`',
+      patternName: sh('c="<commit>"', '/usr/bin/g[i]t merge-base --is-ancestor "$c" origin/main'),
+      patternAnyCharacter: '`/usr/bin/gi? merge-base --is-ancestor "<commit>" origin/main`',
+      patternQuoted: '`/usr/bin/g["i"]t merge-base --is-ancestor "<commit>" origin/main`',
+      operatorName: sh('c="<commit>"', `\${G:-git} merge-base --is-ancestor "$c" origin/main`),
+      ansiName: sh('c="<commit>"', '$\'\\x67it\' merge-base --is-ancestor "$c" origin/main'),
+      patternValueElsewhere:
+        'Set `m=origin/main`, then `c="<commit>"; /usr/bin/g[i]t merge-base --is-ancestor "$c" "$m"`.',
+      patternPiped: '`echo origin/main | /usr/bin/g[i]t rev-parse --stdin`',
+      patternHereDocument: sh('/usr/bin/g[i]t rev-parse --stdin <<EOF', 'origin/main', 'EOF'),
+      patternBesideGit: sh(
+        'git fetch origin +refs/heads/main:refs/remotes/origin/main',
+        '/usr/bin/g[i]t merge-base --is-ancestor "<commit>" origin/main',
+      ),
     }
     expect(Object.fromEntries(Object.entries(found).map(([name, text]) => [name, shortMainAt(text)]))).toEqual({
       array: [3, 4],
@@ -1997,12 +2192,28 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       longerFence: [2, 3],
       deepClosing: [2, 3],
       html: [1],
+      braceName: [3],
+      braceInPath: [3],
+      braceAfterDash: [3],
+      braceSequence: [3],
+      braceHoldsWords: [1],
+      patternName: [3],
+      patternAnyCharacter: [1],
+      patternQuoted: [1],
+      operatorName: [3],
+      ansiName: [3],
+      patternValueElsewhere: [1],
+      patternPiped: [1],
+      patternHereDocument: [2],
+      patternBesideGit: [3],
     })
   })
 
   // What the stricter reading still passes: a full ref built from a variable, hashes piped into git, values set
   // in other spans, a full ref in an indented block, a paragraph whose lines run on past its list item's indent,
-  // which GFM shows as text, and a runbook's placeholders.
+  // which GFM shows as text, and a runbook's placeholders; and a full ref given to a git a pattern names, a
+  // command whose computed name can't make git (a pattern or braces whose words can't end in git, the [ of a
+  // test), and prose that names roles and parameters by a pattern (review 6 GUARDS-01).
   it('passes a full ref however bash builds it, values from other spans, and text GFM shows as text, on planted text', () => {
     const passes = {
       fullRefFromParts: [
@@ -2018,6 +2229,23 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       indentedFullRef: 'Run:\n\n    git fetch origin +refs/heads/main:refs/remotes/origin/main\n',
       continuedParagraph: '1. A step whose text\n       runs on, indented past the item: git log main is prose here',
       placeholders: '`git merge-base --is-ancestor <chosen commit> <current commit>`',
+      fullRefThroughPattern: [
+        '```sh',
+        'c="<commit>"',
+        'm=$(git show-ref --verify --hash refs/remotes/origin/main)',
+        '/usr/bin/g[i]t merge-base --is-ancestor "$c" "$m"',
+        '```',
+      ].join('\n'),
+      patternsNamingNoGit: [
+        '```sh',
+        'git fetch origin +refs/heads/main:refs/remotes/origin/main',
+        '/opt/node-*/bin/node scripts/check.ts origin/main',
+        '/usr/bin/g[^i]t log origin/main',
+        '[ "<commit>" = origin/main ] && echo same',
+        '```',
+      ].join('\n'),
+      bracesNamingNoGit: '`./check-{a,b}.sh origin/main`',
+      prosePatterns: 'The roles `cdk-hearthapp-*` and `hearth-gh-*`, the parameters under `/hearth/*`, and `*`.',
     }
     expect(Object.fromEntries(Object.entries(passes).map(([name, text]) => [name, shortMainAt(text)]))).toEqual(
       Object.fromEntries(Object.keys(passes).map(name => [name, []])),

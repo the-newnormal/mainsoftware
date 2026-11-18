@@ -17,7 +17,7 @@ import { CASE_REFERENCE_PATTERN, type CaseReference, formatCaseReference } from 
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import type { Workspace } from './boundaries'
 import { ACCOUNT_ID, PHONE_NUMBER } from './identifying'
-import { importsOf, withoutComments } from './imports'
+import { importsOf, moduleImports, withoutComments } from './imports'
 import {
   ALLOWED_CUSTOM_RESOURCE,
   ASSET_RULES,
@@ -58,6 +58,14 @@ import { isScript, readRepoFile, repoFiles, root } from './repo-files'
 import { workflowJobs } from './workflow'
 
 const files = repoFiles()
+
+// The modules a file loads when it runs: an import type or an export type, which Node erases, loads nothing, so
+// the deploy scripts' graphs leave them out (review 6 GUARDS-03); import { type X } still loads its module.
+const runtimeImportsOf = (source: string, path: string) =>
+  moduleImports(source, path).flatMap(found =>
+    found.typeOnly || found.specifier === undefined ? [] : [found.specifier],
+  )
+
 const infraScripts = files.filter(path => path.startsWith('infra/') && isScript(path))
 const code = (path: string) => withoutComments(path, readRepoFile(path))
 const workspaces: Workspace[] = files
@@ -642,7 +650,8 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
 
   // The gate, prod-gate and the smoke jobs run the deploy scripts with no npm ci (C11-D58, C11-D54), so
   // each script under infra/scripts/deploy/ loads no npm package, its graph read from its own file; the
-  // three the deploy workflow runs are there now that it is, so this case never reads nothing.
+  // three the deploy workflow runs are there now that it is, so this case never reads nothing. An import type
+  // of a package loads nothing and passes; import { type X } loads it (review 6 GUARDS-03).
   it('every deploy script loads no npm package, found on each with an npm import planted in it (C0.11 PR 4)', () => {
     const scripts = files.filter(path => /^infra\/scripts\/deploy\/[^/]+\.ts$/.test(path) && !path.endsWith('.test.ts'))
     expect(existsSync(join(root, '.github/workflows/deploy.yml'))).toBe(true)
@@ -655,11 +664,16 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
     )
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
     for (const script of scripts) {
-      const planted = (path: string) => (path === script ? `import { z } from 'zod'\n${read(path) ?? ''}` : read(path))
-      expect(packageFindings(importGraph(script, planted, importsOf).specifiers), script).toContain(
+      const plant = (line: string) => (path: string) => (path === script ? `${line}\n${read(path) ?? ''}` : read(path))
+      const findings = (line: string) => packageFindings(importGraph(script, plant(line), runtimeImportsOf).specifiers)
+      expect(findings("import { z } from 'zod'"), script).toContain(
         `${script}: IG-08 loads zod, but runs without npm ci`,
       )
-      expect(packageFindings(importGraph(script, read, importsOf).specifiers), script).toEqual([])
+      expect(findings("import { type Construct } from 'constructs'"), script).toContain(
+        `${script}: IG-08 loads constructs, but runs without npm ci`,
+      )
+      expect(findings("import type { Construct } from 'constructs'"), script).toEqual([])
+      expect(packageFindings(importGraph(script, read, runtimeImportsOf).specifiers), script).toEqual([])
     }
   })
   // INPUTS-A1-02 (round 6). history.ts imports the profiles, so their top level ran in the gate's Plan step
@@ -667,19 +681,41 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
   // that wrote a plan of its own choosing and exited 0, or turned each SMK line to a pass, decided the
   // gate's plan and a broken release's smoke from text outside the fields then on the owner's-read list. So
   // each file a deploy script loads from outside its folder, statically or at a commit, is data alone (and
-  // on that list whole).
+  // on that list whole). An import type, which Node erases, loads nothing, so a file one names isn't loaded
+  // (review 6 GUARDS-03).
   it('every file a deploy script loads from outside its folder is data, which runs nothing as it loads (INPUTS-A1-02, round 6)', () => {
     const scripts = files.filter(path => /^infra\/scripts\/deploy\/[^/]+\.ts$/.test(path) && !path.endsWith('.test.ts'))
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
-    const outside = new Set<string>()
-    for (const script of scripts) {
-      for (const path of importGraph(script, read, importsOf).files) {
-        if (!path.startsWith('infra/scripts/deploy/')) outside.add(path)
+    const outsideWith = (readWith: (path: string) => string | undefined) => {
+      const outside = new Set<string>()
+      for (const script of scripts) {
+        for (const path of importGraph(script, readWith, runtimeImportsOf).files) {
+          if (!path.startsWith('infra/scripts/deploy/')) outside.add(path)
+        }
+        // What a script loads at a commit, by git show <commit>:<path>.
+        for (const shown of (readWith(script) ?? '').matchAll(/`\$\{\w+\}:(infra\/[^`]+)`/g))
+          outside.add(shown[1] ?? '')
       }
-      // What a script loads at a commit, by git show <commit>:<path>.
-      for (const shown of readRepoFile(script).matchAll(/`\$\{\w+\}:(infra\/[^`]+)`/g)) outside.add(shown[1] ?? '')
+      return [...outside].sort()
     }
-    expect([...outside].sort()).toEqual([...DEPLOY_SCRIPT_DATA].sort())
+    expect(outsideWith(read)).toEqual([...DEPLOY_SCRIPT_DATA].sort())
+    // A type planted at the profiles' top from a file that isn't data: by import type it loads nothing, and
+    // deployScriptDataFindings lets it through; by import { type X } it loads names.ts, which the case finds.
+    const profilesPath = 'infra/src/config/profiles.ts'
+    const plantInProfiles = (line: string) => (path: string) =>
+      path === profilesPath ? `${line}\n${read(path) ?? ''}` : read(path)
+    expect(outsideWith(plantInProfiles("import type { WorkloadKind } from './names.ts'"))).toEqual(
+      [...DEPLOY_SCRIPT_DATA].sort(),
+    )
+    expect(
+      deployScriptDataFindings(
+        profilesPath,
+        plantInProfiles("import type { WorkloadKind } from './names.ts'")(profilesPath) ?? '',
+      ),
+    ).toEqual([])
+    expect(outsideWith(plantInProfiles("import { type WorkloadKind } from './names.ts'"))).toContain(
+      'infra/src/config/names.ts',
+    )
     for (const path of DEPLOY_SCRIPT_DATA) expect(deployScriptDataFindings(path, readRepoFile(path)), path).toEqual([])
     // Each way a file runs something as it loads, planted at the profiles' end.
     const profiles = readRepoFile('infra/src/config/profiles.ts')
@@ -701,6 +737,29 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
     expect(ends("process.on('exit', () => {})")).toEqual(RUNS('ExpressionStatement'))
     expect(ends('class X { static { process.exit(0) } }')).toEqual(RUNS('ClassDeclaration'))
     expect(ends('let x = 1')).toEqual(refused('declares a let or a var'))
+    // A then at the top level, which a dynamic import of the file would call as it settles (review 6
+    // SCRIPTS-01): as a function in each form, and as a const naming one, where only the then is refused.
+    const THEN = refused('declares a then at the top level, which a dynamic import calls as it settles')
+    for (const plant of [
+      'export function then(resolve: (value: unknown) => void) { resolve({}) }',
+      'export async function then(resolve: (value: unknown) => void) { resolve({}) }',
+      'export function* then() { yield 1 }',
+      'function then(resolve: (value: unknown) => void) { resolve({}) }',
+      'export const then = 1',
+    ]) {
+      expect(ends(plant), plant).toEqual(THEN)
+    }
+    expect(
+      deployScriptDataFindings(
+        'p.ts',
+        `${profiles}\nfunction answer(resolve: (value: unknown) => void) { resolve({}) }\nexport const then = answer\n`,
+      ),
+    ).toEqual([
+      `p.ts, line ${profiles.split('\n').length + 2}: IG-08 declares a then at the top level, which a dynamic import calls as it settles, but a deploy script loads this file, so it holds data alone and runs nothing as it loads`,
+    ])
+    expect(ends('function f() {}\nexport { f as then }')).toEqual([
+      `p.ts, line ${profiles.split('\n').length + 2}: IG-08 re-exports a module, but a deploy script loads this file, so it holds data alone and runs nothing as it loads`,
+    ])
     for (const value of [
       'run()',
       '(() => 1)()',

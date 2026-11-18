@@ -213,7 +213,13 @@ case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
 esac`
 
 // The asset and release checks (C11-D76, DPW-14): check_assembly and check_release_in, defined here and called
-// by each step that runs them on each folder it downloaded or uploads.
+// by each step that runs them on each folder it downloaded or uploads. The run's own text judges every older
+// release's assembly too, which that release's own code synthesised: synth's check of each environment's
+// previous assembly (a refusal there fails synth, so nothing deploys), a rollback's target and a restore at
+// prod's newest record. So a change to what it pins exactly (a stack's properties, roles, bootstrap version
+// or termination protection, the asset manifests' shape, the outputs) keeps accepting each shape a release
+// among ECR's newest 50 images wrote, or every run fails at synth and every pipeline rollback or restore to
+// a release before the change is refused (T24 item 22). No case can plant an older shape until one exists.
 export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
 # the CLI acts on, so before any credential each one is walked from its root manifest through every
 # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -1653,7 +1659,7 @@ export const PROTECT_ENVIRONMENTS = 'scripts/protect-environments.sh'
 // assignments it reads, with no other line naming AGENT_MARKERS.
 export const MARKER_REFUSAL = `if [ "\${1:-}" != check ]; then
   for marker in "\${AGENT_MARKERS[@]}"; do
-    if [[ -v $marker ]]; then
+    if [ -n "\${!marker+x}" ]; then
       echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
       exit 1
     fi
@@ -1686,11 +1692,51 @@ export function codeLinesAsBash(lines: readonly string[]): string[] {
 // neither, so a line keyed on anything the two differ in (a variable, a file, what gh answers) would end the
 // check differently in the gate and in every test. Pinned, the code changes only with the pin, in the same PR,
 // an owner's read (EXPAND-A4-02, round 6). The comments above the first code line stay free to edit.
-export const PROTECT_ENVIRONMENTS_SHA256 = 'd24fe31b649dd85533a83f4687a261685f1771ae589fcfea5d2ca18935227562'
+export const PROTECT_ENVIRONMENTS_SHA256 = '85e399f0dc1973ed7ea5834620c58a5c7a8ff9311a32536338499e99ee432b95'
 export function pinnedScriptText(script: string): string {
   const lines = script.split('\n')
   const first = lines.findIndex((line, i) => i > 0 && !/^[ \t]*(?:#[\s\S]*)?$/.test(line))
   return first < 0 ? '' : lines.slice(first).join('\n')
+}
+
+// What bash added after 3.2, which a repo admin's Mac runs protect-environments.sh under (its /bin/bash) and no
+// CI runner has to run it under: DPW-09 refuses each in the script's code lines, as bash reads them. Some
+// (`[[ -v`, `|&`, `&>>`, a case fall-through) are parse errors there, and bash parses a whole compound command
+// before it runs any of it, so one inside the marker refusal's `if` stops every command before anything runs;
+// the rest fail, or mean something else, when they run (review 6 ENVS-01).
+export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
+  ['test -v or -R', /(?:\[\[?|\btest)\s+(?:!\s+)?-[vR]\s/],
+  ['mapfile or readarray', /\b(?:mapfile|readarray)\b/],
+  [
+    'an associative array, nameref, global or case attribute',
+    /\b(?:declare|local|typeset|readonly)(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*[Agnlu]/,
+  ],
+  ['a case change or @ transformation', /\$\{[#!]?(?:\w+|[@*])(?:\[[^\]]*\])?(?:[,^]|@[a-zA-Z])/],
+  ['a negative subscript', /\$\{[#!]?\w+\[-/],
+  ['coproc', /\bcoproc\b/],
+  ['|& or &>>', /\|&|&>>/],
+  ['a case fall-through', /;;?&/],
+  ['a named file descriptor', /(?<!\$)\{\w+\}[<>]/],
+  ['wait -n, -f or -p', /\bwait\s+-[a-zA-Z]*[nfp]/],
+  ['read -i or -N', /\bread(?:\s+-[a-zA-Z]+)*?\s+-[a-zA-Z]*[iN]\b/],
+  ['printf %(…)T', /%\([^)]*\)T/],
+  ['shopt', /\bshopt\b/],
+  ['a variable bash 3.2 lacks', /\b(?:BASHPID|EPOCHSECONDS|EPOCHREALTIME|SRANDOM|BASH_ARGV0)\b/],
+]
+// bash before 4.4 calls an empty array unbound under set -u, so the script expands an array's elements only as
+// ${a[@]+"${a[@]}"}, or bare for the two lists its head declares with words (markerHead), never empty.
+const GUARDED_ARRAY = /\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}/g
+const ARRAY_ELEMENTS = /\$\{!?(\w+)\[[@*]\]/g
+const LISTED_ARRAYS = ['ENVIRONMENTS', 'AGENT_MARKERS']
+export function bashAfter32(code: readonly string[]): string[] {
+  const found: string[] = []
+  for (const line of code) {
+    for (const [what, pattern] of BASH_AFTER_3_2) if (pattern.test(line)) found.push(what)
+    for (const match of line.replace(GUARDED_ARRAY, '').matchAll(ARRAY_ELEMENTS)) {
+      if (!LISTED_ARRAYS.includes(match[1] ?? '')) found.push('an unguarded array expansion')
+    }
+  }
+  return [...new Set(found)]
 }
 
 const markerHead = (markers: readonly string[]) => [
@@ -3681,12 +3727,75 @@ export function triggerFindings(workflows: Texts, ruleset: string): Finding[] {
 // --- DPW-02: permissions ---------------------------------------------------------------------------------
 
 // ciSynthProblems' id-token clause, widened (C11-D62): no id-token or write-all anywhere, comments
-// included, in any case, and no double-quoted scalar holding a backslash anywhere on a YAML line (a key,
-// a value, a sequence item or a flow sequence's item), since an escape (id\x2Dtoken, pull_request\x5F…)
-// could spell a word a rule looks for unseen.
+// included, in any case, and no double-quoted scalar holding a backslash on any YAML line (a key, a value,
+// a sequence item or a flow sequence's item, after a node property too), since an escape (id\x2Dtoken,
+// pull_request\x5F…) could spell a word a rule looks for unseen. A double-quoted scalar is the only one
+// whose escapes YAML reads: a backslash in a plain scalar (run: grep -E "^v[0-9]+\." .nvmrc), a
+// single-quoted one or a comment is the same text to GitHub as to the guard, so it passes (escapedLine).
 const ID_TOKEN = /id-token|write-all/i
 const ESCAPE = /"(?:[^"\\\n]|\\.)*\\/
-const escaped = (text: string) => yamlLines(text).some(line => ESCAPE.test(line.text))
+// A double-quoted scalar left open on a line (escapedLine's column) runs on to the next double quote, over
+// lines yamlLines may take for comments: a backslash before that quote is an escape YAML reads.
+function escaped(text: string): boolean {
+  const starts: number[] = []
+  let offset = 0
+  for (const line of text.split('\n')) {
+    starts.push(offset)
+    offset += line.length + 1
+  }
+  return yamlLines(text).some(({ index, text: line }) => {
+    const found = escapedLine(line)
+    if (typeof found === 'boolean') return found
+    const rest = text.slice((starts[index] ?? 0) + found + 1)
+    const backslash = rest.indexOf('\\')
+    const close = rest.indexOf('"')
+    return backslash >= 0 && (close < 0 || backslash < close)
+  })
+}
+
+// Whether a YAML line holds a double-quoted scalar with a backslash, the line read as YAML starts its nodes:
+// at its start; after an indicator that a blank or the line's end follows (a sequence's -, a complex key's
+// ?, a value's :, a document marker); after a node property (an anchor, a tag or an alias); and after the
+// key's : that ends a plain or quoted key. A plain scalar runs to that : or to a blank and #, which starts
+// a comment, as YAML reads one in a block. A double-quoted scalar not closed on its line answers the column
+// of its opening quote, for escaped to read on to its close (shapeProblems refuses it too). In a flow
+// collection, or wherever a character stands that YAML takes in no node's place there, any double quote
+// with a backslash after it on the rest of the line counts, as it did for the whole line before (ESCAPE),
+// so what this reading can't place is refused, never passed.
+function escapedLine(line: string): boolean | number {
+  let rest = line
+  for (;;) {
+    rest = rest.replace(/^[ \t]+/, '')
+    if (rest === '' || rest.startsWith('#')) return false
+    const indicator = /^(?:[-?:]|---|\.\.\.)(?=[ \t]|$)|^[&!*]\S*/.exec(rest)
+    if (indicator) {
+      rest = rest.slice(indicator[0].length)
+      continue
+    }
+    if (rest.startsWith('"') || rest.startsWith("'")) {
+      if (/^"[^"]*\\/.test(rest)) return true
+      const quoted = rest.startsWith('"') ? /^"[^"]*"/.exec(rest) : /^'(?:[^']|'')*'/.exec(rest)
+      // A double-quoted scalar not closed here goes on over the next lines, which escaped reads on to its
+      // close; a single-quoted one reads no escape on any of them.
+      if (!quoted) return rest.startsWith('"') ? line.length - rest.length : false
+      rest = rest.slice(quoted[0].length).replace(/^[ \t]+/, '')
+      if (rest === '' || rest.startsWith('#')) return false
+      if (/^:(?:[ \t]|$)/.test(rest)) {
+        rest = rest.slice(1)
+        continue
+      }
+      return ESCAPE.test(rest)
+    }
+    // A block scalar's header, with no more than a comment after it: its content isn't a YAML line.
+    if (/^[|>][1-9+-]*(?:[ \t]+#.*)?[ \t]*$/.test(rest)) return false
+    if (/^[|>[\]{},%@`]/.test(rest)) return ESCAPE.test(rest)
+    // A plain scalar: to the : and blank that end a key, or the blank and # that start a comment.
+    const plain = /^.*?(?=:(?:[ \t]|$)|[ \t]#|$)/.exec(rest)?.[0] ?? rest
+    rest = rest.slice(plain.length)
+    if (!rest.startsWith(':')) return false
+    rest = rest.slice(1)
+  }
+}
 
 const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
@@ -3951,12 +4060,15 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
   return [...found]
 }
 // The Node every setup-node of ci.yml and deploy.yml reads (node-version-file: .nvmrc, and synth's release's
-// own): the major version alone, which each version of setup-node reads the same way, as the latest Node 24
-// (CLAUDE.md: Node stays on 24), so no manifest, range or older release chooses an older Node in some jobs.
+// own): the major version alone, which each version of setup-node reads the same way, as a Node 24 (CLAUDE.md:
+// Node stays on 24): with check-latest unset, as in every step here, the newest Node 24 in the runner's tool
+// cache, or the newest in actions/node-versions' manifest when the cache holds none. GitHub's ubuntu-24.04
+// image caches a Node 24 well past 24.2, so no manifest, range or older release chooses an older Node in some
+// jobs; the deploy scripts and the pins check refuse one older than 24.2 all the same.
 export const NVMRC_FILE = '.nvmrc'
 export const NVMRC = '24\n'
 const NVMRC_RULE =
-  'is 24 alone, a line of its own, which every setup-node reads as the latest Node 24, so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0'
+  'is 24 alone, a line of its own, which every setup-node reads as a Node 24 (the newest the runner caches, or the newest in the manifest when it caches none), so no manifest, range or release read differently by the two setup-node versions gives the pins check or a deploy job a Node without import.meta.main, on which it would run nothing and exit 0'
 // The job that proves the pins: a step before it in its job (a test that wrote url.<fork>.insteadOf to
 // $HOME/.gitconfig, say, or wrote the check over, or a GITHUB_PATH that put another git first) would decide
 // what it reads. A job runs on a runner of its own, so this one, whose only steps are GitHub's checkout and
@@ -3974,7 +4086,15 @@ const NVMRC_RULE =
 // noexec, under which bash reads the line and runs nothing), and so does its defaults: (a shell that skips
 // the line), a container: (another bash) or a self-hosted runner, and continue-on-error: keeps the run
 // from failing when check fails, so any of them would let check pass when the pins check failed (the sixth
-// review's second attack).
+// review's second attack). These holds are a second layer, not the control: they run in check's own npm
+// test, inside the run they guard. In CI they find a key or a step that leaves that test running (and a
+// local npm run check finds every one), but a pull request that also stops the test (a SHELLOPTS of noexec
+// at ci.yml's top or on check, under which every run step reads its lines, runs none and passes; a shell
+// that skips npm test; check's npm test step, the root's test script or vitest.config.ts changed so this
+// file doesn't run; an install script or a workspace's typecheck script that check runs first) switches
+// them off in its own CI, and at ci.yml's top the pins check and check's exit 1 with them. What holds ci.yml
+// is the owner's read of it (CLAUDE.md's list); the test script, vitest.config.ts and the scripts check runs
+// first are off that list.
 export const PINS_JOB = 'action-pins'
 export const PINS_RUN = 'node scripts/check-action-pins.ts'
 const NEEDS_FAILED = expr(
@@ -5209,6 +5329,10 @@ export function gateFindings(
         'runs in the gate the code pinned whole from its first code line (PROTECT_ENVIRONMENTS_SHA256), which moves only with it',
       ),
     )
+  }
+  const later = bashAfter32(code)
+  if (later.length > 0) {
+    found.push(at(PROTECT_ENVIRONMENTS, 'DPW-09', `keeps to bash 3.2's syntax (BASH_AFTER_3_2): ${later.join(', ')}`))
   }
   return found
 }

@@ -818,9 +818,15 @@ export const DEPLOY_SCRIPT_DATA = ['infra/src/config/profiles.ts', 'infra/src/re
 // assertion or satisfies), exported or not. Nothing else: no import that loads a module, no re-export, no
 // statement that runs (an if, a call, an assignment), no let or var, no class (its static parts run), and
 // in a const no call, new, tagged template, template with a substitution, property read (a getter runs),
-// spread, computed key, method or accessor. So a data file can't take over the gate's plan or a smoke's
-// verdict by what it does when it loads (writing the plan itself and exiting 0, say), and what it decides
-// is its values, which its owner's read and the scripts' own checks hold.
+// spread, computed key, method or accessor. And nothing at the top level named then, a function (async or
+// a generator included) or a const (one naming a function, say): a module namespace with an export named
+// then is a thenable, whose then a dynamic import calls as it settles, taking its answer for the file's
+// exports. floors-check.ts and smoke.ts load the data at a commit through floors-check.ts's wrapper
+// (importData), whose namespace has no then, so this refusal is a second layer (review 6 SCRIPTS-01). So a
+// data file can't take over the gate's plan or a smoke's verdict by what it does when it loads (writing the
+// plan itself and exiting 0, say), and what it decides is its values, which its owner's read and the
+// scripts' own checks hold.
+const THEN = 'declares a then at the top level, which a dynamic import calls as it settles'
 export function deployScriptDataFindings(path: string, source: string): Finding[] {
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const found: string[] = []
@@ -875,8 +881,12 @@ export function deployScriptDataFindings(path: string, source: string): Finding[
           !inert(declaration.initializer)
         ) {
           refuse(declaration, 'gives a const something other than data')
+        } else if (declaration.name.text === 'then') {
+          refuse(declaration, THEN)
         }
       }
+    } else if (ts.isFunctionDeclaration(statement) && statement.name?.text === 'then') {
+      refuse(statement, THEN)
     } else if (
       !ts.isTypeAliasDeclaration(statement) &&
       !ts.isInterfaceDeclaration(statement) &&

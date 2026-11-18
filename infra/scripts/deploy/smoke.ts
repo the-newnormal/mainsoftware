@@ -10,11 +10,12 @@
 //
 // It always runs from the run's own checkout, so the read-back that run's deploy.yml wrote is judged by
 // the code of the same commit, and reads the profile at the release it judges (--profile-at: that
-// commit's profiles.ts, by `git show` into a temporary file it imports), so SMK-02 follows that
-// release's smsProvider. It imports only Node's built-ins and profiles.ts's types (IG-08), so its jobs
-// need no npm ci. It prints one line a check, `SMK-0n pass` or `SMK-0n fail <code>`, and never a body,
-// a header value, an address or an ARN. It decides whether a release passed, so it is on the
-// owner's-read list (C11-D74).
+// commit's profiles.ts, by `git show` into a temporary file loaded through floors-check.ts's wrapper,
+// importData), so SMK-02 follows that release's smsProvider. It imports only Node's built-ins,
+// floors-check.ts (which imports nothing more) and profiles.ts's types (IG-08), so its jobs need no
+// npm ci. It prints one line a check, `SMK-0n pass` or `SMK-0n fail <code>`, and never a body, a header
+// value, an address or an ARN. It decides whether a release passed, so it is on the owner's-read list
+// (C11-D74).
 //
 //   node infra/scripts/deploy/smoke.ts --env <nonprod|prod|restore> --release <commit>:<digest>
 //     --readback <file> --profile-at <commit> [--restore <up|down>] [--repo <dir>] [--invert SMK-05]
@@ -23,13 +24,11 @@
 // whose smoke must fail). Exit 0 when every check passes, 1 when one fails, 2 on bad input.
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { request } from 'node:https'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { connect } from 'node:tls'
-import { pathToFileURL } from 'node:url'
 import type { EnvironmentName, Profile, ServerRole } from '../../src/config/profiles.ts'
+import { importData } from './floors-check.ts'
 
 const ENVIRONMENTS: readonly EnvironmentName[] = ['nonprod', 'prod', 'restore']
 const ROLES: readonly ServerRole[] = ['api', 'realtime', 'worker']
@@ -537,8 +536,9 @@ export interface ProfilesAt {
   originHost: (environment: EnvironmentName) => string | undefined
 }
 
-// profiles.ts as the commit has it, read by `git show` into a temporary folder and imported from there
-// (it imports nothing), the folder removed whatever happens.
+// profiles.ts as the commit has it, read by `git show` and loaded through importData (it imports
+// nothing), its three exports copied into an object of the smoke's own, so the file's namespace is
+// never what a promise settles with.
 export async function profilesAt(commit: string, repo: string): Promise<ProfilesAt> {
   let source: string
   try {
@@ -550,22 +550,15 @@ export async function profilesAt(commit: string, repo: string): Promise<Profiles
   } catch {
     throw new SmokeInputError('--profile-at names no commit with infra/src/config/profiles.ts in this clone')
   }
-  const folder = mkdtempSync(join(tmpdir(), 'hearth-profiles-'))
-  try {
-    const file = join(folder, 'profiles.ts')
-    writeFileSync(file, source)
-    const module: unknown = await import(pathToFileURL(file).href)
-    if (
-      !isRecord(module) ||
-      !isRecord(module.PROFILES) ||
-      typeof module.appHost !== 'function' ||
-      typeof module.originHost !== 'function'
-    ) {
-      throw new SmokeInputError("--profile-at's profiles.ts is not one the smoke can read")
-    }
-    return module as unknown as ProfilesAt
-  } finally {
-    rmSync(folder, { recursive: true, force: true })
+  const { data } = await importData('profiles.ts', source, 'hearth-profiles-')
+  const { PROFILES, appHost, originHost } = data
+  if (!isRecord(PROFILES) || typeof appHost !== 'function' || typeof originHost !== 'function') {
+    throw new SmokeInputError("--profile-at's profiles.ts is not one the smoke can read")
+  }
+  return {
+    PROFILES: PROFILES as ProfilesAt['PROFILES'],
+    appHost: appHost as ProfilesAt['appHost'],
+    originHost: originHost as ProfilesAt['originHost'],
   }
 }
 
@@ -723,7 +716,8 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
 }
 
 // Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never run and the
-// script would exit 0 having judged nothing: it refuses such a Node instead.
+// script would exit 0 having judged nothing: it refuses such a Node instead. floors-check.ts, which this file
+// loads, makes the same check first, so on such a Node its line is the one printed, and the exit is 1.
 if (typeof import.meta.main !== 'boolean') {
   process.stderr.write('smoke: Node 24.2 or later is needed (import.meta.main), so nothing was judged\n')
   process.exit(1)

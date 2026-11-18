@@ -7,7 +7,7 @@
 // global configuration files, a global hook or signed tags, for every git command the test runs itself)
 // or built as repeats, and an ARN, account id or address is built from parts at run time (IG-01). It
 // holds what the smoke must decide, so it is on the owner's-read list (C11-D74).
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { ServerResponse } from 'node:http'
 import { createServer, type Server } from 'node:https'
@@ -40,6 +40,7 @@ import {
 
 const EMAIL = ['test', 'example.invalid'].join('@')
 const PROFILES_SOURCE = fileURLToPath(new URL('../../src/config/profiles.ts', import.meta.url))
+const SMOKE = fileURLToPath(new URL('./smoke.ts', import.meta.url))
 const DIGEST = `sha256:${'b'.repeat(64)}`
 const EARLIER = `sha256:${'c'.repeat(64)}`
 const RELEASE = `${'a'.repeat(40)}:${DIGEST}`
@@ -283,10 +284,26 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
         }),
         'readback-worker-health',
       ],
+      // The healthy count alone, nothing in another state: the api's task runs but isn't registered, a
+      // realtime target short of its two tasks, and one more healthy api target than tasks running.
       [
         changed(v => {
           const [group] = v.targetGroups
-          if (group !== undefined) Object.assign(group, { healthy: 0, other: 1 })
+          if (group !== undefined) Object.assign(group, { healthy: 0, other: 0 })
+        }),
+        'readback-api-targets',
+      ],
+      [
+        changed(v => {
+          const group = v.targetGroups.find(each => each.role === 'realtime')
+          if (group !== undefined) Object.assign(group, { healthy: 1, other: 0 })
+        }),
+        'readback-realtime-targets',
+      ],
+      [
+        changed(v => {
+          const [group] = v.targetGroups
+          if (group !== undefined) Object.assign(group, { healthy: 2, other: 0 })
         }),
         'readback-api-targets',
       ],
@@ -712,6 +729,57 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     })
     expect(unreachable.hosts).toEqual([])
   })
+
+  // An export named `then` makes a module's namespace a thenable, so an import() of profiles.ts itself
+  // would call it as the promise settles and take what it answers for the file's exports, or let it
+  // print a verdict of its own and exit. The smoke loads profiles.ts through a wrapper instead, judging
+  // by the values the file holds without calling its `then`. The case runs the smoke under Node, as a
+  // smoke job does: Vitest's own module runner rewrites every import into an await of the module, so in
+  // process the namespace is awaited whatever the smoke does. The restore stage asks nothing of the
+  // network, so its down half needs no server.
+  it('SMK-T08: a profiles.ts that exports `then` is read for its values, and its `then` never runs as it loads', () => {
+    const source = readFileSync(PROFILES_SOURCE, 'utf8')
+    const down = writeReadBack(
+      changed(v =>
+        Object.assign(v, { env: 'restore', probe: 'skipped', services: [], targetGroups: [], loadBalancer: null }),
+      ),
+      'then-down.json',
+    )
+    const notJson = join(scratch, 'then-not-json.json')
+    writeFileSync(notJson, 'not json')
+    const smoke = (readback: string, then: string) => {
+      writeFileSync(join(repo, 'infra/src/config/profiles.ts'), `${source}\n${then}\n`)
+      git(['commit', '-q', '-am', 'then'])
+      const commit = git(['rev-parse', 'HEAD'])
+      const argv = ['--env', 'restore', '--restore', 'down', '--release', RELEASE, '--readback', readback]
+      const node = spawnSync(process.execPath, [SMOKE, ...argv, '--profile-at', commit, '--repo', repo], {
+        cwd: repo,
+        encoding: 'utf8',
+        timeout: 30_000,
+      })
+      return [node.status, node.stdout, node.stderr]
+    }
+    try {
+      // A `then` that answers with nothing the smoke can read, which would make it refuse as bad input.
+      const empty = [
+        'export function then(resolve: (value: unknown) => void): void {',
+        "  process.stderr.write('then ran\\n')",
+        '  resolve({})',
+        '}',
+      ].join('\n')
+      expect(smoke(down, empty)).toEqual([0, 'SMK-06 pass\n', ''])
+      // A `then` that prints a pass and exits 0, over a read-back that isn't JSON.
+      const verdict = [
+        'export function then(): void {',
+        "  process.stdout.write('SMK-06 pass\\n')",
+        '  process.exit(0)',
+        '}',
+      ].join('\n')
+      expect(smoke(notJson, verdict)).toEqual([1, 'SMK-06 fail readback-json\n', ''])
+    } finally {
+      git(['reset', '-q', '--hard', prodTwilio])
+    }
+  }, 60_000)
 
   it('SMK-T08: with answers whose bodies hold a marker, nothing the smoke prints holds it', async () => {
     const readback = writeReadBack(readBack())

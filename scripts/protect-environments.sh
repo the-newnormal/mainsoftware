@@ -7,6 +7,10 @@
 # (DPW-09, PROTECT_ENVIRONMENTS_SHA256), so a change to that code moves the pin in the same PR; these
 # comments above it stay free to edit.
 #
+# A repo admin may run it on a Mac, whose /bin/bash is 3.2, so it keeps to bash 3.2's syntax: no
+# `[[ -v`, mapfile, associative array or case-changing expansion, and an array that may be empty is
+# expanded only as ${a[@]+"${a[@]}"}, since bash before 4.4 calls an empty array unbound under set -u.
+#
 #   scripts/protect-environments.sh check [owner/repo]
 #   scripts/protect-environments.sh check --from <dir> [owner/repo]
 #   PROD_REVIEWERS=<login>[,<login>...] scripts/protect-environments.sh apply [owner/repo]
@@ -55,7 +59,7 @@ CLAIM_KEYS='["repo","context","job_workflow_ref"]'
 # script with no command under each marker.
 if [ "${1:-}" != check ]; then
   for marker in "${AGENT_MARKERS[@]}"; do
-    if [[ -v $marker ]]; then
+    if [ -n "${!marker+x}" ]; then
       echo "protect-environments: refused while $marker is set: a repo admin runs apply as the separate operating-system user that holds their gh login, never a coding agent or CI" >&2
       exit 1
     fi
@@ -190,7 +194,7 @@ check() {
 reviewers() {
   local login id list='[]'
   IFS=',' read -r -a logins <<<"${PROD_REVIEWERS:-}"
-  for login in "${logins[@]}"; do
+  for login in ${logins[@]+"${logins[@]}"}; do
     [[ "$login" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]] || {
       echo 'protect-environments: PROD_REVIEWERS holds something other than GitHub logins' >&2
       exit 2
