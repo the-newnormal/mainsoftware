@@ -2986,14 +2986,14 @@ jobs:
             exit 1
           fi
 
-  # The prod plan (C11-D51, C11-D55): for a prod deploy once non-prod's smoke passed, or a prod rollback,
-  # the diff the approver reads before the prod job's approval, and for a deploy with a previous release the
-  # diff of the rollback that release's own assembly would make, which prod's rollback job deploys. Its role
-  # reads prod's templates and nothing else. It outputs its attempt, which the prod job's fast re-check holds
-  # to its own.
+  # The prod plan (C11-D51, C11-D55): for a prod deploy once non-prod's smoke passed, a prod rollback or a
+  # restore, the diff the approver reads before the prod job's approval (a restore's of the restore stage's
+  # stacks), and for a deploy with a previous release the diff of the rollback that release's own assembly
+  # would make, which prod's rollback job deploys. Its role reads the prod and restore stacks' templates and
+  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own.
   prod-plan:
     needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && ((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     cache-mode: none
@@ -3002,7 +3002,7 @@ jobs:
       id-token: write
       contents: read
     env:
-      STAGE: prod
+      STAGE: ${{ needs.gate.outputs.target == 'restore' && 'restore' || 'prod' }}
     outputs:
       attempt: ${{ github.run_attempt }}
     steps:
@@ -3433,6 +3433,7 @@ jobs:
       - name: Diff
         env:
           MODE: ${{ needs.gate.outputs.mode }}
+          RESTORE: ${{ needs.gate.outputs.restore }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -3449,12 +3450,13 @@ jobs:
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
-          # The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
-          # the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
-          # a rollback its Tasks and Services; into the log, and into the summary cut at 200 KB, both through
-          # the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
-          # summary it is an indented code block, each line four spaces in and each carriage return a line
-          # break, so no line of a release's own text ends the block or opens HTML that hides what follows.
+          # The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
+          # read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
+          # for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
+          # down the three it deploys; into the log, and into the summary cut at 200 KB, both through the filter.
+          # A diff that fails still shows the CLI's message in both, then fails the step. In the summary it is an
+          # indented code block, each line four spaces in and each carriage return a line break, so no line of a
+          # release's own text ends the block or opens HTML that hides what follows.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
@@ -3463,6 +3465,10 @@ jobs:
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
             } >"$DIFF" || STATUS=$?
+          elif [ "$RESTORE" = down ]; then
+            {
+              run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
+            } >"$DIFF" || STATUS=$?
           else
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --method template --no-lookups --no-notices --no-color --fail-on never
@@ -3470,7 +3476,7 @@ jobs:
           fi
           cat "$DIFF"
           {
-            echo "### What prod's $MODE changes"
+            if [ "$STAGE" = restore ]; then echo "### What the restore changes"; else echo "### What prod's $MODE changes"; fi
             echo ''
             head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
             echo ''
@@ -3526,7 +3532,7 @@ jobs:
   # checked again against prod's records, read afresh.
   prod-gate:
     needs: [gate, build, nonprod, smoke-nonprod, prod-plan]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && ((needs.gate.outputs.target == 'prod' && needs.prod-plan.result == 'success') || needs.gate.outputs.target == 'restore') }}
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.gate.outputs.target == 'prod' || needs.gate.outputs.target == 'restore') && needs.prod-plan.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     cache-mode: none
@@ -3913,14 +3919,14 @@ jobs:
           # masks it.
           stop_token=$(openssl rand -hex 16)
           echo "::stop-commands::$stop_token"
-          # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
-          # rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
+          # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy, rollback
+          # or restore is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
           # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
           # was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
           # Then prod's newest release record, read again and checked by its shape, is the one prod-gate
           # read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
           # build made and non-prod deployed in this run.
-          if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+          if [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
             echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
             exit 1
           fi

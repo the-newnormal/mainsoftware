@@ -8,11 +8,12 @@
 // hearth-gh-deploy pushes the server image, assumes the two hearthapp roles that deploy and publish
 // the workload's stacks, and runs, watches and stops the migrate and probe one-off tasks; it reads
 // nothing else (no secret, log, object, session or database login) and assumes no other role.
-// hearth-gh-diff reads the prod stacks' templates and nothing else. The provider keeps its default
-// removal policy, under the stack's termination protection and the guardrails' protected names: it
-// holds nothing to keep, so, like the roles that trust it, it goes only with its stack, and a failed
-// first deploy's rollback deletes it (TECH-SPEC T24 item 11). This file holds who may deploy, so it is
-// on the owner's-read list (C11-D74).
+// hearth-gh-diff reads the prod and restore stacks' templates and nothing else, the restore stage's so
+// a restore's approval comes after a diff of what it deploys into prod's account. The provider keeps
+// its default removal policy, under the stack's termination protection and the guardrails' protected
+// names: it holds nothing to keep, so, like the roles that trust it, it goes only with its stack, and a
+// failed first deploy's rollback deletes it (TECH-SPEC T24 item 11). This file holds who may deploy,
+// so it is on the owner's-read list (C11-D74).
 import * as cdk from 'aws-cdk-lib'
 import * as iam from 'aws-cdk-lib/aws-iam'
 import { Construct } from 'constructs'
@@ -86,14 +87,12 @@ export class GithubOidc extends Construct {
       value: this.deployRole.attrArn,
     }).overrideLogicalId('DeployRoleArn')
 
-    // The prod-plan environment's diff of the prod stacks (C11-D51), in prod alone.
+    // The prod-plan environment's diff of the prod stacks and, before a restore, the restore stage's (C11-D51),
+    // in prod alone.
     if (workloadAccount === 'prod') {
-      const stacks = arnPattern({
-        service: 'cloudformation',
-        region: REGION,
-        account,
-        resource: 'stack/Hearth-prod-*/*',
-      })
+      const stacks = ['prod', 'restore'].map(stage =>
+        arnPattern({ service: 'cloudformation', region: REGION, account, resource: `stack/Hearth-${stage}-*/*` }),
+      )
       this.diffRole = new iam.CfnRole(this, 'DiffRole', {
         roleName: ROLE.ghDiff,
         maxSessionDuration: 3600,

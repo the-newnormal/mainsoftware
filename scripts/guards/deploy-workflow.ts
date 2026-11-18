@@ -29,8 +29,9 @@
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
 // command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
 // build's image archive) hides a line of the log or the approver's diff or drops a job output; prod-plan
-// writes the diff into its summary as an indented code block, which no line of a release's own text can
-// end or turn into HTML that hides the rest; and ASSET_CHECK refuses a template that hands CloudFormation
+// diffs what every approval in prod deploys, a restore's too (DPW-08), and writes the diff into its summary
+// as an indented code block, which no line of a release's own text can end or turn into HTML that hides
+// the rest; and ASSET_CHECK refuses a template that hands CloudFormation
 // another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
 // type, a transform), which neither the CLI's diff nor the release check reads, and a file asset whose id,
 // which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
@@ -71,7 +72,9 @@
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
-// of its own, or hands it another input; and so is every other run of every job, the five that hold the
+// of its own, or hands it another input, and in a record's writer no line but the guard's own literals
+// (RECORD_JOB_LINES, migrationRecordLines()) sets a name, runs jq or calls gh, so no line the pins admit
+// rewrites what a record says; and so is every other run of every job, the five that hold the
 // deploy role and build's and the synths' (each release on a runner of its own) included, so no run of
 // deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
 // word bash joins from quoted or expanded parts, or npm's and the CLI's own aliases, would pass a rule
@@ -88,7 +91,11 @@
 // canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to
 // evaluating only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript,
 // name a builtin takes, descriptor's variable and variable bash evaluates, a default or an element's
-// assignment counting as the name's, and a line it can't read that plainly is refused), to running only the
+// assignment counting as the name's, a [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis
+// holds one, and a line it can't read that plainly is refused), to expanding only a name it sets, one its
+// step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder or the
+// runner's outputs, summary, folder, run ids, address and commit (foreignExpansionLines(), DPW-07), so no
+// canonical text prints the OIDC request token or another credential its job holds, to running only the
 // commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, with no
 // environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to local or
 // export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and no
@@ -97,9 +104,11 @@
 // handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written
 // on the line and, for jq, data under the assembly's or the temp folder or a path in the checkout; printf
 // only a single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and
-// options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug); tee
-// only appending to the summary; no word of these bash splits or globs, nor any that expands to several words
-// but PROBE's task list and ASSET_CHECK's list of templates; and every other program
+// options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug), one
+// value to each option but a list's, so no expansion in a second word hands aws an option; tee only
+// appending to the summary; no word of these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+
+// PWD, wherever bash expands one, a ${…}'s default and a double-quoted replacement among them), nor any that
+// expands to several words but PROBE's task list and ASSET_CHECK's list of templates; and every other program
 // CANONICAL_COMMANDS names (grep, wc, readlink, realpath, git, node, sort, sleep, mktemp, cd and pwd as much
 // as sed, tar, find, curl, openssl, base64, mkdir and sha256sum) only on its lines as the guard writes them,
 // as is any read of a file by a redirection; the lines the tool holds compare against (TOOL_LINE_TEXTS) are
@@ -845,14 +854,14 @@ elif [ "$(jq -r '.id // ""' <<<"$newest")" != "$RECORD_ID" ]; then
   exit 1
 fi`
 export const FAST_RECHECK_PROD = sh`${STOP_HEAD}
-# The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy or
-# rollback is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
+# The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy, rollback
+# or restore is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
 # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
 # was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
 # Then prod's newest release record, read again and checked by its shape, is the one prod-gate
 # read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
 # build made and non-prod deployed in this run.
-if [ "$TARGET" = prod ] && [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
+if [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
   echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
   exit 1
 fi
@@ -894,6 +903,8 @@ export const CDK_DEPLOY_ROLLBACK = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/
 export const CDK_DEPLOY_DOWN = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/$PART" ${DEPLOY_FLAGS}`
 export const CDK_DIFF_PROD = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --method template --no-lookups --no-notices --no-color --fail-on never`
 export const CDK_DIFF_ROLLBACK = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
+// A restore taken down's diff: the three stacks restore=down deploys (RESTORE_DOWN), in its order.
+export const CDK_DIFF_DOWN = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
 // restore=down (C11-D45; TECH-SPEC T24 item 18, DPW-06): Services, then Data, then Platform, one call each,
 // each only for a restore stack that exists and has settled; one a failed create left (ROLLBACK_COMPLETE,
 // or REVIEW_IN_PROGRESS, which never settles) is skipped, and one whose rollback failed too
@@ -1306,12 +1317,13 @@ echo "read-back: Hearth-$STAGE-Services runs $DEPLOYED" | mask | tee -a "$GITHUB
 // text five times longer, so it is cut at 200 KB, under a step summary's 1 MiB.
 export const DIFF_CUT = 204800
 export const DIFF_RUN = sh`${PREAMBLE}
-# The diff the approver reads (C11-D51): the assembly against prod's deployed templates, read with
-# the plan role's own credentials (its lookup role is refused), for a deploy every prod stack and for
-# a rollback its Tasks and Services; into the log, and into the summary cut at 200 KB, both through
-# the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
-# summary it is an indented code block, each line four spaces in and each carriage return a line
-# break, so no line of a release's own text ends the block or opens HTML that hides what follows.
+# The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
+# read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
+# for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
+# down the three it deploys; into the log, and into the summary cut at 200 KB, both through the filter.
+# A diff that fails still shows the CLI's message in both, then fails the step. In the summary it is an
+# indented code block, each line four spaces in and each carriage return a line break, so no line of a
+# release's own text ends the block or opens HTML that hides what follows.
 ASSEMBLY="$RUNNER_TEMP/assembly"
 DIFF="$RUNNER_TEMP/diff.txt"
 STATUS=0
@@ -1320,6 +1332,10 @@ if [ "$MODE" = rollback ]; then
   {
     ${CDK_DIFF_ROLLBACK}
   } >"$DIFF" || STATUS=$?
+elif [ "$RESTORE" = down ]; then
+  {
+    ${CDK_DIFF_DOWN}
+  } >"$DIFF" || STATUS=$?
 else
   {
     ${CDK_DIFF_PROD}
@@ -1327,7 +1343,7 @@ else
 fi
 cat "$DIFF"
 {
-  echo "### What prod's $MODE changes"
+  if [ "$STAGE" = restore ]; then echo "### What the restore changes"; else echo "### What prod's $MODE changes"; fi
   echo ''
   head -c ${String(DIFF_CUT)} "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
   echo ''
@@ -1981,17 +1997,21 @@ const expr = (inner: string) => `\${{ ${inner} }}`
 // substitution or a backtick substitution, whose patterns' ) this reader would take for the
 // substitution's end; odd names what bash might read otherwise than this reader: a comment whose #
 // stands after anything but a blank or a line's start, or inside a substitution; an ANSI-C string but
-// $'\t'; a ${…} holding a quote, a backtick, a substitution, another ${ or a transformation (@ and a
-// letter, as ${x@P}, which expands its value as a prompt and runs a $( … ) in it), or unquoted, a blank,
-// or with no closing brace; and the old arithmetic expansion $[ … ], quoted or not. A credentialed run
-// refuses either (DPW-10, DPW-13). The views depend on the run's text alone, so each text's are read once
-// and kept (keptByText), every rule reading the same ones.
+// $'\t'; a ${…} holding a quote, a backtick, a substitution, another ${, a tilde (which bash expands in its
+// word, and in a replacement even in double quotes: "${x/a/~}") or a transformation (@ and a letter, as
+// ${x@P}, which expands its value as a prompt and runs a $( … ) in it), or unquoted, a blank,
+// or with no closing brace; the old arithmetic expansion $[ … ], quoted or not; and an unquoted tilde
+// but the =~ operator's (a word's ~, ~+ or ~- is $HOME, $PWD or $OLDPWD, after an assignment's = or : too),
+// which a reader of the words as written takes for itself (the seventh review's fourth attack, where ~-
+// handed aws an --endpoint-url its text never wrote). A credentialed run refuses either (DPW-10, DPW-13).
+// The views depend on the run's text alone, so each text's are read once and kept (keptByText), every rule
+// reading the same ones.
 interface ShellViews {
   readonly text: string
   readonly code: string
   readonly quotedLines: ReadonlySet<number>
   readonly nestedCase: boolean
-  readonly odd: ReadonlySet<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>
+  readonly odd: ReadonlySet<'comment' | 'ansi-c' | 'brace' | 'arithmetic' | 'tilde'>
 }
 // A reader whose answer depends on a run's text alone, kept per text so each rule reading the same run
 // reads it once (at most 4096 texts, then the store starts again).
@@ -2017,7 +2037,7 @@ function readViews(run: string): ShellViews {
   const blank = (c: string) => (c === '\n' ? '\n' : ' ')
   // The lines that start inside a quoted string, whose first word is no command.
   const quotedLines = new Set<number>()
-  const odd = new Set<'comment' | 'ansi-c' | 'brace' | 'arithmetic'>()
+  const odd = new Set<'comment' | 'ansi-c' | 'brace' | 'arithmetic' | 'tilde'>()
   let line = 0
   // Whether the next character starts a word: at the start, and after an unescaped blank (a space or a
   // tab), a newline or ; & | ( ), but never right after a substitution's closing ).
@@ -2050,7 +2070,7 @@ function readViews(run: string): ShellViews {
     }
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
-  const BRACE_ODD = /['"`]|\$[({]|@[A-Za-z]/
+  const BRACE_ODD = /['"`~]|\$[({]|@[A-Za-z]/
   let i = 0
   while (i < run.length) {
     const c = run[i] ?? ''
@@ -2163,6 +2183,12 @@ function readViews(run: string): ShellViews {
       stack.push({ kind: 'paren', depth: 1 })
       i += 2
       boundary = true
+    } else if (c === '~' && !(run[i - 1] === '=' && /[ \t]/.test(run[i - 2] ?? '') && /[ \t]/.test(next))) {
+      // An unquoted tilde but [[ … =~ … ]]'s operator, wherever it stands.
+      odd.add('tilde')
+      keep(c)
+      i++
+      boundary = false
     } else {
       // (A backtick starts a command too, though a # right after one reads as code here, never a comment.)
       if (
@@ -2556,21 +2582,72 @@ function canonicalLines(run: string): ReadonlySet<number> {
 }
 
 // What bash evaluates as arithmetic or a name, on the code view: (( or $(( )), a [[ … ]] comparing as numbers
-// or asking -v or -R, read to the ]] that stands as a word (a ]] inside one, as in ${x//[[:space:]]/} or a
-// regex's [[:alnum:]], ends nothing), a [[ that doesn't close on its own line, a [ or test asking -v or -R
-// anywhere after it on its line, an indirect ${!…}, a ${name[…]…} but [@] or [*], whatever follows the
-// subscript, an offset of a substring (${name:offset}, ${@:offset}, ${*:offset} or ${1:offset}), an
-// assignment to name[…], a compound assignment naming a subscript (a=([i]=1)), and what unplainLines() names
-// (a name handed to read, unset or wait -p, a test of another shape, bash's own evaluating names). The tests
-// pin each canonical text's lines that hold one.
+// or asking -v or -R, by an operator standing anywhere after a [[ on its line (wherever the test closes, so no
+// ]]-shaped text in an operand, ${x/ ]] /}, ${x:- ]] }, ${x//[[:space:]]/} or a group's ( ]]), hides one: the
+// seventh review's first and fourth attacks), a [[ that doesn't close on its own line (testOpenAtEnd()), a [
+// or test asking -v or -R anywhere after it on its line, an indirect ${!…}, a ${name[…]…} but [@] or [*],
+// whatever follows the subscript, an offset of a substring (${name:offset}, ${@:offset}, ${*:offset} or
+// ${1:offset}), an assignment to name[…], a compound assignment naming a subscript (a=([i]=1)), and what
+// unplainLines() names (a name handed to read, unset or wait -p, a test of another shape, bash's own
+// evaluating names). The tests pin each canonical text's lines that hold one.
 const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
 const HERE_DOCUMENT = /(?<!<)<<(?!<)/
-// A ]] that stands as a word, the one thing that ends a [[: after a blank, before a blank, an operator, a ) or
-// the line's end.
-const TEST_END = String.raw`\s\]\](?=[\s;&|)]|$)`
-const TEST_EVALUATIONS = [
-  new RegExp(String.raw`\[\[(?:(?!${TEST_END}).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])`),
-  new RegExp(String.raw`(?:^|[\s;&|(!{])\[\[(?=\s)(?:(?!${TEST_END}).)*$`),
+// A code view's line with each ${…} and $( … ) that closes on it written as underscores, so nothing inside one
+// (a ]] in ${x/ ]] /} or in a substitution's own text) ends a [[.
+function spansBlanked(line: string): string {
+  let out = ''
+  for (let i = 0; i < line.length; i++) {
+    const open = line[i + 1]
+    if (line[i] === '$' && (open === '{' || open === '(')) {
+      const close = open === '{' ? '}' : ')'
+      let depth = 0
+      let end = -1
+      for (let at = i + 1; at < line.length; at++) {
+        if (line[at] === open) depth++
+        else if (line[at] === close && --depth === 0) {
+          end = at
+          break
+        }
+      }
+      if (end >= 0) {
+        out += '_'.repeat(end - i + 1)
+        i = end
+        continue
+      }
+    }
+    out += line[i] ?? ''
+  }
+  return out
+}
+// Whether a [[ where a command starts on a code view's line doesn't close on it: past each ${…} and $( … ) the
+// line closes, and outside any parentheses the test opens (a regex's group, an extglob's, inside which bash
+// reads ]] as text: [[ $x =~ ( ]]) ]]), no ]] stands as a word, after a blank and before a blank, an operator,
+// a ) or the line's end.
+function testOpenAtEnd(line: string): boolean {
+  const blanked = spansBlanked(line)
+  for (const match of blanked.matchAll(/(?:^|[\s;&|(!{])\[\[(?=\s)/g)) {
+    let depth = 0
+    let closed = false
+    for (let at = match.index + match[0].length; at < blanked.length && !closed; at++) {
+      const c = blanked[at]
+      if (c === '(') depth++
+      else if (c === ')') depth = Math.max(0, depth - 1)
+      else if (
+        depth === 0 &&
+        blanked.startsWith(']]', at) &&
+        /\s/.test(blanked[at - 1] ?? '') &&
+        /^(?:[\s;&|)]|$)/.test(blanked.slice(at + 2, at + 3))
+      ) {
+        closed = true
+      }
+    }
+    if (!closed) return true
+  }
+  return false
+}
+const TEST_EVALUATIONS: ReadonlyArray<{ test(line: string): boolean }> = [
+  /\[\[.*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])/,
+  { test: testOpenAtEnd },
   /(?:^|[\s;&|(!{])(?:\[|test)\s.*(?<![\w-])-[vR](?![\w-])/,
 ]
 const EVALUATED = [
@@ -2850,7 +2927,8 @@ function commandWords(text: string, from: number): string[] {
 }
 // A word as the program it is handed reads it: its quotes and escapes taken off as bash takes them (a
 // backslash in double quotes only before $, `, " or \), and each expansion or substitution written \0,
-// which could stand for anything, an option among it. So "-f", '-f', \-f and -\f are all -f.
+// which could stand for anything, an option among it, an unquoted tilde among them (~- is $OLDPWD). So
+// "-f", '-f', \-f and -\f are all -f.
 export function wordAsRead(word: string): string {
   let out = ''
   let quote: '"' | "'" | undefined
@@ -2879,13 +2957,15 @@ export function wordAsRead(word: string): string {
         }
       } else i += /^[A-Za-z_]\w*/.exec(word.slice(i + 1))?.[0].length ?? 1
       out += '\0'
-    } else out += c
+    } else if (c === '~' && quote === undefined) out += '\0'
+    else out += c
   }
   return out
 }
 // Whether bash could make a word into several, or into another program's option, as it runs: an expansion or a
-// substitution outside double quotes (split at blanks), or a glob or a brace outside any quotes (* ? [ {),
-// each read as wordAsRead() reads quotes, escapes and the expansions inside double quotes.
+// substitution outside double quotes (split at blanks), or a glob, a brace or a tilde outside any quotes
+// (* ? [ { ~, the last the value of HOME, PWD or OLDPWD, an option among them), each read as wordAsRead() reads
+// quotes, escapes and the expansions inside double quotes.
 export function wordSplits(word: string): boolean {
   let quote: '"' | "'" | undefined
   for (let i = 0; i < word.length; i++) {
@@ -2907,7 +2987,7 @@ export function wordSplits(word: string): boolean {
           else if (word[i] === close && --depth === 0) break
         }
       }
-    } else if (quote === undefined && /[*?[{]/.test(c)) return true
+    } else if (quote === undefined && /[*?[{~]/.test(c)) return true
   }
   return false
 }
@@ -3179,11 +3259,60 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
     ),
   )
 
+// The names a canonical text may expand (DPW-07; the seventh review's fourth attack, where an echo added to
+// AWS_CHECK printed the OIDC request token spaced out, which no mask matches, since expandsOnlyItsOwn() reads a
+// run's own lines alone): the runner's own that a run's own lines may expand (RUNNER_EXPANSIONS), the run's
+// commit (GITHUB_SHA) and bash's SECONDS; and, outside the runner's and the credentials' namespaces (ACTIONS_,
+// GITHUB_, RUNNER_, AWS_, GH_, INPUT_, STATE_), a name a canonical text sets, one a step's env: (STEP_ENVS) or a
+// job's (STAGE) gives from no secret or token, or the one-offs' TOKEN and the assembly's folder (ASSEMBLY),
+// which a run's own lines set before the texts that read them. So no canonical text expands the OIDC request
+// token or its URL, the runtime token, an AWS_ variable, the job's token or a secret an env: hands its step,
+// even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
+const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
+const RUNNER_NAMES = (): readonly string[] => [...RUNNER_EXPANSIONS, 'GITHUB_SHA', 'SECONDS']
+const namesSetIn = (text: string): string[] => [...NAMES_SET_BY(text), ...shellCommands(text).flatMap(builtinNames)]
+let CANONICAL_GIVEN: ReadonlySet<string> | undefined
+const canonicalGiven = (): ReadonlySet<string> => {
+  if (CANONICAL_GIVEN === undefined) {
+    const envs = Object.values(STEP_ENVS).flatMap(steps => Object.values(steps).flatMap(env => Object.entries(env)))
+    const secret = new Set(envs.filter(([, value]) => /secrets|github\s*\.\s*token/i.test(value)).map(([name]) => name))
+    CANONICAL_GIVEN = new Set(
+      [
+        ...envs.map(([name]) => name),
+        'STAGE',
+        'TOKEN',
+        'ASSEMBLY',
+        ...Object.values(CANONICAL_BY_NAME()).flatMap(namesSetIn),
+      ].filter(name => !secret.has(name) && !CREDENTIAL_NAMESPACE.test(name)),
+    )
+  }
+  return CANONICAL_GIVEN
+}
+// The lines of a canonical text that expand a name it may not ($NAME, ${NAME…}, ${#NAME…}, read on the code
+// view, so a jq program's own $name in single quotes is none), given the names the texts beside it set.
+export function foreignExpansionLines(text: string, alsoSet: readonly string[] = []): number[] {
+  const views = shellViews(text)
+  const allowed = new Set([
+    ...canonicalGiven(),
+    ...alsoSet.filter(name => !CREDENTIAL_NAMESPACE.test(name) && !TOKEN_NAMES.includes(name)),
+    ...RUNNER_NAMES(),
+  ])
+  const lines = new Set<number>()
+  for (const match of views.code.matchAll(/\$\{?[#!]?(?=[A-Za-z_])/g)) {
+    const name = /^\$\{?[#!]?([A-Za-z_]\w*)/.exec(views.text.slice(match.index))?.[1] ?? ''
+    if (!allowed.has(name)) lines.add(views.code.slice(0, match.index).split('\n').length - 1)
+  }
+  return [...lines].sort((a, b) => a - b)
+}
+const CANONICAL_EXPANDS_RULE =
+  "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+
 // DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
-// evaluates nothing from outside it (outsideEvaluations()), and hands jq, gh and the tools that could run a
-// program or write a file only what canonicalToolLines() holds them to, each line that does otherwise named.
-// The guard's own texts never change while it runs, so their findings are read once (CANONICAL_FOUND).
+// evaluates nothing from outside it (outsideEvaluations()), expands no credential (foreignExpansionLines(),
+// DPW-07's), and hands jq, gh and the tools that could run a program or write a file only what
+// canonicalToolLines() holds them to, each line that does otherwise named. The guard's own texts never change
+// while it runs, so their findings are read once (CANONICAL_FOUND).
 let CANONICAL_FOUND: readonly Finding[] | undefined
 export function canonicalTextFindings(texts?: Readonly<Record<string, string>>): Finding[] {
   if (texts === undefined) {
@@ -3192,8 +3321,12 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
   }
   const found: Finding[] = []
   const functions = CANONICAL_FUNCTIONS(texts)
+  const alsoSet = Object.values(texts).flatMap(namesSetIn)
   for (const [name, text] of Object.entries(texts)) {
     if (!readsAsBash(text)) found.push(`${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`)
+    for (const line of foreignExpansionLines(text, alsoSet)) {
+      found.push(`${GUARD}: DPW-07 ${name}, line ${line + 1}: ${CANONICAL_EXPANDS_RULE}`)
+    }
     for (const line of outsideEvaluations(text)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`,
@@ -4895,15 +5028,18 @@ const CDK_LINE_JOBS: Readonly<Record<string, readonly string[]>> = {
   [CDK_DEPLOY_DOWN]: ['prod'],
   [CDK_DIFF_PROD]: ['prod-plan'],
   [CDK_DIFF_ROLLBACK]: ['prod-plan'],
+  [CDK_DIFF_DOWN]: ['prod-plan'],
 }
 
-// Each job's STAGE (DPW-06): set once, at the job, from a literal, or for prod the one expression that
-// yields restore for a restore and prod otherwise.
+// Each job's STAGE (DPW-06): set once, at the job, from a literal, or for prod and prod-plan the one
+// expression that yields restore for a restore and prod otherwise, so prod-plan diffs the stacks prod then
+// deploys.
+const PROD_STAGE = expr("needs.gate.outputs.target == 'restore' && 'restore' || 'prod'")
 export const STAGES: Readonly<Record<string, string>> = {
   nonprod: 'nonprod',
   'rollback-nonprod': 'nonprod',
-  'prod-plan': 'prod',
-  prod: expr("needs.gate.outputs.target == 'restore' && 'restore' || 'prod'"),
+  'prod-plan': PROD_STAGE,
+  prod: PROD_STAGE,
   'rollback-prod': 'prod',
 }
 
@@ -5484,13 +5620,15 @@ const SMOKES: Readonly<Record<string, string>> = {
 }
 
 // DPW-08 (C11-D52): prod needs prod-gate and prod-plan; prod-plan's if: requires non-prod's smoke for a
-// deploy; prod-gate names no environment and holds no id-token, waits for main's check and migrations
-// for a deploy alone, read from ci.yml's own run and its jobs (MAIN_CI, and the gate the pull request's
-// the same way, PULL_CHECKS), never from a check run, and runs history.ts prod-gate with the mode
+// deploy, and lets it run for a restore, whose prod-gate requires its success as a prod deploy's and
+// rollback's does, so every prod approval, a restore's too, comes after a diff of what it deploys (the
+// seventh review's fourth attack); prod-gate names no environment and holds no id-token, waits for main's
+// check and migrations for a deploy alone, read from ci.yml's own run and its jobs (MAIN_CI, and the gate
+// the pull request's the same way, PULL_CHECKS), never from a check run, and runs history.ts prod-gate with the mode
 // (PROD_GATE_CALL); the fast re-checks (FAST_RECHECK_NONPROD and FAST_RECHECK_PROD) come before the
 // credentials and cover a deploy (ancestry, and in prod both digests) and a rollback or restore (the
-// record id; in prod every mode's, and a prod deploy's or rollback's approval is held to prod-plan's
-// diff of this attempt, prod-plan outputting its attempt), each of those runs pinned whole, so no early
+// record id; in prod every mode's, and every approval in prod is held to prod-plan's diff of this
+// attempt, prod-plan outputting its attempt), each of those runs pinned whole, so no early
 // exit 0 or forged output passes it; each smoke judges only the read-back its job wrote in this
 // attempt (the job outputs attempt, and the smoke's one
 // step reading READBACK first refuses another, SMOKE_ATTEMPT); each rollback job needs build, takes this
@@ -5520,9 +5658,39 @@ export function prodPathFindings(workflows: Texts): Finding[] {
     !planIf.includes(
       "((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')",
     ) ||
-    evaluateIf(planIf, { 'needs.gate.outputs.mode': 'deploy', 'needs.smoke-nonprod.result': 'failure' }) !== false
+    evaluateIf(planIf, {
+      'needs.gate.outputs.target': 'prod',
+      'needs.gate.outputs.mode': 'deploy',
+      'needs.smoke-nonprod.result': 'failure',
+    }) !== false
   ) {
     add('prod-plan', "its if: requires smoke-nonprod's success for a deploy")
+  }
+  // A restore is approved against prod-plan's diff of the restore stage's stacks, as a prod deploy or rollback
+  // is against its diff of prod's (the seventh review's fourth attack, where a restore's templates reached
+  // prod's account with no diff in any run): prod-plan runs for a restore, and prod-gate, which prod needs,
+  // requires prod-plan's success for every target.
+  const gateJob = jobs.get('prod-gate')
+  const gateIf = gateJob === undefined ? '' : (jobScalar(gateJob.job, 'if') ?? '')
+  const restore = { 'needs.gate.outputs.target': 'restore', 'needs.gate.outputs.mode': 'deploy' }
+  if (
+    evaluateIf(planIf, {
+      ...restore,
+      'github.triggering_actor': 'person',
+      'github.actor': 'person',
+      'needs.synth.result': 'success',
+      'needs.synth-previous-prod.result': 'success',
+      'needs.smoke-nonprod.result': 'skipped',
+    }) === false ||
+    ['failure', 'cancelled', 'skipped'].some(
+      result =>
+        evaluateIf(gateIf, { ...restore, 'needs.gate.result': 'success', 'needs.prod-plan.result': result }) !== false,
+    )
+  ) {
+    add(
+      'prod-plan',
+      'runs for a restore, whose prod-gate (and so prod) requires its success, so a restore is approved against its diff',
+    )
   }
   const gate = jobs.get('prod-gate')
   const gatePermissions = gate === undefined ? undefined : jobPermissions(gate.job)
@@ -5747,11 +5915,11 @@ const REQUIRES: Readonly<Record<string, ReadonlyArray<readonly [string, Readonly
   'prod-plan': [
     ['synth', {}],
     ['synth-previous-prod', {}],
-    ['smoke-nonprod', { 'needs.gate.outputs.mode': 'deploy' }],
+    ['smoke-nonprod', { 'needs.gate.outputs.mode': 'deploy', 'needs.gate.outputs.target': 'prod' }],
   ],
   'prod-gate': [
     ['gate', {}],
-    ['prod-plan', { 'needs.gate.outputs.target': 'prod' }],
+    ['prod-plan', {}],
   ],
   prod: [
     ['synth', {}],
@@ -6368,21 +6536,33 @@ const AWS_VALUE_NAMES = [
 // options told apart from values as aws tells them, by the text it is handed (so a quoted '--debug' is
 // an option too); each value, as aws reads it, holding no scheme (file://, fileb://, https://) or
 // shorthand file load (key@=) anywhere, and holding an expansion, anywhere in it, only as one of
-// AWS_VALUE_WORDS, whole.
+// AWS_VALUE_WORDS, whole; and one value after each option but a list's (awsValueTaken()).
 function awsIsHeld(args: readonly ShellWord[]): boolean {
   if (!AWS_CALLS.test(` ${argText(args)}`)) return false
   let option = ''
+  let values = 0
   return args.slice(2).every(arg => {
     const value = wordSkeleton(arg.raw)
     if (value === undefined) return false
     if (value.startsWith('-')) {
       option = arg.raw
+      values = 0
       return arg.raw === value && AWS_OPTIONS.includes(arg.raw)
     }
-    if (option === '' || /:\/\/|@=/.test(value) || /^(?:file|fileb|https?):/i.test(value)) return false
+    if (!awsValueTaken(option, ++values, value)) return false
+    if (/:\/\/|@=/.test(value) || /^(?:file|fileb|https?):/i.test(value)) return false
     return !value.includes('\0') || AWS_VALUE_WORDS.includes(arg.raw)
   })
 }
+// Whether aws takes a word as the given option's value, the count-th after it: the first after any option,
+// and a later one only after a list option the workflow hands several (--services, --names, --tasks), and
+// then only a word that starts with no expansion. argparse refuses an option with no value, so an expansion
+// that makes the one value after an option into an option stops the call; but after a value, one that does
+// is read as an option of its own (the seventh review's fourth attack, where "$where" "$endpoint" after
+// --stack-name's value handed aws --endpoint-url).
+const AWS_LIST_OPTIONS = ['--services', '--names', '--tasks']
+const awsValueTaken = (option: string, count: number, read: string) =>
+  option !== '' && (count === 1 || (AWS_LIST_OPTIONS.includes(option) && !read.startsWith('\0')))
 // aws in a canonical text (DPW-10; the seventh review's third attack, where an aws line in AWS_CHECK took
 // --endpoint-url and sent the deploy role's signed request elsewhere, since no rule read a canonical text's aws
 // options): one of the calls the workflow makes (AWS_CALLS) but the registry password, which only the push's own
@@ -6391,10 +6571,12 @@ function awsIsHeld(args: readonly ShellWord[]): boolean {
 // so never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile, --debug, --cli-input-json or another that
 // sends the request elsewhere, reads a file or prints the signed request; and each value after an option, as
 // aws reads it, with no scheme (file://, fileb://, https://) or shorthand file load (key@=), and no word bash
-// splits or globs (wordSplits()) and no expansion of more than one word but PROBE's "${TASK_ARNS[@]}" (an
-// array or "$@" would hand aws each of its words, an option among them), so no value becomes another option as
-// it runs. What a value's variable holds is the text's own: AWS's answers and the job's env in every text the
-// guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
+// splits, globs or expands by a tilde (wordSplits()) and no expansion of more than one word but PROBE's
+// "${TASK_ARNS[@]}" (an array or "$@" would hand aws each of its words, an option among them), and one value
+// after each option but a list's, whose later values start with no expansion (awsValueTaken()), so no value
+// becomes another option as it runs: an expansion that makes the one value after an option into an option
+// leaves that option with none, which argparse refuses. What a value's variable holds is the text's own: AWS's
+// answers and the job's env in every text the guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
 const AWS_TEXT_OPTIONS = [...AWS_OPTIONS, '--task', '--reason', '--overrides', '--log-group-name', '--log-stream-name']
 const AWS_TEXT_FLAGS = ['--start-from-head']
 // An expansion bash makes into as many words as it holds: "$@", "$*", "${@…}", "${*…}" and an array's [@] or [*],
@@ -6407,13 +6589,15 @@ function awsTextHeld(words: readonly string[]): boolean {
   if (!AWS_CALLS.test(` ${head}`) || /^ecr\s+get-login-password$/.test(head) || words.some(wordSplits)) return false
   if (words.some(word => expandsToMany(word) && word !== sh`"$\{TASK_ARNS[@]}"`)) return false
   let option = ''
+  let values = 0
   return words.slice(call).every(word => {
     const read = wordAsRead(word)
     if (read.startsWith('-')) {
       option = AWS_TEXT_FLAGS.includes(word) ? '' : word
+      values = 0
       return word === read && (AWS_TEXT_FLAGS.includes(word) || AWS_TEXT_OPTIONS.includes(word))
     }
-    return option !== '' && !/:\/\/|@=/.test(read) && !/^(?:file|fileb|https?):/i.test(read)
+    return awsValueTaken(option, ++values, read) && !/:\/\/|@=/.test(read) && !/^(?:file|fileb|https?):/i.test(read)
   })
 }
 // The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
@@ -6425,6 +6609,7 @@ const CLI_LINES = [
   CDK_DEPLOY_DOWN,
   CDK_DIFF_PROD,
   CDK_DIFF_ROLLBACK,
+  CDK_DIFF_DOWN,
 ]
 const SKOPEO_LOGIN_COMMAND = 'skopeo login --username AWS --password-stdin "$REGISTRY" 2>&1'
 const wrapped = (command: GlueCommand) => {
@@ -6638,9 +6823,9 @@ const RUNNER_WORDS =
 // The variables that choose what a later command runs, where the CLI's assembly is read from or where an
 // output is written, which no credentialed run or canonical text sets (but CDK_FOLDER's fresh HOME): PATH
 // and the shell's own, the loaders', npm's, git's and gh's, the XDG folders git, gh and curl read their
-// configuration from, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT, GITHUB_WORKSPACE, …); and
-// the files that set a later step's environment or path.
-const LOADER_NAMES = String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+|XDG_\w+`
+// configuration from, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT, GITHUB_WORKSPACE, …), and the
+// folders a tilde stands for (~+ is PWD, ~- OLDPWD); and the files that set a later step's environment or path.
+const LOADER_NAMES = String.raw`PATH|HOME|PWD|OLDPWD|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+|XDG_\w+`
 const LOADER_ASSIGNMENT = assigns(LOADER_NAMES)
 const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
@@ -6909,7 +7094,7 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
     'Check the assembly': { RELEASE: RELEASE_OUTPUT },
     'Check the previous assembly': { PREVIOUS: previousRelease('prod') },
     'Mask the account id': ACCOUNT_ENV,
-    Diff: { MODE },
+    Diff: { MODE, RESTORE: gateOutput('restore') },
   },
   'prod-gate': {
     "Prod's release records": GH_ENV,
@@ -7141,14 +7326,14 @@ export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
     '!cancelled()',
     "needs.synth.result == 'success'",
     "needs.synth-previous-prod.result == 'success'",
-    "needs.gate.outputs.target == 'prod'",
-    "((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')",
+    "((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy'))",
   ),
   'prod-gate': jobIf(
     '!cancelled()',
     "needs.gate.result == 'success'",
     DEPLOY_OR_ROLLBACK,
-    "((needs.gate.outputs.target == 'prod' && needs.prod-plan.result == 'success') || needs.gate.outputs.target == 'restore')",
+    "(needs.gate.outputs.target == 'prod' || needs.gate.outputs.target == 'restore')",
+    "needs.prod-plan.result == 'success'",
   ),
   prod: jobIf(
     '!cancelled()',
@@ -7813,6 +7998,64 @@ const RECORD_WORDS = [
   'gh',
 ]
 const RECORD_BODY = ['jq -n', 'ref: "main"', 'auto_merge: false', 'required_contexts: []']
+// The lines on which a record's writer sets a name, runs jq or calls gh (DPW-13), each written here whole and
+// never read from the texts that hold them (RECORD_HEAD, RECORD_RELEASE, RECORD_RESTORE, migrationRecord()), so a
+// change to a record's text that rewrites what it writes (a filter or an if after the body's object, the body,
+// the payload or the environment set again, another task, environment or commit in its place, another write:
+// the seventh review's fourth attack) leaves a line no list holds. A record job's run holds these lines alone
+// (record-prod's a restore's payload too); migrate's step, from migrate's own end, the migration record's three,
+// with its own environment's name.
+const RECORD_JOB_LINES = [
+  sh`URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"`,
+  sh`local body id`,
+  sh`body=$(jq -n --arg environment "$ENVIRONMENT" --arg task "$1" --argjson payload "$2" '{ref: "main", task: $task, environment: $environment, auto_merge: false, required_contexts: [], transient_environment: false, production_environment: ($environment == "prod"), payload: $payload}')`,
+  sh`id=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$body")`,
+  sh`jq -n --arg url "$URL" '{state: "success", auto_inactive: false, log_url: $url}' |`,
+  sh`jq . <<<"$2"`,
+  sh`! jq -e --arg environment "$ENVIRONMENT" 'type == "object" and keys == ["api", "realtime", "worker"] and all(to_entries[]; .key as $role | .value | type == "string" and test("\\Ahearth-" + $environment + "-" + $role + ":[1-9][0-9]{0,5}\\z"))' <<<"$4" >/dev/null; then`,
+  sh`jq -n --arg kind "$1" --arg commit "$2" --arg digest "$3" --arg migrated "$MIGRATED" --argjson services "$4" '{schema: 1, kind: $kind, commit: $commit, digest: $digest, migratedCommit: (if $migrated == "" then null else $migrated end), services: $services}'`,
+  sh`MIGRATED=$(gh api "repos/$REPO/deployments?environment=$ENVIRONMENT&task=hearth-migrated&per_page=1" --jq '.[0].payload | if type == "object" and (.commit | type == "string" and test("\\A[0-9a-f]{40}\\z")) then .commit else "" end')`,
+  sh`KIND=deploy`,
+  sh`if [ "$MODE" = rollback ]; then KIND=rollback; fi`,
+  sh`PAYLOAD=$(release_payload "$KIND" "$COMMIT" "$DIGEST" "$SERVICES")`,
+  sh`PAYLOAD=$(release_payload pipeline-rollback "$PREVIOUS_COMMIT" "$PREVIOUS_DIGEST" "$ROLLBACK_SERVICES")`,
+  sh`gh api -X POST "repos/$REPO/deployments/$id/statuses" --input - --silent`,
+]
+const RESTORE_PAYLOAD_LINE = sh`PAYLOAD=$(jq -n --arg kind "$RESTORE" --arg commit "$COMMIT" --arg digest "$DIGEST" '{schema: 1, kind: $kind, commit: $commit, digest: $digest}')`
+const migrationRecordLines = (stage: Stage) => [
+  sh`BODY=$(jq -n --arg environment "${stage}" --arg commit "$COMMIT" '{ref: "main", task: "hearth-migrated", environment: $environment, auto_merge: false, required_contexts: [], transient_environment: false, production_environment: ($environment == "prod"), payload: {schema: 1, commit: $commit}}')`,
+  sh`ID=$(gh api -X POST "repos/$REPO/deployments" --input - --jq .id <<<"$BODY")`,
+  sh`jq -n --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{state: "success", auto_inactive: false, log_url: $url}' |`,
+  sh`gh api -X POST "repos/$REPO/deployments/$ID/statuses" --input - --silent`,
+]
+const recordLines = (id: string): ReadonlySet<string> =>
+  new Set(
+    id === 'record-nonprod' || id === 'record-prod'
+      ? [...RECORD_JOB_LINES, ...(id === 'record-prod' ? [RESTORE_PAYLOAD_LINE] : [])]
+      : id === 'nonprod' || id === 'prod'
+        ? migrationRecordLines(id)
+        : [],
+  )
+// The commands that set a name or write or read a record by what they are handed.
+const RECORD_SETTERS = ['jq', 'gh', 'local', 'read', 'mapfile', 'readarray', 'printf', 'export', 'declare']
+const RECORD_LINES_RULE =
+  'sets a name, runs jq or calls gh in a record’s writer only on a line RECORD_JOB_LINES or migrationRecordLines() holds, so nothing rewrites what a record says'
+// The lines of a record's writer, counted from 0, that set a name, run jq or call gh other than as the lists
+// above hold them: the whole of a record job's run, and migrate's step from migrate's own end.
+export function unheldRecordLines(id: string, run: string): number[] {
+  const lines = run.split('\n')
+  const from = id === 'record-nonprod' || id === 'record-prod' ? 0 : Math.max(0, lineIndexOf(lines, MIGRATE_END))
+  const held = recordLines(id)
+  const unheld = readShell(run).commands.filter(
+    command =>
+      command.line >= from &&
+      (command.assignments.length > 0 ||
+        command.variable !== undefined ||
+        RECORD_SETTERS.includes(command.name ?? '')) &&
+      !held.has(lines[command.line]?.trim() ?? ''),
+  )
+  return [...new Set(unheld.map(command => command.line))].sort((a, b) => a - b)
+}
 const MIGRATED_BODY = 'task: "hearth-migrated"'
 const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 
@@ -7980,6 +8223,9 @@ export function releaseFindings(workflows: Texts): Finding[] {
       if (!RECORD_BODY.every(part => run.includes(part))) {
         add(where, 'builds each record’s body whole by jq -n, with ref main, auto_merge false and no required contexts')
       }
+      if ((record || (migrate && (id === 'nonprod' || id === 'prod'))) && unheldRecordLines(id, run).length > 0) {
+        add(where, RECORD_LINES_RULE)
+      }
       if (migrate) {
         const end = lineIndexOf(run.split('\n'), MIGRATE_END)
         const body = run.split('\n').findIndex(line => line.includes(MIGRATED_BODY))
@@ -8048,7 +8294,7 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
           ? RELEASE_OUTPUT
           : rollback
             ? PREVIOUS_OUTPUT
-            : previousRelease((STAGES[id] ?? '') as Stage)
+            : previousRelease(id === 'prod-plan' ? 'prod' : ((STAGES[id] ?? '') as Stage))
         const check = steps.findIndex(step => step.run === assetCheckRun([folder], variable))
         const step = steps[check]
         return (

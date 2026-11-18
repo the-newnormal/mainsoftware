@@ -9,8 +9,8 @@
 // - IAC-10: GitHub's provider and roles, each trust exactly one environment's subject of the deploy
 //   workflow on main, which the quarterly review's step 6 reads, run on them and the RCP, as expected;
 //   hearth-gh-deploy stops and tags only its own one-off tasks and assumes only the two hearthapp
-//   roles; hearth-gh-diff reads the prod stacks and nothing else; hearth-boundary's statements,
-//   NoNewIdentityProviders among them, within a managed policy's limit;
+//   roles; hearth-gh-diff reads the prod and restore stacks and nothing else; hearth-boundary's
+//   statements, NoNewIdentityProviders among them, within a managed policy's limit;
 // - the fast rules each account holds, their patterns, states and inputs, and the topic they email;
 // - C11-D43: the zones, Amazon's CAA alone, retained once made, and prod's `nonprod.` delegation only once its
 //   name servers are committed, which the committed synth follows and two variants pin (filled and
@@ -811,7 +811,7 @@ describe.each(KINDS)('IAC-10 C11-D55: %s’s GitHub provider and roles', kind =>
 })
 
 describe('IAC-10 C11-D55: prod’s hearth-gh-diff', () => {
-  it('IAC-10: it reads the prod stacks’ templates, statuses and resources, assumes no role, and is denied every other action', () => {
+  it('IAC-10: it reads the prod and restore stacks’ templates, statuses and resources, assumes no role, and is denied every other action', () => {
     const [, role] = roleIn('prod', 'hearth-gh-diff')
     const reads = ['cloudformation:GetTemplate', 'cloudformation:DescribeStacks', 'cloudformation:ListStackResources']
     expect(role.Properties?.Policies).toEqual([
@@ -822,7 +822,10 @@ describe('IAC-10 C11-D55: prod’s hearth-gh-diff', () => {
             Sid: 'ReadPlan',
             Effect: 'Allow',
             Action: reads,
-            Resource: arn('cloudformation', REGION, ACCOUNT.prod, 'stack/Hearth-prod-*/*'),
+            Resource: [
+              arn('cloudformation', REGION, ACCOUNT.prod, 'stack/Hearth-prod-*/*'),
+              arn('cloudformation', REGION, ACCOUNT.prod, 'stack/Hearth-restore-*/*'),
+            ],
           },
           { Sid: 'NoAssume', Effect: 'Deny', Action: 'sts:AssumeRole', Resource: '*' },
           { Sid: 'OnlyPlanReads', Effect: 'Deny', NotAction: reads, Resource: '*' },
