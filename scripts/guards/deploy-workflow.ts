@@ -50,7 +50,9 @@
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
 // and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, tr and sed
 // only as prod-plan's diff summary's, every aws word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
-// whole, a canonical text's function or a record job's own only as the workflow calls it), no line of its
+// whole, a canonical text's function or a record job's own only as the workflow calls it, standing alone,
+// outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step, as
+// every job's call of a check does, the synths' too), no line of its
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
 // RUN, ACCOUNT_ID, or a name an aws value reads but by a command its step's pinned run holds), and none
 // expands a name the run doesn't own (its step's or job's env: but GH_TOKEN, what it sets itself, and the
@@ -81,11 +83,18 @@
 // credentials action (IMAGE_CHECK), and skopeo copies only from the folder they checked, never from an
 // archive it would unpack itself, writing a member through a link another made (over the CLI, say).
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
-// reads, and hand it no secret. A canonical text is read whole, so it is held instead to bash's own
-// reading of it (readsAsBash()), to evaluating only what it sets itself (outsideEvaluations(): every
-// arithmetic, test operator, subscript, name a builtin takes and variable bash evaluates, and a line it can't
-// read that plainly is refused), and to handing jq and gh only their held flags and a program written on the
-// line, and sed, tar, find, curl, openssl, base64, mkdir, sha256sum and tr only their lines as the guard
+// reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
+// reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads. A
+// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to
+// evaluating only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript,
+// name a builtin takes, descriptor's variable and variable bash evaluates, a default or an element's
+// assignment counting as the name's, and a line it can't read that plainly is refused), to running only the
+// commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, with no
+// environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to local or
+// export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, so no
+// TAR_OPTIONS or other variable a held tool reads reaches it), to handing jq and gh only their held flags,
+// as bash reads each word, and a program written on the line, printf only a single-quoted format or a plain
+// -v, and sed, tar, find, curl, openssl, base64, mkdir, sha256sum and tr only their lines as the guard
 // writes them (canonicalToolLines()); the lines the tool holds compare against (TOOL_LINE_TEXTS) are the
 // guard's own literals, never read from a canonical text, so a text can't widen what it is held to.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
@@ -1316,6 +1325,39 @@ cat "$DIFF"
 } | mask >>"$GITHUB_STEP_SUMMARY"
 exit "$STATUS"`
 
+// The automatic rollback's diff (C11-D51; the seventh review's second attack): prod's previous release as
+// prod's rollback job would deploy it, the assembly synth-previous-prod made by rebuilding that release from
+// its own code, against what prod runs before this deploy, which is that release, so it shows no change
+// unless the rebuild differs from what runs. A release's own code can tell a rebuild from its own deploy (the
+// CLI hands the app its output folder, CDK_OUTDIR) and write a resource only into the rebuild; the rollback
+// job deploys the very artifact read here, by its id, so the approver reads before approving prod, and again
+// before approving the rollback, what the rollback would deploy. Its Tasks and Services alone, as the
+// rollback deploys them, into the log and the summary as the release's diff is.
+export const ROLLBACK_DIFF_RUN = sh`${PREAMBLE}
+# The automatic rollback's diff (C11-D51): prod's previous release as prod's rollback job would deploy it
+# (synth-previous-prod's assembly, a rebuild of that release's own code), against what prod runs before
+# this deploy, which is that release: its Tasks and Services, read with the plan role's own credentials.
+# It shows no change unless the rebuild differs from what runs; into the log, and into the summary cut at
+# 200 KB, as the release's diff is.
+ASSEMBLY="$RUNNER_TEMP/assembly-previous"
+DIFF="$RUNNER_TEMP/diff.txt"
+STATUS=0
+${CDK_FOLDER}
+{
+  ${CDK_DIFF_ROLLBACK}
+} >"$DIFF" || STATUS=$?
+cat "$DIFF"
+{
+  echo "### What prod's automatic rollback changes"
+  echo ''
+  head -c ${String(DIFF_CUT)} "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
+  echo ''
+  echo ''
+  if [ "$(wc -c <"$DIFF")" -gt ${String(DIFF_CUT)} ]; then echo "The diff is cut at 200 KB here; the job's log holds it whole."; fi
+  if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
+} | mask >>"$GITHUB_STEP_SUMMARY"
+exit "$STATUS"`
+
 // A smoke's run (C11-D54, DPW-08): SMOKE_ATTEMPT, the read-back to a file, then smoke.ts by its job's flags.
 export const smokeRun = (job: 'smoke-nonprod' | 'smoke-prod' | 'resmoke-nonprod' | 'resmoke-prod') =>
   [
@@ -1550,7 +1592,14 @@ const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonpr
   })
   switch (id) {
     case 'prod-plan':
-      return checksBefore(id)
+      return {
+        ...checksBefore(id),
+        'Check the previous assembly': {
+          run: assetCheckRun(['assembly-previous'], 'PREVIOUS'),
+          rule: 'DPW-10',
+          if: PLAN_PREVIOUS_IF,
+        },
+      }
     case 'nonprod':
     case 'prod':
       return {
@@ -1634,6 +1683,7 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   'prod-plan': {
     'The release this job deploys': { run: RELEASE_STEP, rule: 'DPW-13' },
     Diff: { run: DIFF_RUN, rule: 'DPW-08' },
+    'Diff the rollback': { run: ROLLBACK_DIFF_RUN, rule: 'DPW-08', if: PLAN_PREVIOUS_IF },
     ...credentialedRuns('prod-plan'),
   },
   'rollback-nonprod': { ...rollbackRuns(), ...credentialedRuns('rollback-nonprod') },
@@ -2646,8 +2696,12 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
 // sets is built only from such names. So no value from a step's env, an output, an artifact's file or a
 // run's own lines is ever evaluated inside a canonical text.
 const OUTSIDE = /\$\(|[`'"\\]|\$[0-9@*#?$!-]|\$\{(?![A-Za-z_]\w*\})/
+// Refused wherever they stand: $[ … ], ${!…}, a transformation, let, declare and typeset, a local given -i,
+// -n or -A, a default assignment (${name=…}, ${name:=…}, ${name[…]:=…}), which sets a name no assignment of
+// it shows, and a redirection that names its descriptor's variable ({name}>, {name[…]}<), which sets one
+// and evaluates its subscript (the seventh review's second attack).
 const REFUSED_EVALUATION =
-  /\$\[|\$\{!|\$\{[^}\n]*@[A-Za-z]|(?<![\w-])(?:let|declare|typeset)(?![\w-])|(?<![\w-])local\s+-[A-Za-z]*[inA]/g
+  /\$\[|\$\{!|\$\{[^}\n]*@[A-Za-z]|(?<![\w-])(?:let|declare|typeset)(?![\w-])|(?<![\w-])local\s+-[A-Za-z]*[inA]|\$\{[A-Za-z_]\w*(?:\[[^\]\n]*\])?:?=|(?<![\w$])\{[^\s{}]+\}(?=[<>])/g
 export function outsideEvaluations(text: string): number[] {
   const views = shellViews(text)
   const code = views.code
@@ -2709,10 +2763,11 @@ export function outsideEvaluations(text: string): number[] {
     })
   }
   // Each assignment of a name, by its offset in the code and its value as written ('' for a local with none or
-  // a for loop over literal words; $ for one that read, mapfile, printf -v or another for loop sets).
+  // a for loop over literal words; $ for one that read, mapfile, printf -v or another for loop sets). An
+  // element's assignment (name[…]=) is the name's too, since $name reads its first element.
   const assignments = (name: string): Array<{ at: number; value: string }> => {
     const found: Array<{ at: number; value: string }> = []
-    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}\+?=`, 'g'))) {
+    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}(?:\[[^\]\n]*\])?\+?=`, 'g'))) {
       found.push({ at: match.index, value: valueAt(match.index + match[0].length) })
     }
     const local = String.raw`(?<![\w-])local\s[^;\n]*?(?<![\w$=-])${name}(?![\w=])`
@@ -2781,8 +2836,41 @@ function commandWords(text: string, from: number): string[] {
   if (word !== '') found.push(word)
   return found
 }
-// A word as a program reads its start: without the quotes before it, so "-f" and '-f' are -f.
-const unquotedStart = (word: string) => word.replace(/^["']+/, '')
+// A word as the program it is handed reads it: its quotes and escapes taken off as bash takes them (a
+// backslash in double quotes only before $, `, " or \), and each expansion or substitution written \0,
+// which could stand for anything, an option among it. So "-f", '-f', \-f and -\f are all -f.
+export function wordAsRead(word: string): string {
+  let out = ''
+  let quote: '"' | "'" | undefined
+  for (let i = 0; i < word.length; i++) {
+    const c = word[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = undefined
+      else out += c
+    } else if (c === "'" && quote === undefined) quote = "'"
+    else if (c === '"') quote = quote === '"' ? undefined : '"'
+    else if (c === '\\') {
+      const next = word[i + 1] ?? ''
+      out += quote === '"' && !/[$`"\\]/.test(next) ? c + next : next
+      i++
+    } else if (c === '$' || c === '`') {
+      // An expansion to its end: a ( … ) or { … } by its depth, a backtick to the next, or a name or one
+      // character.
+      const open = word[i + 1] ?? ''
+      if (c === '`') i = word.indexOf('`', i + 1) < 0 ? word.length : word.indexOf('`', i + 1)
+      else if (open === '(' || open === '{') {
+        const close = open === '(' ? ')' : '}'
+        let depth = 0
+        for (i++; i < word.length; i++) {
+          if (word[i] === open) depth++
+          else if (word[i] === close && --depth === 0) break
+        }
+      } else i += /^[A-Za-z_]\w*/.exec(word.slice(i + 1))?.[0].length ?? 1
+      out += '\0'
+    } else out += c
+  }
+  return out
+}
 // A redirection's word (<<<"$x", >/dev/null, 2>&1), with its target when the target is a word of its own.
 const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])/
 function withoutRedirections(words: readonly string[]): string[] {
@@ -2798,17 +2886,22 @@ function withoutRedirections(words: readonly string[]): string[] {
 // What a canonical text hands jq and gh, which could take a program from a file, read a file or the
 // environment, or send a file (DPW-10): jq only -e, -r, -c, -n and -s (in any mix) and --arg and --argjson
 // with a name and a value, each written plainly, then its program written on the line (one single-quoted
-// string, or a .field path), then only data: files named from a literal or a folder's variable, or a list
-// of them ("${files[@]}"), never a word that starts with - (jq reads an option after its program too) or
-// a bare expansion, which could be one; gh only as gh api on a double-quoted path under repos/, with at
-// most --jq and a program written the same way; and neither's program holding a word of JQ_REACH. These
-// are the ways a canonical text's line changed by a review that reads it alone could still hand either a
-// file, the environment or a program from elsewhere: jq's -f, --from-file, -L, --rawfile, --slurpfile,
-// --args and --jsonargs, gh's --input, -F and -f among them.
+// string, or a .field path), then only data: files named from a literal or under a folder's variable
+// ("$dir/…"), or a list of them ("${files[@]}"), never a word that, as jq receives it, starts with - (jq
+// reads an option after its program too), nor one an expansion starts that no / follows, which could be one;
+// gh only as gh api on a double-quoted path under repos/, with at most --jq and a program written the same
+// way; and neither's program holding a word of JQ_REACH or reading as an option. Each word is judged as the
+// program receives it (wordAsRead), so a quoted or escaped flag ('-f', "--from-file", \-f) in the program's
+// place or after it is the flag it is (the seventh review's second attack). These are the ways a canonical
+// text's line changed by a review that reads it alone could still hand either a file, the environment or a
+// program from elsewhere: jq's -f, --from-file, -L, --rawfile, --slurpfile, --args and --jsonargs, gh's
+// --input, -F and -f among them.
 const JQ_FLAG = /^-[cenrs]+$/
 const JQ_PROGRAM = /^'[^']*'?$|^\.(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?$/
 const JQ_REACH =
   /(?<![\w$.-])(?:\$?ENV|env|inputs?|input_filename|input_line_number|\$__loc__|\$__prog_args|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin|debug|stderr|halt_error|halt)(?![\w-])/
+const programHeld = (program: string | undefined) =>
+  program !== undefined && JQ_PROGRAM.test(program) && !JQ_REACH.test(program) && !wordAsRead(program).startsWith('-')
 function jqHeld(words: readonly string[]): boolean {
   let i = 0
   for (; i < words.length; i++) {
@@ -2818,19 +2911,28 @@ function jqHeld(words: readonly string[]): boolean {
     if (!/^[A-Za-z_]\w*$/.test(words[i + 1] ?? '') || words[i + 2] === undefined) return false
     i += 2
   }
-  const program = words[i]
-  if (program === undefined || !JQ_PROGRAM.test(program) || JQ_REACH.test(program)) return false
+  if (!programHeld(words[i])) return false
   return words.slice(i + 1).every(word => {
-    const start = unquotedStart(word)
-    const array = /^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(word)
-    return array || (!start.startsWith('-') && !/^["']?\$(?:[A-Za-z_]\w*|\{[^}]*\})["']?$/.test(word) && word !== '')
+    if (/^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(word)) return true
+    const read = wordAsRead(word)
+    return read !== '' && !read.startsWith('-') && (!read.startsWith('\0') || read.startsWith('\0/'))
   })
 }
 function ghHeld(words: readonly string[]): boolean {
   const [api, path, ...rest] = words
   if (api !== 'api' || path === undefined || !/^"repos\/[^"]*"$/.test(path)) return false
   if (rest.length === 0) return true
-  return rest.length === 2 && rest[0] === '--jq' && JQ_PROGRAM.test(rest[1] ?? '') && !JQ_REACH.test(rest[1] ?? '')
+  return rest.length === 2 && rest[0] === '--jq' && programHeld(rest[1])
+}
+// printf in a canonical text: a format first, one whole single-quoted string that reads as no option, or -v
+// written plainly as a word of its own, then the name (held by outsideEvaluations()) and such a format; never
+// -v joined to its name (-vNAME, -v"a[…]"), quoted ("-v") or escaped, and never a format an expansion gives,
+// each of which bash reads as -v and a name whose subscript it evaluates (the seventh review's second
+// attack).
+const PRINTF_FORMAT = /^'[^'-][^']*'$/
+function printfHeld(words: readonly string[]): boolean {
+  const format = words[0] === '-v' ? words[2] : words[0]
+  return format !== undefined && PRINTF_FORMAT.test(format)
 }
 // The tools in a canonical text that could run a program, write a file or fetch one, each only on a line
 // written as TOOL_LINE_TEXTS holds it (the preamble's mask, the CLI's fetch, the image's listing and
@@ -2838,8 +2940,8 @@ function ghHeld(words: readonly string[]): boolean {
 // that runs a program per member or checkpoint (tar's --to-command, --checkpoint-action, -I), per file
 // (find's -exec) or per line (sed's e), or writes a file (sed's w), reaches any job.
 const LINE_HELD_TOOLS = ['sed', 'tar', 'find', 'curl', 'openssl', 'base64', 'mkdir', 'sha256sum', 'tr']
-// The lines of a canonical text on which jq, gh or a line-held tool is handed what the rules above don't
-// hold it to.
+// The lines of a canonical text on which jq, gh, printf or a line-held tool is handed what the rules above
+// don't hold it to.
 export function canonicalToolLines(text: string): number[] {
   const views = shellViews(text)
   const raw = text.split('\n')
@@ -2847,9 +2949,10 @@ export function canonicalToolLines(text: string): number[] {
   const lines = new Set<number>()
   let offset = 0
   for (const [n, line] of views.code.split('\n').entries()) {
-    for (const match of line.matchAll(/(?<![\w$/.{-])(jq|gh)(?![\w-])/g)) {
+    for (const match of line.matchAll(/(?<![\w$/.{-])(jq|gh|printf)(?![\w-])/g)) {
       const words = withoutRedirections(commandWords(views.text, offset + match.index + match[0].length))
-      if (!(match[1] === 'jq' ? jqHeld(words) : ghHeld(words))) lines.add(n)
+      const kept = match[1] === 'jq' ? jqHeld(words) : match[1] === 'gh' ? ghHeld(words) : printfHeld(words)
+      if (!kept) lines.add(n)
     }
     offset += line.length + 1
   }
@@ -2858,6 +2961,105 @@ export function canonicalToolLines(text: string): number[] {
   }
   return [...lines].sort((a, b) => a - b)
 }
+
+// The commands a canonical text runs (DPW-10), a closed list, so it loads, sets or runs nothing its own lines
+// don't show: bash's own that hand the shell nothing to run, load or export (no eval, source, ., trap, alias,
+// shopt, enable, builtin, command, exec, coproc, readonly, declare, typeset, let, unset, wait, getopts,
+// select, readarray or ulimit), the tools the texts use, each held by the rules beside it, and the functions
+// the canonical texts define; never a word bash takes from a quote, an escape or an expansion ("jq", \jq,
+// $tool), which no list names, but the preamble's "$@" in run and get and the CLI's "$CDK" on a CLI line.
+const CANONICAL_COMMANDS = [
+  ':',
+  '[',
+  '[[',
+  '{',
+  '}',
+  'break',
+  'case',
+  'cd',
+  'continue',
+  'done',
+  'echo',
+  'esac',
+  'exit',
+  'export',
+  'fi',
+  'for',
+  'local',
+  'mapfile',
+  'printf',
+  'pwd',
+  'read',
+  'return',
+  'set',
+  'true',
+  'aws',
+  'base64',
+  'curl',
+  'find',
+  'gh',
+  'git',
+  'grep',
+  'jq',
+  'mkdir',
+  'mktemp',
+  'node',
+  'openssl',
+  'readlink',
+  'realpath',
+  'sed',
+  'sha256sum',
+  'sleep',
+  'sort',
+  'tar',
+  'tee',
+  'wc',
+]
+// What a canonical text puts into the environment of what it runs is a closed list too (the seventh review's
+// second attack, where an export of TAR_OPTIONS handed the CLI's held tar a checkpoint action from outside
+// its held line): export only on EXPORT_LINES (the preamble's CDK settings and CDK_FOLDER's fresh HOME),
+// local with no flag (no -x), set only as set -euo pipefail (no -a or -k, which export each assignment), no
+// assignment before a command's word but IFS's before read, a builtin, which hands no child an environment,
+// no wrapper (env, command, …), and no assignment, anywhere, of a name that chooses what a program runs or
+// reads (LOADER_NAMES) but CDK_FOLDER's HOME. A held tool's line is held with its environment.
+const EXPORT_LINES = (): ReadonlySet<string> => new Set([PREAMBLE.split('\n').at(-1) ?? '', CDK_FOLDER])
+const IFS_PREFIXES = ['IFS=', "IFS=$'__'"]
+// The lines of a canonical text that run a command CANONICAL_COMMANDS doesn't name (or no function the
+// canonical texts define), or that hand what they run an environment of their own.
+export function canonicalCommandLines(text: string, functions: ReadonlySet<string>): number[] {
+  const raw = text.split('\n')
+  const lineOf = (n: number) => raw[n]?.trim() ?? ''
+  const lines = new Set<number>()
+  for (const command of shellCommands(text)) {
+    const { word, prefixes } = command
+    const assigned = prefixes.filter(prefix => /^[A-Za-z_]\w*\+?=/.test(prefix))
+    const wrapped = prefixes.filter(prefix => !assigned.includes(prefix))
+    const allowed =
+      CANONICAL_COMMANDS.includes(word) ||
+      functions.has(word) ||
+      (word === '"$@"' && PREAMBLE_RUNNERS.includes(lineOf(command.line))) ||
+      (word === '"$CDK"' && CLI_LINES.includes(lineOf(command.line)))
+    const environment =
+      (word === 'export' && !EXPORT_LINES().has(lineOf(command.line))) ||
+      ((word === 'local' || word === 'export') && /(?:^|\s)[-+][A-Za-z]/.test(command.tail)) ||
+      (word === 'set' && !/^\s+-euo\s+pipefail\s*$/.test(command.tail)) ||
+      (assigned.length > 0 && !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix)))) ||
+      wrapped.some(prefix => prefix !== 'run' && prefix !== 'get')
+    if (!allowed || environment) lines.add(command.line)
+  }
+  const code = shellViews(text).code.split('\n')
+  for (const [n, line] of code.entries()) {
+    if (LOADER_ASSIGNMENT.test(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
+  }
+  return [...lines].sort((a, b) => a - b)
+}
+// The functions the canonical texts define, which any of them may call.
+const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlySet<string> =>
+  new Set(
+    [...Object.values(CANONICAL_BY_NAME()), ...Object.values(texts)].flatMap(text =>
+      functionDefinitions(text).map(each => each.name),
+    ),
+  )
 
 // DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
@@ -2871,6 +3073,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     return [...CANONICAL_FOUND]
   }
   const found: Finding[] = []
+  const functions = CANONICAL_FUNCTIONS(texts)
   for (const [name, text] of Object.entries(texts)) {
     if (!readsAsBash(text)) found.push(`${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`)
     for (const line of outsideEvaluations(text)) {
@@ -2881,6 +3084,11 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of canonicalToolLines(text)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, and the tools that could run a program or write a file only their lines as written`,
+      )
+    }
+    for (const line of canonicalCommandLines(text, functions)) {
+      found.push(
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs`,
       )
     }
   }
@@ -3093,7 +3301,10 @@ export interface ShellWord {
 
 // A command a run's own lines run, as the table reads it: its line in the run, its name (the command's word,
 // or if, for, case, { or [[ for a compound one; none for assignments alone), the assignments before it, its
-// words and redirections, whether it is the first command of a substitution, and its place in its pipeline.
+// words and redirections, whether it is the first command of a substitution, its place in its pipeline, and
+// whether it stands alone: in a pipeline of itself, not negated, the whole of its and-or list and in no
+// if's or elif's condition, nor inside a compound command that is any of these, so its failure ends the
+// step under set -e and an exit in it ends the step.
 export interface GlueCommand {
   line: number
   name: string | undefined
@@ -3104,6 +3315,7 @@ export interface GlueCommand {
   inSubstitution: boolean
   previous: string | undefined
   raw: string
+  alone: boolean
   // A for loop's variable, and the command a pipeline's command pipes into.
   variable?: string
   next?: string
@@ -3228,6 +3440,7 @@ class ShellReader {
   }
 
   private andOr(): void {
+    const start = this.commands.length
     this.pipeline()
     for (;;) {
       this.blanks()
@@ -3235,6 +3448,7 @@ class ShellReader {
         this.i += 2
         this.linebreak()
         this.pipeline()
+        this.together(start)
         continue
       }
       return
@@ -3242,15 +3456,19 @@ class ShellReader {
   }
 
   private pipeline(): void {
+    const start = this.commands.length
     this.blanks()
-    if (this.peek() === '!' && SHELL_TABLE.blank.test(this.peek(1))) {
+    const negated = this.peek() === '!' && SHELL_TABLE.blank.test(this.peek(1))
+    if (negated) {
       this.i++
       this.blanks()
     }
     let previous: string | undefined
     let last: GlueCommand | undefined
+    let count = 0
     for (;;) {
       previous = this.command(previous)
+      count++
       // The command before it in the pipeline learns what it pipes into.
       if (last !== undefined) last.next = previous
       last = this.commands[this.commands.length - 1]
@@ -3261,12 +3479,19 @@ class ShellReader {
         this.linebreak()
         continue
       }
+      if (negated || count > 1) this.together(start)
       return
     }
   }
 
-  private emit(command: Omit<GlueCommand, 'raw'>, from: number): void {
-    this.commands.push({ ...command, raw: this.s.slice(from, this.i).trim() })
+  // The commands read since a point no longer stand alone: they are in a pipeline, a negation, an and-or
+  // list or a condition, or inside a compound command that is.
+  private together(from: number): void {
+    for (const command of this.commands.slice(from)) command.alone = false
+  }
+
+  private emit(command: Omit<GlueCommand, 'raw' | 'alone'>, from: number): void {
+    this.commands.push({ ...command, raw: this.s.slice(from, this.i).trim(), alone: true })
   }
 
   // A command where one starts: a compound one by its keyword, or a simple one. Its name, for the next
@@ -3280,11 +3505,15 @@ class ShellReader {
     const base = { line, assignments: [], args: [], substituted: false, inSubstitution: false, previous }
     if (keyword === 'if') {
       this.i += 2
+      const condition = this.commands.length
       this.expect(this.list(['then']), 'then')
+      this.together(condition)
       let end = this.list(['elif', 'else', 'fi'])
       while (end === 'elif') {
         this.i += 4
+        const next = this.commands.length
         this.expect(this.list(['then']), 'then')
+        this.together(next)
         end = this.list(['elif', 'else', 'fi'])
       }
       if (end === 'else') {
@@ -4186,9 +4415,37 @@ export function permissionFindings(workflows: Texts): Finding[] {
         ),
       )
     }
+    // Every step is an ordinary one, of the keys workflow.ts reads a step by (the seventh review's second
+    // attack): a step group (parallel:, whose steps GitHub runs as background steps) holds steps the reader
+    // reads as one step with no uses:, so a checkout in one was never held to DPW-11, and a background,
+    // wait, wait-all or cancel step is one no rule here reads either.
+    for (const job of workflowJobs(text)) {
+      parsedSteps(job).forEach((step, index) => {
+        if (!step.keyNames.every(key => ORDINARY_STEP_KEYS.includes(key))) {
+          found.push(at(path, 'DPW-02', `${job.id} (${label(step, index)}): ${ORDINARY_STEP}`))
+        }
+      })
+    }
   }
   return found
 }
+// The keys of an ordinary step, every one GitHub reads beside the step kinds (parallel, background, wait,
+// wait-all, cancel), which workflow.ts doesn't read.
+const ORDINARY_STEP_KEYS = [
+  'name',
+  'id',
+  'if',
+  'uses',
+  'with',
+  'env',
+  'run',
+  'shell',
+  'working-directory',
+  'continue-on-error',
+  'timeout-minutes',
+]
+const ORDINARY_STEP =
+  'is an ordinary step, of the keys workflow.ts reads (no parallel group, background, wait, wait-all or cancel step, whose steps or kind no rule reads)'
 
 // --- DPW-03: which jobs hold AWS credentials ------------------------------------------------------------------
 
@@ -4554,6 +4811,9 @@ const FORWARD_IF: Readonly<Record<string, string>> = {
   ),
 }
 const GO_IF = expr("steps.aws.outputs.go == 'true'")
+// prod-plan's download, check and diff of prod's previous assembly: a deploy's, when prod has a previous
+// release, whose assembly prod's rollback job would deploy.
+const PLAN_PREVIOUS_IF = expr("needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy'")
 const CLI_STEP_IF: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   nonprod: {
     [CDK_DEPLOY_FORWARD]: FORWARD_IF.nonprod ?? '',
@@ -4594,6 +4854,8 @@ const stepWith = (steps: readonly WorkflowStep[], line: string) =>
 // only once AWS_CHECK said go. No failure passes: nothing in the workflow has continue-on-error, no
 // step's if: calls a status function, and a credentialed job runs every step up to its credentials
 // action (and AWS_CHECK after them) unconditionally, but its downloads.
+const UNCONDITIONAL =
+  'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:'
 export function deployStepFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (id: string, rule: string) => found.add(at(DEPLOY, 'DPW-06', `${id}: ${rule}`))
@@ -4682,9 +4944,19 @@ export function deployStepFindings(workflows: Texts): Finding[] {
     }
     const credentials = credentialsAt(steps)
     // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped: but
-    // the downloads, and the image check, which runs exactly when the push it guards does (DPW-13).
+    // the downloads, a download's asset check, which runs exactly when its download does (prod-plan's of the
+    // previous assembly), and the image check, which runs exactly when the push it guards does (DPW-13).
     if (ENVIRONMENT_JOBS[id] !== undefined) {
       const last = deploy === undefined ? credentials : credentials + 1
+      const checkedUnder = new Set(
+        steps.flatMap(step => {
+          if (!step.uses?.startsWith('actions/download-artifact@')) return []
+          const path = step.with.get('path') ?? ''
+          const folder = path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path
+          const variable = folder === 'assembly-previous' ? 'PREVIOUS' : 'RELEASE'
+          return [`${assetCheckRun([folder], variable)}\n${step.if ?? ''}`]
+        }),
+      )
       if (
         steps
           .slice(0, last + 1)
@@ -4692,13 +4964,11 @@ export function deployStepFindings(workflows: Texts): Finding[] {
             step =>
               step.if !== undefined &&
               !step.uses?.startsWith('actions/download-artifact@') &&
-              !(step.run === IMAGE_UNPACK_RUN && step.if === PUSH_IF[id]),
+              !(step.run === IMAGE_UNPACK_RUN && step.if === PUSH_IF[id]) &&
+              !checkedUnder.has(`${step.run ?? ''}\n${step.if}`),
           )
       ) {
-        add(
-          id,
-          'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:',
-        )
+        add(id, UNCONDITIONAL)
       }
     }
     if (deploy === undefined) continue
@@ -5680,11 +5950,12 @@ export const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
   mkdir: ['mkdir "$2"'],
   find: [String.raw`entries=$(find "$2" -mindepth 1 -printf '%y %P\n')`],
 }
-// The tools DIFF_RUN alone runs beyond the text tools, each only on its summary's diff line and only in a
-// run that is DIFF_RUN whole: tr makes each carriage return a line break and sed sets each line four spaces
+// The tools prod-plan's diffs alone run beyond the text tools, each only on its summary's diff line and only
+// in a run that is DIFF_RUN or ROLLBACK_DIFF_RUN whole: tr makes each carriage return a line break and sed sets each line four spaces
 // in, so the summary holds the diff as one indented code block; neither reads or writes a file.
 export const DIFF_SUMMARY_LINE = String.raw`head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'`
 const DIFF_TOOLS: ReadonlySet<string> = new Set(['tr', 'sed'])
+const DIFF_RUNS: readonly string[] = [DIFF_RUN, ROLLBACK_DIFF_RUN]
 // openssl also makes the stop token (STOP_COMMANDS), on that line of STOP_HEAD alone, at a run's start: it
 // only prints random bytes.
 export const STOP_TOKEN_LINE = 'stop_token=$(openssl rand -hex 16)'
@@ -6033,9 +6304,37 @@ const recordCalls = (id: string): ReadonlyMap<string, readonly string[]> =>
       ],
     ],
   ])
+// Where a call of a canonical text's function, or of a record job's own, stands (the seventh review's second
+// attack, where a check called as CHECKED=$(check_assembly …) || echo "$CHECKED" refused only in the
+// substitution's subshell, and the || went on): alone (GlueCommand's alone) and outside any substitution, so
+// the check's refusal, an exit 1 or a failure set -e ends the step on, ends the step; but release_payload,
+// which stands as the whole substitution of PAYLOAD=$( … ), an assignment that stands alone, whose failure
+// set -e still ends the step on. What reaches the call (an if around it, an exit before it) is the run's
+// own text, pinned whole, which the owner reads.
+function standsAlone(command: GlueCommand, commands: readonly GlueCommand[]): boolean {
+  if (command.name === 'release_payload') {
+    return (
+      command.substituted &&
+      command.next === undefined &&
+      commands.some(
+        outer =>
+          outer.name === undefined &&
+          outer.line === command.line &&
+          outer.alone &&
+          !outer.inSubstitution &&
+          outer.raw === `PAYLOAD=$(${command.raw})`,
+      )
+    )
+  }
+  return command.alone && !command.substituted && !command.inSubstitution
+}
 // Whether a command a credentialed or record job's own lines run is held to its uses: GLUE_USES's, the
-// table's own, or a function's call as calls names it.
-function glueIsHeld(command: GlueCommand, calls: ReadonlyMap<string, readonly string[]>): boolean {
+// table's own, or a function's call as calls names it, standing where standsAlone() holds it.
+function glueIsHeld(
+  command: GlueCommand,
+  calls: ReadonlyMap<string, readonly string[]>,
+  commands: readonly GlueCommand[],
+): boolean {
   const name = command.name
   const redirections = command.redirections.every(({ op, target }) =>
     op === '<' ? target?.raw === '"$DIFF"' : op.startsWith('<') || op.includes('&') || WRITABLE.test(target?.raw ?? ''),
@@ -6044,10 +6343,11 @@ function glueIsHeld(command: GlueCommand, calls: ReadonlyMap<string, readonly st
   if (!redirections || command.assignments.length > 0) return false
   const use = GLUE_USES[name]
   if (use !== undefined) return use(command)
-  return TABLE_HELD.includes(name) || calls.get(name)?.includes(command.raw) === true
+  if (TABLE_HELD.includes(name)) return true
+  return calls.get(name)?.includes(command.raw) === true && standsAlone(command, commands)
 }
 const HELD =
-  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
+  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one; and calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
 // The names a command on a run's own lines sets: its assignments, a for loop's variable, mapfile's array
 // and local's names.
 const namesSet = (command: GlueCommand): string[] => [
@@ -6138,10 +6438,11 @@ const SETS_INPUT =
 const RUNNER_WORDS =
   /(?<![\w.-])(?:node|nodejs|npx|tsx|ts-node|deno|bun|python[\d.]*|perl|ruby|php|bash|sh|zsh|dash|ksh|eval|source|curl|wget|make|docker(?!:\/\/))(?![\w-])/
 // The variables that choose what a later command runs, where the CLI's assembly is read from or where an
-// output is written, which no credentialed run sets (but CDK_FOLDER's fresh HOME): PATH and the shell's
-// own, the loaders', npm's, git's and gh's, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT,
-// GITHUB_WORKSPACE, …); and the files that set a later step's environment or path.
-const LOADER_NAMES = String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+`
+// output is written, which no credentialed run or canonical text sets (but CDK_FOLDER's fresh HOME): PATH
+// and the shell's own, the loaders', npm's, git's and gh's, the XDG folders git, gh and curl read their
+// configuration from, and GitHub's and the runner's (RUNNER_TEMP, GITHUB_OUTPUT, GITHUB_WORKSPACE, …); and
+// the files that set a later step's environment or path.
+const LOADER_NAMES = String.raw`PATH|HOME|BASH\w*|ENV|CDPATH|SHELLOPTS|PS4|PROMPT_COMMAND|TMPDIR|LD_\w+|NODE_\w+|NPM_\w+|npm_\w+|GIT_\w+|GH_\w+|GITHUB_\w+|RUNNER_\w+|XDG_\w+`
 const LOADER_ASSIGNMENT = assigns(LOADER_NAMES)
 const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
@@ -6408,6 +6709,7 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'prod-plan': {
     'The release this job deploys': RELEASE_ENV,
     'Check the assembly': { RELEASE: RELEASE_OUTPUT },
+    'Check the previous assembly': { PREVIOUS: previousRelease('prod') },
     'Mask the account id': ACCOUNT_ENV,
     Diff: { MODE },
   },
@@ -6504,7 +6806,11 @@ export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonl
   'smoke-nonprod': SMOKE_WITHS,
   'rollback-nonprod': rollbackWiths('nonprod'),
   'resmoke-nonprod': SMOKE_WITHS,
-  'prod-plan': { ...deployWiths('AWS_DIFF_ROLE'), [CHECKOUT_NAME]: CHECKOUT_SHALLOW },
+  'prod-plan': {
+    ...deployWiths('AWS_DIFF_ROLE'),
+    [CHECKOUT_NAME]: CHECKOUT_SHALLOW,
+    "Download prod's previous assembly": downloadOf('needs.synth-previous-prod.outputs.assembly', 'assembly-previous'),
+  },
   'prod-gate': SMOKE_WITHS,
   prod: {
     ...deployWiths('AWS_DEPLOY_ROLE'),
@@ -6711,7 +7017,7 @@ export const ACTION_IFS: Readonly<Record<string, Readonly<Record<string, string>
   'rollback-nonprod': {
     'Download the previous assembly': expr("needs.synth-previous-nonprod.outputs.assembly != ''"),
   },
-  'prod-plan': { 'Download the assembly': ASSEMBLY_DOWNLOAD },
+  'prod-plan': { 'Download the assembly': ASSEMBLY_DOWNLOAD, "Download prod's previous assembly": PLAN_PREVIOUS_IF },
   prod: {
     'Download the assembly': ASSEMBLY_DOWNLOAD,
     'Download the image': expr(
@@ -6828,9 +7134,12 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
     CHECKOUT_STEP,
     ['The release this job deploys'],
     ['Download the assembly', 'actions/download-artifact'],
+    ["Download prod's previous assembly", 'actions/download-artifact'],
     ['Check the assembly'],
+    ['Check the previous assembly'],
     ...CLI_STEPS,
     ['Diff'],
+    ['Diff the rollback'],
   ],
   'prod-gate': [CHECKOUT_STEP, NODE_STEP, ["Prod's release records"], ["main's own CI"], ['The prod gate']],
   prod: deploySteps('prod'),
@@ -7031,7 +7340,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
         const fetchLine = FETCH_TOOLS[word]
         const imageLines = IMAGE_TOOLS[word]
         if (imageLines !== undefined && run === IMAGE_UNPACK_RUN && imageLines.includes(raw(command))) return false
-        if (DIFF_TOOLS.has(word) && run === DIFF_RUN && raw(command) === DIFF_SUMMARY_LINE) return false
+        if (DIFF_TOOLS.has(word) && DIFF_RUNS.includes(run) && raw(command) === DIFF_SUMMARY_LINE) return false
         if (
           word === 'openssl' &&
           raw(command) === STOP_TOKEN_LINE &&
@@ -7062,7 +7371,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       // Its own lines are read by the table, each command held to its uses.
       const refused = refusedAt(where, read)
       if (refused !== undefined) add(refused, AS_BASH)
-      if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS))) add(where, HELD)
+      if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS, read.commands))) add(where, HELD)
       if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], pinnedRunOf(id, step))) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
@@ -7102,9 +7411,10 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const first = cli[0]?.index ?? 0
       const folder = lines.filter(line => line.raw.trim() === CDK_FOLDER)
       const assembly = lines.filter(line => ASSEMBLY_ASSIGNMENT.test(line.code))
-      const wantAssembly = DEPLOY_JOBS[id]?.rollback
-        ? 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"'
-        : 'ASSEMBLY="$RUNNER_TEMP/assembly"'
+      const wantAssembly =
+        DEPLOY_JOBS[id]?.rollback || run === ROLLBACK_DIFF_RUN
+          ? 'ASSEMBLY="$RUNNER_TEMP/assembly-previous"'
+          : 'ASSEMBLY="$RUNNER_TEMP/assembly"'
       const moves = commands.filter(command => ['cd', 'pushd', 'popd'].includes(command.word))
       if (
         cli.some(line => !cliLineIsSafe(line.text)) ||
@@ -7408,7 +7718,7 @@ export function releaseFindings(workflows: Texts): Finding[] {
     const where = steps[0] === undefined ? id : `${id} (${label(steps[0], 0)})`
     const refused = refusedAt(where, read)
     if (refused !== undefined) add(refused, AS_BASH)
-    if (read.commands.some(command => !glueIsHeld(command, recordCalls(id)))) add(where, HELD)
+    if (read.commands.some(command => !glueIsHeld(command, recordCalls(id), read.commands))) add(where, HELD)
     const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
     const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
     if (setsAnInput(run, read, envNames, steps[0] === undefined ? undefined : pinnedRunOf(id, steps[0]))) {
@@ -7496,7 +7806,12 @@ const RUNNER_TEMP = `${expr('runner.temp')}/`
 // release it deploys, on each folder it downloaded, after its downloads and before the credentials
 // action; synth runs it on each folder it uploads, before the upload; every download-artifact step's if:
 // requires its artifact-ids non-empty (an empty one downloads every artifact of the run); and every step
-// that runs the CLI starts it in CDK_FOLDER's fresh folder.
+// that runs the CLI starts it in CDK_FOLDER's fresh folder; and in every job each check's call stands alone.
+const CHECK_NAMES = [...CANONICAL_CALLS.keys()]
+const STANDS_ALONE =
+  'calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
+const CHECKED_FOLDERS =
+  "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
 export function assetCheckFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-14', `${where}: ${rule}`))
@@ -7515,31 +7830,52 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
         add(where, 'starts the CLI in CDK_FOLDER’s fresh folder')
     })
     if (ENVIRONMENT_JOBS[id] !== undefined) {
+      // Each assembly it downloads is checked in a step of its own, with the release that folder holds (the
+      // release's, or the previous release's, which the rollback jobs deploy and prod-plan diffs), after its
+      // download, under its download's if: or none, and before the credentials action.
       const downloads = steps.flatMap((step, index) =>
-        step.uses?.startsWith('actions/download-artifact@') ? [index] : [],
+        step.uses?.startsWith('actions/download-artifact@') && step.with.get('path') !== `${RUNNER_TEMP}image`
+          ? [index]
+          : [],
       )
-      const folders = downloads
-        .map(index => steps[index]?.with.get('path') ?? '')
-        .filter(path => path !== `${RUNNER_TEMP}image`)
-        .map(path => (path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path))
       const rollback = DEPLOY_JOBS[id]?.rollback === true
-      const variable = rollback ? 'PREVIOUS' : 'RELEASE'
-      const check = steps.findIndex(step => step.run === assetCheckRun(folders, variable))
       const credentials = credentialsAt(steps)
-      if (
-        folders.length === 0 ||
-        check < 0 ||
-        check < Math.max(...downloads) ||
-        credentials < 0 ||
-        check > credentials ||
-        steps[check]?.env.get(variable) !== (rollback ? PREVIOUS_OUTPUT : RELEASE_OUTPUT)
-      ) {
-        add(
-          id,
-          'runs ASSET_CHECK on each folder it downloaded, with the release it deploys, after its downloads and before the credentials action',
+      const checked = (index: number) => {
+        const download = steps[index]
+        const path = download?.with.get('path') ?? ''
+        const folder = path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path
+        const previous = folder === 'assembly-previous'
+        const variable = previous ? 'PREVIOUS' : 'RELEASE'
+        const release = !previous
+          ? RELEASE_OUTPUT
+          : rollback
+            ? PREVIOUS_OUTPUT
+            : previousRelease((STAGES[id] ?? '') as Stage)
+        const check = steps.findIndex(step => step.run === assetCheckRun([folder], variable))
+        const step = steps[check]
+        return (
+          check > index &&
+          credentials >= 0 &&
+          check < credentials &&
+          step?.env.get(variable) === release &&
+          (step.if === undefined || step.if === download?.if)
         )
       }
+      if (downloads.length === 0 || !downloads.every(checked)) add(id, CHECKED_FOLDERS)
     }
+    // In every job, synth's and synth-previous' among them, each check's call stands alone (standsAlone), so a
+    // refusal swallowed by an || or a substitution never hands an assembly on as checked. A run the table
+    // can't read whole is refused here too, since the reader stops where it refuses.
+    steps.forEach((step, index) => {
+      if (step.run === undefined || !CHECK_NAMES.some(name => step.run?.includes(name))) return
+      const read = readShell(step.run)
+      if (
+        read.refused !== undefined ||
+        read.commands.some(each => CHECK_NAMES.includes(each.name ?? '') && !standsAlone(each, read.commands))
+      ) {
+        add(`${id} (${label(step, index)})`, STANDS_ALONE)
+      }
+    })
     if (SYNTH_JOBS.includes(id)) {
       steps.forEach((step, index) => {
         if (!step.uses?.startsWith('actions/upload-artifact@')) return

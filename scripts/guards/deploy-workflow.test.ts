@@ -49,6 +49,7 @@ import {
   CI,
   CLI_CHECK,
   CLI_FETCH,
+  canonicalCommandLines,
   canonicalTextFindings,
   canonicalToolLines,
   checkoutFindings,
@@ -63,8 +64,6 @@ import {
   ENVIRONMENT_JOBS,
   evaluatedLines,
   evaluateIf,
-  FAST_RECHECK_NONPROD,
-  FAST_RECHECK_PROD,
   forbiddenWordFindings,
   functionDefinitions,
   GENERAL_WORDS,
@@ -74,7 +73,6 @@ import {
   IMAGE_LAYOUT,
   IMAGE_UNPACK_RUN,
   JOB_IDS,
-  MAIN_CI,
   MASK_RUN,
   MIGRATE_LINES,
   maskingFindings,
@@ -89,7 +87,6 @@ import {
   PREAMBLE,
   PROBE,
   PROBE_LINES,
-  PROD_GATE_CALL,
   PROTECT_ENVIRONMENTS_SHA256,
   PROTECT_ENVIRONMENTS_SHEBANG,
   PULL_CHECKS,
@@ -97,6 +94,7 @@ import {
   pinnedScriptText,
   prodPathFindings,
   RESTORE_DOWN,
+  ROLLBACK_DIFF_RUN,
   RULESET,
   RUN_TASK_MIGRATE,
   RUN_TASK_PROBE,
@@ -223,7 +221,10 @@ const SHAPE =
 const AS_BASH =
   'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 const HELD =
-  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one'
+  'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one; and calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
+// DPW-14's finding for a check called where its refusal wouldn't end the step, in any job.
+const STANDS_ALONE =
+  'calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
 // The findings for a run the guard pins whole (PINNED_RUNS), under the rule that holds it, and for an output
 // written outside one.
 const PINNED_08 =
@@ -258,7 +259,7 @@ describe('DPW: the guard reads the deploy workflow', () => {
     'rollback-nonprod': 13,
     'resmoke-nonprod': 3,
     'record-nonprod': 1,
-    'prod-plan': 9,
+    'prod-plan': 12,
     'prod-gate': 5,
     prod: 21,
     'smoke-prod': 3,
@@ -483,36 +484,27 @@ describe('DPW: the guard reads the deploy workflow', () => {
   // jq's now, so it evaluates no command's output.
   it('pins the lines of the canonical texts that bash evaluates as arithmetic or a name', () => {
     const evaluated = (text: string) => evaluatedLines(text).map(n => text.split('\n')[n]?.trim())
-    expect(evaluated(ASSET_CHECK)).toEqual([
-      `dir=\${queue[0]}`,
-      `queue=("\${queue[@]:1}")`,
-      `dir=\${queue[0]}`,
-      `queue=("\${queue[@]:1}")`,
-      'manifests=$((manifests + 1))',
-      'services=$((services + 1))',
-    ])
-    expect(evaluated(AWS_CHECK)).toEqual([
-      `tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=\${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)`,
-    ])
-    // bash's own SECONDS reads as its count, whatever was assigned to it.
-    expect(evaluated(MAIN_CI)).toEqual(['DEADLINE=$((SECONDS + 30 * 60))'])
-    for (const text of [
-      PREAMBLE,
-      CDK_FOLDER,
-      CLI_FETCH,
-      CLI_CHECK,
-      TASKS_OUTPUTS,
-      ONE_OFF,
-      PROBE,
-      NEWEST_RELEASE,
-      PULL_CHECKS,
-      PROD_GATE_CALL,
-      FAST_RECHECK_NONPROD,
-      FAST_RECHECK_PROD,
-      SMOKE_ATTEMPT,
-      RESTORE_DOWN,
-    ]) {
-      expect(evaluated(text)).toEqual([])
+    // Every canonical text, by its name (the seventh review's second attack found IMAGE_CHECK and STOP_HEAD
+    // left out of a list kept by hand, so a line one gained changed no test): those not named here evaluate
+    // nothing.
+    const EVALUATING: Readonly<Record<string, readonly string[]>> = {
+      ASSET_CHECK: [
+        `dir=\${queue[0]}`,
+        `queue=("\${queue[@]:1}")`,
+        `dir=\${queue[0]}`,
+        `queue=("\${queue[@]:1}")`,
+        'manifests=$((manifests + 1))',
+        'services=$((services + 1))',
+      ],
+      AWS_CHECK: [
+        `tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=\${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)`,
+      ],
+      // bash's own SECONDS reads as its count, whatever was assigned to it.
+      MAIN_CI: ['DEADLINE=$((SECONDS + 30 * 60))'],
+    }
+    expect(Object.keys(EVALUATING).every(name => Object.hasOwn(CANONICAL_BY_NAME(), name))).toBe(true)
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) {
+      expect(evaluated(text), name).toEqual(EVALUATING[name] ?? [])
     }
   })
 
@@ -1648,7 +1640,7 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
   const GOES_ON =
     "lets no failure pass: no continue-on-error, and no step's if: calls always(), success(), failure() or cancelled()"
   const UNCONDITIONAL =
-    'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:'
+    'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:'
   const CLI_IF = "runs each CLI line only in the modes that call for it: its step's if: as written"
   const migrate = '      - name: Migrate\n'
   const probe = '      - name: Probe\n'
@@ -2194,10 +2186,10 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       })
     }
     // Before the credentials: the release (or a rollback job's two releases), the image's check (nonprod and
-    // prod), the assembly's, the fast re-check (nonprod and prod), CLI_FETCH and CLI_CHECK: six in each deploy
-    // job and four in prod-plan and each rollback job.
-    expect(before).toBe(24)
-    expect(after).toBe(31)
+    // prod), the assembly's (and prod-plan's of the previous assembly), the fast re-check (nonprod and prod),
+    // CLI_FETCH and CLI_CHECK: six in each deploy job, five in prod-plan and four in each rollback job.
+    expect(before).toBe(25)
+    expect(after).toBe(32)
     // The token is new each run, and the line naming it is the first the run prints.
     const tokens = [0, 1].map(() => {
       const result = spawnSync('bash', ['-c', `${PREAMBLE}\necho after`], {
@@ -4341,6 +4333,16 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       ['x=$1\nRANDOM=$x', 2],
       ['x=$1\nread -r OPTIND <<<"$x"', 2],
       ['PS4=$1\nset -x', 1],
+      // The seventh review's second attack: a default assignment sets a name no assignment of it shows, an
+      // element's assignment sets the name ($n reads n[0]), and a descriptor's variable is named by a
+      // redirection whose subscript bash evaluates.
+      [`f() {\n  local n=\n  : "\${n:=$1}"\n  (( n > 1 ))\n}`, 3],
+      [`f() {\n  local n=\n  : \${n=$1}\n  (( n > 1 ))\n}`, 3],
+      [`f() {\n  local n=\n  : "\${n[0]:=$1}"\n}`, 3],
+      ['f() {\n  local n=0\n  n[0]=$1\n  (( n > 1 ))\n}', 4],
+      ['f() {\n  local n=0\n  n[0]+=$1\n  (( n > 1 ))\n}', 4],
+      ['x=$(jq -r .n f.json)\necho hi {a[$x]}>/dev/null', 2],
+      ['exec {fd}>/dev/null', 1],
     ] as const) {
       expect(canonicalTextFindings({ X: text }), text).toContain(evaluates('X', line))
     }
@@ -4409,6 +4411,24 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       ['x=$(gh api "repos/$REPO/issues" --input /proc/self/environ)', 0],
       ['x=$(gh api "repos/$REPO/issues" -F "body=@/proc/self/environ")', 0],
       ['x=$(gh api "repos/$REPO/runs" --jq \'env\')', 0],
+      // The seventh review's second attack: a flag jq receives as one, though written quoted or escaped, in
+      // its program's place or after it, and a word an expansion starts that no / follows.
+      [`x=$(jq -er --arg key "$1" '-f' infra/checks/x.jq <<<"$o")`, 0],
+      [`x=$(jq -er --arg key "$1" '--from-file' infra/checks/x.jq <<<"$o")`, 0],
+      [`x=$(jq -er '-L' infra/checks 'include "x"; f' <<<"$o")`, 0],
+      [`x=$(jq -er 'infra/checks/x.jq' \\-f <<<"$o")`, 0],
+      [`x=$(jq -er '.a' "-f" x <<<"$o")`, 0],
+      [`x=$(jq -er '.a' -\\f x <<<"$o")`, 0],
+      [`x=$(jq -er '.a' "$o"rawfile e /proc/self/environ)`, 0],
+      [`x=$(gh api "repos/$REPO/x" --jq '-x')`, 0],
+      // printf's -v joined to its name, quoted or escaped, and a format an expansion gives, each of which bash
+      // reads as -v and a name whose subscript it evaluates.
+      ['printf -v"a[$x]" %s 1', 0],
+      ['printf -va[$x] %s 1', 0],
+      [`printf "-v" "a[$x]" '%s' 1`, 0],
+      [`printf \\-v "a[$x]" '%s' 1`, 0],
+      ['printf "$f" a', 0],
+      [`printf '-v' "a[$x]" '%s' 1`, 0],
       ['tar --extract --file "$1" --to-command=\'. /dev/stdin\'', 0],
       ['tar --extract --file "$1" --directory "$2" --checkpoint=1 --checkpoint-action=exec=x', 0],
       ['mkdir -p "$HOME/.local/bin"', 0],
@@ -5099,7 +5119,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     const imageIf = `if: \${{ needs.gate.outputs.mode == 'deploy' }}\n        run: |\n          set -euo pipefail\n          # The runner reads`
     expect(deployStepFindings(plant(imageIf, imageIf.replace("== 'deploy'", "!= 'rollback'"), job('nonprod')))).toEqual(
       [
-        `${DEPLOY}: DPW-06 nonprod: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads and its image check, under the push’s if:`,
+        `${DEPLOY}: DPW-06 nonprod: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:`,
       ],
     )
     const tar = '          tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions\n'
@@ -6230,7 +6250,7 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
         held++
       }
     }
-    expect(held).toBe(13)
+    expect(held).toBe(14)
     for (const [id, name] of [
       ['build', 'Upload the image'],
       ['gate', "Check out the run's commit"],
@@ -6539,7 +6559,7 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
 describe('DPW-14 (C11-D76): the asset and release checks', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-14 ${where}: ${rule}`
   const CHECKED =
-    'runs ASSET_CHECK on each folder it downloaded, with the release it deploys, after its downloads and before the credentials action'
+    "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
 
   it('finds each planted breakage in the workflow', () => {
     // GUARDS-02: null == 0 is true on GitHub, so this download would run with empty artifact-ids; round 2's
@@ -6564,10 +6584,10 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
     ])
     expect(
       assetCheckFindings(plant("asset_refuse 'the assembly holds a symbolic link'", 'true', job('nonprod'))),
-    ).toEqual([at('nonprod', CHECKED)])
+    ).toEqual([at('nonprod', CHECKED), at('nonprod (Check the assembly)', STANDS_ALONE)])
     expect(
       assetCheckFindings(plant('check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"', 'true', job('prod'))),
-    ).toEqual([at('prod', CHECKED)])
+    ).toEqual([at('prod', CHECKED), at('prod (Check the assembly)', STANDS_ALONE)])
     expect(
       assetCheckFindings(plant(`        if: \${{ needs.synth.outputs.assembly != '' }}\n`, '', job('nonprod'))),
     ).toEqual([
@@ -8060,4 +8080,294 @@ describe('C11-D77: the repository carries and enables no plugin', () => {
     expect(claude).toContain('.claude/settings.json')
     expect(pluginFindings(claude.map(path => [path, readRepoFile(path)] as const))).toEqual([])
   })
+})
+
+// The seventh review's second attack on the allowlist: each way past it the attackers proved, planted as they
+// planted it, is found at its root. A canonical text handed a held tool an environment of its own (an export
+// of TAR_OPTIONS before CLI_FETCH's tar), set a name by a printf -v joined to it, quoted or escaped, or by a
+// default or an element's assignment, and handed jq a flag written in quotes; a check's call stood in a
+// substitution an || swallowed; a checkout stood in a step group no rule read; and the assembly prod's rollback
+// job deploys was never diffed before its approval.
+describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11, DPW-13, DPW-14)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs"
+  const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
+  const tools = (name: string, line: number) =>
+    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, and the tools that could run a program or write a file only their lines as written`
+
+  // FETCH-A2-01: a held tool's line is held with its environment. An export before CLI_FETCH's tar (or
+  // IMAGE_CHECK's) handed tar options from TAR_OPTIONS, a checkpoint action among them, on a line the guard
+  // writes; a canonical text now exports only on its listed lines, sets no option that exports, wraps nothing
+  // and runs only CANONICAL_COMMANDS and the canonical texts' functions.
+  it("holds a canonical text's commands and the environment it hands them to closed lists (FETCH-A2-01)", () => {
+    const tar = 'tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner'
+    const exported = "export TAR_OPTIONS='--checkpoint=1 --checkpoint-action=echo=hearth-plant-checkpoint'"
+    const fetch = CLI_FETCH.replace(`\n${tar}`, `\n${exported}\n${tar}`)
+    expect(fetch).not.toBe(CLI_FETCH)
+    expect(canonicalTextFindings({ CLI_FETCH: fetch })).toContain(
+      commands('CLI_FETCH', fetch.split('\n').indexOf(exported) + 1),
+    )
+    const extract = '  tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions'
+    const image = IMAGE_CHECK.replace(`\n${extract}`, `\n  ${exported}\n${extract}`)
+    expect(image).not.toBe(IMAGE_CHECK)
+    expect(canonicalTextFindings({ IMAGE_CHECK: image })).toContain(
+      commands('IMAGE_CHECK', image.split('\n').indexOf(`  ${exported}`) + 1),
+    )
+    for (const [text, line] of [
+      ['f() {\n  local -x TAR_OPTIONS=--checkpoint=1\n}', 2],
+      ['export -n CDK', 1],
+      ['set -a\nTAR_OPTIONS=x', 1],
+      ['set -o allexport', 1],
+      ['set -k', 1],
+      [`TAR_OPTIONS=x ${tar}`, 1],
+      [`env TAR_OPTIONS=x ${tar}`, 1],
+      ['XDG_CONFIG_HOME="$RUNNER_TEMP/x"', 1],
+      ['HOME="$RUNNER_TEMP/x"', 1],
+      ['x=$1\neval "$x"', 2],
+      ['source "$1"', 1],
+      ['. "$1"', 1],
+      ["trap 'echo $1' EXIT", 1],
+      ["alias jq='jq -f x'", 1],
+      ['shopt -s extdebug', 1],
+      ['readonly x=1', 1],
+      ['coproc x { cat; }', 1],
+      [`"jq" -f p.jq f`, 1],
+      [`\\jq -f p.jq f`, 1],
+      [`j''q -f p.jq f`, 1],
+      ['x=jq\n$x -f p.jq f', 2],
+      ['command jq -n .', 1],
+      ['builtin printf -v "a[$x]" %s 1', 1],
+    ] as const) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(commands('X', line))
+    }
+    // What the texts hold passes: the listed exports, IFS before read, set -euo pipefail, the functions any
+    // canonical text defines, run and get.
+    for (const text of [
+      PREAMBLE.split('\n').at(-1) ?? '',
+      CDK_FOLDER,
+      'set -euo pipefail',
+      `while IFS= read -r x; do :; done <<<"$y"`,
+      `IFS=$'\\t' read -r a b <<<"$y"`,
+      'one_off_end migrate "$MIGRATE_LINES" "$RUN"',
+      'x=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --output json)',
+    ]) {
+      expect(canonicalCommandLines(text, new Set(['one_off_end', 'get', 'run', 'mask'])), text).toEqual([])
+    }
+  })
+
+  // EXPAND-A2-01: printf -v joined to its name, quoted or escaped, and a descriptor's variable, each name a
+  // subscript bash evaluates, which the spaced printf -v alone was read for.
+  it('holds printf in a canonical text to a single-quoted format or a plain -v, and names no descriptor (EXPAND-A2-01)', () => {
+    for (const text of [
+      'x=$(jq -r .n f.json)\nprintf -v"a[$x]" %s 1',
+      'x=$(jq -r .n f.json)\nprintf -va[$x] %s 1',
+      'x=$(jq -r .n f.json)\nprintf "-v" "a[$x]" %s 1',
+      `x=$(jq -r .n f.json)\nprintf \\-v "a[$x]" '%s' 1`,
+    ]) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(tools('X', 2))
+    }
+    expect(canonicalTextFindings({ X: 'x=$(jq -r .n f.json)\necho hi {a[$x]}>/dev/null' }).join('\n')).toMatch(
+      /DPW-10 X, line 2: evaluates/,
+    )
+    // TASKS_OUTPUTS planted as the attackers planted it: a revision kept by printf -v joined to its name.
+    const anchor = `    definition=$(output "\${kind^}TaskDefinition")\n`
+    expect(TASKS_OUTPUTS).toContain(anchor)
+    const planted = TASKS_OUTPUTS.replace(
+      anchor,
+      `${anchor}    revision="\${definition##*:}"\n    printf -v"revisions[$revision]" '%s' "$kind"\n`,
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted }).join('\n')).toMatch(/DPW-10 TASKS_OUTPUTS, line \d+/)
+  })
+
+  // FLOW-A2-01: a check called inside $( … ) refuses in the substitution's subshell, and an || then goes on; a
+  // call in a pipeline, after !, beside && or || or as a condition has its failure ignored by set -e. Each
+  // canonical check, and each record job's function, is held to standing alone.
+  it("holds each check's call to standing alone, so its refusal ends the step (FLOW-A2-01)", () => {
+    const assembly = '          check_assembly "$RUNNER_TEMP/assembly"\n'
+    for (const call of [
+      'CHECKED=$(check_assembly "$RUNNER_TEMP/assembly") || echo "$CHECKED"',
+      'check_assembly "$RUNNER_TEMP/assembly" | tee -a "$GITHUB_STEP_SUMMARY"',
+      '! check_assembly "$RUNNER_TEMP/assembly"',
+      'check_assembly "$RUNNER_TEMP/assembly" || echo x',
+      'echo x && check_assembly "$RUNNER_TEMP/assembly"',
+      'if check_assembly "$RUNNER_TEMP/assembly"; then echo x; fi',
+      'if [ a = b ]; then echo x; elif check_assembly "$RUNNER_TEMP/assembly"; then echo y; fi',
+      '{ check_assembly "$RUNNER_TEMP/assembly"; } || echo x',
+    ]) {
+      expect(credentialed(plant(assembly, `          ${call}\n`, job('nonprod'))), call).toContain(
+        at('DPW-10', 'nonprod (Check the assembly)', HELD),
+      )
+    }
+    expect(
+      credentialed(
+        plant(
+          '            *) aws_check "$MODE" ;;\n',
+          '            *) CHECKED=$(aws_check "$MODE") || echo "aws-check: $CHECKED" ;;\n',
+          job('nonprod'),
+        ),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (What runs)', HELD))
+    expect(
+      credentialed(
+        plant(
+          '          unpack_image "$RUNNER_TEMP/image/image.tar" "$RUNNER_TEMP/image-layout"\n',
+          '          X=$(unpack_image "$RUNNER_TEMP/image/image.tar" "$RUNNER_TEMP/image-layout") || echo "$X"\n',
+          job('nonprod'),
+        ),
+      ),
+    ).toContain(at('DPW-10', 'nonprod (Check and unpack the image)', HELD))
+    for (const [from, to] of [
+      [
+        '            PAYLOAD=$(release_payload "$KIND" "$COMMIT" "$DIGEST" "$SERVICES")\n',
+        '            PAYLOAD=$(release_payload "$KIND" "$COMMIT" "$DIGEST" "$SERVICES") || echo x\n',
+      ],
+      ['            record hearth-release "$PAYLOAD"\n', '            record hearth-release "$PAYLOAD" || echo x\n'],
+    ] as const) {
+      expect(releaseFindings(plant(from, to, job('record-nonprod'))), to).toContain(
+        at('DPW-13', 'record-nonprod (Write the record)', HELD),
+      )
+    }
+    // Every job's check call is held so, the synth jobs' too, which no credential rule reads (DPW-14).
+    expect(
+      assetCheckFindings(plant(assembly, '          check_assembly "$RUNNER_TEMP/assembly" || echo x\n', job('synth'))),
+    ).toContain(at('DPW-14', "synth (Check the release's assembly)", STANDS_ALONE))
+    expect(
+      assetCheckFindings(
+        plant(
+          '          check_assembly "$RUNNER_TEMP/assembly-previous-prod"\n',
+          '          X=$(check_assembly "$RUNNER_TEMP/assembly-previous-prod") || echo "$X"\n',
+          job('synth-previous-prod'),
+        ),
+      ),
+    ).toContain(at('DPW-14', "synth-previous-prod (Check prod's previous assembly)", STANDS_ALONE))
+    expect(
+      assetCheckFindings(
+        plant(
+          '            *) aws_check "$MODE" ;;\n',
+          '            *) aws_check "$MODE" || echo x ;;\n',
+          job('nonprod'),
+        ),
+      ),
+    ).toContain(at('DPW-14', 'nonprod (What runs)', STANDS_ALONE))
+    // The reader says which commands stand alone.
+    const alone = (run: string) => readShell(run).commands.map(each => [each.name ?? '=', each.alone])
+    expect(alone('a x\nb x | c\n! d\ne || f\nif g; then h; fi\n{ i; } && j')).toEqual([
+      ['a', true],
+      ['b', false],
+      ['c', false],
+      ['d', false],
+      ['e', false],
+      ['f', false],
+      ['g', false],
+      ['h', true],
+      ['if', true],
+      ['i', false],
+      ['{', false],
+      ['j', false],
+    ])
+  }, 60_000)
+
+  // YAML-A2-01: a step group (parallel:) holds steps GitHub runs as background steps, which workflow.ts reads
+  // as one step with no uses:, so a checkout in one was never held to persist-credentials: false.
+  it('refuses a step of a kind workflow.ts doesn’t read, in every workflow (YAML-A2-01)', () => {
+    const checkout = '      - uses: actions/checkout@v5\n        with:\n          persist-credentials: false\n'
+    const ORDINARY =
+      'is an ordinary step, of the keys workflow.ts reads (no parallel group, background, wait, wait-all or cancel step, whose steps or kind no rule reads)'
+    const planted = plant(checkout, '      - parallel:\n          - uses: actions/checkout@v5\n', '  audit:\n', CI)
+    expect(permissionFindings(planted)).toContain(`${CI}: DPW-02 audit (step 1): ${ORDINARY}`)
+    const added = '.github/workflows/preview.yml'
+    const preview = [
+      'name: Preview',
+      'on:',
+      '  push:',
+      'permissions:',
+      '  contents: read',
+      'jobs:',
+      '  preview:',
+      '    runs-on: ubuntu-24.04',
+      '    steps:',
+      '      - parallel:',
+      '          - name: Check out',
+      '            uses: actions/checkout@v5',
+      '      - wait-all: true',
+      '',
+    ].join('\n')
+    expect(permissionFindings(new Map([...workflows, [added, preview]]))).toEqual([
+      `${added}: DPW-02 preview (step 1): ${ORDINARY}`,
+      `${added}: DPW-02 preview (step 2): ${ORDINARY}`,
+    ])
+  })
+
+  // INPUTS-A2-01: a release's own code can tell its rebuild as prod's previous release (the CLI hands the app
+  // its output folder) from its own deploy and write a resource only into the rebuild, which prod's rollback
+  // job deploys behind an approval no diff showed it to. prod-plan now diffs that very assembly, checked as
+  // the rollback job checks it, against what prod runs, into its own summary before prod's approval.
+  it("diffs, in prod-plan, the very assembly prod's rollback job deploys (INPUTS-A2-01)", () => {
+    const stepsOf = (id: string) => {
+      const found = workflowJobs(deployText).find(each => each.id === id)
+      if (found === undefined) throw new Error(`no job ${id}`)
+      return parsedSteps(found)
+    }
+    const steps = stepsOf('prod-plan')
+    const named = (name: string) => steps.find(step => step.name === name)
+    const download = named("Download prod's previous assembly")
+    const deployed = stepsOf('rollback-prod').find(step => step.name === 'Download the previous assembly')
+    expect(download?.with.get('artifact-ids')).toBe(deployed?.with.get('artifact-ids'))
+    expect(download?.with.get('path')).toBe(deployed?.with.get('path'))
+    expect(named('Check the previous assembly')?.run).toBe(
+      [
+        STOP_HEAD,
+        ASSET_CHECK,
+        'check_assembly "$RUNNER_TEMP/assembly-previous"',
+        'check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"',
+      ].join('\n'),
+    )
+    expect(named('Diff the rollback')?.run).toBe(ROLLBACK_DIFF_RUN)
+    expect(ROLLBACK_DIFF_RUN).toContain('ASSEMBLY="$RUNNER_TEMP/assembly-previous"')
+    expect(ROLLBACK_DIFF_RUN).toContain("### What prod's automatic rollback changes")
+    for (const name of ["Download prod's previous assembly", 'Check the previous assembly', 'Diff the rollback']) {
+      expect(named(name)?.if, name).toBe(
+        `\${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}`,
+      )
+    }
+    const CHECKED =
+      "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
+    expect(assetCheckFindings(removedStep('prod-plan', 'Check the previous assembly'))).toEqual([
+      at('DPW-14', 'prod-plan', CHECKED),
+    ])
+    const previous = stepText(deployText, 'prod-plan', 'Check the previous assembly')
+    expect(
+      assetCheckFindings(
+        withText(
+          DEPLOY,
+          edited(
+            deployText,
+            previous,
+            previous.replace(
+              `if: \${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}`,
+              `if: \${{ needs.gate.outputs.mode == 'rollback' }}`,
+            ),
+            job('prod-plan'),
+          ),
+        ),
+      ),
+    ).toEqual([at('DPW-14', 'prod-plan', CHECKED)])
+    // The rollback's diff is pinned whole, so it diffs no other folder.
+    const diff = stepText(deployText, 'prod-plan', 'Diff the rollback')
+    expect(
+      prodPathFindings(
+        withText(
+          DEPLOY,
+          edited(
+            deployText,
+            diff,
+            diff.replace('ASSEMBLY="$RUNNER_TEMP/assembly-previous"', 'ASSEMBLY="$RUNNER_TEMP/assembly"'),
+            job('prod-plan'),
+          ),
+        ),
+      ),
+    ).toContain(at('DPW-08', 'prod-plan (Diff the rollback)', PINNED_08))
+  }, 60_000)
 })

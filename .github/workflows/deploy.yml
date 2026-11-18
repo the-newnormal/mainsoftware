@@ -2978,8 +2978,10 @@ jobs:
           fi
 
   # The prod plan (C11-D51, C11-D55): for a prod deploy once non-prod's smoke passed, or a prod rollback,
-  # the diff the approver reads before the prod job's approval. Its role reads prod's templates and
-  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own.
+  # the diff the approver reads before the prod job's approval, and for a deploy with a previous release the
+  # diff of the rollback that release's own assembly would make, which prod's rollback job deploys. Its role
+  # reads prod's templates and nothing else. It outputs its attempt, which the prod job's fast re-check holds
+  # to its own.
   prod-plan:
     needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
@@ -3034,6 +3036,12 @@ jobs:
         with:
           artifact-ids: ${{ needs.synth.outputs.assembly }}
           path: ${{ runner.temp }}/assembly
+      - name: Download prod's previous assembly
+        if: ${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.synth-previous-prod.outputs.assembly }}
+          path: ${{ runner.temp }}/assembly-previous
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
@@ -3192,6 +3200,165 @@ jobs:
           }
           check_assembly "$RUNNER_TEMP/assembly"
           check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
+      - name: Check the previous assembly
+        if: ${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}
+        env:
+          PREVIOUS: ${{ needs.gate.outputs.previous_prod_commit }}:${{ needs.gate.outputs.previous_prod_digest }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
+          # the CLI acts on, so before any credential each one is walked from its root manifest through every
+          # nested assembly, the files its manifests name and not file names, and refused for: missing context
+          # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
+          # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
+          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
+          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
+          # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
+          # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
+          # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
+          # isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
+          # folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
+          # object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
+          # with keys held to their bytes that is the template itself; a file asset whose id, its key in the
+          # manifest's files, isn't its key's 64 hex digits (the CLI writes the zip it packages to
+          # .cache/<id>.zip beside the manifest, or uploads the file already there, so a / or .. in an id would
+          # have it write or read a file outside the tree); no asset manifest at all; a stack whose
+          # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
+          # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
+          # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
+          # tag, parameter or other property: none is in a template or the approver's diff), or an asset
+          # manifest's (its bootstrap version and parameter alone); a stack whose name isn't Hearth- and its
+          # stage's id (the CLI would otherwise name it by its artifact's id), or whose template CloudFormation is
+          # handed isn't its own templateFile (the CLI hands CloudFormation the object stackTemplateAssetObjectUrl
+          # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
+          # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
+          # template holding a section, a transform or a resource type a workload synth never writes (a section
+          # other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
+          # VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
+          # Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); any symbolic link.
+          # The release check then requires every Services template's Release output to be the release this
+          # job deploys, and every container image in the Tasks and Services templates to be the server image
+          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
+          # naming the rule, never a path or value from the assembly.
+          asset_refuse() {
+            echo "asset-check: $1"
+            exit 1
+          }
+          # Each cloud assembly folder in the tree, the root first (read once check_assembly has passed).
+          assembly_dirs() {
+            local queue=("$1") dir name
+            while [ "${#queue[@]}" -gt 0 ]; do
+              dir=${queue[0]}
+              queue=("${queue[@]:1}")
+              printf '%s\n' "$dir"
+              while IFS= read -r name; do
+                queue+=("$dir/$name")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:cloud-assembly") | .properties.directoryName' "$dir/manifest.json")
+            done
+          }
+          check_assembly() {
+            local root dir file path manifests=0 queue stackfiles
+            [ -d "$1" ] || asset_refuse 'the assembly folder is missing'
+            root=$(cd "$1" && pwd -P)
+            [ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'
+            queue=("$root")
+            while [ "${#queue[@]}" -gt 0 ]; do
+              dir=${queue[0]}
+              queue=("${queue[@]:1}")
+              [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
+              jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'a manifest has missing context, which the CLI would look up'
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact type is not one a workload synth writes'
+              jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'a manifest names a file that is not a plain name in its own folder'
+              while IFS= read -r file; do
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse "an artifact's metadata is not a JSON object of entry lists"
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
+                jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a metadata file is not a JSON object of entry lists'
+                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
+              while IFS= read -r file; do
+                [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
+                while IFS= read -r path; do
+                  case "$(realpath -m -- "$dir/$path")" in
+                    "$root"/*) ;;
+                    *) asset_refuse 'an asset path leaves the assembly' ;;
+                  esac
+                done < <(jq -r '(.files // {})[] | .source.path' "$dir/$file")
+                jq -e '(.files // {}) | all(.[]; (.source.packaging != "file" or (.source.path | test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))) and (.destinations | type == "object" and length == 1) and all(.destinations[]; type == "object" and keys == ["assumeRoleArn", "bucketName", "objectKey", "region"] and .bucketName == "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1" and .region == "ap-southeast-1" and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-file-publishing-role-${AWS::AccountId}-ap-southeast-1" and (.objectKey | type == "string" and test("\\A[0-9a-f]{64}\\.(json|zip)\\z"))) and ((.source.packaging == "zip") == (.destinations[] | .objectKey | endswith(".zip"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's one destination isn't the staging bucket, its region and its publishing role as the synth spells them, at a key of 64 hex digits that ends as its packaging does, or a file asset isn't a plain name in its own folder"
+                jq -e '(.files // {}) | to_entries | all(.[]; .key as $id | ($id | test("\\A[0-9a-f]{64}\\z")) and all(.value.destinations[]; .objectKey == $id + ".json" or .objectKey == $id + ".zip"))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a file asset's id isn't its key's 64 hex digits (the CLI packages a zip at, and uploads one it finds at, .cache/<id>.zip)"
+                while IFS=$'\t' read -r path key; do
+                  [ -f "$dir/$path" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                  [ "$(sha256sum <"$dir/$path")" = "${key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"
+                done < <(jq -r '(.files // {})[] | select(.source.packaging == "file") | [.source.path, (.destinations[] | .objectKey)] | @tsv' "$dir/$file")
+                manifests=$((manifests + 1))
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              stackfiles=()
+              while IFS= read -r file; do
+                stackfiles+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")
+              jq -se '.[0] as $m | [.[1:][] | (.files // {})[]] as $files | [($m.artifacts // {})[] | select(.type == "aws:cloudformation:stack")] | all(.[]; (.displayName | type == "string") and (.properties.stackName | type == "string" and test("\\A[A-Za-z][A-Za-z0-9-]{0,127}\\z")) and .properties.stackName == "Hearth-" + (.displayName | gsub("/"; "-")) and (.properties.stackTemplateAssetObjectUrl | type == "string" and test("\\As3://[^/]+/[^/]+\\z")) and (.properties.templateFile as $t | (.properties.stackTemplateAssetObjectUrl | capture("\\As3://(?<b>[^/]+)/(?<k>[^/]+)\\z")) as $u | [$files[] | select(any((.destinations // {})[]; .bucketName == $u.b and .objectKey == $u.k))] | length > 0 and all(.[]; .source == {path: $t, packaging: "file"})))' "$dir/manifest.json" "${stackfiles[@]}" >/dev/null 2>&1 ||
+                asset_refuse "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile"
+              while IFS= read -r file; do
+                [ -d "$dir/$file" ] || asset_refuse 'a nested assembly is missing'
+                queue+=("$dir/$file")
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:cloud-assembly") | .properties.directoryName' "$dir/manifest.json")
+            done
+            [ "$manifests" -gt 0 ] || asset_refuse 'no asset manifest was read'
+          }
+          check_release_in() {
+            local root release=$2 digest services=0 dir stack template
+            [[ "$release" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]] || asset_refuse 'the release is not <commit>:<digest>'
+            digest=${release#*:}
+            root=$(cd "$1" && pwd -P)
+            while IFS= read -r dir; do
+              while IFS=$'\t' read -r stack template; do
+                case "$stack" in
+                  Hearth-*-Services)
+                    services=$((services + 1))
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                      asset_refuse "a Services template's Release is not this job's release"
+                    ;;&
+                  Hearth-*-Tasks | Hearth-*-Services)
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                      asset_refuse 'a container image is not the server image at this release'
+                    ;;
+                esac
+              done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | [.properties.stackName, .properties.templateFile] | @tsv' "$dir/manifest.json")
+            done < <(assembly_dirs "$root")
+            [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
+          }
+          check_assembly "$RUNNER_TEMP/assembly-previous"
+          check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
@@ -3295,6 +3462,47 @@ jobs:
           cat "$DIFF"
           {
             echo "### What prod's $MODE changes"
+            echo ''
+            head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
+            echo ''
+            echo ''
+            if [ "$(wc -c <"$DIFF")" -gt 204800 ]; then echo "The diff is cut at 200 KB here; the job's log holds it whole."; fi
+            if [ "$STATUS" != 0 ]; then echo "The diff failed (exit $STATUS), so this plan fails; the CLI's message is above."; fi
+          } | mask >>"$GITHUB_STEP_SUMMARY"
+          exit "$STATUS"
+      - name: Diff the rollback
+        if: ${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
+          # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
+          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          run() { "$@" 2>&1 | mask; }
+          get() { "$@" 2> >(mask >&2); }
+          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
+          export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
+          # The automatic rollback's diff (C11-D51): prod's previous release as prod's rollback job would deploy it
+          # (synth-previous-prod's assembly, a rebuild of that release's own code), against what prod runs before
+          # this deploy, which is that release: its Tasks and Services, read with the plan role's own credentials.
+          # It shows no change unless the rebuild differs from what runs; into the log, and into the summary cut at
+          # 200 KB, as the release's diff is.
+          ASSEMBLY="$RUNNER_TEMP/assembly-previous"
+          DIFF="$RUNNER_TEMP/diff.txt"
+          STATUS=0
+          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          {
+            run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
+          } >"$DIFF" || STATUS=$?
+          cat "$DIFF"
+          {
+            echo "### What prod's automatic rollback changes"
             echo ''
             head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'
             echo ''
