@@ -75,21 +75,26 @@
 //   git, a path ending /git or git-<command>, a value that is, a command named by an expansion of one, or one whose
 //   name bash computes and may make git: a ${…} operator, ANSI-C or locale quoting or arithmetic in it, or a brace
 //   expansion or a *, ? or [ outside quotes any of whose words could name git or git-<command>, a pattern only with
-//   a word after it, so a lone * in prose runs none; review 6 GUARDS-01) is also found where bash computes text no
-//   word holds: a here-document, a process substitution, ANSI-C or locale quoting, an unquoted brace expansion,
-//   arithmetic, a ( inside a word (an array's list or an extended pattern), any ${…} but a plain ${NAME}, a
-//   function's definition, a command named by an expansion, and eval, source, read, mapfile, readarray, alias, let,
-//   getopts, hash, enable, trap, coproc, printf -v and a declaration with an option (EXPAND-A3-02, round 6). In a
-//   command that runs git every word after git (or after a computed name that may be git) is read, whatever the
-//   subcommand, but the value of git's own -C, -c, --git-dir, --work-tree, --namespace or --config-env ahead of the
-//   subcommand and the repository a fetch, pull, push or ls-remote names first; in code that runs git, so is the
-//   value a variable is set to, a for loop's list and set's words as written, and every word of a command
-//   substituted into git's words or into such a value. A word names main when a part of it between =, :, .., a
-//   blank, < or > (an option's value, a refspec's or a tree-ish's two sides, a range's ends, a word bash would
-//   split), past a leading -, + or ^ and a trailing }, and cut at ^, ~ or @{, is main, origin, or a name ending
-//   /main or /HEAD that doesn't start refs/. A name that reaches git another way (read from a file, git's own
-//   configuration or aliases, the person's own shell aliases and functions, a command named by a plain variable the
-//   runbook never sets, or a git put on the PATH under another name) isn't seen: review keeps that out.
+//   a word after it, so a lone * in prose runs none; review 6 GUARDS-01; and the top-level code of a piece any of
+//   whose words, its words' own code included, split at blanks, = and every character a name or a path can't hold,
+//   is git or git-<command>, as an alias's value, an eval's string, a value an unquoted $check splits or a
+//   function's local is, and of every piece of a runbook that sets IFS, whose splitting the reader doesn't follow;
+//   review 7 EXPAND-A1-02) is also found where bash computes text no word holds: a here-document, a process
+//   substitution, ANSI-C or locale quoting, an unquoted brace expansion, arithmetic, a ( inside a word (an array's
+//   list or an extended pattern), any ${…} but a plain ${NAME}, a function's definition, a command named by an
+//   expansion, and eval, source, read, mapfile, readarray, alias, let, getopts, hash, enable, trap, coproc,
+//   printf -v and a declaration with an option (EXPAND-A3-02, round 6). In a command that runs git every word after
+//   git (or after a computed name that may be git) is read, whatever the subcommand, but the value of git's own -C,
+//   -c, --git-dir, --work-tree, --namespace or --config-env ahead of the subcommand and the repository a fetch,
+//   pull, push or ls-remote names first; in code that runs git, so is the value a variable is set to, a for loop's
+//   list and set's words as written, and every word of a command substituted into git's words or into such a value.
+//   A word names main when a part of it between =, :, .., a blank, < or > (an option's value, a refspec's or a
+//   tree-ish's two sides, a range's ends, a word bash would split), past a leading -, + or ^ and a trailing }, and
+//   cut at ^, ~ or @{, is main, origin, or a name ending /main or /HEAD that doesn't start refs/. A name that
+//   reaches git another way (read from a file, git's own configuration or aliases, the person's own shell aliases
+//   and functions, a command named by a plain variable the runbook never sets, a git put on the PATH under another
+//   name, or a name the runbook joins from parts none of which is git and then runs through an alias, an eval or an
+//   unquoted expansion, which nobody writes by accident) isn't seen: review keeps that out.
 // Comments are stripped before the server's and the packages' code is searched, so a mention in a
 // comment proves nothing.
 import { posix } from 'node:path'
@@ -1938,16 +1943,36 @@ function shortMainAt(text: string): number[] {
   const units = unitsOf(pieces)
   const variables = variablesOf(units)
   const byPiece = pieces.map(() => new Set<number>())
-  for (const { shell, lineOf, piece } of units) {
+  // The pieces whose own text may hand bash git though no command there is git: a word of any of the piece's
+  // commands, its words' own code included, split at blanks, = and every other character a command name or a
+  // path can't hold, that is git or git-<command> (an alias's value, an eval's string, a value a later $check runs
+  // split, a function's local), and every piece of a runbook that sets IFS, whose splitting the reader doesn't
+  // follow. In such a piece the top-level code is read as code that runs git, so the alias, the eval, the command
+  // named by an expansion and the value naming main are found (review 7 EXPAND-A1-02).
+  const setsIfs = units.some(({ shell }) =>
+    shell.commands.some(
+      ({ words }) => words.some(word => ASSIGNMENT.exec(word)?.[1] === 'IFS') || setByName(words).includes('IFS'),
+    ),
+  )
+  const mayRunGit = new Set(
+    units.flatMap(({ shell, piece }) =>
+      setsIfs || shell.commands.some(({ words }) => words.some(word => word.split(/[^A-Za-z0-9_./-]+/).some(isGit)))
+        ? [piece]
+        : [],
+    ),
+  )
+  for (const { shell, lineOf, piece, depth } of units) {
     // A command named by an expansion that a value any piece sets makes git (G=git, then "$G" log).
     const namedByExpansion = (command: ShellCommand) => {
       const at = nameAt(command.words)
       if (!/[$\0]/.test(command.words[at] ?? '')) return false
       return expand(command.parts[at] ?? [], false, variables, new Set())?.some(isGit) === true
     }
-    const gitRuns = shell.commands.some(
-      command => runsGit(command) || variableValues(command.words).some(isGit) || namedByExpansion(command),
-    )
+    const gitRuns =
+      (depth === 0 && mayRunGit.has(piece)) ||
+      shell.commands.some(
+        command => runsGit(command) || variableValues(command.words).some(isGit) || namedByExpansion(command),
+      )
     const found = byPiece[piece]
     if (!gitRuns || found === undefined) continue
     for (const at of shell.computed) found.add(lineOf(at))
@@ -2206,6 +2231,44 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       patternPiped: [1],
       patternHereDocument: [2],
       patternBesideGit: [3],
+    })
+  })
+
+  // Code that hands git its words through text bash reads again: an alias, an eval of a string, a value an
+  // unquoted $check splits into git and its words (by blanks or by an IFS the runbook sets), and the same inside
+  // a function's local; each is found though no command there is git (review 7 EXPAND-A1-02).
+  it('finds git run through an alias, an eval, a value bash splits or a function, on planted text', () => {
+    const sh = (...lines: string[]) => ['```sh', ...lines, '```'].join('\n')
+    const found = {
+      alias: sh("alias on_main='git merge-base --is-ancestor'", 'on_main "$c" origin/main'),
+      aliasElsewhere: [
+        sh("alias on_main='git merge-base --is-ancestor'"),
+        'Then:',
+        sh('on_main "$c" origin/main'),
+      ].join('\n'),
+      evalString: sh(`check='git merge-base --is-ancestor "$c" origin/main'`, 'eval "$check"'),
+      evalJoined: sh("check='git merge-base --is-ancestor'", 'eval "$check \\"\\$c\\" origin/main"'),
+      unquoted: sh(
+        'recorded=$(jq -r .payload.commit record.json)',
+        'check="git merge-base --is-ancestor $recorded origin/main"',
+        '$check',
+      ),
+      commaIfs: sh('check="git,merge-base,--is-ancestor,$c,origin/main"', 'IFS=,', '$check'),
+      letterIfs: sh('check="gitxmerge-basex--is-ancestorx$cxorigin/main"', 'IFS=x', '$check'),
+      functionLocal: sh(
+        'on_main() { local check="git merge-base --is-ancestor $1 origin/main"; $check; }',
+        'on_main "$c"',
+      ),
+    }
+    expect(Object.fromEntries(Object.entries(found).map(([name, text]) => [name, shortMainAt(text)]))).toEqual({
+      alias: [2],
+      aliasElsewhere: [2],
+      evalString: [2, 3],
+      evalJoined: [3],
+      unquoted: [3, 4],
+      commaIfs: [2, 4],
+      letterIfs: [2, 4],
+      functionLocal: [2],
     })
   })
 

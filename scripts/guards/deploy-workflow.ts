@@ -61,27 +61,33 @@
 // GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
 // written as a block mapping and never as one expression GitHub would read as the whole mapping, every
-// action step's with: is the guard's, whole (STEP_WITHS: no checkout but synth's three names a ref or a
-// path, and those check out their own commit into their own folder), every step's id is the guard's
+// action step's with: is the guard's, whole (STEP_WITHS: no checkout but the three synths' names a ref or a
+// path, one to a job, each its own commit into its own folder, and no job checks out two commits, so no
+// runner that synthesises or reads an assembly runs a second commit's code), every step's id is the guard's
 // (STEP_IDS), so no step of its own answers for a pinned step's outputs, and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
 // of its own, or hands it another input; and so is every other run of every job, the five that hold the
-// deploy role and build's and synth's (each synth step in its own folder) included, so no run of
+// deploy role and build's and the synths' (each release on a runner of its own) included, so no run of
 // deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
 // word bash joins from quoted or expanded parts, or npm's and the CLI's own aliases, would pass a rule
-// that reads the text); outside build and synth no other step writes an output. Build and synth still
-// run repository code by design (the install, the synth, the image), which could write a later step's
-// file by its folder, so synth's own asset check holds only against deploy.yml's text: each credentialed
+// that reads the text); outside build and the synths no other step writes an output. Build and the synths
+// still run repository code by design (the install, the synth, the image), which could write a later step's
+// file by its folder, so a synth's own asset check holds only against deploy.yml's text: each credentialed
 // job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
 // uploads is data the same way: nonprod and prod each list it and unpack it themselves, before the
 // credentials action (IMAGE_CHECK), and skopeo copies only from the folder they checked, never from an
 // archive it would unpack itself, writing a member through a link another made (over the CLI, say).
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret. A canonical text is read whole, so it is held instead to bash's own
-// reading of it (readsAsBash()) and to evaluating only what it sets itself (outsideEvaluations()).
+// reading of it (readsAsBash()), to evaluating only what it sets itself (outsideEvaluations(): every
+// arithmetic, test operator, subscript, name a builtin takes and variable bash evaluates, and a line it can't
+// read that plainly is refused), and to handing jq and gh only their held flags and a program written on the
+// line, and sed, tar, find, curl, openssl, base64, mkdir, sha256sum and tr only their lines as the guard
+// writes them (canonicalToolLines()); the lines the tool holds compare against (TOOL_LINE_TEXTS) are the
+// guard's own literals, never read from a canonical text, so a text can't widen what it is held to.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -214,12 +220,13 @@ esac`
 
 // The asset and release checks (C11-D76, DPW-14): check_assembly and check_release_in, defined here and called
 // by each step that runs them on each folder it downloaded or uploads. The run's own text judges every older
-// release's assembly too, which that release's own code synthesised: synth's check of each environment's
-// previous assembly (a refusal there fails synth, so nothing deploys), a rollback's target and a restore at
-// prod's newest record. So a change to what it pins exactly (a stack's properties, roles, bootstrap version
-// or termination protection, the asset manifests' shape, the outputs) keeps accepting each shape a release
-// among ECR's newest 50 images wrote, or every run fails at synth and every pipeline rollback or restore to
-// a release before the change is refused (T24 item 22). No case can plant an older shape until one exists.
+// release's assembly too, which that release's own code synthesised: each synth-previous job's check of its
+// environment's previous assembly (a refusal there fails that job, so nothing deploys), a rollback's target and
+// a restore at prod's newest record. So a change to what it pins exactly (a stack's properties, roles,
+// bootstrap version or termination protection, the asset manifests' shape, the outputs) keeps accepting each
+// shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline rollback
+// or restore to a release before the change is refused (T24 item 22). No case can plant an older shape until
+// one exists.
 export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
 # the CLI acts on, so before any credential each one is walked from its root manifest through every
 # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -1036,8 +1043,8 @@ if [ "$BUILD" = true ]; then DIGEST=$BUILD_DIGEST; fi
 ${SYNTH_LINES.slice(0, 4).join('\n')}
 echo "release=$COMMIT:$DIGEST" >>"$GITHUB_OUTPUT"`
 export const previousSynthRun = (stage: 'nonprod' | 'prod') => sh`set -euo pipefail
-# The release ${stage} runs now, for its automatic rollback, synthesised only after the run's own
-# assembly is checked and uploaded, so no other commit's code runs while that one can still change.
+# The release ${stage} runs now, for its automatic rollback, synthesised on a runner of its own,
+# which runs no other commit's code, so neither this commit's code nor the release's changes the other.
 npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-${stage}"`
 
 // --- The runs the guard pins whole (DPW-08, DPW-09, DPW-10, DPW-13) --------------------------------------
@@ -1578,33 +1585,29 @@ const buildRuns = (): Pinned => ({
   'Check the image': { run: LOAD_RUN, rule: 'DPW-13' },
   "The image's migrate step": { run: MIGRATE_IMAGE_RUN, rule: 'DPW-13' },
 })
-const synthRuns = (): Pinned => {
-  const previous = (stage: 'nonprod' | 'prod'): Pinned => {
-    const condition = expr(`needs.gate.outputs.previous_${stage}_commit != ''`)
-    const cwd = `previous-${stage}`
-    return {
-      [`Install ${stage}'s previous release`]: { run: INSTALL_RUN, rule: 'DPW-13', if: condition, cwd },
-      [`Synthesise ${stage}'s previous release`]: {
-        run: previousSynthRun(stage),
-        rule: 'DPW-13',
-        if: condition,
-        cwd,
-      },
-      [`Check ${stage}'s previous assembly`]: {
-        run: assetCheckRun([`assembly-previous-${stage}`], 'RELEASE'),
-        rule: 'DPW-13',
-        if: condition,
-      },
-    }
-  }
+const previousSynthRuns = (stage: 'nonprod' | 'prod'): Pinned => {
+  const condition = expr(`needs.gate.outputs.previous_${stage}_commit != ''`)
+  const cwd = `previous-${stage}`
   return {
-    'Install the release': { run: INSTALL_RUN, rule: 'DPW-13', cwd: 'release' },
-    'Synthesise the release': { run: SYNTH_RUN, rule: 'DPW-13', cwd: 'release' },
-    "Check the release's assembly": { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-13' },
-    ...previous('nonprod'),
-    ...previous('prod'),
+    [`Install ${stage}'s previous release`]: { run: INSTALL_RUN, rule: 'DPW-13', if: condition, cwd },
+    [`Synthesise ${stage}'s previous release`]: {
+      run: previousSynthRun(stage),
+      rule: 'DPW-13',
+      if: condition,
+      cwd,
+    },
+    [`Check ${stage}'s previous assembly`]: {
+      run: assetCheckRun([`assembly-previous-${stage}`], 'RELEASE'),
+      rule: 'DPW-13',
+      if: condition,
+    },
   }
 }
+const synthRuns = (): Pinned => ({
+  'Install the release': { run: INSTALL_RUN, rule: 'DPW-13', cwd: 'release' },
+  'Synthesise the release': { run: SYNTH_RUN, rule: 'DPW-13', cwd: 'release' },
+  "Check the release's assembly": { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-13' },
+})
 export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   gate: {
     'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
@@ -1615,6 +1618,8 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   },
   build: buildRuns(),
   synth: synthRuns(),
+  'synth-previous-nonprod': previousSynthRuns('nonprod'),
+  'synth-previous-prod': previousSynthRuns('prod'),
   'prod-gate': {
     "Prod's release records": { run: PROD_RECORDS, rule: 'DPW-08' },
     "main's own CI": {
@@ -1749,11 +1754,13 @@ const markerHead = (markers: readonly string[]) => [
   ...MARKER_REFUSAL.split('\n'),
 ]
 
-// The fifteen jobs, in the workflow's order (C11-D47 to C11-D52, T24 item 20).
+// The seventeen jobs, in the workflow's order (C11-D47 to C11-D52, T24 item 20).
 export const JOB_IDS = [
   'gate',
   'build',
   'synth',
+  'synth-previous-nonprod',
+  'synth-previous-prod',
   'nonprod',
   'smoke-nonprod',
   'rollback-nonprod',
@@ -1793,6 +1800,8 @@ export const TIMEOUTS: Readonly<Record<JobId, number>> = {
   gate: 15,
   build: 30,
   synth: 25,
+  'synth-previous-nonprod': 25,
+  'synth-previous-prod': 25,
   nonprod: 50,
   'smoke-nonprod': 10,
   'rollback-nonprod': 50,
@@ -1815,6 +1824,8 @@ export const JOB_PERMISSIONS: Readonly<Record<JobId, Readonly<Record<string, str
   gate: { contents: 'read', actions: 'read', deployments: 'read', 'pull-requests': 'read' },
   build: READ,
   synth: READ,
+  'synth-previous-nonprod': READ,
+  'synth-previous-prod': READ,
   nonprod: DEPLOYING,
   'smoke-nonprod': READ,
   'rollback-nonprod': ROLLING_BACK,
@@ -2483,21 +2494,99 @@ function canonicalLines(run: string): ReadonlySet<number> {
 }
 
 // What bash evaluates as arithmetic or a name, on the code view: (( or $(( )), a [[ … ]] comparing as numbers
-// or asking -v or -R, a [ or test asking -v or -R, an indirect ${!…}, a ${name[…]} but [@] or [*], an offset
-// of a substring (${name:offset}, ${@:offset}, ${*:offset} or ${1:offset}), an assignment to name[…] and a
-// compound assignment naming a subscript (a=([i]=1)). The tests pin each canonical text's lines that hold one.
+// or asking -v or -R, read to the ]] that stands as a word (a ]] inside one, as in ${x//[[:space:]]/} or a
+// regex's [[:alnum:]], ends nothing), a [[ that doesn't close on its own line, a [ or test asking -v or -R
+// anywhere after it on its line, an indirect ${!…}, a ${name[…]…} but [@] or [*], whatever follows the
+// subscript, an offset of a substring (${name:offset}, ${@:offset}, ${*:offset} or ${1:offset}), an
+// assignment to name[…], a compound assignment naming a subscript (a=([i]=1)), and what unplainLines() names
+// (a name handed to read, unset or wait -p, a test of another shape, bash's own evaluating names). The tests
+// pin each canonical text's lines that hold one.
 const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
 const HERE_DOCUMENT = /(?<!<)<<(?!<)/
+// A ]] that stands as a word, the one thing that ends a [[: after a blank, before a blank, an operator, a ) or
+// the line's end.
+const TEST_END = String.raw`\s\]\](?=[\s;&|)]|$)`
+const TEST_EVALUATIONS = [
+  new RegExp(String.raw`\[\[(?:(?!${TEST_END}).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])`),
+  new RegExp(String.raw`(?:^|[\s;&|(!{])\[\[(?=\s)(?:(?!${TEST_END}).)*$`),
+  /(?:^|[\s;&|(!{])(?:\[|test)\s.*(?<![\w-])-[vR](?![\w-])/,
+]
 const EVALUATED = [
   /\(\(/,
-  /\[\[(?:(?!\]\]).)*(?<![\w-])-(?:eq|ne|lt|le|gt|ge|v|R)(?![\w-])/,
-  /(?:^|[\s;&|(!])(?:\[|test)\s(?:(?!\]).)*(?<![\w-])-[vR](?![\w-])/,
+  ...TEST_EVALUATIONS,
   /\$\{!/,
   /\$\{#?[A-Za-z_]\w*\[(?![@*]\])/,
   /\$\{(?:[A-Za-z_]\w*(?:\[[@*]\])?|[@*#?$!-]|\d+):(?![-=?+])/,
   /(?<![\w$])[A-Za-z_]\w*\[[^\]\n]*\]\+?=/,
   /(?:^|[\s(])\[[^\]\n]*\]\+?=/,
 ]
+// The builtins that set or unset a variable by a name they are handed, whose subscript bash evaluates (read,
+// unset, wait -p) or whose callback it runs (mapfile -C): in a canonical text read, unset, mapfile and
+// readarray are given -r, -t and plain names alone, and wait no -p, so no name is built from a value, quoted
+// or subscripted. (printf -v is held by outsideEvaluations(), local and export by GIVEN_NAME, and declare,
+// typeset and let are refused there.)
+const NAME_TAKER = /(?<![\w$/.{-])(read|unset|wait|mapfile|readarray)(?![\w-])([^;&|<>()\n]*)/g
+const PLAIN_FLAGS = ['-r', '-t']
+const PLAIN_NAME = /^[A-Za-z_]\w*$/
+// bash's own names that evaluate what is assigned to them (RANDOM, SRANDOM, OPTIND and HISTCMD as arithmetic,
+// PS0 to PS4 and PROMPT_COMMAND as a prompt, whose $( … ) runs), and set -x, which expands PS4 before each
+// command: a canonical text names none and traces nothing.
+const EVALUATING_NAME =
+  /(?<![\w$])(?:RANDOM|SRANDOM|OPTIND|HISTCMD|PS[0-4]|PROMPT_COMMAND)(?!\w)|(?<![\w-])set\s+(?:[-+][A-Za-z]*x|[-+]o\s+xtrace)/
+// A [ or test, where a command starts, whose words, after one !, are one word, a unary test of TEST_UNARY and a
+// word, or a word, a binary test of TEST_BINARY and a word, each operator written plainly: no -v or -R, which
+// evaluate a name, and no operator in quotes or given by an expansion, which test reads after bash takes its
+// quotes off and expands it.
+const TEST_START = /(?:^|[;&|(){!]|\b(?:if|then|elif|else|while|until|do)\b)[ \t]*(\[|test)(?=[ \t])/g
+const TEST_UNARY = ['-n', '-z', '-d', '-f', '-e', '-s', '-L', '-h', '-r', '-x']
+const TEST_BINARY = ['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']
+// The words of a [ or test from an offset of a code view's line, split at the blanks outside its parentheses,
+// to its ] (a [) or to the end of its command (a test); undefined for a [ that its line doesn't close.
+function testWords(line: string, from: number, bracket: boolean): string[] | undefined {
+  const found: string[] = []
+  let word = ''
+  let depth = 0
+  for (let at = from; at < line.length; at++) {
+    const c = line[at] ?? ''
+    if (c === '(') depth++
+    if (c === ')') depth--
+    if (depth < 0 || (depth === 0 && /[;&|]/.test(c))) break
+    if (depth === 0 && /[ \t]/.test(c)) {
+      if (word === ']' && bracket) return found
+      if (word !== '') found.push(word)
+      word = ''
+    } else word += c
+  }
+  if (bracket) return word === ']' ? found : undefined
+  if (word !== '') found.push(word)
+  return found
+}
+const testShaped = (words: readonly string[] | undefined) => {
+  if (words === undefined) return false
+  const operands = words[0] === '!' ? words.slice(1) : words
+  if (operands.length === 1) return true
+  if (operands.length === 2) return TEST_UNARY.includes(operands[0] ?? '')
+  return operands.length === 3 && TEST_BINARY.includes(operands[1] ?? '')
+}
+// The lines of a code view on which bash would evaluate a name or an operator a value hands it: a name read,
+// unset, mapfile or readarray is given that isn't plain, a flag of theirs but -r and -t, wait's -p, one of
+// bash's own evaluating names, set -x, and a [ or test of any other shape.
+function unplainLines(code: string): number[] {
+  return code.split('\n').flatMap((line, n) => {
+    const names = [...line.matchAll(NAME_TAKER)].some(([, builtin, rest]) => {
+      const words = (rest ?? '')
+        .trim()
+        .split(/[ \t]+/)
+        .filter(Boolean)
+      if (builtin === 'wait') return words.some(word => /^-[A-Za-z]*p/.test(word))
+      return words.some(word => !PLAIN_FLAGS.includes(word) && (!PLAIN_NAME.test(word) || EVALUATING_NAME.test(word)))
+    })
+    const tests = [...line.matchAll(TEST_START)].some(
+      match => !testShaped(testWords(line, match.index + match[0].length, match[1] === '[')),
+    )
+    return names || tests || EVALUATING_NAME.test(line) ? [n] : []
+  })
+}
 // A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own).
 const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=.*)?)$/s
 // A command's words in the code view, split at the blanks outside its parentheses.
@@ -2518,9 +2607,11 @@ function words(text: string): string[] {
 }
 // The lines of a text, by index, that bash evaluates as arithmetic or a name (EVALUATED, on the code view).
 export function evaluatedLines(run: string): number[] {
-  return shellViews(run)
-    .code.split('\n')
-    .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) ? [n] : []))
+  const code = shellViews(run).code
+  const unplain = new Set(unplainLines(code))
+  return code
+    .split('\n')
+    .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n) ? [n] : []))
 }
 // Whether a canonical text is written in the shell shellViews() and shellCommands() read, so the rules read its
 // commands as bash runs them: no unquoted backslash before a blank, a # or a line's end, no case inside a
@@ -2539,7 +2630,10 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
     : []
   if (names.some(command => !words(command.tail).every(word => GIVEN_NAME.test(word)))) return false
   const canonical = canonicalLines(run)
-  return views.code.split('\n').every((line, n) => !EVALUATED.some(pattern => pattern.test(line)) || canonical.has(n))
+  const unplain = new Set(unplainLines(views.code))
+  return views.code
+    .split('\n')
+    .every((line, n) => !(EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n)) || canonical.has(n))
 }
 
 // The lines of a canonical text at which bash evaluates, as arithmetic, a subscript, an offset, a name or a
@@ -2585,14 +2679,21 @@ export function outsideEvaluations(text: string): number[] {
   // $[ … ] in double quotes too, which the code view writes as quoted text.
   for (const match of views.text.matchAll(/\$\[/g)) sites.push({ at: match.index, names: undefined })
   let offset = 0
-  for (const line of code.split('\n')) {
-    if (EVALUATED.slice(1, 3).some(pattern => pattern.test(line))) sites.push({ at: offset, names: undefined })
+  const unplain = new Set(unplainLines(code))
+  for (const [n, line] of code.split('\n').entries()) {
+    if (TEST_EVALUATIONS.some(pattern => pattern.test(line)) || unplain.has(n)) {
+      sites.push({ at: offset, names: undefined })
+    }
     offset += line.length + 1
   }
-  // A ${…}'s subscript, offset and length, an assignment's subscript and printf -v's name.
+  // A ${…}'s subscript, whatever follows it (${a[i]:-}, ${a[i]/x/y} and ${#a[i]} evaluate it as ${a[i]}
+  // does), its offset and length, an assignment's subscript and printf -v's name.
+  for (const match of code.matchAll(/\$\{#?([A-Za-z_]\w*)\[([^\]\n]*)\]/g)) {
+    const subscript = match[2] ?? ''
+    if (subscript !== '@' && subscript !== '*') arithmetic(match.index, subscript)
+  }
   for (const match of code.matchAll(/\$\{#?([A-Za-z_]\w*|[0-9@*])(?:\[([^\]\n]*)\])?(?::(?![-=?+])([^}\n]*))?\}/g)) {
-    const [, name, subscript, range] = match
-    if (subscript !== undefined && subscript !== '@' && subscript !== '*') arithmetic(match.index, subscript)
+    const [, name, , range] = match
     if (range !== undefined) arithmetic(match.index, range.replace(':', ' '))
     if (range !== undefined && !/^[A-Za-z_]/.test(name ?? '')) sites.push({ at: match.index, names: undefined })
   }
@@ -2644,10 +2745,125 @@ export function outsideEvaluations(text: string): number[] {
 }
 
 export const GUARD = 'scripts/guards/deploy-workflow.ts'
+
+// The words of a command in a text view from an offset, each as written (quotes and all), split at the
+// blanks outside its quotes and substitutions, to its end: an unquoted newline, ;, & or |, or a ) that closes
+// nothing it opened. A single-quoted string reads to its next quote, a double-quoted one to its own, and a
+// $( … ) or ( … ) to its ), each quoting as bash quotes inside it.
+function commandWords(text: string, from: number): string[] {
+  const found: string[] = []
+  const stack: Array<'"' | ')'> = []
+  let word = ''
+  for (let at = from; at < text.length; at++) {
+    const c = text[at] ?? ''
+    const top = stack[stack.length - 1]
+    if (top === undefined && /[ \t]/.test(c)) {
+      if (word !== '') found.push(word)
+      word = ''
+      continue
+    }
+    if (top === undefined && /[\n;&|)]/.test(c)) break
+    word += c
+    if (c === '\\') {
+      word += text[at + 1] ?? ''
+      at++
+    } else if (c === "'" && top !== '"') {
+      const close = text.indexOf("'", at + 1)
+      const end = close < 0 ? text.length : close + 1
+      word += text.slice(at + 1, end)
+      at = end - 1
+    } else if (c === '"') {
+      if (top === '"') stack.pop()
+      else stack.push('"')
+    } else if (c === '(' && (top !== '"' || text[at - 1] === '$')) stack.push(')')
+    else if (c === ')' && top === ')') stack.pop()
+  }
+  if (word !== '') found.push(word)
+  return found
+}
+// A word as a program reads its start: without the quotes before it, so "-f" and '-f' are -f.
+const unquotedStart = (word: string) => word.replace(/^["']+/, '')
+// A redirection's word (<<<"$x", >/dev/null, 2>&1), with its target when the target is a word of its own.
+const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])/
+function withoutRedirections(words: readonly string[]): string[] {
+  const kept: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] ?? ''
+    const operator = REDIRECTING.exec(word)?.[0]
+    if (operator === undefined) kept.push(word)
+    else if (operator === word) i++
+  }
+  return kept
+}
+// What a canonical text hands jq and gh, which could take a program from a file, read a file or the
+// environment, or send a file (DPW-10): jq only -e, -r, -c, -n and -s (in any mix) and --arg and --argjson
+// with a name and a value, each written plainly, then its program written on the line (one single-quoted
+// string, or a .field path), then only data: files named from a literal or a folder's variable, or a list
+// of them ("${files[@]}"), never a word that starts with - (jq reads an option after its program too) or
+// a bare expansion, which could be one; gh only as gh api on a double-quoted path under repos/, with at
+// most --jq and a program written the same way; and neither's program holding a word of JQ_REACH. These
+// are the ways a canonical text's line changed by a review that reads it alone could still hand either a
+// file, the environment or a program from elsewhere: jq's -f, --from-file, -L, --rawfile, --slurpfile,
+// --args and --jsonargs, gh's --input, -F and -f among them.
+const JQ_FLAG = /^-[cenrs]+$/
+const JQ_PROGRAM = /^'[^']*'?$|^\.(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?$/
+const JQ_REACH =
+  /(?<![\w$.-])(?:\$?ENV|env|inputs?|input_filename|input_line_number|\$__loc__|\$__prog_args|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin|debug|stderr|halt_error|halt)(?![\w-])/
+function jqHeld(words: readonly string[]): boolean {
+  let i = 0
+  for (; i < words.length; i++) {
+    const word = words[i] ?? ''
+    if (JQ_FLAG.test(word)) continue
+    if (word !== '--arg' && word !== '--argjson') break
+    if (!/^[A-Za-z_]\w*$/.test(words[i + 1] ?? '') || words[i + 2] === undefined) return false
+    i += 2
+  }
+  const program = words[i]
+  if (program === undefined || !JQ_PROGRAM.test(program) || JQ_REACH.test(program)) return false
+  return words.slice(i + 1).every(word => {
+    const start = unquotedStart(word)
+    const array = /^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(word)
+    return array || (!start.startsWith('-') && !/^["']?\$(?:[A-Za-z_]\w*|\{[^}]*\})["']?$/.test(word) && word !== '')
+  })
+}
+function ghHeld(words: readonly string[]): boolean {
+  const [api, path, ...rest] = words
+  if (api !== 'api' || path === undefined || !/^"repos\/[^"]*"$/.test(path)) return false
+  if (rest.length === 0) return true
+  return rest.length === 2 && rest[0] === '--jq' && JQ_PROGRAM.test(rest[1] ?? '') && !JQ_REACH.test(rest[1] ?? '')
+}
+// The tools in a canonical text that could run a program, write a file or fetch one, each only on a line
+// written as TOOL_LINE_TEXTS holds it (the preamble's mask, the CLI's fetch, the image's listing and
+// unpacking, the assembly's and the CLI's link searches, a file asset's hash, the stop token), so no flag
+// that runs a program per member or checkpoint (tar's --to-command, --checkpoint-action, -I), per file
+// (find's -exec) or per line (sed's e), or writes a file (sed's w), reaches any job.
+const LINE_HELD_TOOLS = ['sed', 'tar', 'find', 'curl', 'openssl', 'base64', 'mkdir', 'sha256sum', 'tr']
+// The lines of a canonical text on which jq, gh or a line-held tool is handed what the rules above don't
+// hold it to.
+export function canonicalToolLines(text: string): number[] {
+  const views = shellViews(text)
+  const raw = text.split('\n')
+  const held = new Set(TOOL_LINE_TEXTS().map(([line]) => line))
+  const lines = new Set<number>()
+  let offset = 0
+  for (const [n, line] of views.code.split('\n').entries()) {
+    for (const match of line.matchAll(/(?<![\w$/.{-])(jq|gh)(?![\w-])/g)) {
+      const words = withoutRedirections(commandWords(views.text, offset + match.index + match[0].length))
+      if (!(match[1] === 'jq' ? jqHeld(words) : ghHeld(words))) lines.add(n)
+    }
+    offset += line.length + 1
+  }
+  for (const command of shellCommands(text)) {
+    if (LINE_HELD_TOOLS.includes(command.word) && !held.has(raw[command.line]?.trim() ?? '')) lines.add(command.line)
+  }
+  return [...lines].sort((a, b) => a - b)
+}
+
 // DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
-// and evaluates nothing from outside it (outsideEvaluations()), each line that does named. The guard's own
-// texts never change while it runs, so their findings are read once (CANONICAL_FOUND).
+// evaluates nothing from outside it (outsideEvaluations()), and hands jq, gh and the tools that could run a
+// program or write a file only what canonicalToolLines() holds them to, each line that does otherwise named.
+// The guard's own texts never change while it runs, so their findings are read once (CANONICAL_FOUND).
 let CANONICAL_FOUND: readonly Finding[] | undefined
 export function canonicalTextFindings(texts?: Readonly<Record<string, string>>): Finding[] {
   if (texts === undefined) {
@@ -2660,6 +2876,11 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of outsideEvaluations(text)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`,
+      )
+    }
+    for (const line of canonicalToolLines(text)) {
+      found.push(
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, and the tools that could run a program or write a file only their lines as written`,
       )
     }
   }
@@ -3855,7 +4076,7 @@ export function permissionFindings(workflows: Texts): Finding[] {
   for (const { id, job } of jobsOf(deploy).values()) {
     const want = (JOB_PERMISSIONS as Readonly<Record<string, Readonly<Record<string, string>>>>)[id]
     const have = jobPermissions(job)
-    if (want === undefined) found.push(at(DEPLOY, 'DPW-02', `${id}: is none of the fifteen jobs`))
+    if (want === undefined) found.push(at(DEPLOY, 'DPW-02', `${id}: is none of the seventeen jobs`))
     else if (!(have instanceof Map) || !sameMap(have, want)) {
       found.push(at(DEPLOY, 'DPW-02', `${id}: its permissions are exactly ${describePermissions(want)}`))
     }
@@ -5014,7 +5235,7 @@ export function prodPathFindings(workflows: Texts): Finding[] {
     PROD_GATE_CALL,
   ])
   for (const { id, steps } of jobs.values()) {
-    if (id === 'build' || id === 'synth') continue
+    if (id === 'build' || SYNTH_JOBS.includes(id)) continue
     steps.forEach((step, index) => {
       if (step.run?.includes('GITHUB_OUTPUT') && !outputRuns.has(step.run)) {
         add(`${id} (${label(step, index)})`, 'writes an output only from a run the guard pins whole')
@@ -5117,16 +5338,25 @@ const PLAN_ENV: Readonly<Record<string, string>> = {
   RELEASE: expr('inputs.release'),
   RESTORE: expr('inputs.restore'),
 }
+// The jobs that synthesise an assembly, each one commit's on a runner of its own (C11-D51): the release's,
+// and each environment's previous release's, for its automatic rollback.
+const SYNTH_JOBS: readonly string[] = ['synth', 'synth-previous-nonprod', 'synth-previous-prod']
 // The jobs whose if: no drill may pass (C11-D59): drills are non-prod's alone.
 const NO_DRILL = ['prod-plan', 'prod-gate', 'prod', 'rollback-prod', 'record-prod'] as const
 // The jobs each job runs only once they succeeded, with what else its if: is then told (DPW-09): an if:
 // that calls a status function (!cancelled(), say) isn't joined to success(), so it must ask itself.
 const REQUIRES: Readonly<Record<string, ReadonlyArray<readonly [string, Readonly<Record<string, string>>]>>> = {
   synth: [['gate', {}]],
-  nonprod: [['synth', {}]],
+  'synth-previous-nonprod': [['gate', {}]],
+  'synth-previous-prod': [['gate', {}]],
+  nonprod: [
+    ['synth', {}],
+    ['synth-previous-nonprod', {}],
+  ],
   'smoke-nonprod': [['nonprod', {}]],
   'prod-plan': [
     ['synth', {}],
+    ['synth-previous-prod', {}],
     ['smoke-nonprod', { 'needs.gate.outputs.mode': 'deploy' }],
   ],
   'prod-gate': [
@@ -5135,6 +5365,7 @@ const REQUIRES: Readonly<Record<string, ReadonlyArray<readonly [string, Readonly
   ],
   prod: [
     ['synth', {}],
+    ['synth-previous-prod', {}],
     ['prod-gate', {}],
   ],
   'smoke-prod': [['prod', {}]],
@@ -5417,56 +5648,68 @@ const TOOLS = [
 // workflow makes (no s3 cp, which would write a file), skopeo only as the registry login and the push,
 // set only as set -euo pipefail (no set --, which would hand "$@" a program), and local
 // and export with no flag (no -n, which would set another variable through a name). (trap, which runs its
-// text, is no builtin a job may use.)
-const MASK_LINE = PREAMBLE.split('\n').find(line => line.startsWith('mask()')) ?? ''
-const FIND_LINE = ASSET_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
-const CLI_FIND_LINE = CLI_CHECK.split('\n').find(line => line.includes('find ')) ?? ''
-const KEY_HASH_LINE = ASSET_CHECK.split('\n').find(line => line.includes('sha256sum ')) ?? ''
+// text, is no builtin a job may use.) Each line such a tool is held to below is written here as it is, never
+// read out of the canonical text it stands in, so a change to that text's line (a sed command that runs
+// what it reads, a tar that runs a program per member or per checkpoint, a find that copies a file) is
+// refused until the line here moves too; the tests hold each to standing whole in its text
+// (TOOL_LINE_TEXTS).
+export const MASK_LINE = String.raw`mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }`
+export const FIND_LINE = `[ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'`
+export const CLI_FIND_LINE = `[ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }`
+export const KEY_HASH_LINE = sh`[ "$(sha256sum <"$dir/$path")" = "$\{key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"`
 // The tools CLI_FETCH alone runs, each only on its own line of that text and only in a run that is CLI_FETCH
 // whole: mkdir makes the CLI's folder, curl fetches the registry's tarball by its fixed URL (the one network
 // call a credentialed run makes outside aws, gh and skopeo), openssl and base64 hash it, and tar unpacks it
 // into the folder. None writes anywhere but the CLI's folder and its tarball, before CLI_CHECK.
-const fetchTextLine = (start: string) => CLI_FETCH.split('\n').find(line => line.startsWith(start)) ?? ''
-const HASH_LINE = fetchTextLine('[ "sha512-$(openssl ')
-const FETCH_TOOLS: Readonly<Record<string, string>> = {
-  mkdir: fetchTextLine('mkdir '),
-  curl: fetchTextLine('curl '),
+const HASH_LINE = `[ "sha512-$(openssl dgst -sha512 -binary "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" | base64 -w0)" = "$integrity" ] ||`
+export const FETCH_TOOLS: Readonly<Record<string, string>> = {
+  mkdir: 'mkdir "$RUNNER_TEMP/aws-cdk"',
+  curl: `curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 300 --max-filesize 104857600 --output "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" "https://registry.npmjs.org/aws-cdk/-/aws-cdk-$pin.tgz"`,
   openssl: HASH_LINE,
   base64: HASH_LINE,
-  tar: fetchTextLine('tar '),
+  tar: 'tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner',
 }
 // The tools IMAGE_CHECK runs, each only on its own lines of that text and only in a run that is
 // IMAGE_UNPACK_RUN whole: tar lists the archive and then unpacks it into the folder mkdir makes, and find
 // lists what it unpacked. None writes anywhere but that folder, before the credentials action.
-const imageTextLines = (start: string) =>
-  IMAGE_CHECK.split('\n')
-    .map(line => line.trim())
-    .filter(line => line.startsWith(start))
-const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
-  tar: [...imageTextLines('listing=$(tar '), ...imageTextLines('tar ')],
-  mkdir: imageTextLines('mkdir '),
-  find: imageTextLines('entries=$(find '),
+export const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+  tar: [
+    'listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||',
+    'tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions',
+  ],
+  mkdir: ['mkdir "$2"'],
+  find: [String.raw`entries=$(find "$2" -mindepth 1 -printf '%y %P\n')`],
 }
 // The tools DIFF_RUN alone runs beyond the text tools, each only on its summary's diff line and only in a
 // run that is DIFF_RUN whole: tr makes each carriage return a line break and sed sets each line four spaces
 // in, so the summary holds the diff as one indented code block; neither reads or writes a file.
-const DIFF_SUMMARY_LINE = DIFF_RUN.split('\n')
-  .map(line => line.trim())
-  .find(line => line.startsWith('head -c '))
+export const DIFF_SUMMARY_LINE = String.raw`head -c 204800 "$DIFF" | tr '\r' '\n' | sed 's/^/    /'`
 const DIFF_TOOLS: ReadonlySet<string> = new Set(['tr', 'sed'])
 // openssl also makes the stop token (STOP_COMMANDS), on that line of STOP_HEAD alone, at a run's start: it
 // only prints random bytes.
-const STOP_TOKEN_LINE = STOP_COMMANDS.split('\n')[0] ?? ''
+export const STOP_TOKEN_LINE = 'stop_token=$(openssl rand -hex 16)'
 const STOP_TOKEN_AT = STOP_HEAD.split('\n').indexOf(STOP_TOKEN_LINE)
+// Where the tests find each line above standing whole, trimmed, in its canonical text.
+export const TOOL_LINE_TEXTS = (): ReadonlyArray<readonly [string, string]> => [
+  [MASK_LINE, PREAMBLE],
+  [FIND_LINE, ASSET_CHECK],
+  [CLI_FIND_LINE, CLI_CHECK],
+  [KEY_HASH_LINE, ASSET_CHECK],
+  ...Object.values(FETCH_TOOLS).map(line => [line, CLI_FETCH] as const),
+  ...Object.values(IMAGE_TOOLS).flatMap(lines => lines.map(line => [line, IMAGE_CHECK] as const)),
+  [DIFF_SUMMARY_LINE, DIFF_RUN],
+  [STOP_TOKEN_LINE, STOP_COMMANDS],
+  ...PREAMBLE_RUNNERS.map(line => [line, PREAMBLE] as const),
+]
 const AWS_CALLS =
   /^\s+(?:ecs\s+(?:run-task|describe-tasks|describe-services|list-tasks|stop-task|wait\s+tasks-stopped|describe-task-definition)|elbv2\s+describe-(?:target-groups|target-group-attributes|target-health|load-balancers|load-balancer-attributes)|cloudformation\s+describe-stacks|ecr\s+(?:describe-images|get-login-password)|logs\s+get-log-events)(?:\s|$)/
 const NO_FLAG = (command: ShellCommand) => !/(?:^|\s)[-+][A-Za-z]/.test(command.tail)
 const TOOL_USES: Readonly<Record<string, (command: ShellCommand, raw: string) => boolean>> = {
   git: ({ rest }) => /^\s+merge-base\s+--is-ancestor\s/.test(rest),
   gh: ({ rest }) => /^\s+api\s/.test(rest),
-  sed: (_, raw) => raw === MASK_LINE.trim(),
-  find: (_, raw) => raw === FIND_LINE.trim() || raw === CLI_FIND_LINE.trim(),
-  sha256sum: (_, raw) => raw === KEY_HASH_LINE.trim(),
+  sed: (_, raw) => raw === MASK_LINE,
+  find: (_, raw) => raw === FIND_LINE || raw === CLI_FIND_LINE,
+  sha256sum: (_, raw) => raw === KEY_HASH_LINE,
   sort: ({ rest }) => /^(?:\s+-[nruV]+)*\s*$/.test(rest),
   tee: ({ rest }) => /^\s+-a\s+"\$GITHUB_STEP_SUMMARY"\s*$/.test(rest),
   mapfile: ({ rest }) => !/(?:^|\s)-[A-Za-z]*C/.test(rest),
@@ -5926,7 +6169,8 @@ const SETTER_LINES: ReadonlySet<string> = new Set([
   'for ROLE in api realtime; do',
   'for RELEASE in "$COMMIT:$DIGEST" "$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"; do',
 ])
-const PREAMBLE_RUNNERS = PREAMBLE.split('\n').filter(line => line.includes('"$@"'))
+// The preamble's run and get, written as they are (TOOL_LINE_TEXTS).
+const PREAMBLE_RUNNERS = ['run() { "$@" 2>&1 | mask; }', 'get() { "$@" 2> >(mask >&2); }']
 
 // Whether each function a run defines stands where a canonical text that defines it stands in the run,
 // line for line, so no run defines a function of its own or redefines one (a cp, a jq, the preamble's
@@ -6141,11 +6385,15 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
       BUILD_DIGEST,
     },
     "Check the release's assembly": { RELEASE: expr('steps.synth.outputs.release') },
+  },
+  'synth-previous-nonprod': {
     "Synthesise nonprod's previous release": {
       COMMIT: gateOutput('previous_nonprod_commit'),
       DIGEST: gateOutput('previous_nonprod_digest'),
     },
     "Check nonprod's previous assembly": { RELEASE: previousRelease('nonprod') },
+  },
+  'synth-previous-prod': {
     "Synthesise prod's previous release": {
       COMMIT: gateOutput('previous_prod_commit'),
       DIGEST: gateOutput('previous_prod_digest'),
@@ -6187,10 +6435,11 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
 // and into which folder, which .nvmrc sets Node, which artifact each download fetches into which folder,
 // what each upload sends and the credentials action's inputs. So no checkout of the gate, build, a deploy,
 // rollback or smoke job, prod-plan or prod-gate names a ref or a path (each checks out the run's commit,
-// which the gate holds to main, into the workspace), and synth's three check out exactly the release, nonprod's
-// and prod's previous release, each into its own folder: a ref added, dropped or pointed at another output
-// (an input, a branch, a commit) or two folders swapped would have the gate plan by, or the synth build,
-// another commit's code, under labels and checks that read only the env: (the pins read the folder by name).
+// which the gate holds to main, into the workspace), and the three synths' check out exactly the release,
+// nonprod's and prod's previous release, each into its own folder, one to a job, so no runner that makes an
+// assembly runs a second commit's code: a ref added, dropped or pointed at another output (an input, a
+// branch, a commit) or two folders swapped would have the gate plan by, or a synth build, another commit's
+// code, under labels and checks that read only the env: (the pins read the folder by name).
 const TEMP = `${expr('runner.temp')}/`
 const CHECKOUT_FULL = { 'fetch-depth': '0', 'persist-credentials': 'false' }
 const CHECKOUT_SHALLOW = { 'persist-credentials': 'false' }
@@ -6217,7 +6466,7 @@ const deployWiths = (credentials: string) => ({
 })
 const rollbackWiths = (stage: Stage) => ({
   [CHECKOUT_NAME]: CHECKOUT_FULL,
-  'Download the previous assembly': downloadOf(`needs.synth.outputs.assembly_previous_${stage}`, 'assembly-previous'),
+  'Download the previous assembly': downloadOf(`needs.synth-previous-${stage}.outputs.assembly`, 'assembly-previous'),
   'AWS credentials': credentialsWith('AWS_DEPLOY_ROLE'),
 })
 const SMOKE_WITHS = { [CHECKOUT_NAME]: CHECKOUT_FULL, [NODE_NAME]: NODE_WITH }
@@ -6237,9 +6486,15 @@ export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonl
     "Check out the release's commit": checkoutOf('commit', 'release'),
     [NODE_NAME]: { ...NODE_WITH, 'node-version-file': 'release/.nvmrc' },
     "Upload the release's assembly": uploadOf('assembly'),
+  },
+  'synth-previous-nonprod': {
     "Check out nonprod's previous release": checkoutOf('previous_nonprod_commit', 'previous-nonprod'),
+    [NODE_NAME]: { ...NODE_WITH, 'node-version-file': 'previous-nonprod/.nvmrc' },
     "Upload nonprod's previous assembly": uploadOf('assembly-previous-nonprod'),
+  },
+  'synth-previous-prod': {
     "Check out prod's previous release": checkoutOf('previous_prod_commit', 'previous-prod'),
+    [NODE_NAME]: { ...NODE_WITH, 'node-version-file': 'previous-prod/.nvmrc' },
     "Upload prod's previous assembly": uploadOf('assembly-previous-prod'),
   },
   nonprod: {
@@ -6260,7 +6515,7 @@ export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonl
   'resmoke-prod': SMOKE_WITHS,
 }
 const WITH =
-  'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
+  'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but the three synths’, one to a job, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
 const stepOutput = (step: string, name: string) => expr(`steps.${step}.outputs.${name}`)
 const deployOutputs = {
   digest: expr('steps.push.outputs.digest || steps.release.outputs.digest'),
@@ -6304,11 +6559,9 @@ export const JOB_OUTPUTS: Readonly<Record<string, Readonly<Record<string, string
     ].map(name => [name, stepOutput('plan', name)]),
   ),
   build: { digest: stepOutput('image', 'digest'), image: stepOutput('upload', 'artifact-id') },
-  synth: {
-    assembly: stepOutput('assembly', 'artifact-id'),
-    assembly_previous_nonprod: stepOutput('previous-nonprod', 'artifact-id'),
-    assembly_previous_prod: stepOutput('previous-prod', 'artifact-id'),
-  },
+  synth: { assembly: stepOutput('assembly', 'artifact-id') },
+  'synth-previous-nonprod': { assembly: stepOutput('previous-nonprod', 'artifact-id') },
+  'synth-previous-prod': { assembly: stepOutput('previous-prod', 'artifact-id') },
   nonprod: deployOutputs,
   'rollback-nonprod': rollbackOutputs,
   'prod-plan': { attempt: expr('github.run_attempt') },
@@ -6330,12 +6583,9 @@ const rollbackIds = {
 export const STEP_IDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   gate: { Plan: 'plan' },
   build: { 'Build the image': 'image', 'Upload the image': 'upload' },
-  synth: {
-    'Synthesise the release': 'synth',
-    "Upload the release's assembly": 'assembly',
-    "Upload nonprod's previous assembly": 'previous-nonprod',
-    "Upload prod's previous assembly": 'previous-prod',
-  },
+  synth: { 'Synthesise the release': 'synth', "Upload the release's assembly": 'assembly' },
+  'synth-previous-nonprod': { "Upload nonprod's previous assembly": 'previous-nonprod' },
+  'synth-previous-prod': { "Upload prod's previous assembly": 'previous-prod' },
   nonprod: { ...deployIds, ...markIds },
   'rollback-nonprod': rollbackIds,
   'prod-plan': { 'The release this job deploys': 'release' },
@@ -6361,7 +6611,14 @@ export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
     "needs.gate.result == 'success'",
     "(needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.gate.outputs.build != 'true'))",
   ),
-  nonprod: jobIf('!cancelled()', "needs.synth.result == 'success'", "needs.gate.outputs.nonprod == 'true'"),
+  'synth-previous-nonprod': jobIf('!cancelled()', "needs.gate.result == 'success'"),
+  'synth-previous-prod': jobIf('!cancelled()', "needs.gate.result == 'success'"),
+  nonprod: jobIf(
+    '!cancelled()',
+    "needs.synth.result == 'success'",
+    "needs.synth-previous-nonprod.result == 'success'",
+    "needs.gate.outputs.nonprod == 'true'",
+  ),
   'smoke-nonprod': jobIf('!cancelled()', "needs.nonprod.result == 'success'"),
   'rollback-nonprod': jobIf(
     '!cancelled()',
@@ -6379,6 +6636,7 @@ export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
   'prod-plan': jobIf(
     '!cancelled()',
     "needs.synth.result == 'success'",
+    "needs.synth-previous-prod.result == 'success'",
     "needs.gate.outputs.target == 'prod'",
     "((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')",
   ),
@@ -6391,6 +6649,7 @@ export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
   prod: jobIf(
     '!cancelled()',
     "needs.synth.result == 'success'",
+    "needs.synth-previous-prod.result == 'success'",
     "needs.prod-gate.result == 'success'",
     DEPLOY_OR_ROLLBACK,
   ),
@@ -6415,16 +6674,18 @@ export const JOB_NEEDS: Readonly<Record<JobId, readonly string[]>> = {
   gate: [],
   build: ['gate'],
   synth: ['gate', 'build'],
-  nonprod: ['gate', 'build', 'synth'],
+  'synth-previous-nonprod': ['gate'],
+  'synth-previous-prod': ['gate'],
+  nonprod: ['gate', 'build', 'synth', 'synth-previous-nonprod'],
   'smoke-nonprod': ['gate', 'nonprod'],
-  'rollback-nonprod': ['gate', 'build', 'synth', 'nonprod', 'smoke-nonprod'],
+  'rollback-nonprod': ['gate', 'build', 'synth-previous-nonprod', 'nonprod', 'smoke-nonprod'],
   'resmoke-nonprod': ['gate', 'rollback-nonprod'],
   'record-nonprod': ['gate', 'nonprod', 'smoke-nonprod', 'rollback-nonprod', 'resmoke-nonprod'],
-  'prod-plan': ['gate', 'build', 'synth', 'smoke-nonprod'],
+  'prod-plan': ['gate', 'build', 'synth', 'synth-previous-prod', 'smoke-nonprod'],
   'prod-gate': ['gate', 'build', 'nonprod', 'smoke-nonprod', 'prod-plan'],
-  prod: ['gate', 'build', 'synth', 'nonprod', 'prod-plan', 'prod-gate'],
+  prod: ['gate', 'build', 'synth', 'synth-previous-prod', 'nonprod', 'prod-plan', 'prod-gate'],
   'smoke-prod': ['gate', 'prod'],
-  'rollback-prod': ['gate', 'build', 'synth', 'prod', 'smoke-prod'],
+  'rollback-prod': ['gate', 'build', 'synth-previous-prod', 'prod', 'smoke-prod'],
   'resmoke-prod': ['gate', 'rollback-prod'],
   'record-prod': ['gate', 'prod', 'smoke-prod', 'rollback-prod', 'resmoke-prod'],
 }
@@ -6433,10 +6694,14 @@ export const JOB_NEEDS: Readonly<Record<JobId, readonly string[]>> = {
 const previousCommit = (stage: Stage) => expr(`needs.gate.outputs.previous_${stage}_commit != ''`)
 const ASSEMBLY_DOWNLOAD = expr("needs.synth.outputs.assembly != ''")
 export const ACTION_IFS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  synth: {
+  'synth-previous-nonprod': {
     "Check out nonprod's previous release": previousCommit('nonprod'),
+    [NODE_NAME]: previousCommit('nonprod'),
     "Upload nonprod's previous assembly": previousCommit('nonprod'),
+  },
+  'synth-previous-prod': {
     "Check out prod's previous release": previousCommit('prod'),
+    [NODE_NAME]: previousCommit('prod'),
     "Upload prod's previous assembly": previousCommit('prod'),
   },
   nonprod: {
@@ -6444,7 +6709,7 @@ export const ACTION_IFS: Readonly<Record<string, Readonly<Record<string, string>
     'Download the image': expr("needs.build.outputs.image != '' && needs.gate.outputs.mode == 'deploy'"),
   },
   'rollback-nonprod': {
-    'Download the previous assembly': expr("needs.synth.outputs.assembly_previous_nonprod != ''"),
+    'Download the previous assembly': expr("needs.synth-previous-nonprod.outputs.assembly != ''"),
   },
   'prod-plan': { 'Download the assembly': ASSEMBLY_DOWNLOAD },
   prod: {
@@ -6454,7 +6719,7 @@ export const ACTION_IFS: Readonly<Record<string, Readonly<Record<string, string>
     ),
   },
   'rollback-prod': {
-    'Download the previous assembly': expr("needs.synth.outputs.assembly_previous_prod != ''"),
+    'Download the previous assembly': expr("needs.synth-previous-prod.outputs.assembly != ''"),
   },
 }
 const JOB_IF =
@@ -6543,9 +6808,15 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
     ["Check out the release's commit", 'actions/checkout'],
     NODE_STEP,
     ...synthSteps('the release', "the release's assembly"),
+  ],
+  'synth-previous-nonprod': [
     ["Check out nonprod's previous release", 'actions/checkout'],
+    NODE_STEP,
     ...synthSteps("nonprod's previous release", "nonprod's previous assembly"),
+  ],
+  'synth-previous-prod': [
     ["Check out prod's previous release", 'actions/checkout'],
+    NODE_STEP,
     ...synthSteps("prod's previous release", "prod's previous assembly"),
   ],
   nonprod: deploySteps('nonprod'),
@@ -6568,6 +6839,8 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
   'resmoke-prod': SMOKE_STEPS,
   'record-prod': [['Write the record']],
 }
+const ONE_CHECKOUT =
+  "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code"
 const STEPS =
   'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
 // No run of any job names a file command that hands a later step of its job something: GITHUB_ENV (a
@@ -6648,13 +6921,17 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
     ) {
       add(id, STEPS)
     }
+    // No runner runs two commits' code: a job checks out once, so the code a commit's install or synth runs
+    // (a process left behind, a file written over) never meets another commit's checkout, and an assembly a
+    // rollback deploys is made only by its own commit (the seventh review's first attack).
+    if (steps.filter(step => /^actions\/checkout@/i.test(step.uses ?? '')).length > 1) add(id, ONE_CHECKOUT)
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       if (FILE_COMMANDS.test(step.run ?? '')) add(where, FILES)
-      if (!onceEach(step.keyNames, id === 'synth' ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
+      if (!onceEach(step.keyNames, SYNTH_JOBS.includes(id) ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
         add(
           where,
-          'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error',
+          'holds only name, id, if, uses, with, env and run (and working-directory in the synths), each once: no shell or continue-on-error',
         )
       }
       const action = step.uses?.split('@')[0]
@@ -7263,7 +7540,7 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
         )
       }
     }
-    if (id === 'synth') {
+    if (SYNTH_JOBS.includes(id)) {
       steps.forEach((step, index) => {
         if (!step.uses?.startsWith('actions/upload-artifact@')) return
         const path = step.with.get('path') ?? ''
@@ -7272,7 +7549,7 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
           .slice(0, index)
           .some(other => other.run === assetCheckRun([folder], 'RELEASE') && other.if === step.if)
         if (!checked)
-          add(`synth (${label(step, index)})`, 'runs ASSET_CHECK on each assembly it uploads, before the upload')
+          add(`${id} (${label(step, index)})`, 'runs ASSET_CHECK on each assembly it uploads, before the upload')
       })
     }
   }

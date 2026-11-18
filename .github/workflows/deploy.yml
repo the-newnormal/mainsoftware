@@ -3,9 +3,11 @@
 # deploy, a rollback, a drill or the restore stage (docs/runbooks/deploy-and-rollback.md). It is never
 # a required check: ci.yml's check and migrations gate merging, before this runs.
 #
-# Fifteen jobs. The gate decides what the run deploys, from the release records (GitHub deployments),
+# Seventeen jobs. The gate decides what the run deploys, from the release records (GitHub deployments),
 # the merged pull request's tree and checks, the floors and DOMAINS; the build makes the server image
-# on ARM, and the synth the cloud assemblies, with no credential. Only the five jobs that name a GitHub
+# on ARM, and the synth the release's cloud assembly, and each synth-previous job one environment's
+# previous release's, for its automatic rollback, each on a runner of its own that runs no other
+# commit's code, with no credential. Only the five jobs that name a GitHub
 # environment hold AWS credentials (nonprod, rollback-nonprod, prod-plan, prod, rollback-prod), through
 # OIDC, and they run no repository code (C11-D48): a checkout for the lockfile and history,
 # downloads by artifact id, the asset and release checks, the CLI check, the credentials action, the
@@ -322,9 +324,9 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  # The synth (C11-D51, C11-D76): no credential. Each commit the gate names, all on main, in its own
-  # checkout and install: the release first, checked and uploaded, then each deployed environment's
-  # previous release, for its automatic rollback. The asset and release checks run on each.
+  # The synth (C11-D51, C11-D76): no credential. The release's commit, on main, checked out, installed and
+  # synthesised on a runner that runs no other commit's code (each previous release has a job of its own),
+  # then checked and uploaded.
   synth:
     needs: [gate, build]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && needs.gate.outputs.build != 'true')) }}
@@ -335,8 +337,6 @@ jobs:
       contents: read
     outputs:
       assembly: ${{ steps.assembly.outputs.artifact-id }}
-      assembly_previous_nonprod: ${{ steps.previous-nonprod.outputs.artifact-id }}
-      assembly_previous_prod: ${{ steps.previous-prod.outputs.artifact-id }}
     steps:
       - name: Check out the release's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -542,6 +542,22 @@ jobs:
           include-hidden-files: false
           retention-days: 14
           if-no-files-found: error
+
+  # Non-prod's previous release, for its automatic rollback (C11-D51, C11-D52): no credential. The commit the
+  # gate names, on main, checked out, installed and synthesised on a runner of its own, which runs no other
+  # commit's code, so the release's own synth can't change what this assembly holds, nor this commit's the
+  # release's; then checked and uploaded. With no previous release, every step skips.
+  synth-previous-nonprod:
+    needs: [gate]
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    cache-mode: none
+    permissions:
+      contents: read
+    outputs:
+      assembly: ${{ steps.previous-nonprod.outputs.artifact-id }}
+    steps:
       - name: Check out nonprod's previous release
         if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -549,6 +565,12 @@ jobs:
           ref: ${{ needs.gate.outputs.previous_nonprod_commit }}
           path: previous-nonprod
           persist-credentials: false
+      - name: Node, from .nvmrc
+        if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: previous-nonprod/.nvmrc
+          package-manager-cache: false
       - name: Install nonprod's previous release
         if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
         working-directory: previous-nonprod
@@ -561,8 +583,8 @@ jobs:
           DIGEST: ${{ needs.gate.outputs.previous_nonprod_digest }}
         run: |
           set -euo pipefail
-          # The release nonprod runs now, for its automatic rollback, synthesised only after the run's own
-          # assembly is checked and uploaded, so no other commit's code runs while that one can still change.
+          # The release nonprod runs now, for its automatic rollback, synthesised on a runner of its own,
+          # which runs no other commit's code, so neither this commit's code nor the release's changes the other.
           npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-nonprod"
       - name: Check nonprod's previous assembly
         if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
@@ -733,6 +755,22 @@ jobs:
           include-hidden-files: false
           retention-days: 14
           if-no-files-found: error
+
+  # Prod's previous release, for its automatic rollback (C11-D51, C11-D52): no credential. The commit the
+  # gate names, on main, checked out, installed and synthesised on a runner of its own, which runs no other
+  # commit's code, so the release's own synth can't change what this assembly holds, nor this commit's the
+  # release's; then checked and uploaded. With no previous release, every step skips.
+  synth-previous-prod:
+    needs: [gate]
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    cache-mode: none
+    permissions:
+      contents: read
+    outputs:
+      assembly: ${{ steps.previous-prod.outputs.artifact-id }}
+    steps:
       - name: Check out prod's previous release
         if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -740,6 +778,12 @@ jobs:
           ref: ${{ needs.gate.outputs.previous_prod_commit }}
           path: previous-prod
           persist-credentials: false
+      - name: Node, from .nvmrc
+        if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: previous-prod/.nvmrc
+          package-manager-cache: false
       - name: Install prod's previous release
         if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
         working-directory: previous-prod
@@ -752,8 +796,8 @@ jobs:
           DIGEST: ${{ needs.gate.outputs.previous_prod_digest }}
         run: |
           set -euo pipefail
-          # The release prod runs now, for its automatic rollback, synthesised only after the run's own
-          # assembly is checked and uploaded, so no other commit's code runs while that one can still change.
+          # The release prod runs now, for its automatic rollback, synthesised on a runner of its own,
+          # which runs no other commit's code, so neither this commit's code nor the release's changes the other.
           npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/assembly-previous-prod"
       - name: Check prod's previous assembly
         if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
@@ -929,8 +973,8 @@ jobs:
   # probe), a rollback (Tasks and Services of the target), drill-break (Services must fail and come back)
   # or drill-smoke (the deploy path with the release that runs); then the read-back for the smoke.
   nonprod:
-    needs: [gate, build, synth]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.gate.outputs.nonprod == 'true' }}
+    needs: [gate, build, synth, synth-previous-nonprod]
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-nonprod.result == 'success' && needs.gate.outputs.nonprod == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     cache-mode: none
@@ -2064,7 +2108,7 @@ jobs:
   # check decides: unless this run's release is what runs, and the release its deploy replaced is the
   # previous one or a later one, and no later commit has pushed an image, it deploys nothing (rolled=false).
   rollback-nonprod:
-    needs: [gate, build, synth, nonprod, smoke-nonprod]
+    needs: [gate, build, synth-previous-nonprod, nonprod, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.rollback_nonprod == 'true' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke') && needs.nonprod.outputs.services_started == 'true' && (needs.smoke-nonprod.result == 'failure' || needs.nonprod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -2123,10 +2167,10 @@ jobs:
             echo "previous=$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"
           } >>"$GITHUB_OUTPUT"
       - name: Download the previous assembly
-        if: ${{ needs.synth.outputs.assembly_previous_nonprod != '' }}
+        if: ${{ needs.synth-previous-nonprod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          artifact-ids: ${{ needs.synth.outputs.assembly_previous_nonprod }}
+          artifact-ids: ${{ needs.synth-previous-nonprod.outputs.assembly }}
           path: ${{ runner.temp }}/assembly-previous
       - name: Check the previous assembly
         env:
@@ -2937,8 +2981,8 @@ jobs:
   # the diff the approver reads before the prod job's approval. Its role reads prod's templates and
   # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own.
   prod-plan:
-    needs: [gate, build, synth, smoke-nonprod]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
+    needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     cache-mode: none
@@ -3366,8 +3410,8 @@ jobs:
   # and the probe) or down (Services, Data, Platform, no probe), the restore at prod's current release;
   # then the read-back for the smoke. The fast re-check runs first, after the approval.
   prod:
-    needs: [gate, build, synth, nonprod, prod-plan, prod-gate]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.prod-gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') }}
+    needs: [gate, build, synth, synth-previous-prod, nonprod, prod-plan, prod-gate]
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && needs.prod-gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     cache-mode: none
@@ -4542,7 +4586,7 @@ jobs:
   # previous one or a later one, and no later commit has pushed an image, it deploys nothing (rolled=false).
   # It waits for prod's reviewer again.
   rollback-prod:
-    needs: [gate, build, synth, prod, smoke-prod]
+    needs: [gate, build, synth-previous-prod, prod, smoke-prod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.rollback_prod == 'true' && needs.gate.outputs.target == 'prod' && needs.gate.outputs.mode == 'deploy' && needs.prod.outputs.services_started == 'true' && (needs.smoke-prod.result == 'failure' || needs.prod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -4601,10 +4645,10 @@ jobs:
             echo "previous=$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"
           } >>"$GITHUB_OUTPUT"
       - name: Download the previous assembly
-        if: ${{ needs.synth.outputs.assembly_previous_prod != '' }}
+        if: ${{ needs.synth-previous-prod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          artifact-ids: ${{ needs.synth.outputs.assembly_previous_prod }}
+          artifact-ids: ${{ needs.synth-previous-prod.outputs.assembly }}
           path: ${{ runner.temp }}/assembly-previous
       - name: Check the previous assembly
         env:

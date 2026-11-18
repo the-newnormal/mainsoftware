@@ -1,5 +1,5 @@
 // The deploy-workflow guard's cases (DPW-01 to DPW-14; C0.11, TECH-SPEC T24 items 20 to 23 and 28). The
-// reader first finds the fifteen jobs and their steps, and reads every canonical text back exactly, and
+// reader first finds the seventeen jobs and their steps, and reads every canonical text back exactly, and
 // DPW-02 refuses any line in a shape it doesn't read, so a reformatted workflow fails rather than passing
 // unread. Then each case is proved on planted text, an exact edit of the real file that throws when its
 // anchor is gone, before it holds the repository.
@@ -50,6 +50,7 @@ import {
   CLI_CHECK,
   CLI_FETCH,
   canonicalTextFindings,
+  canonicalToolLines,
   checkoutFindings,
   codeLinesAsBash,
   credentialedCodeFindings,
@@ -109,6 +110,7 @@ import {
   shellViews,
   TARGETS_QUERY,
   TASKS_OUTPUTS,
+  TOOL_LINE_TEXTS,
   timeoutAndGroupFindings,
   triggerFindings,
 } from './deploy-workflow.ts'
@@ -248,7 +250,9 @@ describe('DPW: the guard reads the deploy workflow', () => {
   const STEPS: Readonly<Record<string, number>> = {
     gate: 7,
     build: 11,
-    synth: 16,
+    synth: 6,
+    'synth-previous-nonprod': 6,
+    'synth-previous-prod': 6,
     nonprod: 21,
     'smoke-nonprod': 3,
     'rollback-nonprod': 13,
@@ -263,7 +267,7 @@ describe('DPW: the guard reads the deploy workflow', () => {
     'record-prod': 1,
   }
 
-  it('finds the fifteen jobs in order and every step of each, parsed alike by both readers', () => {
+  it('finds the seventeen jobs in order and every step of each, parsed alike by both readers', () => {
     const jobs = workflowJobs(deployText)
     expect(jobs.map(each => each.id)).toEqual([...JOB_IDS])
     for (const each of jobs) {
@@ -759,8 +763,8 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(
       permissionFindings(
         plant(
-          '    needs: [gate, build, synth, nonprod, prod-plan, prod-gate]\n',
-          '    needs: [gate, build, synth,\n      nonprod, prod-plan, prod-gate]\n',
+          '    needs: [gate, build, synth, synth-previous-prod, nonprod, prod-plan, prod-gate]\n',
+          '    needs: [gate, build, synth, synth-previous-prod,\n      nonprod, prod-plan, prod-gate]\n',
         ),
       ),
     ).toEqual(shape(DEPLOY))
@@ -2315,8 +2319,8 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(
       prodPathFindings(
         plant(
-          '    needs: [gate, build, synth, nonprod, prod-plan, prod-gate]\n',
-          '    needs: [gate, build, synth, nonprod, prod-plan]\n',
+          '    needs: [gate, build, synth, synth-previous-prod, nonprod, prod-plan, prod-gate]\n',
+          '    needs: [gate, build, synth, synth-previous-prod, nonprod, prod-plan]\n',
           job('prod'),
         ),
       ),
@@ -2377,8 +2381,8 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(
       prodPathFindings(
         plant(
-          '    needs: [gate, build, synth, nonprod, smoke-nonprod]\n',
-          '    needs: [gate, synth, nonprod, smoke-nonprod]\n',
+          '    needs: [gate, build, synth-previous-nonprod, nonprod, smoke-nonprod]\n',
+          '    needs: [gate, synth-previous-nonprod, nonprod, smoke-nonprod]\n',
           job('rollback-nonprod'),
         ),
       ),
@@ -2815,10 +2819,15 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     // An if: with !cancelled() isn't joined to success(): prod after a failed prod-gate, nonprod after a
     // failed synth, prod-gate after a failed prod-plan.
     expect(gate(plant(" && needs.prod-gate.result == 'success'", '', job('prod')))).toEqual([
-      at('prod', 'its if: runs it only once synth and prod-gate succeeded'),
+      at('prod', 'its if: runs it only once synth and synth-previous-prod and prod-gate succeeded'),
     ])
     expect(gate(plant(" && needs.synth.result == 'success'", '', job('nonprod')))).toEqual([
-      at('nonprod', 'its if: runs it only once synth succeeded'),
+      at('nonprod', 'its if: runs it only once synth and synth-previous-nonprod succeeded'),
+    ])
+    // The seventh review's first attack: each previous release is synthesised in a job of its own, which
+    // the deploy waits for, so its automatic rollback has an assembly no other commit's code made.
+    expect(gate(plant(" && needs.synth-previous-nonprod.result == 'success'", '', job('nonprod')))).toEqual([
+      at('nonprod', 'its if: runs it only once synth and synth-previous-nonprod succeeded'),
     ])
     expect(gate(plant(" && needs.prod-plan.result == 'success')", ')', job('prod-gate')))).toEqual([
       at('prod-gate', 'its if: runs it only once gate and prod-plan succeeded'),
@@ -2838,7 +2847,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       expect(gate(plant(prodIf, prodIf.replace(' }}', ` || ${term} }}`), job('prod'))), term).toEqual([
         at('prod', BOT),
         at('prod', 'its if: admits no drill: drills are non-prod’s alone'),
-        at('prod', 'its if: runs it only once synth and prod-gate succeeded'),
+        at('prod', 'its if: runs it only once synth and synth-previous-prod and prod-gate succeeded'),
       ])
     }
   })
@@ -3537,10 +3546,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const JOB_KEYS =
     'holds only needs, if, runs-on, timeout-minutes, cache-mode, permissions, environment, concurrency, outputs, env and steps, each once: no container, services, defaults, strategy, uses or continue-on-error'
   const STEP_KEYS =
-    'holds only name, id, if, uses, with, env and run (and working-directory in synth), each once: no shell or continue-on-error'
+    'holds only name, id, if, uses, with, env and run (and working-directory in the synths), each once: no shell or continue-on-error'
   const WITH = 'gives its action only the inputs the workflow uses: no repository, run-id, token or other source'
   const WITH_WHOLE =
-    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
+    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but the three synths’, one to a job, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
   const ENV =
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
@@ -4307,6 +4316,31 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       [`echo "\${x:$y}"`, 1],
       ['a=([$y]=1)', 1],
       ['x=1\necho $(( x + $1 ))', 2],
+      // The seventh review's first attack: a name read, unset or wait -p is handed evaluates its subscript, a
+      // ${a[…]} evaluates its subscript whatever follows it, and a [[ … ]] reads to the ]] that stands as a
+      // word, so a ]] inside one hides nothing, nor does a line break.
+      ['x=$(jq -r .n f.json)\nread -r "a[$x]" <<<1', 2],
+      ["x=$(jq -r .n f.json)\nread -r 'a[$x]' <<<1", 2],
+      ['x=$(jq -r .n f.json)\nread -r "$x" <<<1', 2],
+      ['x=$(jq -r .n f.json)\nunset "a[$x]"', 2],
+      ['x=$(jq -r .n f.json)\nunset -v "a[$x]"', 2],
+      ['x=$(jq -r .n f.json)\n{ unset "a[$x]"; }', 2],
+      ['x=$(jq -r .n f.json)\nbuiltin read -r "a[$x]" <<<1', 2],
+      ['x=$(jq -r .n f.json)\nwait -n -p "a[$x]"', 2],
+      ['mapfile -t -C "$x" lines <<<1', 1],
+      [`x=$(jq -r .n f.json)\necho "\${a[$x]:-}"`, 2],
+      [`x=$(jq -r .n f.json)\necho "\${a[$x]+set}" "\${a[$x]/b/c}"`, 2],
+      [`x=$1\n[[ "\${x//[[:space:]]/}" -gt 1 ]]`, 2],
+      ['x=$1\n[[ "$x" =~ ^[[:alnum:]]+$ || "$x" -gt 1 ]]', 2],
+      ['x=$1\n[[ -n "$x" &&\n"$x" -gt 1 ]]', 2],
+      ['x=$1\n[[ ( "$x" -gt 1 ) ]]', 2],
+      ['x=$1\n[ "-v" "$x" ]', 2],
+      ['x=$1\nop=$2\n[ "$op" "$x" ]', 3],
+      ['x=$1\n[ -n "$x" ] && [ "$x" = a -o -v "$x" ]', 2],
+      ['x=$1\ntest -v "$x"', 2],
+      ['x=$1\nRANDOM=$x', 2],
+      ['x=$1\nread -r OPTIND <<<"$x"', 2],
+      ['PS4=$1\nset -x', 1],
     ] as const) {
       expect(canonicalTextFindings({ X: text }), text).toContain(evaluates('X', line))
     }
@@ -4316,6 +4350,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       'n=0\nn=$((n + 1))',
       `echo "\${a[0]}"`,
       `for kind in a b; do printf -v "\${kind^^}_X" %s 1; done`,
+      'while IFS= read -r name; do :; done <<<"$x"',
+      `IFS=$'\\t' read -r path key <<<"$x"`,
+      `mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$x")`,
+      'run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"',
+      '[ "$x" = "$y" ] && [ -n "$x" ] && ! [ "$(wc -l <<<"$x")" -gt 0 ]',
+      '[[ "$x" =~ ^[0-9]+$ ]] || [[ "$x" != *_IN_PROGRESS ]]',
     ]) {
       expect(outsideEvaluations(text), text).toEqual([])
     }
@@ -4339,6 +4379,56 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       expect([parsed.status, parsed.stderr], name).toEqual([0, ''])
       expect(text, name).not.toMatch(/(?:\\|&&|\|\||\|)\s*$/)
     }
+  })
+
+  // The seventh review's first attack: a canonical text's jq once took its program from a repository file
+  // (-f), its image unpacking a tar that ran each member (--to-command), and its mask a sed that ran a line it
+  // read (e), each admitted because the tool's hold read the line it held out of the canonical text itself.
+  // Every such line is now written in the guard (TOOL_LINE_TEXTS), standing whole in its text, and a
+  // canonical text's jq and gh are held to their flags and a program written on the line.
+  it("holds a canonical text's jq, gh and line-held tools to what the guard writes", () => {
+    for (const [line, text] of TOOL_LINE_TEXTS()) {
+      expect(
+        text.split('\n').some(each => each.trim() === line),
+        line,
+      ).toBe(true)
+    }
+    for (const text of Object.values(CANONICAL_BY_NAME())) expect(canonicalToolLines(text)).toEqual([])
+    for (const [text, line] of [
+      ['x=$(jq -er --arg key "$1" -f infra/checks/stack-output.jq <<<"$o")', 0],
+      ['x=$(jq -r --from-file p.jq "$f")', 0],
+      ["x=$(jq -n --rawfile e /proc/self/environ '$e')", 0],
+      ['x=$(jq -n --slurpfile e "$f" \'$e\')', 0],
+      ['x=$(jq -L lib -n \'include "x"; .\')', 0],
+      ['x=$(jq -r \'P\' "-f" lib.jq)', 0],
+      ['x=$(jq -r \'.a\' "$f" --rawfile e /proc/self/environ)', 0],
+      ['x=$(jq -r "$program" "$f")', 0],
+      ["x=$(jq -r '.a' \"$f\")\ny=$(jq -nr 'env.AWS_SECRET_ACCESS_KEY')", 1],
+      ["x=$(jq -nr '$ENV.HOME')", 0],
+      ['x=$(jq -r \'input_filename\' "$f")', 0],
+      ['x=$(gh api "repos/$REPO/issues" --input /proc/self/environ)', 0],
+      ['x=$(gh api "repos/$REPO/issues" -F "body=@/proc/self/environ")', 0],
+      ['x=$(gh api "repos/$REPO/runs" --jq \'env\')', 0],
+      ['tar --extract --file "$1" --to-command=\'. /dev/stdin\'', 0],
+      ['tar --extract --file "$1" --directory "$2" --checkpoint=1 --checkpoint-action=exec=x', 0],
+      ['mkdir -p "$HOME/.local/bin"', 0],
+      [`entries=$(find "$2" -mindepth 1 -exec cp {} "$HOME/.jq" \\;)`, 0],
+      [
+        PREAMBLE.replace("ta'; }", "ta; /^: hearth;/e'; }"),
+        PREAMBLE.split('\n').findIndex(each => each.startsWith('mask()')),
+      ],
+    ] as const) {
+      expect(canonicalToolLines(text), text).toContain(line)
+    }
+    // A changed tool line is a finding of the canonical rule, whatever the line in the guard says.
+    const planted = {
+      IMAGE_CHECK: IMAGE_CHECK.replace(
+        '  mkdir "$2"\n',
+        '  mkdir "$2"\n  tar --extract --file "$1" --to-command=cat\n',
+      ),
+    }
+    expect(planted.IMAGE_CHECK).not.toBe(IMAGE_CHECK)
+    expect(canonicalTextFindings(planted).join('\n')).toMatch(/DPW-10 IMAGE_CHECK, line \d+: hands jq and gh only/)
   })
 
   it('holds the repository', () => {
@@ -6140,7 +6230,7 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
         held++
       }
     }
-    expect(held).toBe(11)
+    expect(held).toBe(13)
     for (const [id, name] of [
       ['build', 'Upload the image'],
       ['gate', "Check out the run's commit"],
@@ -6323,7 +6413,7 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
 
 describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
   const WITH =
-    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but synth’s three, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
+    'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but the three synths’, one to a job, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
   const at = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${WITH}`
   const found = (texts: ReadonlyMap<string, string>) =>
     credentialedCodeFindings(texts, manifests, lockfile).filter(each => each.endsWith(WITH))
@@ -6331,7 +6421,7 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
   const release = `          ref: \${{ needs.gate.outputs.commit }}\n`
   const RELEASE = "synth (Check out the release's commit)"
 
-  it('holds every checkout to the run’s commit, and synth’s three to their own commits and folders (GUARDS-01, round 5)', () => {
+  it('holds every checkout to the run’s commit, and the three synths’ to their own commits and folders (GUARDS-01, round 5)', () => {
     // A ref given to a checkout that has none: the gate's (an input, so a dispatch names the commit whose
     // history.ts plans), the build's, a deploy job's and prod-gate's.
     for (const [id, ref] of [
@@ -6361,10 +6451,10 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
         plant(
           `          ref: \${{ needs.gate.outputs.previous_prod_commit }}\n`,
           `          ref: \${{ needs.gate.outputs.previous_nonprod_commit }}\n`,
-          job('synth'),
+          job('synth-previous-prod'),
         ),
       ),
-    ).toEqual([at("synth (Check out prod's previous release)")])
+    ).toEqual([at("synth-previous-prod (Check out prod's previous release)")])
     // The release's and nonprod's previous folders swapped: each synth step then runs in the other's tree.
     const swapped = edited(
       edited(deployText, '          path: release\n', '          path: previous-nonprod\n', job('synth')),
@@ -6372,7 +6462,38 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
       '          path: release\n',
       "      - name: Check out nonprod's previous release\n",
     )
-    expect(found(withText(DEPLOY, swapped))).toEqual([at(RELEASE), at("synth (Check out nonprod's previous release)")])
+    expect(found(withText(DEPLOY, swapped))).toEqual([
+      at(RELEASE),
+      at("synth-previous-nonprod (Check out nonprod's previous release)"),
+    ])
+  })
+
+  // The seventh review's first attack: the release's synth once ran on the runner that then checked out,
+  // installed and synthesised each previous release, so a process its code left behind rewrote prod's
+  // previous release's source before that synth read it, and the automatic rollback deployed what no commit
+  // holds. Each previous release has a job of its own now, and no job checks out twice.
+  it('checks out one commit at most in each job, so no runner making an assembly runs a second commit', () => {
+    const ONE =
+      "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code"
+    const one = (texts: ReadonlyMap<string, string>) =>
+      credentialedCodeFindings(texts, manifests, lockfile).filter(each => each.endsWith(ONE))
+    expect(one(workflows)).toEqual([])
+    const previous = stepText(deployText, 'synth-previous-prod', "Check out prod's previous release")
+    const twice = edited(
+      deployText,
+      '      - name: Install the release\n',
+      `${previous}      - name: Install the release\n`,
+      job('synth'),
+    )
+    expect(one(withText(DEPLOY, twice))).toEqual([`${DEPLOY}: DPW-10 synth: ${ONE}`])
+    const again = stepText(deployText, 'nonprod', "Check out the run's commit")
+    const deploying = edited(
+      deployText,
+      '      - name: The release this job deploys\n',
+      `${again}      - name: The release this job deploys\n`,
+      job('nonprod'),
+    )
+    expect(one(withText(DEPLOY, deploying))).toEqual([`${DEPLOY}: DPW-10 nonprod: ${ONE}`])
   })
 
   it('holds every download, upload, Node and credentials input to its value', () => {
@@ -6389,7 +6510,7 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
       found(
         plant(
           `          artifact-ids: \${{ needs.synth.outputs.assembly }}\n`,
-          `          artifact-ids: \${{ needs.synth.outputs.assembly_previous_prod }}\n`,
+          `          artifact-ids: \${{ needs.synth-previous-prod.outputs.assembly }}\n`,
           job('prod'),
         ),
       ),
