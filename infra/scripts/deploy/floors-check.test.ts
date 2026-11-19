@@ -215,6 +215,34 @@ describe('C11-D58: the rollback floors check', () => {
     expect([bad.status, bad.stdout, bad.stderr]).toEqual([2, 'floors-check: --target is missing\n', ''])
   }, 60_000)
 
+  // importData writes floors.ts into a folder under the system's temporary folder (TMPDIR), and Node
+  // takes a .ts file's module type from the nearest package.json above it: with none of the folder's
+  // own, a typeless one above TMPDIR would add a warning on stderr, and a CommonJS one would fail the
+  // load, so every check would print `floors-check: failed`. The folder's own package.json decides it.
+  it('C11-D58: reads floors.ts as a module whatever package.json sits above the temporary folder', () => {
+    const above = mkdtempSync(join(tmpdir(), 'hearth-floors-tmpdir-'))
+    const temp = join(above, 'tmp')
+    mkdirSync(temp)
+    try {
+      for (const manifest of ['{}\n', '{"type":"commonjs"}\n']) {
+        writeFileSync(join(above, 'package.json'), manifest)
+        const node = spawnSync(process.execPath, [SCRIPT, '--target', c.c2, '--floors-at', c.c3], {
+          cwd: repo,
+          encoding: 'utf8',
+          env: { ...process.env, TMPDIR: temp },
+          timeout: 30_000,
+        })
+        expect([node.status, node.stdout, node.stderr], manifest).toEqual([
+          1,
+          `floors-check: refused ${DROP_Y.migration} (${DROP_Y.why})\n`,
+          '',
+        ])
+      }
+    } finally {
+      rmSync(above, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   it('C11-D58: --floors-at reads the later commit’s floor though the working copy predates it', async () => {
     run(['-c', 'advice.detachedHead=false', 'checkout', '-q', c.c2])
     try {

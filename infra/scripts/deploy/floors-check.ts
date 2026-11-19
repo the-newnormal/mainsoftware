@@ -120,7 +120,10 @@ export function isOnMain(commit: string, mainCommit: string, repo: string): bool
 // file's exports: imported by itself, such a file would run its own code as it loads and decide what
 // the script reads (no floors, say). The wrapper's namespace has no `then`, so the file's own exports
 // are read and none of them is called as it loads. They come back in a box of this function's own,
-// since an async function's value settles its promise the same way.
+// since an async function's value settles its promise the same way. The folder holds a package.json
+// of its own naming the module type: Node takes a .ts file's type from the nearest package.json above
+// it, and without one here that would be whatever sits above the system's temporary folder (TMPDIR),
+// where a typeless one adds a warning on stderr and a CommonJS one fails the load.
 export async function importData(
   file: string,
   source: string,
@@ -129,6 +132,7 @@ export async function importData(
   if (!/^[a-z]+\.ts$/.test(file)) throw new Error('importData: the data file is named as a plain .ts file')
   const folder = mkdtempSync(join(tmpdir(), prefix))
   try {
+    writeFileSync(join(folder, 'package.json'), '{"type":"module"}\n')
     writeFileSync(join(folder, file), source)
     const wrapper = join(folder, 'wrapper.mjs')
     writeFileSync(wrapper, `import * as data from './${file}'\nexport const box = { data }\n`)

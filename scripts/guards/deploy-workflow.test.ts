@@ -805,10 +805,12 @@ describe('DPW-02 (C11-D55): permissions', () => {
   // or a command after one in a run, passed every rule; and a blank but a space or a tab is part of a word
   // to bash, so a # after one is no comment. Each such character, and every other control or format
   // character, is refused in every workflow, named by its line and code point, and each plant here passes
-  // every other DPW-02 check.
-  it('finds a line break workflow.ts doesn’t split at, a control or format character or another blank, in any workflow', () => {
+  // every other DPW-02 check. From the eighth review (GUARDS-01) a tab is refused too: YAML never indents
+  // with one, and a key indented with spaces and then a tab passed the shape check at its level while the
+  // job and step readers, matching spaces alone, never read it, so an env: and its BASH_ENV passed unread.
+  it('finds a line break workflow.ts doesn’t split at, a tab, a control or format character or another blank, in any workflow', () => {
     const CHARACTERS =
-      'a workflow holds only tabs, newlines and printable text: no carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space or a tab'
+      'a workflow holds only newlines and printable text: no tab, carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space'
     const odd = (path: string, planted: string, marker: string, point: string) => {
       const at = planted.indexOf(marker)
       expect(at).toBeGreaterThan(-1)
@@ -864,6 +866,41 @@ describe('DPW-02 (C11-D55): permissions', () => {
       const run = edited(deployText, started, `${started}${command}`, job('nonprod'))
       expect(permissionFindings(withText(DEPLOY, run)), point).toEqual(odd(DEPLOY, run, command, point))
     }
+    // A tab in a key's indentation, which every job and step reader dropped while the shape check placed it
+    // at its level: a record job's env: and a step's env: entry, each setting BASH_ENV before a pinned run, a
+    // credentialed job's defaults:, and in ci.yml a checkout's uses: after its dash, with no
+    // persist-credentials: false, which DPW-11 never saw. Each is refused twice: as a character, and as a
+    // line workflow.ts reads at no level (shapeProblems counts only spaces as indentation).
+    const shapeFinding = (path: string) => `${path}: DPW-02 ${SHAPE}`
+    const recordJob =
+      '  record-nonprod:\n    needs: [gate, nonprod, smoke-nonprod, rollback-nonprod, resmoke-nonprod]\n'
+    const recordEnv = '   \tenv:\n      BASH_ENV: $(echo planted >&2)\n'
+    const recordStep = '      - name: Write the record\n        env:\n'
+    const stepEntry = '         \tBASH_ENV: $(echo planted >&2)\n'
+    const nonprodEnv = '    env:\n      STAGE: nonprod\n'
+    const defaults = "   \tdefaults:\n      run:\n        shell: bash --noprofile --norc -c 'echo planted' {0}\n"
+    for (const [from, to, marker] of [
+      [recordJob, recordJob.replace('\n', `\n${recordEnv}`), recordEnv],
+      [recordStep, `${recordStep}${stepEntry}`, stepEntry],
+      [nonprodEnv, `${nonprodEnv}${defaults}`, defaults],
+      [recordJob, recordJob.replace('\n', '\n\t\tenv:\n      BASH_ENV: x\n'), '\t\tenv:'],
+    ] as const) {
+      const planted = edited(deployText, from, to)
+      const found = permissionFindings(withText(DEPLOY, planted))
+      expect(found, marker).toContain(odd(DEPLOY, planted, marker, '0009')[0])
+      expect(found, marker).toContain(shapeFinding(DEPLOY))
+      expect(
+        found.every(each => each.startsWith(`${DEPLOY}: DPW-02 `)),
+        marker,
+      ).toBe(true)
+    }
+    const ciCheckout = `${checkout}v5\n        with:\n          persist-credentials: false\n`
+    const tabbed = `      - \tuses: actions/checkout@v5\n`
+    const ciPlanted = edited(ciText, ciCheckout, tabbed)
+    expect(permissionFindings(withText(CI, ciPlanted))).toEqual([
+      odd(CI, ciPlanted, tabbed, '0009')[0],
+      shapeFinding(CI),
+    ])
   })
 
   // The clause infra.ts's ciSynthProblems held for ci.yml until C0.11 PR 4, with its cases, as they stood.
@@ -994,6 +1031,16 @@ describe('DPW-02 (C11-D55): permissions', () => {
       [download, `        if: needs.synth.outputs.assembly != ''\n`, job('nonprod')],
     ] as const) {
       expect(permissionFindings(plant(from, to, after)), to).toContain(`${DEPLOY}: DPW-02 ${IF}`)
+    }
+    // Blanks after the expression, or after its comment, are no part of a plain scalar, so GitHub reads the
+    // expression alone, as the guard does, and nothing is refused (the eighth review's GUARDS-03: two
+    // trailing spaces were refused as a string GitHub reads as always true, which it isn't).
+    for (const [from, to, after] of [
+      [`    if: ${prodIf}\n`, `    if: ${prodIf}  \n`, job('prod')],
+      [download, `        if: \${{ needs.synth.outputs.assembly != '' }} \n`, job('nonprod')],
+      [download, `        if: \${{ needs.synth.outputs.assembly != '' }}  # the download's  \n`, job('nonprod')],
+    ] as const) {
+      expect(permissionFindings(plant(from, to, after)), to).toEqual([])
     }
   })
 
@@ -3012,6 +3059,13 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       ['  [[ ( -v PROD_REVIEWERS ) ]] || true', 'test -v or -R'],
       ['  [[ -n "$repo" ||\n    -v PROD_REVIEWERS ]] || true', 'test -v or -R'],
       ['  [ -n "$repo" -a -v PROD_REVIEWERS ] || true', 'test -v or -R'],
+      // And over a line a backslash continues, which bash reads joined, or after a bare [[ that ends its line
+      // (review 8 ENVS-01).
+      ['  if [[ -n "$repo" && \\\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[ \\\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [ -n "$repo" -a \\\n    -v PROD_REVIEWERS ]; then :; fi', 'test -v or -R'],
+      ['  if test \\\n    -v PROD_REVIEWERS; then :; fi', 'test -v or -R'],
       [`  echo "\${repo:0:-1}"`, 'a negative substring length'],
       ['  seen[-1]=x', 'a negative subscript'],
       ['  echo {1..7..2}', 'a brace expansion with a step or zero padding'],
@@ -3026,6 +3080,8 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     for (const line of [
       `  echo "\${repo:-x:-y}" "\${repo: -1}" "\${repo:1:2}" {0..9} "\${repo//x/y}"`,
       '  [[ -n "$repo" && -n "$dir" ]] || true',
+      '  if [[ -n "$repo" && \\\n    -n "$dir" ]]; then :; fi',
+      '  echo \\\\\n  -v',
     ]) {
       const planted = protectEnvironments.replace(applyHead, `${applyHead}${line}\n`)
       expect(gate(workflows, environments, holds, planted), line).toEqual([pinned])
@@ -7194,6 +7250,114 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
   })
 })
 
+// drill-break (C11-D59, DPW-06), run with bash as non-prod's job runs it: aws is a stand-in function and the
+// CLI a stand-in file. The stack's status after the broken deploy proves that deploy reached CloudFormation
+// only if this deploy moved it there, since CloudFormation changes a stack's status only when it runs a change
+// set: so the drill refuses to start on a stack an earlier rollback left (the eighth review's ROLLBACK-01: a
+// CLI that failed before any change set, over a Services stack left UPDATE_ROLLBACK_COMPLETE, passed as a
+// drill and was read as proof that the circuit breaker and CloudFormation's rollback work).
+describe('DPW-06 (C11-D59): drill-break against planted AWS answers', () => {
+  let scratch = ''
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw06-drill-'))
+    const bin = join(scratch, 'aws-cdk', 'package', 'bin')
+    execFileSync('mkdir', ['-p', bin])
+    // The stand-in CLI logs its call, moves the stack to CDK_MOVES when given one (CloudFormation ran the
+    // change set and rolled it back), and exits CDK_EXIT.
+    writeFileSync(
+      join(bin, 'cdk'),
+      '#!/bin/bash\necho "$1 $4" >>"$CDK_LOG"\nif [ -n "$CDK_MOVES" ]; then printf \'%s\' "$CDK_MOVES" >"$STACK_FILE"; fi\nexit "$CDK_EXIT"\n',
+      { mode: 0o755 },
+    )
+  })
+  afterAll(() => {
+    if (scratch !== '') rmSync(scratch, { recursive: true, force: true })
+  })
+  const runOf = () => {
+    const nonprod = workflowJobs(deployText).find(each => each.id === 'nonprod')
+    const run = (nonprod === undefined ? [] : parsedSteps(nonprod)).find(step => step.name === 'drill-break')?.run
+    if (run === undefined) throw new Error('no step drill-break in nonprod')
+    return run
+  }
+  // The stand-in aws: the Services stack's status is STACK_FILE's text, and realtime runs revision 7, one
+  // deployment, PRIMARY and COMPLETED, before and after.
+  const STUB = `aws() {
+  case "$1 $2" in
+    'cloudformation describe-stacks') cat "$STACK_FILE"; echo ;;
+    'ecs describe-services')
+      if [[ "$*" == *'--output text'* ]]; then echo 'task-definition/hearth-nonprod-realtime:7'
+      else echo '[{"status":"PRIMARY","rollout":"COMPLETED","definition":"task-definition/hearth-nonprod-realtime:7"}]'; fi ;;
+    *) echo "unexpected aws $*" >&2; return 99 ;;
+  esac
+}`
+  function drill(before: string, cdkExit: number, moves = '') {
+    const log = join(scratch, 'cdk.log')
+    const summary = join(scratch, 'summary')
+    const stackFile = join(scratch, 'stack')
+    writeFileSync(log, '')
+    writeFileSync(summary, '')
+    writeFileSync(stackFile, before)
+    const result = spawnSync('bash', ['-c', `${STUB}\n${runOf()}`], {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: scratch,
+        TMPDIR: scratch,
+        GITHUB_OUTPUT: join(scratch, 'output'),
+        GITHUB_STEP_SUMMARY: summary,
+        RUNNER_TEMP: scratch,
+        CDK_LOG: log,
+        STACK_FILE: stackFile,
+        CDK_EXIT: String(cdkExit),
+        CDK_MOVES: moves,
+        STAGE: 'nonprod',
+      },
+    })
+    return {
+      status: result.status,
+      said: result.stdout.trim().split('\n').at(-1) ?? '',
+      deployed: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
+      summary: readFileSync(summary, 'utf8').trim(),
+    }
+  }
+  const unsettled = (status: string) =>
+    `drill-break: the Services stack is ${status} before the drill, so its status after couldn't show this deploy reached CloudFormation: dispatch deploy to nonprod first (deploy-and-rollback.md)`
+
+  it('passes when its broken deploy fails and CloudFormation rolls the stack back from a settled update or create', () => {
+    for (const before of ['UPDATE_COMPLETE', 'CREATE_COMPLETE']) {
+      const passed = drill(before, 1, 'UPDATE_ROLLBACK_COMPLETE')
+      expect(passed.status, before).toBe(0)
+      expect(passed.deployed, before).toEqual(['deploy nonprod/Services'])
+      expect(passed.summary, before).toBe(
+        'drill-break: the broken deploy failed and realtime runs hearth-nonprod-realtime:7 again',
+      )
+    }
+  })
+
+  it('refuses to start on a stack an earlier rollback left, which would pass whether or not this deploy reached CloudFormation (ROLLBACK-01)', () => {
+    // The CLI fails at once (an asset publish, a throttle, a change set CloudFormation refuses) and moves
+    // nothing: over a stack the last drill or a rolled-back forward deploy left, the old step passed.
+    for (const before of ['UPDATE_ROLLBACK_COMPLETE', 'ROLLBACK_COMPLETE', 'UPDATE_IN_PROGRESS']) {
+      const refused = drill(before, 1)
+      expect(refused.status, before).toBe(1)
+      expect(refused.said, before).toBe(unsettled(before))
+      expect(refused.deployed, before).toEqual([])
+      expect(refused.summary, before).toBe('')
+    }
+  })
+
+  it('fails a broken deploy that never reached CloudFormation, and one that succeeded', () => {
+    const early = drill('UPDATE_COMPLETE', 1)
+    expect(early.status).toBe(1)
+    expect(early.said).toBe('drill-break: the Services stack is UPDATE_COMPLETE, not UPDATE_ROLLBACK_COMPLETE')
+    expect(early.deployed).toEqual(['deploy nonprod/Services'])
+    const succeeded = drill('UPDATE_COMPLETE', 0, 'UPDATE_COMPLETE')
+    expect(succeeded.status).toBe(1)
+    expect(succeeded.said).toBe('drill-break: the broken Services deploy succeeded, so the drill proved nothing')
+    expect(succeeded.summary).toBe('')
+  })
+})
+
 // restore=down (C11-D45; T24 item 18) and the prod job's read-back after it, each step's run taken from
 // deploy.yml and run with bash and jq against a stand-in aws and CLI (ROLLBACK-04): down skips a restore
 // stack a failed create left (ROLLBACK_COMPLETE or REVIEW_IN_PROGRESS) and refuses one still moving, and
@@ -7547,7 +7711,9 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     // An id that is another asset's key, or the key's digits with its extension, is refused too.
     expect(check(another('a'.repeat(64), 'c'))).toBe(ID)
     expect(check(another(`${'a'.repeat(64)}.zip`, 'a'))).toBe(ID)
-  })
+    // Eleven runs of ASSET_CHECK, each over its own copy of the assembly, take as long as the machine's
+    // load makes them, as its siblings' do.
+  }, 120_000)
 
   it('refuses each planted breakage of the assets, with one line naming its rule', () => {
     const executable = (path: string) =>

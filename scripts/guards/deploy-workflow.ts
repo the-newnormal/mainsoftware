@@ -1700,6 +1700,16 @@ if ! [[ "$BEFORE" =~ ^hearth-nonprod-realtime:[1-9][0-9]{0,5}$ ]]; then
   echo "drill-break: realtime's revision can't be read" | mask
   exit 1
 fi
+# The status after proves the broken deploy reached CloudFormation only if this deploy moved it there:
+# CloudFormation changes a stack's status only when it runs a change set, and a failure before one (an
+# asset publish, a throttle, a change set it refuses) leaves the stack as it was. So the drill starts only
+# on a stack whose last operation succeeded; one an earlier rollback left (the last drill-break, or a
+# forward deploy CloudFormation rolled back) waits for a forward deploy to non-prod.
+SETTLED=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].StackStatus' --output text)
+if [ "$SETTLED" != UPDATE_COMPLETE ] && [ "$SETTLED" != CREATE_COMPLETE ]; then
+  echo "drill-break: the Services stack is $SETTLED before the drill, so its status after couldn't show this deploy reached CloudFormation: dispatch deploy to nonprod first (deploy-and-rollback.md)" | mask
+  exit 1
+fi
 ASSEMBLY="$RUNNER_TEMP/assembly"
 ${CDK_FOLDER}
 ${CDK_DEPLOY_DRILL}
@@ -1940,9 +1950,11 @@ export function pinnedScriptText(script: string): string {
 // before it runs any of it, so one inside the marker refusal's `if` stops every command before anything runs;
 // the rest fail, or mean something else, when they run (review 6 ENVS-01). A test's -v or -R is found wherever
 // an operand stands: after [[, [ or test, after !, &&, ||, ( or [ and test's -a and -o, and at the start of a
-// line that continues a [[ test after one of those (review 7 ENVS-01). It is a list read line by line, not a
-// parser: a construct it doesn't name, or one it can't see (built from an expansion, held in a variable, or an
-// arithmetic subscript such as $(( a[-1] ))), passes, so the list grows with each one found.
+// line that continues a [[ test after one of those (review 7 ENVS-01) or after a bare [[ ending its line; and a
+// line a backslash continues is read joined to the next, as bash reads it (review 8 ENVS-01). It is a list read
+// line by line, not a parser: a construct it doesn't name, or one it can't see (built from an expansion, held
+// in a variable, or an arithmetic subscript such as $(( a[-1] ))), passes, so the list grows with each one
+// found.
 export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
   ['test -v or -R', /(?:\[\[?|\btest|!|&&|\|\||\()\s*-[vR]\s/],
   ['test -v or -R', /(?:\[|\btest)\s.*\s-[ao]\s+-[vR]\s/],
@@ -1966,10 +1978,24 @@ export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
   ['shopt', /\bshopt\b/],
   ['a variable bash 3.2 lacks', /\b(?:BASHPID|EPOCHSECONDS|EPOCHREALTIME|SRANDOM|BASH_ARGV0)\b/],
 ]
-// A [[ test's operands may go on over a line break after &&, || or (, and bash 3.2 stops on a -v or -R there
-// too: a code line that starts with one, after a line that ends with one of those or with !.
-const CONTINUED_TEST = /(?:&&|\|\||\(|!)[ \t]*$/
+// A [[ test's operands may go on over a line break after [[, &&, || or (, and bash 3.2 stops on a -v or -R
+// there too: a code line that starts with one, after a line that ends with one of those or with !.
+const CONTINUED_TEST = /(?:\[\[|&&|\|\||\(|!)[ \t]*$/
 const CONTINUED_OPERAND = /^[ \t]*-[vR]\s/
+// The code as bash reads it before it parses: a line that ends in a backslash no other backslash escapes goes
+// on with the next, the backslash and the line break dropped, so a test's operands over such a break are read
+// on one line.
+function continuedLines(code: readonly string[]): string[] {
+  const lines: string[] = []
+  let pending: string | undefined
+  for (const line of code) {
+    const whole = pending === undefined ? line : `${pending}${line}`
+    pending = /(?:^|[^\\])(?:\\\\)*\\$/.test(whole) ? whole.slice(0, -1) : undefined
+    if (pending === undefined) lines.push(whole)
+  }
+  if (pending !== undefined) lines.push(pending)
+  return lines
+}
 // bash before 4.4 calls an empty array unbound under set -u, so the script expands an array's elements only as
 // ${a[@]+"${a[@]}"}, or bare for the two lists its head declares with words (markerHead), never empty.
 const GUARDED_ARRAY = /\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}/g
@@ -1977,9 +2003,10 @@ const ARRAY_ELEMENTS = /\$\{!?(\w+)\[[@*]\]/g
 const LISTED_ARRAYS = ['ENVIRONMENTS', 'AGENT_MARKERS']
 export function bashAfter32(code: readonly string[]): string[] {
   const found: string[] = []
-  for (const [n, line] of code.entries()) {
+  const lines = continuedLines(code)
+  for (const [n, line] of lines.entries()) {
     for (const [what, pattern] of BASH_AFTER_3_2) if (pattern.test(line)) found.push(what)
-    if (CONTINUED_OPERAND.test(line) && CONTINUED_TEST.test(code[n - 1] ?? '')) found.push('test -v or -R')
+    if (CONTINUED_OPERAND.test(line) && CONTINUED_TEST.test(lines[n - 1] ?? '')) found.push('test -v or -R')
     for (const match of line.replace(GUARDED_ARRAY, '').matchAll(ARRAY_ELEMENTS)) {
       if (!LISTED_ARRAYS.includes(match[1] ?? '')) found.push('an unguarded array expansion')
     }
@@ -4979,24 +5006,29 @@ const CALLED_WORKFLOW = /^\.\/(\.github\/workflows\/[^/@\s]+\.ya?ml)$/
 const CALLS_OWN =
   'calls only another workflow of this repository at this commit (./.github/workflows/<file>.yml), never deploy.yml, one of another repository or one at another ref'
 // An if: as GitHub reads an expression: a plain scalar that is one ${{ … }} and nothing else (a comment
-// aside), with no ${{ or }} inside it.
-const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:\s+#.*)?$/
+// aside), with no ${{ or }} inside it. Blanks after it are no part of it: YAML ends a plain scalar at its
+// last character that isn't a blank, so GitHub reads the expression alone, as the guard does.
+const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:[ \t]+#.*)?[ \t]*$/
 
 const describePermissions = (record: Readonly<Record<string, string>>) =>
   Object.entries(record)
     .map(([scope, level]) => `${scope}: ${level}`)
     .join(', ')
 
-// A character the guard would read otherwise than GitHub's YAML reader or bash (DPW-02): a carriage return,
-// which YAML reads as a line break (workflow.ts splits only at a newline, so what follows one, in a comment
-// or a run, would be a step, a key or a command no rule reads); NEL, LS and PS, which YAML 1.1 readers
-// break lines at too; any other control or format character (a vertical tab, a form feed, DEL, U+FEFF,
-// the bidirectional ones); and any blank but a space (a no-break space, U+2003), which JavaScript reads as
-// white space and bash as part of a word, so a # after one is no comment. The first such character a
+// A character the guard would read otherwise than GitHub's YAML reader or bash (DPW-02): a tab, which YAML
+// never reads as indentation, while workflow.ts read one as a column (a key indented with spaces and then a
+// tab sat at its level for the shape check and at none for the job and step readers, which match spaces
+// alone, so an env: and its BASH_ENV under it reached no rule) and YAML readers differ on (some refuse it,
+// some skip it); a carriage return, which YAML reads as a line break (workflow.ts splits only at a newline,
+// so what follows one, in a comment or a run, would be a step, a key or a command no rule reads); NEL, LS
+// and PS, which YAML 1.1 readers break lines at too; any other control or format character (a vertical
+// tab, a form feed, DEL, U+FEFF, the bidirectional ones); and any blank but a space (a no-break space,
+// U+2003), which JavaScript reads as white space and bash as part of a word, so a # after one is no
+// comment. A run that needs a tab writes $'\t', as the canonical texts do. The first such character a
 // workflow holds, by its line and code point, never the text.
-const UNREAD_CHARACTER = /(?![\t\n])[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u
+const UNREAD_CHARACTER = /(?!\n)[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u
 const CHARACTERS =
-  'a workflow holds only tabs, newlines and printable text: no carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space or a tab'
+  'a workflow holds only newlines and printable text: no tab, carriage return, NEL, line or paragraph separator, other control or format character, or blank but a space'
 function unreadCharacter(text: string): string | undefined {
   const match = UNREAD_CHARACTER.exec(text)
   if (match === null) return undefined
@@ -5012,7 +5044,7 @@ function unreadCharacter(text: string): string | undefined {
 // a run: (blockScalarProblems, since GitHub keeps a block scalar's last line break in any other
 // value), every if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an
 // escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow
-// mapping but {}), so none is read wrong, and holds only tabs, newlines and printable text
+// mapping but {}), so none is read wrong, and holds only newlines and printable text, no tab
 // (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
 // no environment, gives no block scalar an indentation indicator (indicatorProblems), and has each job that
 // calls a reusable workflow call another of this repository's at this commit (CALLED_WORKFLOW), never
@@ -5094,8 +5126,9 @@ export function permissionFindings(workflows: Texts): Finding[] {
   if (blockScalarProblems(deploy).length > 0) {
     found.push(at(DEPLOY, 'DPW-02', BLOCK_SCALARS))
   }
-  // Every workflow holds only tabs, newlines and printable text, read before anything else, so nothing
-  // after a line break workflow.ts doesn't split at, or a blank bash doesn't, passes unread.
+  // Every workflow holds only newlines and printable text, read before anything else, so nothing after a
+  // line break workflow.ts doesn't split at, a blank bash doesn't, or a tab YAML doesn't indent with, passes
+  // unread.
   for (const [path, text] of workflows) {
     const odd = unreadCharacter(text)
     if (odd !== undefined) found.push(at(path, 'DPW-02', `${odd}, but ${CHARACTERS}`))

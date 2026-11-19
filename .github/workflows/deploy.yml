@@ -1873,6 +1873,16 @@ jobs:
             echo "drill-break: realtime's revision can't be read" | mask
             exit 1
           fi
+          # The status after proves the broken deploy reached CloudFormation only if this deploy moved it there:
+          # CloudFormation changes a stack's status only when it runs a change set, and a failure before one (an
+          # asset publish, a throttle, a change set it refuses) leaves the stack as it was. So the drill starts only
+          # on a stack whose last operation succeeded; one an earlier rollback left (the last drill-break, or a
+          # forward deploy CloudFormation rolled back) waits for a forward deploy to non-prod.
+          SETTLED=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].StackStatus' --output text)
+          if [ "$SETTLED" != UPDATE_COMPLETE ] && [ "$SETTLED" != CREATE_COMPLETE ]; then
+            echo "drill-break: the Services stack is $SETTLED before the drill, so its status after couldn't show this deploy reached CloudFormation: dispatch deploy to nonprod first (deploy-and-rollback.md)" | mask
+            exit 1
+          fi
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
           if run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events; then

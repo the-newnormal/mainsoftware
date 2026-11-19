@@ -734,7 +734,13 @@ export const gitExpansionsMet =
 // the last page's next null, and <role>-revisions-<n>.json, each `[[revisionArn, taskDefinition,
 // imageDigest], …]`. finishedAt is the CLI's ISO time or epoch seconds.
 export function readEcsPages(folder: string, readText: (path: string) => string): Record<ServiceRole, EcsHistory> {
-  const names = readdirSync(folder)
+  // A folder that isn't there, or a file named in its place (one saved page), is input it can't use.
+  let names: string[]
+  try {
+    names = readdirSync(folder)
+  } catch {
+    throw new HistoryInputError("--pages can't be read")
+  }
   const parse = (name: string): unknown => {
     try {
       return JSON.parse(readText(join(folder, name)))
@@ -982,9 +988,7 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
       if ([...drill].some(entry => !/^hearth-[a-z]+-(?:api|realtime|worker):[1-9][0-9]{0,5}$/.test(entry))) {
         throw new HistoryInputError('--drill is not a list of family:revision')
       }
-      const folder = required(flags, 'pages')
-      if (!existsSync(folder)) throw new HistoryInputError("--pages can't be read")
-      const chosen = chooseFromEcs(readEcsPages(folder, io.readText), digests, drill)
+      const chosen = chooseFromEcs(readEcsPages(required(flags, 'pages'), io.readText), digests, drill)
       if (!chosen.ok) return refuse(io, chosen.reason)
       printRelease(io, chosen.value)
       return 0

@@ -18,8 +18,11 @@
 // break. commentLines() names the YAML comment lines, never a line starting with # inside a block
 // scalar, which is the scalar's. It splits a file into lines only at a newline, so a carriage return,
 // NEL, LS or PS, which YAML readers break lines at too, would hide what follows it on its line from
-// every rule: the deploy-workflow guard refuses any of them, and any other control or format character
-// or blank but a space or a tab, in every workflow before anything else reads it. It also refuses every
+// every rule: the deploy-workflow guard refuses any of them, a tab, and any other control or format
+// character or blank but a space, in every workflow before anything else reads it. As YAML does, it counts
+// only spaces as indentation, and shapeProblems() names a line whose indentation, or the blank after its
+// sequence item's dash, holds a tab, which YAML readers refuse or skip and this reader would place at
+// another level than the job and step readers, which match spaces alone. It also refuses every
 // line shapeProblems() names in every workflow, every one literalProblems() or blockScalarProblems()
 // names in deploy.yml and every one indicatorProblems() names in every other, a double-quoted scalar
 // holding an escape in every workflow, and in deploy.yml any flow mapping and quoted item too (DPW-02).
@@ -123,7 +126,11 @@ export function workflowTop(text: string): Map<string, string[]> {
   return top
 }
 
-const indentOf = (line: string) => line.length - line.trimStart().length
+// A line's indentation: its leading spaces, the only character YAML indents with (a tab is never
+// indentation to YAML, so a line indented with one sits at no level a reader here matches).
+const indentOf = (line: string) => line.length - line.replace(/^ +/, '').length
+// A tab in a line's indentation, or in the blank after its sequence item's dash (shapeProblems).
+const TAB_INDENT = /^[ \t]*(?:-[ \t]*)?\t/
 const isBlankOrComment = (line: string) => line.trim() === '' || /^\s*#/.test(line)
 // A block scalar's indicator: literal (|) or folded (>), with a chomping indicator (+ or -) and an
 // indentation indicator (1 to 9) in either order, then an optional comment.
@@ -513,13 +520,18 @@ function flowItemsRead(inner: string): boolean {
 // no anchor, alias or tag: a block scalar's indicator, a plain scalar no line below continues (anything
 // deeper under it is refused) and that starts with no indicator YAML reads as structure (STRUCTURE), a
 // quoted scalar closed on the line, a flow sequence closed on the line whose items are scalars read as
-// YAML reads them (flowItemsRead), or the empty flow mapping {}.
+// YAML reads them (flowItemsRead), or the empty flow mapping {}. Its indentation, and the blank after its
+// dash, are spaces alone (TAB_INDENT).
 export function shapeProblems(text: string): number[] {
   const problems: number[] = []
   const open: Array<{ indent: number; kind: 'map' | 'list' | undefined; keys: Set<string> }> = [
     { indent: 0, kind: 'map', keys: new Set() },
   ]
   for (const { index, text: line } of yamlLines(text)) {
+    if (TAB_INDENT.test(line)) {
+      problems.push(index)
+      continue
+    }
     const indent = indentOf(line)
     while (open.length > 1 && (open[open.length - 1]?.indent ?? 0) > indent) open.pop()
     const block = open[open.length - 1]

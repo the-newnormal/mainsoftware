@@ -1751,6 +1751,15 @@ describe('C11-D58, C11-D61: the command line', () => {
         err: [],
       })
     }
+    // --pages is the folder the pages were saved in: a folder that isn't there, or one page's file
+    // named in its place, is input it can't use, never `history: failed`.
+    for (const bad of [join(scratch, 'pages-missing'), join(pages, 'api-deployments-1.json')]) {
+      expect(await cli(['choose-ecs', '--pages', bad, '--current-digest', D.c])).toEqual({
+        code: 2,
+        out: ["history: --pages can't be read"],
+        err: [],
+      })
+    }
   })
 
   it('C11-D58: choose-ecs refuses a mistyped --drill and a saved revision with no image digest, never choosing past them', async () => {
