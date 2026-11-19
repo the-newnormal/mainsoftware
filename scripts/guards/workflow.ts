@@ -27,7 +27,9 @@
 // names in deploy.yml and every one indicatorProblems() names in every other, a double-quoted scalar
 // holding an escape in every workflow, and in deploy.yml any flow mapping and quoted item too (DPW-02).
 // That guard (scripts/guards/deploy-workflow.ts) reads the deploy workflow through this file, so this
-// file is on the owner's-read list (C11-D74).
+// file is on the owner's-read list (C11-D74). Every workflow is on that list too, so what this file
+// refuses is a second layer behind the owner's read of a changed workflow (that guard's header, last
+// paragraph).
 
 // One job: its id, its runner, its timeout in minutes, and its steps, each as its own lines with
 // the indent and the step's leading "- " taken off (so `run: npm test`, or `uses: …` then `with:`

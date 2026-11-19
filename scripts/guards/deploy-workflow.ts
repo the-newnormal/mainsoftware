@@ -67,7 +67,7 @@
 // the tests run it with neither the gate step's environment nor a gh that answers, so no line keyed on what
 // they differ in can pass the gate's check over environments that have drifted.
 //
-// The workflow is read through workflow.ts, which refuses any shape it can't read (DPW-02), and any block
+// The workflow is read through workflow.ts, which refuses each shape it knows it can't read (DPW-02), and any block
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
 // read twice. Its own lines, every line outside a canonical text standing whole, are read by readShell()
 // through SHELL_TABLE, an allowlist of the shell forms the workflow uses (blanks, word characters, quoting,
@@ -75,7 +75,8 @@
 // before, substitutions, operators, redirections after a command's word alone, since bash takes 2>/dev/null set as
 // set's, keywords, tests, case patterns, functions, assignments and builtins as it holds them), so any form the
 // table doesn't name is refused at its line (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in
-// every other), whatever it is, and no review has to find it first; each command it reads in a credentialed or
+// every other), whatever it is, while a form it names that bash or jq reads otherwise is a gap in it, behind the
+// owner's read of the changed line (the last paragraph); each command it reads in a credentialed or
 // record job is held to the flags and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, read as jq
 // tokenises it, so a string defines and binds nothing, and no name it defines or binds, nor any word it runs, is one
 // that reaches outside it (env and $ENV, input, include, import, debug and the rest, JQ_REACH_NAMES), a name a key
@@ -91,10 +92,10 @@
 // never vouched for by its own pinned run), and none, in any job, expands a name the run doesn't own (its
 // step's or job's env: but GH_TOKEN, what it sets itself but a name the runner hands a step, and the runner's
 // outputs, summary, folder and run ids), so neither the OIDC request token the runner hands every run step of a
-// job with an id-token nor the job's token is ever handed to a tool that could print it in pieces. The wiring
-// between the runs is pinned too: every job's steps are the guard's, in order, by name and action (JOB_STEPS), so no
-// step of its own stands before a pinned run in any job, and no run of any job names GITHUB_ENV,
-// GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
+// job with an id-token nor the job's token is handed, in any form the table reads, to a tool that could print it
+// in pieces. The wiring between the runs is pinned too: every job's steps are the guard's, in order, by name and
+// action (JOB_STEPS), so no step of its own stands before a pinned run in any job, and no run of any job names
+// GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
 // written as a block mapping and never as one expression GitHub would read as the whole mapping, every
 // action step's with: is the guard's, whole (STEP_WITHS: no checkout but the three synths' names a ref or a
@@ -111,7 +112,8 @@
 // deploy role and build's and the synths' (each release on a runner of its own) included, so no run of
 // deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
 // word bash joins from quoted or expanded parts, or npm's and the CLI's own aliases, would pass a rule
-// that reads the text); outside build and the synths no other step writes an output. Build and the synths
+// that reads the text), behind the owner's read of any change to a pinned run (the last paragraph); outside
+// build and the synths no other step writes an output. Build and the synths
 // still run repository code by design (the install, the synth, the image), which could write a later step's
 // file by its folder, so a synth's own asset check holds only against deploy.yml's text: each credentialed
 // job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
@@ -183,21 +185,26 @@
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
 //
-// What holds a change to a canonical text. A canonical text changes only when its constant here and deploy.yml
-// change together, and both are on the owner's-read list, so the owner reads every changed line as written. The
-// rules over what a canonical text holds (DPW-07's, DPW-10's and DPW-13's holds on its commands, tools, names,
-// evaluation sites and writes) read full bash, which no reader short of bash models whole, so they are a second
-// layer behind that read. They catch a form an author could write by mistake, or that reads as harmless in a
-// diff: an unquoted expansion, a value carried from one text into another's arithmetic, test or command, a
-// helper that passes its arguments on, an idiom whose effect only bash's rules show. A construct written to get
-// past them or to do harm (a builtin setting a name the text then writes through, a jq program reaching the
-// environment, a subscript or callback after a redirection, a path built to climb out of its folder, a line that
-// resumes workflow commands, a form chosen to hide a command) is held by the owner's read of the changed lines,
-// which the rules don't replace, so where this file says a canonical text does, or can't do, something, it means
-// in every form these rules read. Nothing else leans on that read: a change that leaves every canonical text as
-// it is, the glue SHELL_TABLE reads (a narrow language the guard models whole), the YAML side, and the checks
-// over what code off the owner's-read list produces or AWS and GitHub answer (ASSET_CHECK, IMAGE_CHECK,
-// CLI_CHECK, ARTIFACT_NAMES and the rest) are held by the rules in full.
+// What holds a change to a pinned text. Every run in deploy.yml is pinned whole, its glue lines and the
+// canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
+// so any change to what deploy.yml runs changes this file's constants and deploy.yml together. Both are on the
+// owner's-read list, as are every other workflow, the environments, protect-environments.sh, the pins check
+// and the files this guard reads its rules from, so the owner reads every changed line as written. The rules
+// here read bash, jq and GitHub's YAML and expressions, which no reader short of the real one models whole, so
+// over such a change they are a second layer behind that read. They catch a form an author could write by
+// mistake, or that reads as harmless in a diff: an unquoted expansion, a value carried from one place into
+// another's arithmetic, test, command or aws value, a refactor that reads a value from a stack output, an
+// artifact or another step where it read AWS, a helper that passes its arguments on, an idiom whose effect
+// only bash's or GitHub's rules show. A construct written to get past them or to do harm (a credential renamed
+// as the run's own, a jq program reaching the environment or a module, a string spelt to look like a
+// definition, a builtin setting a name the text then writes through, a subscript or callback after a
+// redirection, a path built to climb out of its folder, a line that resumes workflow commands, a form chosen
+// to hide a command) is held by the owner's read of the changed lines, which the rules don't replace. So where
+// this file says a run, a workflow or a canonical text does, or can't do, something, it means as these
+// constants pin it and in every form these rules read. Nothing that needs no such change leans on that read:
+// the checks over what code off the owner's-read list builds or renders and over what AWS, GitHub or an
+// artifact answers (ASSET_CHECK, IMAGE_CHECK, CLI_CHECK, ARTIFACT_NAMES, the read-back's schema, the smokes),
+// and a defect in these files as committed, keep their full claims.
 import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
@@ -1346,7 +1353,9 @@ npm run synth -w @hearth/infra -- -c release="$COMMIT:$DIGEST" -o "$RUNNER_TEMP/
 // record, services_started and read-back, the rollback jobs' releases, read-back and rolled, prod-plan's
 // diff, the smokes and the record jobs; every other run of a job that holds the deploy role; and the gate's
 // and prod-gate's other reads, and every run of build and synth, so no run of deploy.yml has a line of its
-// own (PINNED_RUNS). The rest of each such run's rules still read it.
+// own (PINNED_RUNS). A change to one, a glue line included, changes this constant and deploy.yml together,
+// and the owner's read of it holds the change (the header's last paragraph); the rest of each such run's rules
+// still read it, as a second layer.
 
 // The gate's read of the release, migration and restore records (C11-D58, C11-D61, DPW-09), which
 // history.ts plan reads as data.
@@ -2901,9 +2910,10 @@ function runLines(
 }
 
 // The canonical texts, which a run may hold whole: each read by shellViews() and shellCommands(), written in
-// the shell they read (readsAsBash()) and evaluating only what it sets itself (outsideEvaluations()), both
-// held by the tests; a run's own lines, every line outside a canonical text standing whole, are read by
-// SHELL_TABLE alone (readShell()).
+// the shell they read (readsAsBash()) and evaluating only what it sets itself in every form
+// outsideEvaluations() reads, both held by the tests; a run's own lines, every line outside a canonical text
+// standing whole, are read by SHELL_TABLE alone (readShell()). Both readings are a second layer behind the
+// owner's read of a changed run (the header's last paragraph).
 export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   STOP_HEAD,
   PREAMBLE,
@@ -4039,7 +4049,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
 // whole) by this table alone, and refuses the first thing it doesn't name: a character, a quoting form, an
 // expansion, a substitution, an operator, a redirection, a keyword, a test, a pattern, a function or an
 // assignment of another shape. The canonical texts are fixed here, read by shellViews() and
-// shellCommands(), and evaluate only what each sets itself (outsideEvaluations()).
+// shellCommands(), and evaluate only what each sets itself in every form outsideEvaluations() reads. The table
+// is a second layer behind the owner's read of a changed run, since every run is pinned whole (the header's last
+// paragraph): it refuses every form it doesn't name, and a form it names that bash reads otherwise is a gap in it.
 export const SHELL_TABLE = {
   // A blank, between words: a space or a tab. bash splits words at these alone (a newline ends a command),
   // so a no-break space, a form feed or any other character is part of a word, and is refused here.
@@ -5247,11 +5259,12 @@ function unreadCharacter(text: string): string | undefined {
 // a run: (blockScalarProblems, since GitHub keeps a block scalar's last line break in any other
 // value), every if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an
 // escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow
-// mapping but {}), so none is read wrong, and holds only newlines and printable text, no tab
-// (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
+// mapping but {}), so none is read wrong in a shape it names, and holds only newlines and printable text, no
+// tab (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
 // no environment, gives no block scalar an indentation indicator (indicatorProblems), and has each job that
 // calls a reusable workflow call another of this repository's at this commit (CALLED_WORKFLOW), never
-// deploy.yml, handing it no secret.
+// deploy.yml, handing it no secret. Every workflow is on the owner's-read list, so these holds are a second
+// layer behind the owner's read of a changed line (the header's last paragraph).
 export function permissionFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
