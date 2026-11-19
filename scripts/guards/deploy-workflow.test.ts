@@ -6052,7 +6052,8 @@ describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10
     expect(maskingFindings(addedBefore('record-prod', 'Write the record', url, lines(tokenSplit)))).toEqual([
       at('DPW-07', 'record-prod (Write the record)', OWN),
     ])
-    // A job that holds neither credentials nor records is no concern of this rule.
+    // A job that holds neither credentials nor records is held the same way since the ninth review's fourth
+    // attack (EXPAND-A4-02: the gate spaced out GH_TOKEN with sed): its job's token is a name it doesn't own.
     expect(
       maskingFindings(
         plant(
@@ -6061,7 +6062,7 @@ describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10
           job('smoke-nonprod'),
         ),
       ),
-    ).toEqual([])
+    ).toEqual([at('DPW-07', 'smoke-nonprod (Smoke)', OWN)])
   })
 
   // FLOW-A3-02, and FLOW-A3-01's class: a credentialed run's own lines capture an AWS answer and print it split,
@@ -8811,6 +8812,104 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     }
   }, 120_000)
 
+  // INPUTS-A4-01 (round 9). A role can attach a managed policy by its ARN (ManagedPolicyArns), which the diff
+  // lists by that ARN alone and never prints the statements of: a release that attached the account's own
+  // hearth-boundary, whose first statement allows everything, to prod's api task role passed every check. Every
+  // role now holds only the keys the workload writes and the account's own boundary as the synth spells it.
+  it('holds every role to the keys the workload writes and the account’s own boundary (INPUTS-A4-01, round 9)', () => {
+    const ROLES = refused(
+      "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own",
+    )
+    type Resource = { Type?: string; Properties?: Record<string, unknown> }
+    const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
+    const apiRole = (change: (properties: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(prod(dir), 'Platform', '.template.json'), json => {
+        const id = Object.keys(resources(json)).find(
+          each => each.startsWith('RolesApiTask') && resources(json)[each]?.Type === 'AWS::IAM::Role',
+        )
+        const properties = id === undefined ? undefined : resources(json)[id]?.Properties
+        if (properties === undefined) throw new Error('no api task role')
+        change(properties)
+      })
+      rekey(prod(dir), 'Platform')
+    }
+    // The account's boundary as applyBoundary() renders it, and the same policy written other ways, each built
+    // from parts so no account id or ARN is written here.
+    const boundary = {
+      'Fn::Join': ['', [['arn', 'aws', 'iam', '', ''].join(':'), { Ref: 'AWS::AccountId' }, ':policy/hearth-boundary']],
+    }
+    const byPartition = {
+      'Fn::Join': [
+        '',
+        ['arn:', { Ref: 'AWS::Partition' }, ':iam::', { Ref: 'AWS::AccountId' }, ':policy/hearth-boundary'],
+      ],
+    }
+    const literal = ['arn', 'aws', 'iam', '', '1'.repeat(12), 'policy/hearth-boundary'].join(':')
+    const administrator = ['arn', 'aws', 'iam', '', 'aws', 'policy/AdministratorAccess'].join(':')
+    // The re-keyed synth passes, and so does a role whose properties are only re-written as they were.
+    expect(check(apiRole(() => {}))).toBe('passed')
+    expect(
+      check(
+        apiRole(properties => {
+          properties.PermissionsBoundary = boundary
+        }),
+      ),
+    ).toBe('passed')
+    for (const [name, plant] of [
+      // The attack's own plant: the account's boundary attached as a policy, as the release wrote it.
+      [
+        'the boundary attached by a Join',
+        apiRole(properties => {
+          properties.ManagedPolicyArns = [byPartition]
+        }),
+      ],
+      [
+        'the boundary attached by a literal ARN',
+        apiRole(properties => {
+          properties.ManagedPolicyArns = [literal]
+        }),
+      ],
+      [
+        "AWS's AdministratorAccess attached",
+        apiRole(properties => {
+          properties.ManagedPolicyArns = [administrator]
+        }),
+      ],
+      [
+        'an empty attachment list',
+        apiRole(properties => {
+          properties.ManagedPolicyArns = []
+        }),
+      ],
+      [
+        'another key a release adds',
+        apiRole(properties => {
+          properties.Path = '/hearth/'
+        }),
+      ],
+      [
+        'a boundary but the account’s own',
+        apiRole(properties => {
+          properties.PermissionsBoundary = administrator
+        }),
+      ],
+      [
+        'the boundary spelt with the partition',
+        apiRole(properties => {
+          properties.PermissionsBoundary = byPartition
+        }),
+      ],
+      [
+        'no boundary',
+        apiRole(properties => {
+          delete properties.PermissionsBoundary
+        }),
+      ],
+    ] as const) {
+      expect(check(plant), name).toBe(ROLES)
+    }
+  }, 120_000)
+
   it('holds the probe’s and migrate’s line patterns to what they print', () => {
     const probe = new RegExp(PROBE_LINES)
     for (const line of ['api 0 200 -', 'realtime 1 no-answer ?', 'worker 0 503 valkey,database', 'probe: failed'])
@@ -10950,4 +11049,80 @@ describe('Round 9, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
     expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
   }, 60_000)
+})
+
+describe('Round 9, attack 4: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
+  const OWN =
+    "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
+  const own = (where: string) => `${DEPLOY}: DPW-07 ${where}: ${OWN}`
+
+  // COMMANDS-A4-01 and EXPAND-A4-02: the runner hands a step its credentials by name (the OIDC request token and
+  // its URL, the AWS session, the job's token), which a jq split or a sed spacing prints in pieces no mask
+  // matches. A credentialed run's own ACTIONS_ID_TOKEN_REQUEST_TOKEN='' made the token's name the run's own, so
+  // a jq before it handed the live token on; and the gate's and prod-gate's own lines, which DPW-07 held to their
+  // own names only in credentialed and record jobs, spaced out GH_TOKEN with sed. A name the runner hands a step
+  // is now never the run's own but RUNNER_EXPANSIONS, however it is set, and the rule holds every job.
+  it('expands on a run’s own lines no name the runner hands a step but RUNNER_EXPANSIONS, in every job (COMMANDS-A4-01, EXPAND-A4-02)', () => {
+    // EXPAND-A4-02's line in the gate's and prod-gate's records steps.
+    const token = `          echo "$GH_TOKEN" | sed 's/./& /g'\n`
+    expect(
+      maskingFindings(
+        addedBefore(
+          'gate',
+          'The release, migration and restore records',
+          '          for environment in nonprod prod; do\n',
+          token,
+        ),
+      ),
+    ).toEqual([own('gate (The release, migration and restore records)')])
+    expect(
+      maskingFindings(
+        addedBefore(
+          'prod-gate',
+          "Prod's release records",
+          `          gh api "repos/$REPO/deployments?environment=prod&task=hearth-release&per_page=100" >"$RUNNER_TEMP/records/release-prod.json"\n`,
+          token,
+        ),
+      ),
+    ).toEqual([own("prod-gate (Prod's release records)")])
+    // COMMANDS-A4-01's two lines in the release step of every job that holds the OIDC request token, and the same
+    // with the name set by a for loop or mapfile instead, or another of the runner's names.
+    const next = '          if [ "$BUILD" = true ]; then DIGEST=$BUILD_DIGEST; fi\n'
+    const split = (name: string) => `          jq -nc --arg t "$${name}" '$t | split("")' >&2\n`
+    for (const id of ['nonprod', 'prod-plan', 'prod']) {
+      for (const [name, setter] of [
+        ['ACTIONS_ID_TOKEN_REQUEST_TOKEN', "ACTIONS_ID_TOKEN_REQUEST_TOKEN=''"],
+        ['ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'for ACTIONS_ID_TOKEN_REQUEST_TOKEN in x; do echo x; done'],
+        ['ACTIONS_ID_TOKEN_REQUEST_URL', 'mapfile -t ACTIONS_ID_TOKEN_REQUEST_URL < <(echo x)'],
+        ['GH_TOKEN', "GH_TOKEN=''"],
+        ['INPUT_X', "INPUT_X=''"],
+      ] as const) {
+        const release = addedBefore(id, 'The release this job deploys', next, `${split(name)}          ${setter}\n`)
+        expect(maskingFindings(release), `${id}: ${name}`).toEqual([own(`${id} (The release this job deploys)`)])
+      }
+    }
+    // The runner's outputs, summary, folder, run ids and address are still a run's own in every job.
+    expect(maskingFindings(workflows)).toEqual([])
+  }, 60_000)
+
+  // EXPAND-A4-01: inside double quotes bash removes a backslash and the line break after it, so a $ ending one
+  // line of a canonical text joined the next line's (cmd), {NAME} or ((…)): TASKS_OUTPUTS ran a command, or
+  // printed an AWS secret spaced out, in every rule's blind spot, since the code view writes the quoted pair as
+  // text. readsAsBash() now refuses a backslash at a line's end anywhere in a canonical text as written.
+  it('refuses a backslash at a line’s end in a canonical text, quoted or not (EXPAND-A4-01)', () => {
+    const anchor = '  local outputs kind definition\n'
+    expect(TASKS_OUTPUTS).toContain(anchor)
+    for (const added of [
+      '  echo "tasks: Hearth-$STAGE-Tasks $\\\n(touch "$RUNNER_TEMP/pwn")" | mask\n',
+      '  echo "tasks: Hearth-$STAGE-Tasks, read by $\\\n{AWS_SECRET_ACCESS_KEY//?/& }" | mask\n',
+      '  echo "tasks: $\\\n((1 + 1))" | mask\n',
+      '  echo "tasks: Hearth-$STAGE-Tasks \\\nhas no outputs" | mask\n',
+      "  echo 'tasks: \\\nx' | mask\n",
+    ]) {
+      const planted = TASKS_OUTPUTS.replace(anchor, `${anchor}${added}`)
+      expect(canonicalTextFindings({ TASKS_OUTPUTS: planted }), added).toContain(SHELL('TASKS_OUTPUTS'))
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
 })

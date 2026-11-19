@@ -48,7 +48,9 @@
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
-// IAM table reads under no principal, and an added resource's properties, which it never prints), holds the one
+// IAM table reads under no principal, and an added resource's properties, which it never prints), holds every role
+// to the keys the workload writes and the account's own boundary, so none attaches a managed policy by its ARN, which
+// the diff lists by that ARN alone and never prints the statements of, holds the one
 // custom resource the workload writes, CDK's default security group handler, whose answer its handler decides at
 // deploy time, to a Platform stack, its own function's zip in the staging bucket, that function's properties CDK's
 // own and no others (no layer, environment, network or role elsewhere, so no other account's code runs before the
@@ -83,11 +85,11 @@
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
 // RUN, ACCOUNT_ID, or a name an aws value reads or the read-back builds one from but by the commands
 // AWS_VALUE_LINES writes, each from AWS's answer to a call by the stage's names, never a stack's outputs, and
-// never vouched for by its own pinned run), and none
-// expands a name the run doesn't own (its step's or job's env: but GH_TOKEN, what it sets itself, and the
-// runner's outputs, summary, folder and run ids), so the OIDC request token the runner hands every run step
-// of a job with an id-token is never handed to a tool that could print it in pieces. The wiring between the
-// runs is pinned too: every job's steps are the guard's, in order, by name and action (JOB_STEPS), so no
+// never vouched for by its own pinned run), and none, in any job, expands a name the run doesn't own (its
+// step's or job's env: but GH_TOKEN, what it sets itself but a name the runner hands a step, and the runner's
+// outputs, summary, folder and run ids), so neither the OIDC request token the runner hands every run step of a
+// job with an id-token nor the job's token is ever handed to a tool that could print it in pieces. The wiring
+// between the runs is pinned too: every job's steps are the guard's, in order, by name and action (JOB_STEPS), so no
 // step of its own stands before a pinned run in any job, and no run of any job names GITHUB_ENV,
 // GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
@@ -117,7 +119,9 @@
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
 // reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads. A
 // canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
-// paragraph says what that read holds), to bash's own reading of it (readsAsBash()), to evaluating
+// paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
+// line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
+// joins a $ to the next line's (, { or ((, which the code view writes as quoted text), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -394,7 +398,10 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
 # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
 # does either; or an output with a key but its value and description, so none exports a value another
-# stack could import; any symbolic link.
+# stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+# boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+# policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+# boundary attached as a policy would grant everything it bounds); any symbolic link.
 # The release check then holds the one custom resource the workload writes, CDK's
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -448,6 +455,8 @@ check_assembly() {
         asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
       jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+      jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2913,6 +2922,12 @@ function canonicalLines(run: string): ReadonlySet<number> {
 // unplainLines() names (a name handed to read, unset or wait -p, a test of another shape, bash's own
 // evaluating names). The tests pin each canonical text's lines that hold one.
 const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
+// A backslash at a line's end anywhere in a text as written, quoted or not: inside double quotes bash removes
+// it with the line break and joins the two lines into one word, so a $ and a backslash ending one line and
+// (cmd) or {NAME} starting the next run cmd or expand NAME, as outside quotes and in a here-document, while
+// the code view writes the quoted pair as text, so ESCAPED_BREAK, which reads the code view, never sees it
+// (the ninth review's fourth attack). No canonical text holds one.
+const LINE_JOIN = /\\$/m
 const HERE_DOCUMENT = /(?<!<)<<(?!<)/
 // A code view's line with each ${…} and $( … ) that closes on it written as underscores, so nothing inside one
 // (a ]] in ${x/ ]] /} or in a substitution's own text) ends a [[.
@@ -3148,7 +3163,7 @@ export function evaluatedLines(run: string): number[] {
 // outsideEvaluations()).
 export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
   if (views.nestedCase || views.odd.size > 0) return false
-  if (ESCAPED_BREAK.test(views.code) || SUBSTITUTED_WORD.test(views.code)) return false
+  if (ESCAPED_BREAK.test(views.code) || LINE_JOIN.test(run) || SUBSTITUTED_WORD.test(views.code)) return false
   if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
   // (Only a text whose code names local or export has one to read.)
@@ -6021,10 +6036,10 @@ const STOPS_FIRST =
 // a pipe's next line), then tee -a or >>.
 const SUMMARY_THROUGH_MASK = /(?:^|\|)\s*mask\s*(?:\|\s*tee\s+-a\s+|>>\s*)"\$\{?$/
 const AWS_ENV_ASSIGNMENT = assigns('AWS_[A-Z0-9_]*|ROLE_TO_ASSUME')
-// The runner's own names a credentialed or record run's own lines may expand: its outputs, its summary, its
-// folder and the run's ids and address, none of them a credential. Not GH_TOKEN, which gh reads itself,
-// and none of the names the runner hands a job a credential in (the OIDC request token and its URL, the
-// AWS session), which a jq split or slice would print in pieces no mask matches.
+// The runner's own names a run's own lines may expand, in any job: its outputs, its summary, its folder and the
+// run's ids and address, none of them a credential. Not GH_TOKEN, which gh reads itself, and none of the names the
+// runner hands a job a credential in (the OIDC request token and its URL, the AWS session), which a jq split or
+// slice would print in pieces no mask matches.
 const RUNNER_EXPANSIONS = [
   'GITHUB_OUTPUT',
   'GITHUB_STEP_SUMMARY',
@@ -6035,13 +6050,19 @@ const RUNNER_EXPANSIONS = [
   'GITHUB_REPOSITORY',
 ]
 const TOKEN_NAMES = ['GH_TOKEN']
-// Whether a run's own lines expand only a name its step's or job's env: sets (but a token's), one its own
-// lines or a canonical text standing in it set, one of RUNNER_EXPANSIONS, a function's argument ($1 to $9)
-// or the last status ($?).
+// Whether a run's own lines expand only a name its step's or job's env: sets, or its own lines or a canonical text
+// standing in it set, one of RUNNER_EXPANSIONS, a function's argument ($1 to $9) or the last status ($?); never a
+// token's (GH_TOKEN) or another name the runner hands a step (CREDENTIAL_NAMESPACE's) but RUNNER_EXPANSIONS, which
+// neither an env: nor setting it makes the run's own (an own line's ACTIONS_ID_TOKEN_REQUEST_TOKEN='' after a jq
+// handed the live token, the ninth review's fourth attack), as canonicalGiven() holds the canonical texts.
 function expandsOnlyItsOwn(run: string, read: ShellRead, env: readonly string[]): boolean {
-  const own = new Set<string>([...env.filter(name => !TOKEN_NAMES.includes(name)), ...RUNNER_EXPANSIONS])
-  for (const command of read.commands) for (const name of namesSet(command)) own.add(name)
-  for (const place of canonicalPlaces(run)) for (const name of NAMES_SET_BY(place.text)) own.add(name)
+  const own = new Set<string>(RUNNER_EXPANSIONS)
+  const given = [
+    ...env,
+    ...read.commands.flatMap(namesSet),
+    ...canonicalPlaces(run).flatMap(place => NAMES_SET_BY(place.text)),
+  ]
+  for (const name of given) if (!TOKEN_NAMES.includes(name) && !CREDENTIAL_NAMESPACE.test(name)) own.add(name)
   return read.commands.every(command =>
     [
       ...command.args,
@@ -6069,7 +6090,8 @@ const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
 
 // DPW-07 (C11-D61): nothing a run prints shows what it shouldn't. No set -x, set -o xtrace, env as a word
 // outside quotes, bare set, printenv, export -p, declare -p or a declare, export, local or readonly given no
-// name; in a credentialed or record run's own lines no expansion but of its own names (EXPANDS_ITS_OWN), and
+// name; in every run's own lines, in every job, no expansion but of its own names (EXPANDS_ITS_OWN), a name the
+// runner hands a step never one of them but RUNNER_EXPANSIONS, and
 // in a credentialed run no jq program's env or $ENV, /proc file or AWS_ variable's expansion; no ${{ }}
 // inside a run (inputs and outputs come through env:); secrets, in any letter case or form, names only the
 // role and the account id, as secrets.NAME, in the five environment jobs, and never GITHUB_TOKEN; github.token
@@ -6123,14 +6145,10 @@ export function maskingFindings(workflows: Texts): Finding[] {
       // others' by DPW-10 and DPW-13.
       const refused = refusedAt(where, read)
       if (refused !== undefined && !credentialed && !RECORD_JOBS.includes(id)) add(refused, AS_BASH)
-      // A credentialed or record run's own lines expand only the names it owns, so none hands the OIDC
-      // request token, the AWS session or the GitHub token to a tool that prints it in pieces.
-      if (
-        (credentialed || RECORD_JOBS.includes(id)) &&
-        !expandsOnlyItsOwn(run, read, [...jobNames, ...step.env.keys()])
-      ) {
-        add(where, EXPANDS_ITS_OWN)
-      }
+      // A run's own lines expand only the names it owns, in every job, so none hands the OIDC request token, the
+      // AWS session or the job's token to a tool that prints it in pieces (the ninth review's fourth attack: the
+      // gate's own echo "$GH_TOKEN" | sed 's/./& /g', in a job this rule once left out, spaced out its token).
+      if (!expandsOnlyItsOwn(run, read, [...jobNames, ...step.env.keys()])) add(where, EXPANDS_ITS_OWN)
       // env or printenv, by name or path, as a command or a word handed to one (sudo printenv, xargs env,
       // find -exec /usr/bin/env), quoted or not, since bash hands a program the word with its quotes taken
       // off. A program the run starts is handed a script only as one word (bash -c "printenv X"), which DPW-07

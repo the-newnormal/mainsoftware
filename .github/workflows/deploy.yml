@@ -438,7 +438,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -492,6 +495,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -681,7 +686,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -735,6 +743,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -925,7 +935,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -979,6 +992,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -1278,7 +1293,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -1332,6 +1350,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2453,7 +2473,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -2507,6 +2530,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -3399,7 +3424,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -3453,6 +3481,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -3589,7 +3619,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -3643,6 +3676,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -4249,7 +4284,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -4303,6 +4341,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -5477,7 +5517,10 @@ jobs:
           # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
           # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
           # does either; or an output with a key but its value and description, so none exports a value another
-          # stack could import; any symbolic link.
+          # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
+          # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
+          # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
+          # boundary attached as a policy would grant everything it bounds); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -5531,6 +5574,8 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
