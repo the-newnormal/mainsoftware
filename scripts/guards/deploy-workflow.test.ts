@@ -93,6 +93,7 @@ import {
   ONE_OFF,
   OVERRIDES_JQ,
   outsideEvaluations,
+  ownLinesSetAnInput,
   PINNED_RUNS,
   PLAN_CALL,
   PREAMBLE,
@@ -114,6 +115,7 @@ import {
   readShell,
   recordRun,
   releaseFindings,
+  SHELL_TABLE,
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
   STAGES,
@@ -5481,7 +5483,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
 describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-13)', () => {
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads or the read-back builds one from but by the commands AWS_VALUE_LINES writes (the read-back's from AWS's answers, never a stack's outputs), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
   const ENV =
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const MAPPING =
@@ -5829,7 +5831,7 @@ describe('Round 4, attack 2: the ways past the allowlist (DPW-02, DPW-10)', () =
   const FILES =
     'names no GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, in any job: no step hands a later one of its job a variable (BASH_ENV, say, which bash reads before a pinned run), a folder to search first or a state'
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads or the read-back builds one from but by the commands AWS_VALUE_LINES writes (the read-back's from AWS's answers, never a stack's outputs), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
   const BLOCK_SCALARS = `${DEPLOY}: DPW-02 writes a block scalar only as a run:, never as an env: entry, an output, an input or any other value, whose last line break GitHub keeps and the guard's reader drops`
   const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
   // deploy.yml with a run step of its own, named name, before one of a job's steps.
@@ -5988,7 +5990,7 @@ describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
   const SETS_INPUT =
-    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads or the read-back builds one from but by the commands AWS_VALUE_LINES writes (the read-back's from AWS's answers, never a stack's outputs), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
   const OWN =
     "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
   const lines = (...each: string[]) => each.map(line => `          ${line}\n`).join('')
@@ -6115,9 +6117,9 @@ describe('Round 4, attack 3: the ways past the allowlist (DPW-02, DPW-07, DPW-10
   }, 60_000)
 
   // A run pinned under another rule no longer lets its own lines set a name an aws value reads: only the
-  // commands its pinned text holds may, so a line added to the read-back that sets one is this rule's finding
-  // as well as its pin's.
-  it('lets a pinned run’s own lines set a name an aws value reads only by the commands it pins', () => {
+  // commands AWS_VALUE_LINES writes may (since the ninth review's second attack, never the pinned text itself),
+  // so a line added to the read-back that sets one is this rule's finding as well as its pin's.
+  it('lets a pinned run’s own lines set a name an aws value reads only by the commands the guard writes', () => {
     const states = '              STATES=$(get aws elbv2 describe-target-health'
     expect(
       credentialed(
@@ -8521,7 +8523,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // Arn, the function's code a zip in the staging bucket, and no string in its template naming it.
   it("holds the one custom resource to CDK's default security group handler, and nothing reads its answer (INPUTS-A1-01, round 9)", () => {
     const CUSTOM = refused(
-      "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
+      "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
     )
     type Resource = { Type?: string; Properties?: Record<string, unknown> }
     const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
@@ -8624,6 +8626,77 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ),
     ).toBe('passed')
   }, 60_000)
+
+  // INPUTS-A2-01 (round 9). The custom resource's rule held its handler function's Code and the ServiceToken but
+  // no other property, so a release gave CDK's own handler aws-cdk-lib's documented observability idiom, another
+  // account's layer and AWS_LAMBDA_EXEC_WRAPPER naming that layer's startup script, and the code that ran when
+  // CloudFormation called the handler was another account's; the approver's diff showed two added properties,
+  // the layer's account masked as ***. The function's properties are now CDK's own and no others.
+  it("holds the default security group handler's function to CDK's own properties (INPUTS-A2-01, round 9)", () => {
+    const CUSTOM = refused(
+      "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
+    )
+    type Resource = { Type?: string; Properties?: Record<string, unknown> }
+    const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
+    const platform = read(named(nonprod(source), 'Platform', '.template.json'))
+    const FN = Object.keys(resources(platform)).find(id => resources(platform)[id]?.Type === 'AWS::Lambda::Function')
+    if (FN === undefined) throw new Error('no handler function in the Platform template')
+    // The synth's function holds exactly these properties.
+    expect(Object.keys(resources(platform)[FN]?.Properties ?? {}).sort()).toEqual([
+      'Code',
+      'Description',
+      'Handler',
+      'MemorySize',
+      'Role',
+      'Runtime',
+      'Timeout',
+    ])
+    const fn = (change: (properties: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(nonprod(dir), 'Platform', '.template.json'), json => {
+        const properties = resources(json)[FN]?.Properties
+        if (properties === undefined) throw new Error('no handler properties')
+        change(properties)
+      })
+      rekey(nonprod(dir), 'Platform')
+    }
+    expect(check(fn(() => {}))).toBe('passed')
+    // Another account's layer, built from parts so no account id is written here.
+    const layer = ['arn', 'aws', 'lambda', 'ap-southeast-1', '1'.repeat(12), 'layer', 'x', '7'].join(':')
+    const wrapper = { Variables: { AWS_LAMBDA_EXEC_WRAPPER: '/opt/otel-instrument' } }
+    const role = ['arn', 'aws', 'iam', '', '1'.repeat(12), 'role/x'].join(':')
+    for (const [name, change] of [
+      // The attack's plant: a layer and the wrapper that runs its script first.
+      [
+        'layer and wrapper',
+        (properties: Record<string, unknown>) => {
+          properties.Layers = [layer]
+          properties.Environment = wrapper
+        },
+      ],
+      ['layer alone', (properties: Record<string, unknown>) => (properties.Layers = [layer])],
+      ['environment alone', (properties: Record<string, unknown>) => (properties.Environment = wrapper)],
+      [
+        'a custom runtime',
+        (properties: Record<string, unknown>) => {
+          properties.Runtime = 'provided.al2023'
+          properties.Handler = 'bootstrap'
+        },
+      ],
+      ['another handler', (properties: Record<string, unknown>) => (properties.Handler = 'index.handler')],
+      [
+        'a network of its own',
+        (properties: Record<string, unknown>) => (properties.VpcConfig = { SubnetIds: [], SecurityGroupIds: [] }),
+      ],
+      ['a role elsewhere', (properties: Record<string, unknown>) => (properties.Role = role)],
+      [
+        "a role that isn't one of its template's",
+        (properties: Record<string, unknown>) => (properties.Role = { 'Fn::GetAtt': ['Nothing', 'Arn'] }),
+      ],
+      ['no description', (properties: Record<string, unknown>) => delete properties.Description],
+    ] as const) {
+      expect(check(fn(change)), name).toBe(CUSTOM)
+    }
+  }, 120_000)
 
   it('holds the probe’s and migrate’s line patterns to what they print', () => {
     const probe = new RegExp(PROBE_LINES)
@@ -10541,4 +10614,123 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
     for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(canonicalToolLines(text), name).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
   })
+})
+
+describe('Round 9, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const READBACK = 'nonprod (Read back what runs)'
+  const SETS_INPUT =
+    "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads or the read-back builds one from but by the commands AWS_VALUE_LINES writes (the read-back's from AWS's answers, never a stack's outputs), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+  const ENV =
+    'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+  const ARN_CHECK = `if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then`
+  // One line of nonprod's read-back replaced in deploy.yml (the pin's finding comes with it, beside the rule's).
+  const inReadBack = (from: string, to: string) => {
+    expect(READ_BACK).toContain(from.trim())
+    const step = stepText(deployText, 'nonprod', 'Read back what runs')
+    return withText(DEPLOY, edited(deployText, step, edited(step, from, to), job('nonprod')))
+  }
+
+  // EXPAND-A2-01: the glue's jq hold read a name as an object's key whenever a { or a , stood before it and a :
+  // after, whatever bracket was open, so in a slice, .[0, env:1], the start jq evaluates read as a key: env read
+  // the job's environment, halt ended the read-back's ARN check, the push's tag check and drill-break's check
+  // with status 0, debug printed the input. DPW-07's quoted-env rule let env: through the same way. A name is now
+  // a key only straight inside braces.
+  it('reads a name as a key only straight inside braces, never as a slice’s start (EXPAND-A2-01)', () => {
+    for (const program of [
+      '.[0, env:1]',
+      '.[0, halt:1] | contains("arn:") | not',
+      '.[0, debug:1]',
+      '.[0, stderr:1]',
+      '.[0, input:1]',
+      '{a: .[0, env:1]}',
+      '{a: (1, env:2)}',
+      '[{a: 1}, env:2]',
+    ]) {
+      expect(jqProgramIsHeld(program, []), program).toBe(false)
+    }
+    for (const program of ['{schema: 1, env: $stage}', '{a: [1, 2], env: 3}', '[{env: 1}]', '{a: (1), env: 2}']) {
+      expect(jqProgramIsHeld(program, ['stage']), program).toBe(true)
+    }
+    // Through deploy.yml: the attack's plants in the read-back's ARN check and the push's tag check.
+    const env = inReadBack(ARN_CHECK, ARN_CHECK.replace("'tostring", "'.[0, env:1] | tostring"))
+    expect(credentialed(env)).toContain(at('DPW-10', READBACK, HELD))
+    expect(maskingFindings(env)).toContain(at('DPW-07', READBACK, ENV))
+    expect(
+      credentialed(inReadBack(ARN_CHECK, ARN_CHECK.replace('contains("arn:")', '.[0, halt:1] | contains("arn:")'))),
+    ).toContain(at('DPW-10', READBACK, HELD))
+    const tags = `'index($tag) != null'`
+    expect(credentialed(plant(tags, `'.[0, halt:1] | index($tag) != null'`, job('nonprod')))).toContain(
+      at('DPW-10', 'nonprod (Push the image)', HELD),
+    )
+    // The read-back's own env: key, straight inside braces, is still a key.
+    expect(maskingFindings(workflows)).toEqual([])
+    expect(credentialed(workflows)).toEqual([])
+  }, 60_000)
+
+  // COMMANDS-A2-02: the glue read "${NAME[@]}" as one word in [ and jq, where bash hands each element on as a
+  // word of its own: [ "${TASK_ARNS[@]}" != '' ] read -v and a subscripted name and ran the subscript's command,
+  // and jq --arg tasks "${TASK_ARNS[@]}" took the second element as its program. Round 8 closed both for the
+  // canonical texts. A word that expands to several now reaches only aws, through run or get.
+  it('hands a word that expands to several words to aws alone (COMMANDS-A2-02)', () => {
+    const word = (raw: string) => ({ raw, value: undefined, quoted: true, expands: ['A'] })
+    const test = SHELL_TABLE.builtins['[']
+    expect(test?.([word(`"$\{A[@]}"`), word('!='), word("''"), word(']')])).toBe(false)
+    expect(test?.([word(`"$\{#A[@]}"`), word('-gt'), word('0'), word(']')])).toBe(true)
+    expect(readShell(`if [ "$\{A[@]}" != '' ]; then\n  echo x\nfi`).refused).toBeDefined()
+    expect(readShell(`if [ "$\{#A[@]}" -gt 0 ]; then\n  echo x\nfi`).refused).toBeUndefined()
+    // Through deploy.yml, the attack's two plants, and the same word handed to echo.
+    const count = `  if [ "$\{#TASK_ARNS[@]}" -gt 0 ]; then`
+    const planted = credentialed(inReadBack(count, `  if [ "$\{TASK_ARNS[@]}" != '' ]; then`))
+    expect(
+      planted.some(each => each.startsWith(`${DEPLOY}: DPW-10 ${READBACK}, line `) && each.endsWith(AS_BASH)),
+    ).toBe(true)
+    const tasks = "TASKS='[]'\n"
+    for (const added of [`LISTED=$(jq -nc --arg tasks "$\{TASK_ARNS[@]}" '$tasks')`, `echo "$\{TASK_ARNS[@]}"`]) {
+      expect(credentialed(inReadBack(tasks, `${tasks}            ${added}\n`)), added).toContain(
+        at('DPW-10', READBACK, HELD),
+      )
+    }
+    expect(credentialed(workflows)).toEqual([])
+  }, 60_000)
+
+  // COMMANDS-A2-01 and FLOW-A2-01: the names an aws value reads were held to their setters only by the read-back's
+  // pin, which a change to the run and its pin together always met, so one changed line read the load balancer,
+  // a target group or the tasks from the Services stack's outputs, which the release writes, and a file:// output
+  // had aws-cli load a runner file and send it, or an output list handed aws --endpoint-url. Each name, and each
+  // name the read-back builds one from, is now set only by the commands AWS_VALUE_LINES writes.
+  it('sets the names an aws value reads only by the commands the guard writes, whatever the pin holds (COMMANDS-A2-01, FLOW-A2-01)', () => {
+    const run = [PREAMBLE, READ_BACK].join('\n')
+    expect(ownLinesSetAnInput(run)).toBe(false)
+    const outputs = (key: string) =>
+      `get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].Outputs[?OutputKey==\`${key}\`].OutputValue | [0]' --output text`
+    const lines: ReadonlyArray<readonly [string, string]> = [
+      [
+        `BALANCER=$(get aws elbv2 describe-load-balancers --names "hearth-$STAGE" --query 'LoadBalancers[0].LoadBalancerArn' --output text)`,
+        `BALANCER=$(${outputs('Balancer')})`,
+      ],
+      [`GROUP_ARN=$(jq -r '.arn' <<<"$GROUP")`, `GROUP_ARN=$(${outputs('TargetGroup')})`],
+      [
+        `GROUP=$(jq -ec --arg name "hearth-$STAGE-$ROLE" 'first(.[] | select(.name == $name))' <<<"$TARGET_GROUPS")`,
+        `GROUP=$(${outputs('TargetGroup')})`,
+      ],
+      [
+        `ARNS=$(get aws ecs list-tasks --cluster "hearth-$STAGE" --service-name "hearth-$STAGE-$ROLE" --desired-status RUNNING --query 'taskArns' --output json)`,
+        `ARNS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Services" --query 'Stacks[0].Outputs[].OutputValue' --output json)`,
+      ],
+      [`mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`, `mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$STACK")`],
+      ['for ROLE in api realtime worker; do', 'for ROLE in api realtime worker -v; do'],
+    ]
+    for (const [from, to] of lines) {
+      expect(run, from).toContain(from)
+      // The run changed as its pin would change with it: still this rule's finding.
+      expect(ownLinesSetAnInput(run.replace(from, to)), to).toBe(true)
+    }
+    // Through deploy.yml, the names the read-back builds a value from, which no rule held before.
+    for (const [from, to] of lines.slice(2, 5)) {
+      expect(credentialed(inReadBack(from, to)), to).toContain(at('DPW-10', READBACK, SETS_INPUT))
+    }
+    expect(credentialed(workflows)).toEqual([])
+  }, 60_000)
 })

@@ -47,9 +47,11 @@
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
 // IAM table reads under no principal, and an added resource's properties, which it never prints), holds the one
 // custom resource the workload writes, CDK's default security group handler, whose answer its handler decides at
-// deploy time, to a Platform stack, its own function's zip in the staging bucket and no value of its template that
-// names it, so no handler of a release's own or another account's answers into a grant the diff shows only by an
-// attribute's name, and refuses a file asset whose id, which the CLI joins to the path it writes a packaged zip to
+// deploy time, to a Platform stack, its own function's zip in the staging bucket, that function's properties CDK's
+// own and no others (no layer, environment, network or role elsewhere, so no other account's code runs before the
+// handler, as a layer and AWS_LAMBDA_EXEC_WRAPPER would make it) and no value of its template that names it, so no
+// handler of a release's own or another account's answers into a grant the diff shows only by an attribute's name,
+// and refuses a file asset whose id, which the CLI joins to the path it writes a packaged zip to
 // or uploads one from, isn't its key's digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
@@ -67,13 +69,17 @@
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
 // and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, read as jq
 // tokenises it, so a string defines and binds nothing, and no name it defines or binds, nor any word it runs, is one
-// that reaches outside it (env and $ENV, input, include, import, debug and the rest, JQ_REACH_NAMES), tr and sed
+// that reaches outside it (env and $ENV, input, include, import, debug and the rest, JQ_REACH_NAMES), a name a key
+// only straight inside braces (in .[0, env:1] env is a slice's start jq runs), no word bash hands on as several
+// ("${NAME[@]}") to any command but aws, as a list option's values, tr and sed
 // only as prod-plan's diff summary's, every aws word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
 // whole, a canonical text's function or a record job's own only as the workflow calls it, standing alone,
 // outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step, as
 // every job's call of a check does, the synths' too), no line of its
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
-// RUN, ACCOUNT_ID, or a name an aws value reads but by a command its step's pinned run holds), and none
+// RUN, ACCOUNT_ID, or a name an aws value reads or the read-back builds one from but by the commands
+// AWS_VALUE_LINES writes, each from AWS's answer to a call by the stage's names, never a stack's outputs, and
+// never vouched for by its own pinned run), and none
 // expands a name the run doesn't own (its step's or job's env: but GH_TOKEN, what it sets itself, and the
 // runner's outputs, summary, folder and run ids), so the OIDC request token the runner hands every run step
 // of a job with an id-token is never handed to a tool that could print it in pieces. The wiring between the
@@ -381,8 +387,10 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
 # is that function's Arn (never a function elsewhere, another account's among them), the function's
-# code is a zip in the staging bucket (never inline), and no string in its template names it, so no
-# grant, output or other value reads its answer. Then it requires every Services template's Release
+# code is a zip in the staging bucket (never inline) and its properties CDK's own and no others (CDK's
+# entry point on a Node.js runtime, run by a role of its template, with no layer, environment, network
+# or other key, so no other account's code runs before the handler), and no string in its template
+# names it, so no grant, output or other value reads its answer. Then it requires every Services template's Release
 # output to be the release this job deploys, and every container image in the Tasks and Services
 # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
 # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
@@ -479,8 +487,8 @@ check_release_in() {
   root=$(cd "$1" && pwd -P)
   while IFS= read -r dir; do
     while IFS=$'\t' read -r stack template; do
-      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
-        asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+        asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
@@ -3990,7 +3998,9 @@ export const SHELL_TABLE = {
     { form: /^\$\{[A-Za-z_][A-Za-z0-9_]*##\*\/\}/, where: 'quoted or value' },
     // ${#NAME[@]}: how many elements the array holds.
     { form: /^\$\{#[A-Za-z_][A-Za-z0-9_]*\[@\]\}/, where: 'quoted' },
-    // "${NAME[@]}": each element as a word of its own, the whole double-quoted word.
+    // "${NAME[@]}": each element as a word of its own, the whole double-quoted word, handed to aws alone, through
+    // run or get, as a list option's values (glueIsHeld()), and never to [ or jq, which would read an element as a
+    // flag, an operator or a program.
     { form: /^\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}/, where: 'whole' },
     // $?: the last command's status, an assignment's whole value.
     { form: /^\$\?/, where: 'whole value' },
@@ -4045,12 +4055,14 @@ export const SHELL_TABLE = {
     // set sets the shell's options: only -euo pipefail.
     set: (args: readonly ShellWord[]) => args.map(arg => arg.raw).join(' ') === '-euo pipefail',
     // [ compares two words, =, != or -gt (a number bash reads as digits, never evaluated), and nothing else
-    // (never -v, which evaluates a subscript).
+    // (never -v, which evaluates a subscript): each operand one word as bash hands it, never "${NAME[@]}",
+    // whose elements [ would read as words of their own, -v and a name among them (the ninth review's second
+    // attack).
     '[': (args: readonly ShellWord[]) =>
       args.length === 4 &&
       ['=', '!=', '-gt'].includes(args[1]?.raw ?? '') &&
       args[3]?.raw === ']' &&
-      [args[0], args[2]].every(arg => arg !== undefined && (arg.quoted || !arg.raw.startsWith('-'))),
+      [args[0], args[2]].every(arg => arg !== undefined && !manyWords(arg) && (arg.quoted || !arg.raw.startsWith('-'))),
     // local declares a function's variables by their names alone.
     local: (args: readonly ShellWord[]) =>
       args.length > 0 && args.every(arg => /^[A-Za-z_]\w*$/.test(arg.raw) && !SHELL_TABLE.bashVariables.test(arg.raw)),
@@ -4152,6 +4164,10 @@ export interface ShellWord {
   value: string | undefined
   quoted: boolean
   expands: readonly string[]
+}
+// Whether bash hands a word on as several: "${NAME[@]}", the one such form the table reads, and only whole.
+function manyWords(word: ShellWord): boolean {
+  return /^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(word.raw)
 }
 
 // A command a run's own lines run, as the table reads it: its line in the run, its name (the command's word,
@@ -5936,12 +5952,35 @@ const TRACE =
 const ENV_WORD = /(?<![\w.$/-])env(?![\w./=-])/
 // What prints the environment in a credentialed run beyond ENV_WORD, which reads no quoted text (C11-D61):
 // in quoted text, jq's env builtin and $ENV in a program, a - beside either jq's operator and never part of a
-// name (-env.X prints the value in the error negating it throws), and env as an object's key, env: …, nothing;
-// anywhere, a /proc file (environ), or /proc reached through /dev/fd or /dev/stdin, /dev/stdout or
-// /dev/stderr (/dev/fd/../environ is the run's own; the seventh review's third attack), and an AWS_
-// variable's expansion, whose value is a credential. No run uses any. A path built from parts is the
-// canonical rule's to refuse, which reads a file only on a line the guard writes (canonicalToolLines()).
-const QUOTED_ENV = /(?<![\w.$"])env(?![\w"])(?!\s*:)|\$ENV\b/
+// name (-env.X prints the value in the error negating it throws), and env as an object's key, env: … straight
+// inside braces the line opens, after their { or a , (quotedEnvIsKey()), nothing, but the same env: inside [ ]
+// or ( ) is a slice's start jq evaluates (.[0, env:1]; the ninth review's second attack); anywhere, a /proc
+// file (environ), or /proc reached through /dev/fd or /dev/stdin, /dev/stdout or /dev/stderr
+// (/dev/fd/../environ is the run's own; the seventh review's third attack), and an AWS_ variable's expansion,
+// whose value is a credential. No run uses any. A path built from parts is the canonical rule's to refuse,
+// which reads a file only on a line the guard writes (canonicalToolLines()).
+const QUOTED_ENV = /(?<![\w.$"])env(?![\w"])|\$ENV\b/g
+// Whether the env at a line's quoted text's index is an object's key: a : after it, and before it, on the line,
+// a { or a , with braces the innermost bracket open there (jq's strings read as strings, never brackets).
+function quotedEnvIsKey(text: string, at: number): boolean {
+  if (!/^env\s*:/.test(text.slice(at))) return false
+  const open: string[] = []
+  let previous = ''
+  for (let i = 0; i < at; i++) {
+    const c = text[i] ?? ''
+    if (c === '"') {
+      for (i++; i < at && text[i] !== '"'; i++) if (text[i] === '\\') i++
+      previous = c
+      continue
+    }
+    if (c === '{' || c === '[' || c === '(') open.push(c)
+    if (c === '}' || c === ']' || c === ')') open.pop()
+    if (!/\s/.test(c)) previous = c
+  }
+  return open.at(-1) === '{' && (previous === '{' || previous === ',')
+}
+const quotedEnv = (text: string) =>
+  [...text.matchAll(QUOTED_ENV)].some(match => match[0] !== 'env' || !quotedEnvIsKey(text, match.index))
 const CREDENTIAL_READ = /\/proc(?![\w.-])|\/dev\/(?:fd|std(?:in|out|err))(?![\w.-])|\$\{?!?AWS_/
 // A line's quoted text alone, everything else blanked: the code view writes quoted text as underscores.
 const quotedText = (line: { text: string; code: string }) =>
@@ -6135,7 +6174,7 @@ export function maskingFindings(workflows: Texts): Finding[] {
           ].some(word => word.expands.some(name => name.startsWith('AWS_'))),
         ) ||
         lines.some(
-          line => CREDENTIAL_READ.test(line.text) || (/env|ENV/.test(line.text) && QUOTED_ENV.test(quotedText(line))),
+          line => CREDENTIAL_READ.test(line.text) || (/env|ENV/.test(line.text) && quotedEnv(quotedText(line))),
         )
       ) {
         add(
@@ -7043,12 +7082,18 @@ export function jqProgramIsHeld(program: string, given: readonly string[]): bool
   if ([...bound, ...defined].some(name => JQ_REACH_NAMES.test(name))) return false
   let previous = ''
   let at = 0
+  // The brackets open where each token stands: a name is an object's key only straight inside braces, after
+  // the { or a , there and before a :, since inside [ ] or ( ) the same name and colon are a slice's start
+  // (.[0, env:1] evaluates env, halt or debug there; the ninth review's second attack).
+  const open: string[] = []
   for (const token of tokens) {
     at += token.length
     if (/^\s/.test(token)) continue
+    if (token === '{' || token === '[' || token === '(') open.push(token)
+    if (token === '}' || token === ']' || token === ')') open.pop()
     if (token.startsWith('$') && !bound.has(token.slice(1))) return false
     if (/^[A-Za-z_]/.test(token)) {
-      const key = (previous === '{' || previous === ',') && /^\s*:/.test(program.slice(at))
+      const key = open.at(-1) === '{' && (previous === '{' || previous === ',') && /^\s*:/.test(program.slice(at))
       if (JQ_REACH_NAMES.test(token) && !key) return false
       if (!(key || previous === 'def' || defined.has(token) || token === 'def' || JQ_WORDS.includes(token))) {
         return false
@@ -7070,8 +7115,11 @@ const programOf = (word: ShellWord | undefined): string | undefined =>
       : WHOLE_PROGRAM.test(word.raw) && word.value !== undefined && word.expands.length === 0
         ? word.value
         : undefined
-// jq given its flags, then one program (single-quoted, or . alone) and no file to read.
+// jq given its flags, then one program (single-quoted, or . alone) and no file to read; no word of which
+// expands to several ("${NAME[@]}" as an --arg's value hands jq each element as a word, a program among them;
+// the ninth review's second attack).
 function jqIsHeld(args: readonly ShellWord[]): boolean {
+  if (args.some(manyWords)) return false
   const given: string[] = []
   let i = 0
   for (; i < args.length; i++) {
@@ -7154,8 +7202,8 @@ function wordSkeleton(raw: string): string | undefined {
 // migrate runs with, set by a canonical text from AWS's own answers or by a run the guard pins whole; the
 // read-back's tasks, target group and load balancer, from AWS's answers in the read-back), and the names
 // it builds from the stage (STAGES' job env), the release's digest, a role the read-back loops over and
-// the run's own ids. No own line outside a step whose run the guard pins whole sets a name they read
-// (AWS_VALUE_LINES), and no other word holds an expansion, so neither a value the CLI loads from a file
+// the run's own ids. No own line sets a name they read, or one the read-back builds one from, but by the
+// commands AWS_VALUE_LINES writes, and no other word holds an expansion, so neither a value the CLI loads from a file
 // (file://, fileb://) nor a shorthand file load (imageTag@=file://…, built from a glue variable after a
 // literal key) is put together at run time.
 const AWS_VALUE_WORDS = [
@@ -7174,10 +7222,9 @@ const AWS_VALUE_WORDS = [
   '"hearth-$STAGE-$ROLE"',
   '"Hearth-$STAGE-Services"',
 ]
-// The names those words read that a run's own lines could set, which no own line sets outside a step whose
-// run the guard pins whole, but TOKEN on the lines DPW-06 pins (a literal and the run's ids). STAGE is the
-// job's env and the GITHUB_ names the runner's, which no own line sets either (SETS_INPUT, the loader
-// names).
+// The names those words read that a run's own lines could set, which no own line sets but by the commands
+// AWS_VALUE_LINES writes (TOKEN on the lines DPW-06 pins, a literal and the run's ids). STAGE is the job's env
+// and the GITHUB_ names the runner's, which no own line sets either (SETS_INPUT, the loader names).
 const AWS_VALUE_NAMES = [
   'CLUSTER',
   'MIGRATE_TD',
@@ -7421,6 +7468,10 @@ function glueIsHeld(
   )
   if (name === undefined) return redirections
   if (!redirections || command.assignments.length > 0) return false
+  // A word bash hands on as several only to aws, through run or get, whose hold reads each as the list
+  // option's values (AWS_VALUE_WORDS): to any other command each element would be a word of its own, a flag
+  // or a program among them (the ninth review's second attack).
+  if (name !== 'run' && name !== 'get' && command.args.some(manyWords)) return false
   const use = GLUE_USES[name]
   if (use !== undefined) return use(command)
   if (TABLE_HELD.includes(name)) return true
@@ -7465,39 +7516,62 @@ const ASSIGNED_ONLY_BY: ReadonlyMap<string, readonly string[]> = new Map([
   ['RUN', [RUN_TASK_MIGRATE]],
   ['ACCOUNT_ID', []],
 ])
-// Every name an aws value reads (AWS_VALUE_NAMES) is set on a run's own lines only by a command its step's
-// pinned run holds (the release's DIGEST, the read-back's tasks, target group, load balancer and roles,
-// migrate's network), so a line added to a pinned run that sets one is this rule's finding as well as the
-// pin's, but TOKEN, also on the lines DPW-06 pins; a name a canonical text sets (CLUSTER, the task
-// definitions) never on an own line.
-const AWS_VALUE_LINES: ReadonlyMap<string, readonly string[]> = new Map(
-  AWS_VALUE_NAMES.map((name): [string, readonly string[]] => [
-    name,
-    name === 'TOKEN'
-      ? (['migrate', 'probe'] as const).flatMap(kind =>
-          (['nonprod', 'prod'] as const).flatMap(stage =>
-            (['deploy', 'rollback'] as const).map(job => tokenLine(kind, stage, job)),
-          ),
-        )
-      : [],
-  ]),
-)
-// The runs the guard pins whole (PINNED_RUNS), by their job and their step's name.
-const PINNED_RUN_TEXTS: ReadonlyMap<string, string> = new Map(
-  Object.entries(PINNED_RUNS()).flatMap(([id, pinned]) =>
-    Object.entries(pinned).map(([name, { run }]): [string, string] => [`${id}\n${name}`, run]),
-  ),
-)
-const pinnedRunOf = (id: string, step: WorkflowStep) => PINNED_RUN_TEXTS.get(`${id}\n${step.name ?? ''}`)
-// The commands a pinned run's own lines run, as the table reads them.
-const PINNED_COMMANDS = keptByText((run: string): readonly string[] => readShell(run).commands.map(each => each.raw))
+// Every name an aws value reads (AWS_VALUE_NAMES), and every name the read-back builds one from (ARNS, which
+// TASK_ARNS is read from, and TARGET_GROUPS and GROUP, which GROUP_ARN is), is set on a run's own lines only by
+// the commands written here, each as the workflow writes it (a for loop by its first line): the release's
+// DIGEST from the job's own env, migrate's network, TOKEN on the lines DPW-06 pins, and the read-back's tasks,
+// target groups, load balancer and roles from AWS's answers to the calls that name them (ECS's list-tasks,
+// ELB's describe-target-groups and describe-load-balancers by the stage's names), never from a stack's
+// outputs, which the release writes; a name a canonical text sets (CLUSTER, the task definitions) never on an
+// own line. A pinned run doesn't vouch for its own setters (the ninth review's second attack, where the
+// read-back and its pin, changed together, read the load balancer, a target group or the tasks from the
+// Services stack's outputs, and a file:// output had aws-cli load a runner file and send it): a new setter
+// joins this list in the same change, which the owner reads as a rule's change.
+const AWS_VALUE_LINES: ReadonlyMap<string, readonly string[]> = new Map([
+  ...AWS_VALUE_NAMES.map((name): [string, readonly string[]] => [name, []]),
+  [
+    'TOKEN',
+    (['migrate', 'probe'] as const).flatMap(kind =>
+      (['nonprod', 'prod'] as const).flatMap(stage =>
+        (['deploy', 'rollback'] as const).map(job => tokenLine(kind, stage, job)),
+      ),
+    ),
+  ],
+  ['NET_MIGRATE', [NET_JQ.migrate]],
+  ['DIGEST', ['DIGEST=$GATE_DIGEST', 'DIGEST=$BUILD_DIGEST']],
+  ['ROLE', ['for ROLE in api realtime worker; do', 'for ROLE in api realtime; do']],
+  [
+    'ARNS',
+    [
+      `ARNS=$(get aws ecs list-tasks --cluster "hearth-$STAGE" --service-name "hearth-$STAGE-$ROLE" --desired-status RUNNING --query 'taskArns' --output json)`,
+    ],
+  ],
+  ['TASK_ARNS', [`mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`]],
+  [
+    'TARGET_GROUPS',
+    [
+      `TARGET_GROUPS=$(get aws elbv2 describe-target-groups --names "hearth-$STAGE-api" "hearth-$STAGE-realtime" --query 'TargetGroups[].{name: TargetGroupName, arn: TargetGroupArn, path: HealthCheckPath}' --output json)`,
+    ],
+  ],
+  [
+    'GROUP',
+    [`GROUP=$(jq -ec --arg name "hearth-$STAGE-$ROLE" 'first(.[] | select(.name == $name))' <<<"$TARGET_GROUPS")`],
+  ],
+  ['GROUP_ARN', [`GROUP_ARN=$(jq -r '.arn' <<<"$GROUP")`]],
+  [
+    'BALANCER',
+    [
+      `BALANCER=$(get aws elbv2 describe-load-balancers --names "hearth-$STAGE" --query 'LoadBalancers[0].LoadBalancerArn' --output text)`,
+    ],
+  ],
+])
+// A command as AWS_VALUE_LINES names it: a for loop by its first line, any other whole.
+const setterText = (command: GlueCommand) => (command.name === 'for' ? (command.raw.split('\n')[0] ?? '') : command.raw)
 // Whether a run's own lines set an input its pinned lines read (DPW-10, DPW-13): a name its step's or its
 // job's env: sets, one a canonical text standing in the run sets, one ASSIGNED_ONLY_BY names on any line
-// but its own, or one an aws value reads by any command but AWS_VALUE_LINES' own and its step's pinned
-// run's.
-function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinned: string | undefined): boolean {
+// but its own, or one AWS_VALUE_LINES names by any command but its own.
+function setsAnInput(run: string, read: ShellRead, env: readonly string[]): boolean {
   const canonical = new Set(canonicalPlaces(run).flatMap(place => NAMES_SET_BY(place.text)))
-  const held = pinned === undefined ? [] : PINNED_COMMANDS(pinned)
   const onlyOn = (lines: readonly string[] | undefined, raw: string) => lines !== undefined && !lines.includes(raw)
   return read.commands.some(command =>
     namesSet(command).some(
@@ -7505,12 +7579,22 @@ function setsAnInput(run: string, read: ShellRead, env: readonly string[], pinne
         env.includes(name) ||
         canonical.has(name) ||
         onlyOn(ASSIGNED_ONLY_BY.get(name), command.raw) ||
-        (onlyOn(AWS_VALUE_LINES.get(name), command.raw) && !held.includes(command.raw)),
+        onlyOn(AWS_VALUE_LINES.get(name), setterText(command)),
     ),
   )
 }
+// setsAnInput() over a run read by the table, for the guard's cases: a pinned run changed with its pin still
+// sets an input by any setter AWS_VALUE_LINES doesn't write.
+export const ownLinesSetAnInput = (run: string, env: readonly string[] = []) => setsAnInput(run, readShell(run), env)
 const SETS_INPUT =
-  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads but by a command its step's pinned run holds (TOKEN also on its own lines), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+  "sets no variable its step's or its job's env: sets or a canonical text in its run sets, no name an aws value reads or the read-back builds one from but by the commands AWS_VALUE_LINES writes (the read-back's from AWS's answers, never a stack's outputs), REGISTRY and RUN only on their own lines and ACCOUNT_ID on none, so no line the guard holds is handed another input"
+// The runs the guard pins whole (PINNED_RUNS), by their job and their step's name.
+const PINNED_RUN_TEXTS: ReadonlyMap<string, string> = new Map(
+  Object.entries(PINNED_RUNS()).flatMap(([id, pinned]) =>
+    Object.entries(pinned).map(([name, { run }]): [string, string] => [`${id}\n${name}`, run]),
+  ),
+)
+const pinnedRunOf = (id: string, step: WorkflowStep) => PINNED_RUN_TEXTS.get(`${id}\n${step.name ?? ''}`)
 // The words no credentialed run names anywhere outside a comment, so no tool can be handed one to run (a
 // find -exec, a sort --compress-program, a git alias, a trap's text, a variable): the interpreters and
 // the downloaders. node is a word, so node_modules passes; a jq path (.source) and the push's docker://
@@ -8500,7 +8584,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (refused !== undefined) add(refused, AS_BASH)
       const diffRun = DIFF_RUNS.includes(run)
       if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS, read.commands, diffRun))) add(where, HELD)
-      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], pinnedRunOf(id, step))) add(where, SETS_INPUT)
+      if (setsAnInput(run, read, [...jobNames, ...step.env.keys()])) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
@@ -8920,7 +9004,7 @@ export function releaseFindings(workflows: Texts): Finding[] {
     if (read.commands.some(command => !glueIsHeld(command, recordCalls(id), read.commands))) add(where, HELD)
     const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
     const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
-    if (setsAnInput(run, read, envNames, steps[0] === undefined ? undefined : pinnedRunOf(id, steps[0]))) {
+    if (setsAnInput(run, read, envNames)) {
       add(where, SETS_INPUT)
     }
   }
