@@ -2990,7 +2990,8 @@ jobs:
   # restore, the diff the approver reads before the prod job's approval (a restore's of the restore stage's
   # stacks), and for a deploy with a previous release the diff of the rollback that release's own assembly
   # would make, which prod's rollback job deploys. Its role reads the prod and restore stacks' templates and
-  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own.
+  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own, and for a restore
+  # taken down what it read of each restore stack, which the prod job's down holds the stage to.
   prod-plan:
     needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && ((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy')) }}
@@ -3005,6 +3006,7 @@ jobs:
       STAGE: ${{ needs.gate.outputs.target == 'restore' && 'restore' || 'prod' }}
     outputs:
       attempt: ${{ github.run_attempt }}
+      down: ${{ steps.diff.outputs.down }}
     steps:
       - name: Check out the run's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3431,6 +3433,7 @@ jobs:
           mask-aws-account-id: true
           translate-env-variables: false
       - name: Diff
+        id: diff
         env:
           MODE: ${{ needs.gate.outputs.mode }}
           RESTORE: ${{ needs.gate.outputs.restore }}
@@ -3475,7 +3478,10 @@ jobs:
           # created. One that doesn't exist, that a failed create left or whose failed create couldn't roll back is
           # named above the diff, through the filter, and not diffed; one still moving, or one that can't be read,
           # fails the diff, as it would fail down. Its status is DOWN_STATUS, which the run then takes as the diff's.
+          # What it read of each stack (DOWN_READ: missing, or its status) is the job's down output, which the prod
+          # job's down holds the stage to, so down deploys no stack this diff didn't show.
           DOWN_STATUS=0
+          DOWN_READ=''
           if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
             : >"$DIFF"
             for PART in Services Data Platform; do
@@ -3483,6 +3489,7 @@ jobs:
                 case "$PART_STATUS" in
                   *'does not exist'*)
                     echo "restore down: Hearth-$STAGE-$PART doesn't exist, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                    DOWN_READ="$DOWN_READ$PART:missing,"
                     continue
                     ;;
                   *)
@@ -3492,6 +3499,14 @@ jobs:
                     ;;
                 esac
               fi
+              case "$PART_STATUS" in
+                '' | *[!A-Z_]*)
+                  echo "restore down: Hearth-$STAGE-$PART can't be read, so the diff fails" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  DOWN_STATUS=1
+                  break
+                  ;;
+              esac
+              DOWN_READ="$DOWN_READ$PART:$PART_STATUS,"
               case "$PART_STATUS" in
                 ROLLBACK_COMPLETE | REVIEW_IN_PROGRESS)
                   echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -3514,6 +3529,7 @@ jobs:
                 break
               }
             done
+            if [ "$DOWN_STATUS" = 0 ]; then echo "down=$DOWN_READ" >>"$GITHUB_OUTPUT"; fi
           fi
           if [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi
           cat "$DIFF"
@@ -4515,6 +4531,8 @@ jobs:
           run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Take the restore stage down
         if: ${{ needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down' }}
+        env:
+          PLANNED: ${{ needs.prod-plan.outputs.down }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -4537,9 +4555,29 @@ jobs:
           # exist is skipped, and one still moving refuses, so down works after a failed or partial up and
           # never creates a stack. One whose failed create couldn't roll back (ROLLBACK_FAILED, which may hold
           # billed resources, and which the CLI would delete and create again) is skipped too, the later stacks
-          # are still taken down, and the step then fails, since that stack waits for tier 2.
+          # are still taken down, and the step then fails, since that stack waits for tier 2. Nothing is taken down
+          # unless every stack reads as prod-plan read it (PLANNED), so down deploys only what the approved diff showed.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          SEEN=''
+          for PART in Services Data Platform; do
+            if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
+              case "$STATUS" in
+                *'does not exist'*)
+                  STATUS=missing
+                  ;;
+                *)
+                  echo "restore down: Hearth-$STAGE-$PART can't be read" | mask
+                  exit 1
+                  ;;
+              esac
+            fi
+            SEEN="$SEEN$PART:$STATUS,"
+          done
+          if [ "$SEEN" != "$PLANNED" ]; then
+            echo "restore down: the restore stage changed since prod-plan diffed it (prod-plan read $PLANNED, down reads $SEEN), so nothing is taken down: dispatch restore=down again" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           KEPT=''
           for PART in Services Data Platform; do
             if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then

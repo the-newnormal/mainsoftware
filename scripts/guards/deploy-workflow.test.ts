@@ -76,6 +76,7 @@ import {
   IMAGE_UNPACK_RUN,
   JOB_IDS,
   JOB_IFS,
+  JOB_OUTPUTS,
   MASK_RUN,
   MIGRATE_LINES,
   maskingFindings,
@@ -109,6 +110,7 @@ import {
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
   STAGES,
+  STEP_ENVS,
   STOP_COMMANDS,
   STOP_HEAD,
   shellCommands,
@@ -2528,15 +2530,32 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
   // diff, from an earlier attempt, while what prod runs may have changed since; prod's fast re-check holds
   // the approval to prod-plan's attempt and to the record prod-gate read, in every mode.
   it('finds a prod approval not held to prod-plan’s diff of this attempt', () => {
-    const PLAN = "outputs its attempt alone, which prod's fast re-check holds to its own"
+    const PLAN =
+      "outputs its attempt, which prod's fast re-check holds to its own, and its diff's read of the restore stage, which prod's down holds the stage to, and nothing else"
     const attempt = `      attempt: \${{ github.run_attempt }}\n`
-    expect(prodPathFindings(plant(`    outputs:\n${attempt}`, '', job('prod-plan')))).toEqual([at('prod-plan', PLAN)])
+    const down = `      down: \${{ steps.diff.outputs.down }}\n`
+    expect(prodPathFindings(plant(`    outputs:\n${attempt}${down}`, '', job('prod-plan')))).toEqual([
+      at('prod-plan', PLAN),
+    ])
     expect(prodPathFindings(plant(attempt, `      attempt: \${{ github.run_id }}\n`, job('prod-plan')))).toEqual([
       at('prod-plan', PLAN),
     ])
     expect(prodPathFindings(plant(attempt, `${attempt}      diff: \${{ github.run_id }}\n`, job('prod-plan')))).toEqual(
       [at('prod-plan', PLAN)],
     )
+    // A restore taken down is held to what prod-plan's diff read (INPUTS-A1-01, the eighth review's first
+    // attack): its down output, from the Diff step by its id, and prod's PLANNED, which reads it.
+    const DOWN = "takes the restore stage down only as prod-plan's diff read it (PLANNED, its down output)"
+    expect(prodPathFindings(plant(down, '', job('prod-plan')))).toEqual([at('prod-plan', PLAN)])
+    expect(prodPathFindings(plant(down, `      down: \${{ needs.gate.outputs.restore }}\n`, job('prod-plan')))).toEqual(
+      [at('prod-plan', PLAN)],
+    )
+    expect(prodPathFindings(plant('        id: diff\n', '', job('prod-plan')))).toEqual([at('prod', DOWN)])
+    const planned = `          PLANNED: \${{ needs.prod-plan.outputs.down }}\n`
+    expect(prodPathFindings(plant(planned, '', job('prod')))).toEqual([at('prod', DOWN)])
+    expect(
+      prodPathFindings(plant(planned, `          PLANNED: \${{ needs.prod-plan.outputs.attempt }}\n`, job('prod'))),
+    ).toEqual([at('prod', DOWN)])
     expect(
       prodPathFindings(plant(`          PLAN_ATTEMPT: \${{ needs.prod-plan.outputs.attempt }}\n`, '', job('prod'))),
     ).toEqual([at('prod', RECHECK)])
@@ -3920,19 +3939,23 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       at('nonprod (Deploy Services)', SETS),
     ])
     const folder = `          ${CDK_FOLDER}\n`
+    // read hands it the name, which the CLI's rule reads too (the eighth review's first attack).
     expect(deployServices(folder, '          read -r ASSEMBLY <<<"x"\n')).toEqual([
       pinned('nonprod (Deploy Services)'),
       at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 4}`, AS_BASH),
       at('nonprod (Deploy Services)', SETS),
+      at('nonprod (Deploy Services)', CLI),
     ])
     expect(deployServices(folder, '          ASSEMBLY+=/x\n')).toEqual([
       pinned('nonprod (Deploy Services)'),
       at(`nonprod (Deploy Services), line ${PREAMBLE.split('\n').length + 4}`, AS_BASH),
       at('nonprod (Deploy Services)', CLI),
     ])
-    // The run is no longer DIFF_RUN whole, so the tr and sed that set its summary's code block are refused too.
+    // The run is no longer DIFF_RUN whole, so the tr and sed that set its summary's code block are refused too,
+    // and so is every write to "$DIFF", which only prod-plan's two diff runs make (the eighth review's first attack).
     expect(find('DIFF="$RUNNER_TEMP/diff.txt"', 'DIFF=node_modules/aws-cdk/bin/cdk', job('prod-plan'))).toEqual([
       at('prod-plan (Diff)', RUNS),
+      at('prod-plan (Diff)', HELD),
       at('prod-plan (Diff)', WRITES),
     ])
   }, 30_000)
@@ -7233,7 +7256,20 @@ describe('DPW-06 (C11-D45): restore=down and its read-back against planted AWS a
       output: readFileSync(output, 'utf8'),
     }
   }
-  const down = (env: Record<string, string>) => step('Take the restore stage down', env)
+  // What prod-plan's diff read of each restore stack, as RESTORE_DOWN_DIFF writes its down output (missing, or
+  // the stack's status), for the statuses a case plants: down's PLANNED unless the case names its own.
+  const planned = (env: Record<string, string>) => {
+    const statuses: Record<string, string> = {
+      STATUS_Services: 'UPDATE_COMPLETE',
+      STATUS_Data: 'UPDATE_COMPLETE',
+      STATUS_Platform: 'UPDATE_COMPLETE',
+      ...env,
+    }
+    return ['Services', 'Data', 'Platform']
+      .map(part => `${part}:${statuses[`STATUS_${part}`] === 'none' ? 'missing' : statuses[`STATUS_${part}`]},`)
+      .join('')
+  }
+  const down = (env: Record<string, string>) => step('Take the restore stage down', { PLANNED: planned(env), ...env })
   const readBack = (env: Record<string, string>) => step('Read back what runs', env)
 
   it('takes each settled stack down in order, and skips one a failed create left or that doesn’t exist', () => {
@@ -7267,6 +7303,49 @@ describe('DPW-06 (C11-D45): restore=down and its read-back against planted AWS a
       'restore down: Hearth-restore-Data is UPDATE_IN_PROGRESS: wait for it to settle, then dispatch again',
     )
     expect(moving.deployed).toEqual(['deploy restore/Services'])
+  })
+
+  // INPUTS-A1-01 (the eighth review's first attack): prod-plan decided which restore stacks down diffs, and
+  // down decided again, after the approval, which it deploys, so a stack that didn't exist (or that a failed
+  // create left) when prod-plan read it, and that another restore's up created (or recreated) before down
+  // ran, was deployed from a template no diff showed. down now reads every stack first and refuses, before
+  // any deploy, unless it reads what prod-plan read.
+  it('takes nothing down unless every restore stack reads as prod-plan read it (INPUTS-A1-01)', () => {
+    const changed =
+      'restore down: the restore stage changed since prod-plan diffed it (prod-plan read Services:missing,Data:missing,Platform:missing,, down reads Services:CREATE_COMPLETE,Data:CREATE_COMPLETE,Platform:CREATE_COMPLETE,), so nothing is taken down: dispatch restore=down again'
+    // An up and a down dispatched together: the down's plan read no stack, the up then made all three.
+    const raced = down({
+      STATUS_Services: 'CREATE_COMPLETE',
+      STATUS_Data: 'CREATE_COMPLETE',
+      STATUS_Platform: 'CREATE_COMPLETE',
+      PLANNED: 'Services:missing,Data:missing,Platform:missing,',
+    })
+    expect(raced).toMatchObject({ status: 1, said: changed, deployed: [] })
+    // A failed up and its retry: the plan read Services as its failed create left it, the retry made it again.
+    const retried = down({
+      STATUS_Services: 'CREATE_COMPLETE',
+      PLANNED: planned({ STATUS_Services: 'ROLLBACK_COMPLETE' }),
+    })
+    expect(retried.status).toBe(1)
+    expect(retried.deployed).toEqual([])
+    expect(retried.said).toContain('the restore stage changed since prod-plan diffed it')
+    // Any other change, a stack gone since, and no read from prod-plan at all refuse too.
+    const changes: ReadonlyArray<Record<string, string>> = [
+      { STATUS_Data: 'UPDATE_ROLLBACK_COMPLETE' },
+      { STATUS_Platform: 'none', PLANNED: planned({}) },
+      { PLANNED: '' },
+      { PLANNED: planned({}).replace('Platform:UPDATE_COMPLETE,', '') },
+    ]
+    for (const env of changes) {
+      const refused = down({ PLANNED: planned({}), ...env })
+      expect(refused.status, JSON.stringify(env)).toBe(1)
+      expect(refused.deployed, JSON.stringify(env)).toEqual([])
+    }
+    // The stage as prod-plan read it is taken down as before, a stack it read as missing skipped.
+    expect(down({ STATUS_Services: 'none' })).toMatchObject({
+      status: 0,
+      deployed: ['deploy restore/Data', 'deploy restore/Platform'],
+    })
   })
 
   it('reads a restore Services stack a failed create left as the release down was given, and nothing else', () => {
@@ -8169,7 +8248,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const tools = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
@@ -8454,7 +8533,7 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   // A canonical text with one line replaced, or added before one, and the 1-based line the change stands on.
   const replaced = (text: string, from: string, to: string) => {
@@ -8942,6 +9021,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       )
       if (env.FAILS === 'true') writeFileSync(join(temp, 'fails'), '')
       writeFileSync(join(temp, 'summary.md'), '')
+      writeFileSync(join(temp, 'output'), '')
       const result = spawnSync('bash', ['-c', DIFF_RUN], {
         encoding: 'utf8',
         env: {
@@ -8949,6 +9029,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
           HOME: temp,
           RUNNER_TEMP: temp,
           GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
+          GITHUB_OUTPUT: join(temp, 'output'),
           STAGE: 'restore',
           MODE: 'deploy',
           RESTORE: 'down',
@@ -8960,7 +9041,13 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
         .split('\n')
         .filter(line => line !== '')
         .map(line => line.split(' ').filter(word => /^(?:restore|prod)\//.test(word)))
-      return { status: result.status, diffed, summary: read('summary.md'), aws: read('aws.log') }
+      return {
+        status: result.status,
+        diffed,
+        summary: read('summary.md'),
+        aws: read('aws.log'),
+        output: read('output'),
+      }
     }
     const skipped = (part: string, why: string) => `restore down: Hearth-restore-${part} ${why}`
     const NOT_THERE = "doesn't exist, so down skips it and it isn't diffed"
@@ -8974,6 +9061,8 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(settled.status).toBe(0)
       expect(settled.diffed).toEqual([['restore/Services'], ['restore/Data'], ['restore/Platform']])
+      // What it read of each stack is the job's down output, which prod's down holds the stage to.
+      expect(settled.output).toBe('down=Services:UPDATE_COMPLETE,Data:UPDATE_COMPLETE,Platform:CREATE_COMPLETE,\n')
       // An up that failed before Services: Services isn't diffed (so shown as created by no line), but named
       // above the diff, and the other two are.
       const noServices = diff({
@@ -8982,6 +9071,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(noServices.status).toBe(0)
       expect(noServices.diffed).toEqual([['restore/Data'], ['restore/Platform']])
+      expect(noServices.output).toBe('down=Services:missing,Data:UPDATE_COMPLETE,Platform:UPDATE_COMPLETE,\n')
       const lines = noServices.summary.split('\n')
       const heading = lines.indexOf('### What the restore changes')
       expect(lines.indexOf(skipped('Services', NOT_THERE))).toBeGreaterThanOrEqual(0)
@@ -8997,6 +9087,9 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(leftovers.status).toBe(0)
       expect(leftovers.diffed).toEqual([])
+      expect(leftovers.output).toBe(
+        'down=Services:REVIEW_IN_PROGRESS,Data:ROLLBACK_COMPLETE,Platform:ROLLBACK_FAILED,\n',
+      )
       expect(leftovers.summary).toContain(skipped('Services', FAILED_CREATE))
       expect(leftovers.summary).toContain(skipped('Data', FAILED_CREATE))
       expect(leftovers.summary).toContain(skipped('Platform', 'is ROLLBACK_FAILED'))
@@ -9010,12 +9103,20 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(moving.status).toBe(1)
       expect(moving.diffed).toEqual([['restore/Services']])
+      expect(moving.output).toBe('')
       expect(moving.summary).toContain(skipped('Data', 'is UPDATE_IN_PROGRESS, which down refuses, so the diff fails'))
       expect(moving.summary).toContain('The diff failed (exit 1), so this plan fails')
       const unread = diff({ 'Hearth-restore-Services': '!Access denied' })
       expect(unread.status).toBe(1)
       expect(unread.diffed).toEqual([])
       expect(unread.summary).toContain(skipped('Services', "can't be read, so the diff fails"))
+      expect(unread.output).toBe('')
+      // A status of no stack's shape (a line break and another output, say) fails the diff and writes nothing.
+      const odd = diff({ 'Hearth-restore-Services': 'UPDATE_COMPLETE\ngo=true' })
+      expect(odd.status).toBe(1)
+      expect(odd.diffed).toEqual([])
+      expect(odd.summary).toContain(skipped('Services', "can't be read, so the diff fails"))
+      expect(odd.output).toBe('')
       const failing = diff(
         {
           'Hearth-restore-Services': 'UPDATE_COMPLETE',
@@ -9038,9 +9139,157 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
         expect(other.status, JSON.stringify(env)).toBe(0)
         expect(other.diffed, JSON.stringify(env)).toEqual(want)
         expect(other.aws, JSON.stringify(env)).toBe('')
+        expect(other.output, JSON.stringify(env)).toBe('')
       }
     } finally {
       rmSync(scratch, { recursive: true, force: true })
     }
+  })
+})
+
+describe('Round 8, attack 1: the ways past the allowlist (DPW-06, DPW-08, DPW-10)', () => {
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  const evaluates = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${EVALUATES}`
+  const at = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
+  const CDK_ONCE = 'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked'
+
+  // FETCH-A1-01: the write rule let every credentialed run write to "$DIFF", "set by its one line", and held
+  // that line only against DIFF=, so printf -v DIFF (or read, mapfile or a for loop) in AWS_CHECK pointed the
+  // write at the CLI CLI_CHECK had checked, which then ran the line with the deploy role's credentials; CDK was
+  // held the same way, so printf -v CDK made "$CDK" another program. A canonical text now sets none of
+  // HELD_NAMES in any spelling (but the preamble's CDK line), every rule that holds one reads the names a
+  // builtin is handed too, and only prod-plan's two diff runs may write to "$DIFF".
+  it("holds DIFF, CDK, ASSEMBLY and STAGE to their one line in every spelling, and the diff's write to prod-plan's diff runs (FETCH-A1-01)", () => {
+    const anchor = '  [ "$stage" = restore ] && stage=prod\n'
+    expect(AWS_CHECK).toContain(anchor)
+    const set = `  printf -v DIFF '%s' "$RUNNER_TEMP/aws-cdk/package/bin/cdk"`
+    const write = `  [ ! -f "$DIFF" ] || printf '%s\\n' 'process.stderr.write("x\\n");' >>"$DIFF"`
+    const planted = AWS_CHECK.replace(anchor, `${anchor}${set}\n${write}\n`)
+    expect(canonicalTextFindings({ AWS_CHECK: planted })).toContain(
+      commands('AWS_CHECK', planted.split('\n').indexOf(set) + 1),
+    )
+    // Every spelling that sets a held name, in any canonical text.
+    for (const name of ['DIFF', 'CDK', 'ASSEMBLY', 'STAGE']) {
+      for (const text of [
+        `printf -v ${name} '%s' "$x"`,
+        `IFS= read -r ${name} <<<"$x"`,
+        `mapfile -t ${name} < <(jq -n '1')`,
+        `for ${name} in x; do :; done`,
+        `local ${name}`,
+        `local ${name}=x`,
+        `${name}=x`,
+        `${name}+=x`,
+      ]) {
+        expect(canonicalTextFindings({ X: `x=1\n${text}` }), text).toContain(commands('X', 2))
+      }
+    }
+    // The preamble's own CDK line, and every committed text, pass.
+    expect(canonicalCommandLines(PREAMBLE, new Set(['mask', 'run', 'get']))).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+    // In a credentialed run's whole text, a builtin naming DIFF and a write to "$DIFF" outside prod-plan's
+    // two diff runs are each this rule's finding, whatever the pins and the canonical rules say.
+    const whatRuns = (added: string) =>
+      credentialedCodeFindings(
+        addedBefore('nonprod', 'What runs', `          ${anchor}`, `          ${added}\n`),
+        manifests,
+        lockfile,
+      )
+    for (const added of [
+      `printf -v DIFF '%s' "$RUNNER_TEMP/aws-cdk/package/bin/cdk"`,
+      'read -r DIFF <<<"$RUNNER_TEMP/x"',
+      'for DIFF in "$RUNNER_TEMP/x"; do :; done',
+      'echo x >>"$DIFF"',
+      ': >"$DIFF"',
+    ]) {
+      expect(whatRuns(added), added).toContain(at('nonprod (What runs)', WRITES))
+    }
+    // CDK, by a builtin, anywhere: this rule in every job, the pins aside.
+    const preambleCdk = '          CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"\n'
+    for (const added of ["printf -v CDK '%s' true", 'read -r CDK <<<"x"', 'for CDK in true; do :; done']) {
+      const found = credentialedCodeFindings(
+        addedBefore('nonprod', 'What runs', preambleCdk, `${preambleCdk}          ${added}\n`),
+        manifests,
+        lockfile,
+      )
+      expect(found, added).toContain(at('nonprod (What runs)', CDK_ONCE))
+    }
+    // STAGE, by a builtin, in any job's run (DPW-06).
+    expect(
+      deployStepFindings(
+        addedBefore('nonprod', 'What runs', `          ${anchor}`, `          read -r STAGE <<<"x"\n`),
+      ),
+    ).toContain(`${DEPLOY}: DPW-06 nonprod: sets STAGE once, at the job, to nonprod`)
+    // prod-plan's diff runs, as committed, still write the diff.
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+    expect(DIFF_RUN).toContain('} >"$DIFF" || STATUS=$?')
+    expect(ROLLBACK_DIFF_RUN).toContain('} >"$DIFF" || STATUS=$?')
+  })
+
+  // FLOW-A1-01: testShaped() counted an unquoted $definition as one operand of [ -n $definition ], but bash
+  // splits it first, so a value 'x -o -v a[$(cmd)]' handed [ a -v whose subscript bash evaluated, running cmd.
+  // A [ or test whose words bash could split, glob or expand a tilde in is no longer shaped, and one standing
+  // after a redirection, an assignment or a wrapper (run [ …), which TEST_START never read, is refused too.
+  it('refuses a [ or test whose operand bash would split, and one no shape check reads (FLOW-A1-01)', () => {
+    const anchor = `    definition=$(output "$\{kind^}TaskDefinition")\n`
+    expect(TASKS_OUTPUTS).toContain(anchor)
+    const test = `    [ -n $definition ] || { echo "tasks: Hearth-$STAGE-Tasks has no $kind definition" | mask; exit 1; }`
+    const planted = TASKS_OUTPUTS.replace(anchor, `${anchor}${test}\n`)
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(
+      evaluates('TASKS_OUTPUTS', planted.split('\n').indexOf(test) + 1),
+    )
+    for (const text of [
+      '[ -n $x ]',
+      '[ $x ]',
+      '[ -f $x ]',
+      '[ $(jq -r .a <<<"$x") = y ]',
+      '[ -n "a"$x ]',
+      `[ -n $\{x} ]`,
+      '[ "$x" = * ]',
+      '[ "$x" = ~ ]',
+      '[ "$x" = {a,b} ]',
+      '! [ $x = y ]',
+      'run [ -n "$x" ]',
+      '2>/dev/null [ -n "$x" ]',
+      'y=1 [ -n "$x" ]',
+    ]) {
+      expect(outsideEvaluations(`x=1\n${text}`), text).toContain(1)
+      expect(evaluatedLines(`x=1\n${text}`), text).toContain(1)
+    }
+    // A quoted operand, a substitution in double quotes and a test after a command's start pass.
+    for (const text of [
+      '[ -n "$x" ]',
+      '[ "$(jq -r \'.a\' <<<"$x")" = y ]',
+      'if [ "$x" = y ] && [ -z "$x" ]; then :; fi',
+      '[ "$x" -gt 0 ] || exit 1',
+    ]) {
+      expect(evaluatedLines(`x=1\n${text}`), text).toEqual([])
+    }
+  })
+
+  // INPUTS-A1-01: prod-plan's diff of a restore taken down skipped each stack that didn't exist or that a failed
+  // create left, and prod's down decided again, after the approval, which stacks it deploys, so a second
+  // restore's up between the two had down deploy stacks no diff showed. prod-plan now outputs what it read of
+  // each stack, and down refuses, before any deploy, unless it reads the same (its run is pinned, PLANNED its
+  // env and down prod-plan's output: DPW-08, and the bash cases beside DPW-06 and DPW-08 above).
+  it("binds a restore taken down to the stacks prod-plan's diff read (INPUTS-A1-01)", () => {
+    expect(RESTORE_DOWN_DIFF).toContain(
+      '  if [ "$DOWN_STATUS" = 0 ]; then echo "down=$DOWN_READ" >>"$GITHUB_OUTPUT"; fi\n',
+    )
+    expect(RESTORE_DOWN.startsWith("SEEN=''\nfor PART in Services Data Platform; do\n")).toBe(true)
+    expect(RESTORE_DOWN).toContain('if [ "$SEEN" != "$PLANNED" ]; then')
+    // The check comes before every deploy down makes.
+    expect(RESTORE_DOWN.indexOf('"$PLANNED"')).toBeLessThan(RESTORE_DOWN.indexOf(CDK_DEPLOY_DOWN))
+    expect(STEP_ENVS.prod?.['Take the restore stage down']).toEqual({
+      PLANNED: `\${{ needs.prod-plan.outputs.down }}`,
+    })
+    expect(JOB_OUTPUTS['prod-plan']).toEqual({
+      attempt: `\${{ github.run_attempt }}`,
+      down: `\${{ steps.diff.outputs.down }}`,
+    })
+    expect(prodPathFindings(workflows)).toEqual([])
   })
 })

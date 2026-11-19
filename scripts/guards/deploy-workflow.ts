@@ -29,9 +29,12 @@
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
 // command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
 // build's image archive) hides a line of the log or the approver's diff or drops a job output; prod-plan
-// diffs what every approval in prod deploys, a restore's too (DPW-08), and writes the diff into its summary
-// as an indented code block, which no line of a release's own text can end or turn into HTML that hides
-// the rest; and ASSET_CHECK refuses a template that hands CloudFormation
+// diffs what every approval in prod deploys, a restore's too (DPW-08), a restore taken down deploying only
+// the stacks that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy
+// unless it reads the same), and writes the diff into its summary as an indented code block, which no line
+// of a release's own text can end or turn into HTML that hides the rest; a credentialed run writes no file
+// but its outputs, its summary and /dev/null, and the diff in prod-plan's two diff runs alone; and
+// ASSET_CHECK refuses a template that hands CloudFormation
 // another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
 // type, a transform), which neither the CLI's diff nor the release check reads, and a file asset whose id,
 // which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
@@ -88,33 +91,34 @@
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
 // reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads. A
-// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to
-// evaluating only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript,
-// name a builtin takes, descriptor's variable and variable bash evaluates, a default or an element's
-// assignment counting as the name's, a [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis
-// holds one, and a line it can't read that plainly is refused), to expanding only a name it sets, one its
-// step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's
-// diff file or the runner's outputs, summary, folder, run ids, address and commit (foreignExpansionLines(),
-// DPW-07), so no canonical text prints the OIDC request token or another credential its job holds, to running only the
-// commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, with no
-// environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to local or
-// export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and no
-// name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS
-// or other variable a held tool reads reaches it), and to every program it runs being held by what it is
-// handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written
-// on the line and, for jq, data under the assembly's or the temp folder or a path in the checkout; printf
-// only a single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and
-// options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug), one
-// value to each option but a list's, so no expansion in a second word hands aws an option; tee only
-// appending to the summary; no word of these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+
-// PWD, wherever bash expands one, a ${…}'s default and a double-quoted replacement among them), nor any that
-// expands to several words but PROBE's task list and ASSET_CHECK's list of templates; and every other program
-// CANONICAL_COMMANDS names (grep, wc, readlink, realpath, git, node, sort, sleep, mktemp, cd and pwd as much
-// as sed, tar, find, curl, openssl, base64, mkdir and sha256sum) only on its lines as the guard writes them,
-// as is any read of a file by a redirection; the lines the tool holds compare against (TOOL_LINE_TEXTS) are
-// the guard's own literals, never read from a canonical text, so a text can't widen what it is held to. What
-// a variable a held line names holds is the text's own, set from AWS's answers, the job's env or a literal
-// in every text the guard writes, which a change to the text shows.
+// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to evaluating
+// only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
+// descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
+// [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis holds one, a [ or test with a word bash could
+// split, glob or expand a tilde in or that stands where no shape check reads it (after a redirection, an assignment,
+// run or get) counting as a site, and a line it can't read that plainly is refused), to expanding only a name it
+// sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder,
+// prod-plan's diff file or the runner's outputs, summary, folder, run ids, address and commit
+// (foreignExpansionLines(), DPW-07), so no canonical text prints the OIDC request token or another credential its
+// job holds, to running only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a
+// plain word, with no environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to
+// local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and
+// no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
+// other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
+// DIFF, STAGE) set in any spelling but the preamble's CDK line), and to every program it runs being held by what it
+// is handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written on
+// the line and, for jq, data under the assembly's or the temp folder or a path in the checkout; printf only a
+// single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and options the
+// workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug), one value to each option
+// but a list's, so no expansion in a second word hands aws an option; tee only appending to the summary; no word of
+// these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+ PWD, wherever bash expands one, a ${…}'s
+// default and a double-quoted replacement among them), nor any that expands to several words but PROBE's task list
+// and ASSET_CHECK's list of templates; and every other program CANONICAL_COMMANDS names (grep, wc, readlink,
+// realpath, git, node, sort, sleep, mktemp, cd and pwd as much as sed, tar, find, curl, openssl, base64, mkdir and
+// sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection; the lines the
+// tool holds compare against (TOOL_LINE_TEXTS) are the guard's own literals, never read from a canonical text, so a
+// text can't widen what it is held to. What a variable a held line names holds is the text's own, set from AWS's
+// answers, the job's env or a literal in every text the guard writes, which a change to the text shows.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -909,8 +913,31 @@ export const CDK_DIFF_DOWN = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/$PART" -
 // each only for a restore stack that exists and has settled; one a failed create left (ROLLBACK_COMPLETE,
 // or REVIEW_IN_PROGRESS, which never settles) is skipped, and one whose rollback failed too
 // (ROLLBACK_FAILED, which the CLI would delete and create again) is skipped and fails the step after the
-// others are down.
-export const RESTORE_DOWN = sh`KEPT=''
+// others are down. First it reads every stack's status as prod-plan's RESTORE_DOWN_DIFF did and refuses,
+// before any deploy, unless it reads what prod-plan read (PLANNED, its down output), so down deploys only the
+// stacks the approved diff showed: one that didn't exist or that a failed create left when prod-plan read it,
+// and that another restore's up has since created or recreated, is never deployed from a template no diff
+// showed (the eighth review's first attack).
+export const RESTORE_DOWN = sh`SEEN=''
+for PART in Services Data Platform; do
+  if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
+    case "$STATUS" in
+      *'does not exist'*)
+        STATUS=missing
+        ;;
+      *)
+        echo "restore down: Hearth-$STAGE-$PART can't be read" | mask
+        exit 1
+        ;;
+    esac
+  fi
+  SEEN="$SEEN$PART:$STATUS,"
+done
+if [ "$SEEN" != "$PLANNED" ]; then
+  echo "restore down: the restore stage changed since prod-plan diffed it (prod-plan read $PLANNED, down reads $SEEN), so nothing is taken down: dispatch restore=down again" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+  exit 1
+fi
+KEPT=''
 for PART in Services Data Platform; do
   if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
     case "$STATUS" in
@@ -959,7 +986,10 @@ export const RESTORE_DOWN_DIFF = sh`# A restore taken down (RESTORE_DOWN_DIFF; C
 # created. One that doesn't exist, that a failed create left or whose failed create couldn't roll back is
 # named above the diff, through the filter, and not diffed; one still moving, or one that can't be read,
 # fails the diff, as it would fail down. Its status is DOWN_STATUS, which the run then takes as the diff's.
+# What it read of each stack (DOWN_READ: missing, or its status) is the job's down output, which the prod
+# job's down holds the stage to, so down deploys no stack this diff didn't show.
 DOWN_STATUS=0
+DOWN_READ=''
 if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
   : >"$DIFF"
   for PART in Services Data Platform; do
@@ -967,6 +997,7 @@ if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
       case "$PART_STATUS" in
         *'does not exist'*)
           echo "restore down: Hearth-$STAGE-$PART doesn't exist, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          DOWN_READ="$DOWN_READ$PART:missing,"
           continue
           ;;
         *)
@@ -976,6 +1007,14 @@ if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
           ;;
       esac
     fi
+    case "$PART_STATUS" in
+      '' | *[!A-Z_]*)
+        echo "restore down: Hearth-$STAGE-$PART can't be read, so the diff fails" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        DOWN_STATUS=1
+        break
+        ;;
+    esac
+    DOWN_READ="$DOWN_READ$PART:$PART_STATUS,"
     case "$PART_STATUS" in
       ROLLBACK_COMPLETE | REVIEW_IN_PROGRESS)
         echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -998,6 +1037,7 @@ if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
       break
     }
   done
+  if [ "$DOWN_STATUS" = 0 ]; then echo "down=$DOWN_READ" >>"$GITHUB_OUTPUT"; fi
 fi`
 
 // The image check (C11-D50, C11-D79, DPW-13): check_image_archive and unpack_image, defined here and called by
@@ -1587,7 +1627,8 @@ export const DOWN_RUN = cliRun(
 # exist is skipped, and one still moving refuses, so down works after a failed or partial up and
 # never creates a stack. One whose failed create couldn't roll back (ROLLBACK_FAILED, which may hold
 # billed resources, and which the CLI would delete and create again) is skipped too, the later stacks
-# are still taken down, and the step then fails, since that stack waits for tier 2.`,
+# are still taken down, and the step then fails, since that stack waits for tier 2. Nothing is taken down
+# unless every stack reads as prod-plan read it (PLANNED), so down deploys only what the approved diff showed.`,
   'assembly',
   RESTORE_DOWN,
 )
@@ -2574,14 +2615,24 @@ function readDefinitions(run: string): Array<{ name: string; line: number }> {
 }
 
 // An assignment to one of the names in any of bash's spellings: NAME=, NAME+=, NAME[i]=, export, local
-// or readonly NAME=, (( NAME = … )), $(( NAME += … )) and ${NAME:=…}. (printf -v, read, mapfile and for
-// set a variable too: a credentialed run uses them only on DPW-10's SETTER_LINES.)
+// or readonly NAME=, (( NAME = … )), $(( NAME += … )) and ${NAME:=…}. (printf -v, read, mapfile, local, for,
+// select and getopts set a variable by a word they are handed, which builtinNames() reads: a credentialed run
+// uses them only on DPW-10's SETTER_LINES, and none of them names HELD_NAMES anywhere.)
 const assigns = (names: string) =>
   new RegExp(String.raw`(?<![\w$.-])(?:${names})(?:\[[^\]]*\])?\s*(?:[-+*/%&|^:]|<<|>>)?=(?!=)`)
 const STAGE_ASSIGNMENT = assigns('STAGE')
 const CDK_ASSIGNMENT = assigns('CDK')
 const ASSEMBLY_ASSIGNMENT = assigns('ASSEMBLY')
 const DIFF_ASSIGNMENT = assigns('DIFF')
+// The names a rule holds to the one line that sets them (DPW-06, DPW-10): CDK, the CLI the preamble names;
+// ASSEMBLY, the folder the CLI reads; DIFF, the file prod-plan's diff runs write; and STAGE, the job's. Each
+// rule reads its name in every spelling bash sets one in, an assignment (assigns()) and a word a builtin is
+// handed (builtinNames()), and no canonical text sets one at all but the preamble's CDK line, so no printf -v,
+// read, mapfile or for loop points the diff's write at the CLI CLI_CHECK checked, or "$CDK" at another
+// program (the eighth review's first attack, which assigns() alone let through).
+const HELD_NAMES: readonly string[] = ['CDK', 'ASSEMBLY', 'DIFF', 'STAGE']
+const HELD_ASSIGNMENT = assigns(HELD_NAMES.join('|'))
+const handsName = (name: string) => (command: ShellCommand) => builtinNames(command).includes(name)
 
 // Each line of a run with its two views, for the rules that read a line's text or its code.
 function runLines(
@@ -2743,7 +2794,10 @@ const EVALUATING_NAME =
 // A [ or test, where a command starts, whose words, after one !, are one word, a unary test of TEST_UNARY and a
 // word, or a word, a binary test of TEST_BINARY and a word, each operator written plainly: no -v or -R, which
 // evaluate a name, and no operator in quotes or given by an expansion, which test reads after bash takes its
-// quotes off and expands it.
+// quotes off and expands it; and no word bash could split into several (wordSplits(): an expansion or a
+// substitution outside double quotes, a glob, a brace or a tilde), since [ reads its words only after bash
+// splits them, so an unquoted [ -n $x ] hands it -v and a subscript to evaluate when x's value holds them
+// (the eighth review's first attack).
 const TEST_START = /(?:^|[;&|(){!]|\b(?:if|then|elif|else|while|until|do)\b)[ \t]*(\[|test)(?=[ \t])/g
 const TEST_UNARY = ['-n', '-z', '-d', '-f', '-e', '-s', '-L', '-h', '-r', '-x']
 const TEST_BINARY = ['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']
@@ -2769,7 +2823,7 @@ function testWords(line: string, from: number, bracket: boolean): string[] | und
   return found
 }
 const testShaped = (words: readonly string[] | undefined) => {
-  if (words === undefined) return false
+  if (words === undefined || words.some(word => wordSplits(word))) return false
   const operands = words[0] === '!' ? words.slice(1) : words
   if (operands.length === 1) return true
   if (operands.length === 2) return TEST_UNARY.includes(operands[0] ?? '')
@@ -2777,9 +2831,12 @@ const testShaped = (words: readonly string[] | undefined) => {
 }
 // The lines of a code view on which bash would evaluate a name or an operator a value hands it: a name read,
 // unset, mapfile or readarray is given that isn't plain, a flag of theirs but -r and -t, wait's -p, one of
-// bash's own evaluating names, set -x, and a [ or test of any other shape.
-function unplainLines(code: string): number[] {
+// bash's own evaluating names, set -x, and a [ or test of any other shape, or one TEST_START doesn't read
+// (unreadTests(), given the text the code view is of).
+function unplainLines(code: string, text?: string): number[] {
+  const unread = new Set(text === undefined ? [] : unreadTests(text, code))
   return code.split('\n').flatMap((line, n) => {
+    if (unread.has(n)) return [n]
     const names = [...line.matchAll(NAME_TAKER)].some(([, builtin, rest]) => {
       const words = (rest ?? '')
         .trim()
@@ -2793,6 +2850,17 @@ function unplainLines(code: string): number[] {
     )
     return names || tests || EVALUATING_NAME.test(line) ? [n] : []
   })
+}
+// The lines of a text on which shellCommands() reads more [ and test commands than TEST_START finds where a
+// command starts: one after a redirection, an assignment or a wrapper (run [ -n $x ], say), whose words
+// testShaped() would never read, so it is refused whatever they are.
+function unreadTests(text: string, code: string): number[] {
+  const counts = new Map<number, number>()
+  for (const command of shellCommands(text)) {
+    if (command.word === '[' || command.word === 'test') counts.set(command.line, (counts.get(command.line) ?? 0) + 1)
+  }
+  const lines = code.split('\n')
+  return [...counts].filter(([n, count]) => count > [...(lines[n] ?? '').matchAll(TEST_START)].length).map(([n]) => n)
 }
 // A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own).
 const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=.*)?)$/s
@@ -2815,7 +2883,7 @@ function words(text: string): string[] {
 // The lines of a text, by index, that bash evaluates as arithmetic or a name (EVALUATED, on the code view).
 export function evaluatedLines(run: string): number[] {
   const code = shellViews(run).code
-  const unplain = new Set(unplainLines(code))
+  const unplain = new Set(unplainLines(code, run))
   return code
     .split('\n')
     .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n) ? [n] : []))
@@ -2837,7 +2905,7 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
     : []
   if (names.some(command => !words(command.tail).every(word => GIVEN_NAME.test(word)))) return false
   const canonical = canonicalLines(run)
-  const unplain = new Set(unplainLines(views.code))
+  const unplain = new Set(unplainLines(views.code, run))
   return views.code
     .split('\n')
     .every((line, n) => !(EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n)) || canonical.has(n))
@@ -2890,7 +2958,7 @@ export function outsideEvaluations(text: string): number[] {
   // $[ … ] in double quotes too, which the code view writes as quoted text.
   for (const match of views.text.matchAll(/\$\[/g)) sites.push({ at: match.index, names: undefined })
   let offset = 0
-  const unplain = new Set(unplainLines(code))
+  const unplain = new Set(unplainLines(code, text))
   for (const [n, line] of code.split('\n').entries()) {
     if (TEST_EVALUATIONS.some(pattern => pattern.test(line)) || unplain.has(n)) {
       sites.push({ at: offset, names: undefined })
@@ -3277,16 +3345,20 @@ const CANONICAL_COMMANDS = [
 // local with no flag (no -x), set only as set -euo pipefail (no -a or -k, which export each assignment), no
 // assignment before a command's word but IFS's before read, a builtin, which hands no child an environment,
 // no wrapper (env, command, …), and no assignment, anywhere, of a name that chooses what a program runs or
-// reads (LOADER_NAMES) but CDK_FOLDER's HOME. A held tool's line is held with its environment.
+// reads (LOADER_NAMES) but CDK_FOLDER's HOME, nor of one a rule holds to its one line (HELD_NAMES) but the
+// preamble's CDK, in any spelling. A held tool's line is held with its environment.
 const EXPORT_LINES = (): ReadonlySet<string> => new Set([PREAMBLE.split('\n').at(-1) ?? '', CDK_FOLDER])
 const IFS_PREFIXES = ['IFS=', "IFS=$'__'"]
 // The names a builtin sets by a word it is handed rather than by NAME=, which LOADER_ASSIGNMENT doesn't read:
-// read's, mapfile's and readarray's names, a for loop's and printf -v's (each a plain word, by the rules above),
-// so none is PATH, HOME or another of LOADER_NAMES (the seventh review's third attack).
+// read's, mapfile's and readarray's names, a for or select loop's, getopts', printf -v's and local's (each a
+// plain word, by the rules above), so none is PATH, HOME or another of LOADER_NAMES (the seventh review's third
+// attack), nor one of HELD_NAMES (the eighth review's first).
 const builtinNames = ({ word, tail }: ShellCommand): string[] => {
   const given = words(tail)
   if (word === 'read' || word === 'mapfile' || word === 'readarray') return given.filter(each => PLAIN_NAME.test(each))
-  if (word === 'for') return given.slice(0, 1)
+  if (word === 'for' || word === 'select') return given.slice(0, 1)
+  if (word === 'getopts') return given.slice(1, 2)
+  if (word === 'local') return given.map(each => /^[A-Za-z_]\w*(?=\+?=|$)/.exec(each)?.[0] ?? '').filter(Boolean)
   return word === 'printf' && given[0] === '-v' ? given.slice(1, 2) : []
 }
 // The lines of a canonical text that run a command CANONICAL_COMMANDS doesn't name (or no function the
@@ -3310,12 +3382,13 @@ export function canonicalCommandLines(text: string, functions: ReadonlySet<strin
       (word === 'set' && !/^\s+-euo\s+pipefail\s*$/.test(command.tail)) ||
       (assigned.length > 0 && !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix)))) ||
       wrapped.some(prefix => prefix !== 'run' && prefix !== 'get') ||
-      builtinNames(command).some(name => LOADER_NAME.test(name))
+      builtinNames(command).some(name => LOADER_NAME.test(name) || HELD_NAMES.includes(name))
     if (!allowed || environment) lines.add(command.line)
   }
   const code = shellViews(text).code.split('\n')
   for (const [n, line] of code.entries()) {
     if (LOADER_ASSIGNMENT.test(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
+    if (HELD_ASSIGNMENT.test(line) && lineOf(n) !== PREAMBLE_CDK) lines.add(n)
   }
   return [...lines].sort((a, b) => a - b)
 }
@@ -3409,7 +3482,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
-        `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs`,
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
       )
     }
   }
@@ -5203,6 +5276,8 @@ export function deployStepFindings(workflows: Texts): Finding[] {
       if (step.env.has('STAGE')) add(id, `sets STAGE once, at the job, to ${wantStage ?? 'nothing'}`)
       if (step.run === undefined) continue
       const run = step.run
+      if (shellCommands(run).some(handsName('STAGE')))
+        add(id, `sets STAGE once, at the job, to ${wantStage ?? 'nothing'}`)
       for (const line of runLines(run)) {
         const raw = line.raw.trim()
         if (line.text.includes('run-task') && raw !== RUN_TASK_MIGRATE && raw !== RUN_TASK_PROBE) {
@@ -5822,9 +5897,29 @@ export function prodPathFindings(workflows: Texts): Finding[] {
   // A prod deploy or rollback is approved against prod-plan's diff of this attempt: prod-plan outputs its
   // attempt, which prod's fast re-check (pinned above, with PLAN_ATTEMPT) holds to GITHUB_RUN_ATTEMPT, so a
   // re-run of prod alone, whose prod-plan keeps an earlier attempt's outputs, refuses before the credentials.
+  // A restore taken down is approved against the stacks its diff showed: prod-plan outputs what its Diff step
+  // read of each restore stack (down, RESTORE_DOWN_DIFF's), and prod's down step (pinned whole, PLANNED its
+  // env) refuses before any deploy unless it reads the same, so no stack another restore created or recreated
+  // since is deployed from a template no diff showed (the eighth review's first attack).
   const planOutputs = blockValue(plan?.job.keys.get('outputs') ?? [])
-  if (!isMap(planOutputs) || planOutputs.size !== 1 || planOutputs.get('attempt') !== expr('github.run_attempt')) {
-    add('prod-plan', "outputs its attempt alone, which prod's fast re-check holds to its own")
+  if (
+    !isMap(planOutputs) ||
+    planOutputs.size !== 2 ||
+    planOutputs.get('attempt') !== expr('github.run_attempt') ||
+    planOutputs.get('down') !== stepOutput('diff', 'down')
+  ) {
+    add(
+      'prod-plan',
+      "outputs its attempt, which prod's fast re-check holds to its own, and its diff's read of the restore stage, which prod's down holds the stage to, and nothing else",
+    )
+  }
+  const takeDown = jobs.get('prod')?.steps.find(step => step.name === 'Take the restore stage down')
+  if (
+    takeDown?.run !== DOWN_RUN ||
+    takeDown.env.get('PLANNED') !== expr('needs.prod-plan.outputs.down') ||
+    plan?.steps.find(step => step.name === 'Diff')?.id !== 'diff'
+  ) {
+    add('prod', "takes the restore stage down only as prod-plan's diff read it (PLANNED, its down output)")
   }
   // A smoke judges only a read-back from this attempt: a re-run of it alone (whose deploy job keeps its
   // outputs from an earlier attempt) refuses before smoke.ts runs, so no stale pass is recorded or staged.
@@ -6787,10 +6882,13 @@ function glueIsHeld(
   command: GlueCommand,
   calls: ReadonlyMap<string, readonly string[]>,
   commands: readonly GlueCommand[],
+  diffRun = false,
 ): boolean {
   const name = command.name
   const redirections = command.redirections.every(({ op, target }) =>
-    op === '<' ? target?.raw === '"$DIFF"' : op.startsWith('<') || op.includes('&') || WRITABLE.test(target?.raw ?? ''),
+    op === '<'
+      ? target?.raw === DIFF_TARGET
+      : op.startsWith('<') || op.includes('&') || writable(target?.raw ?? '', diffRun),
   )
   if (name === undefined) return redirections
   if (!redirections || command.assignments.length > 0) return false
@@ -6899,12 +6997,15 @@ const LOADER_NAMES = String.raw`PATH|HOME|PWD|OLDPWD|BASH\w*|ENV|CDPATH|SHELLOPT
 const LOADER_ASSIGNMENT = assigns(LOADER_NAMES)
 const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
-// What a credentialed run may write to: nothing but its outputs, its summary, prod-plan's diff (DIFF, set
-// by its one line) and /dev/null, so no file the CLI or a tool then runs (the CLI CLI_FETCH unpacked, say)
-// is rewritten. A write is any redirection that opens its target for writing: >, >>, >|, &>, a
-// descriptor's (2>) and the read-write <> (1<>file, which rewrites the file in place).
+// What a credentialed run may write to: nothing but its outputs, its summary and /dev/null, and in
+// prod-plan's two diff runs alone (DIFF_RUNS) the diff (DIFF, set by its one line and by no builtin, which
+// HELD_NAMES holds), so no file the CLI or a tool then runs (the CLI CLI_FETCH unpacked, say) is rewritten,
+// whatever a canonical text sets DIFF to. A write is any redirection that opens its target for writing: >, >>,
+// >|, &>, a descriptor's (2>) and the read-write <> (1<>file, which rewrites the file in place).
 const REDIRECTION = /(?<![<>&])(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
-const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|DIFF)")$/
+const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY)")$/
+const DIFF_TARGET = '"$DIFF"'
+const writable = (target: string, diffRun: boolean) => WRITABLE.test(target) || (diffRun && target === DIFF_TARGET)
 const DIFF_LINE = 'DIFF="$RUNNER_TEMP/diff.txt"'
 // The canonical texts that define functions, and the lines on which a credentialed run sets a variable by
 // printf -v, read, mapfile or for: the canonical texts' own, and the read-back's and the rollback jobs'
@@ -7014,6 +7115,7 @@ const ENV_KEYS = [
   'PREVIOUS_COMMIT',
   'PREVIOUS_DIGEST',
   'PLAN_ATTEMPT',
+  'PLANNED',
   'PROFILE_AT',
   'READBACK',
   'RECORD_ID',
@@ -7080,6 +7182,7 @@ const deployEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<strin
     ...(stage === 'prod' ? { NONPROD_DIGEST } : {}),
   },
   Migrate: { ...GH_ENV, COMMIT: expr('steps.release.outputs.commit') },
+  ...(stage === 'prod' ? { 'Take the restore stage down': { PLANNED: expr('needs.prod-plan.outputs.down') } } : {}),
   'Read back what runs': readBackEnv(RELEASE_OUTPUT),
 })
 const rollbackEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
@@ -7333,7 +7436,7 @@ export const JOB_OUTPUTS: Readonly<Record<string, Readonly<Record<string, string
   'synth-previous-prod': { assembly: stepOutput('previous-prod', 'artifact-id') },
   nonprod: deployOutputs,
   'rollback-nonprod': rollbackOutputs,
-  'prod-plan': { attempt: expr('github.run_attempt') },
+  'prod-plan': { attempt: expr('github.run_attempt'), down: stepOutput('diff', 'down') },
   'prod-gate': { current_prod_id: stepOutput('check', 'current_prod_id') },
   prod: deployOutputs,
   'rollback-prod': rollbackOutputs,
@@ -7357,7 +7460,7 @@ export const STEP_IDS: Readonly<Record<string, Readonly<Record<string, string>>>
   'synth-previous-prod': { "Upload prod's previous assembly": 'previous-prod' },
   nonprod: { ...deployIds, ...markIds },
   'rollback-nonprod': rollbackIds,
-  'prod-plan': { 'The release this job deploys': 'release' },
+  'prod-plan': { 'The release this job deploys': 'release', Diff: 'diff' },
   'prod-gate': { 'The prod gate': 'check' },
   prod: { ...deployIds, ...markIds },
   'rollback-prod': rollbackIds,
@@ -7782,10 +7885,11 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const lines = runLines(run, views)
       if (lines.some(line => REFUSED_CLI.test(line.text)))
         add(where, 'passes none of the CLI’s refused flags or subcommands')
-      for (const line of lines) {
-        if (CDK_ASSIGNMENT.test(line.code) && line.raw.trim() !== PREAMBLE_CDK) {
-          add(where, 'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked')
-        }
+      if (
+        lines.some(line => CDK_ASSIGNMENT.test(line.code) && line.raw.trim() !== PREAMBLE_CDK) ||
+        shellCommands(run).some(handsName('CDK'))
+      ) {
+        add(where, 'assigns CDK only in the preamble, as the bin of the registry package CLI_FETCH unpacked')
       }
       if (!credentialed) return
       if (step.uses !== undefined && !ALLOWED_USES.test(step.uses)) {
@@ -7834,7 +7938,8 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       // Its own lines are read by the table, each command held to its uses.
       const refused = refusedAt(where, read)
       if (refused !== undefined) add(refused, AS_BASH)
-      if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS, read.commands))) add(where, HELD)
+      const diffRun = DIFF_RUNS.includes(run)
+      if (read.commands.some(command => !glueIsHeld(command, CANONICAL_CALLS, read.commands, diffRun))) add(where, HELD)
       if (setsAnInput(run, read, [...jobNames, ...step.env.keys()], pinnedRunOf(id, step))) add(where, SETS_INPUT)
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
@@ -7852,9 +7957,10 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const code = commandCode(shellViews(run).code).split('\n')
       if (
         code.some(line =>
-          [...line.matchAll(REDIRECTION)].some(write => write[1] !== '(' && !WRITABLE.test(write[1] ?? '')),
+          [...line.matchAll(REDIRECTION)].some(write => write[1] !== '(' && !writable(write[1] ?? '', diffRun)),
         ) ||
-        lines.some(line => DIFF_ASSIGNMENT.test(line.code) && line.raw.trim() !== DIFF_LINE)
+        lines.some(line => DIFF_ASSIGNMENT.test(line.code) && line.raw.trim() !== DIFF_LINE) ||
+        commands.some(handsName('DIFF'))
       ) {
         add(where, "writes no file but its outputs, its summary, prod-plan's diff and /dev/null")
       }
@@ -7881,6 +7987,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const moves = commands.filter(command => ['cd', 'pushd', 'popd'].includes(command.word))
       if (
         cli.some(line => !cliLineIsSafe(line.text)) ||
+        commands.some(handsName('ASSEMBLY')) ||
         assembly.length !== 1 ||
         assembly[0]?.raw.trim() !== wantAssembly ||
         (assembly[0]?.index ?? first) > first ||
