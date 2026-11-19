@@ -59,8 +59,16 @@
 // (the handler's code itself is the release's own, as the image is: ASSET_CHECK holds a zip asset's key to 64 hex
 // digits and .zip, never to the zip's bytes, which it doesn't read, and the CLI uploads nothing to a key already
 // in the bucket, so the first release to upload a key decides what every later one naming it runs; what that
-// code can do is its role's grant, which the diff's IAM table shows), and refuses a file asset whose id, which
-// the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
+// code can do is its role's grant, which the diff's IAM table shows), refuses a file asset whose id, which
+// the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits, and holds
+// every resource to the property paths and forms the workload synth writes for its type (one jq object literal
+// in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
+// each value a service acts on (a task's roles, image, logs, secret and tags, a service's network, ECS Exec and
+// target groups, a security group rule's peer, a VPC endpoint's service and policy, the load balancer's
+// attributes, a listener's and record's targets, a parameter's stored value, a role's trust, a tag's key) to the
+// synth's shape, since the stage's own code that writes them is rendered only for a real release and the diff
+// prints an added resource as one line (a container's environment, command and health check stay the release's
+// own, as its image is).
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -353,10 +361,11 @@ esac`
 // release's assembly too, which that release's own code synthesised: each synth-previous job's check of its
 // environment's previous assembly (a refusal there fails that job, so nothing deploys), a rollback's target and
 // a restore at prod's newest record. So a change to what it pins exactly (a stack's properties, roles,
-// bootstrap version or termination protection, the asset manifests' shape, the outputs) keeps accepting each
-// shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline rollback
-// or restore to a release before the change is refused (T24 item 22). No case can plant an older shape until
-// one exists.
+// bootstrap version or termination protection, the asset manifests' shape, the outputs, and from review 10 each
+// resource type's property paths in its literal and each value it holds to the synth's shape) keeps accepting
+// each shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline
+// rollback or restore to a release before the change is refused (T24 item 22). No case can plant an older shape
+// until one exists.
 export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D76, DPW-14). A downloaded cloud assembly is data
 # the CLI acts on, so before any credential each one is walked from its root manifest through every
 # nested assembly, the files its manifests name and not file names, and refused for: missing context
@@ -422,10 +431,41 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
 # its template, with no layer, environment, network or other key, so no other account's code runs before
 # the handler), and no string in its template names it, so no grant, output or other value reads its
-# answer. Then it requires every Services template's Release output to be the release this job deploys,
-# and every container image in the Tasks and Services templates to be the server image at its digest,
-# reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the rule,
-# never a path or value from the assembly.
+# answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
+# properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
+# every key and nested key of its properties, with each intrinsic function within them by its name, to its
+# type's list of paths below, each key of letters, digits, : and - alone. The diff prints an added resource as
+# one line and a changed one as its property tree, so otherwise a container's environment files, a log
+# group's resource policy or key, a load balancer's access logs, a target group's targets, a secret's replicas
+# or a literal ARN of another account where the synth writes a reference would reach CloudFormation unread,
+# in non-prod with no approver at all. It holds what each stack's values name, for that stack's own stage: no
+# string (a literal, or a Join or Sub with the account's id and partition filled in) holds an ARN but one in
+# the account's own namespace, in ap-southeast-1 or IAM's (or the one S3 ARN, ECR's image-layer bucket, which
+# the S3 gateway endpoint's one statement names), an account id (12 digits in a row outside a 64-hex digest),
+# or a Hearth name or parameter of another stage. And it holds each value a service acts on to the synth's
+# shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
+# by name in the account, its image the server's repository in the account at a digest, its log group and
+# stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
+# which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
+# service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
+# behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+# is CDK's disallow-all alone and its inline ingress HTTPS from anywhere alone, and each rule resource names
+# the template's own groups or S3's managed prefix list; a VPC endpoint names one of the six services the
+# synth writes in ap-southeast-1 (ecr.api, ecr.dkr, logs, secretsmanager, ssmmessages and s3), the template's
+# network and a policy whose every statement binds its principals to the organisation by aws:PrincipalOrgID,
+# but the S3 gateway's one statement for ECR's image layers; the load balancer and target groups hold the
+# attributes the synth writes (no access, connection or health-check log destination), the template's
+# network and targets by IP alone; a listener serves the template's certificates with a fixed response, a
+# rule forwards to the template's target groups, the record is an alias of the template's load balancer in
+# its stage's zone, routes reach the template's internet gateway and flow logs the template's log group by
+# its own role; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+# parameter holding the template's own resource's value (or a host name for Valkey's endpoint) and each role
+# trusted by ECS tasks, VPC flow logs or Lambda alone, in the account. What a container is handed beside
+# these (its environment, command, health check and user) is the release's own, as the image is, held to
+# its keys alone. Then it requires every Services template's Release output to be the release this job
+# deploys, and every container image in the Tasks and Services templates to be the server image at its
+# digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
+# rule, never a path or value from the assembly.
 asset_refuse() {
   echo "asset-check: $1"
   exit 1
@@ -525,6 +565,230 @@ check_release_in() {
     while IFS=$'\t' read -r stack template; do
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
         asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+      # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
+      # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
+      # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
+      # on any line of the workflow, stays part of a longer word). A key the synth never writes is refused, and so
+      # is a value the synth writes as a reference written as a literal (an ARN or id of another account's
+      # resource) or the other way round.
+      # A change that writes another key, or a property in another form, adds its path here, which the owner
+      # reads; a path stays while a previous release's assembly (any of ECR's newest 50 images, which
+      # synth-previous-*, a rollback or a restore may deploy) still writes it.
+      jq -e '{
+        "AWS::CertificateManager::Certificate": [
+          "DomainName", "DomainValidationOptions_[]_DomainName", "DomainValidationOptions_[]_HostedZoneId_Ref",
+          "Tags_[]_Key", "Tags_[]_Value", "ValidationMethod"
+        ],
+        "AWS::EC2::FlowLog": [
+          "DeliverLogsPermissionArn_Fn::GetAtt_[]", "LogDestinationType", "LogGroupName_Ref",
+          "MaxAggregationInterval", "ResourceId_Ref", "ResourceType", "TrafficType"
+        ],
+        "AWS::EC2::InternetGateway": ["Tags_[]_Key", "Tags_[]_Value"],
+        "AWS::EC2::Route": ["DestinationCidrBlock", "GatewayId_Ref", "RouteTableId_Ref"],
+        "AWS::EC2::RouteTable": ["Tags_[]_Key", "Tags_[]_Value", "VpcId_Ref"],
+        "AWS::EC2::SecurityGroup": [
+          "GroupDescription", "SecurityGroupEgress_[]_CidrIp", "SecurityGroupEgress_[]_Description",
+          "SecurityGroupEgress_[]_FromPort", "SecurityGroupEgress_[]_IpProtocol", "SecurityGroupEgress_[]_ToPort",
+          "SecurityGroupIngress_[]_CidrIp", "SecurityGroupIngress_[]_Description", "SecurityGroupIngress_[]_FromPort",
+          "SecurityGroupIngress_[]_IpProtocol", "SecurityGroupIngress_[]_ToPort", "VpcId_Ref"
+        ],
+        "AWS::EC2::SecurityGroupEgress": [
+          "Description", "DestinationPrefixListId", "DestinationSecurityGroupId_Fn::GetAtt_[]", "FromPort",
+          "GroupId_Fn::GetAtt_[]", "IpProtocol", "ToPort"
+        ],
+        "AWS::EC2::SecurityGroupIngress": [
+          "Description", "FromPort", "GroupId_Fn::GetAtt_[]", "IpProtocol", "SourceSecurityGroupId_Fn::GetAtt_[]",
+          "ToPort"
+        ],
+        "AWS::EC2::Subnet": [
+          "AvailabilityZone_Fn::Select_[]", "AvailabilityZone_Fn::Select_[]_Fn::GetAZs", "CidrBlock",
+          "MapPublicIpOnLaunch", "Tags_[]_Key", "Tags_[]_Value", "VpcId_Ref"
+        ],
+        "AWS::EC2::SubnetRouteTableAssociation": ["RouteTableId_Ref", "SubnetId_Ref"],
+        "AWS::EC2::VPC": [
+          "CidrBlock", "EnableDnsHostnames", "EnableDnsSupport", "InstanceTenancy", "Tags_[]_Key", "Tags_[]_Value"
+        ],
+        "AWS::EC2::VPCEndpoint": [
+          "PolicyDocument_Statement_[]_Action", "PolicyDocument_Statement_[]_Action_[]",
+          "PolicyDocument_Statement_[]_Condition_StringEquals_aws:PrincipalOrgID_Ref",
+          "PolicyDocument_Statement_[]_Condition_StringEquals_aws:ResourceOrgID_Ref",
+          "PolicyDocument_Statement_[]_Effect", "PolicyDocument_Statement_[]_Principal_AWS",
+          "PolicyDocument_Statement_[]_Resource", "PolicyDocument_Statement_[]_Sid", "PolicyDocument_Version",
+          "PrivateDnsEnabled", "RouteTableIds_[]_Ref", "SecurityGroupIds_[]_Fn::GetAtt_[]", "ServiceName",
+          "SubnetIds_[]_Ref", "VpcEndpointType", "VpcId_Ref"
+        ],
+        "AWS::EC2::VPCGatewayAttachment": ["InternetGatewayId_Ref", "VpcId_Ref"],
+        "AWS::ECS::Cluster": [
+          "ClusterName", "ClusterSettings_[]_Name", "ClusterSettings_[]_Value",
+          "Configuration_ExecuteCommandConfiguration_Logging"
+        ],
+        "AWS::ECS::Service": [
+          "AvailabilityZoneRebalancing", "Cluster", "DeploymentConfiguration_DeploymentCircuitBreaker_Enable",
+          "DeploymentConfiguration_DeploymentCircuitBreaker_Rollback", "DeploymentConfiguration_MaximumPercent",
+          "DeploymentConfiguration_MinimumHealthyPercent", "DesiredCount", "EnableExecuteCommand",
+          "HealthCheckGracePeriodSeconds", "LaunchType", "LoadBalancers_[]_ContainerName",
+          "LoadBalancers_[]_ContainerPort", "LoadBalancers_[]_TargetGroupArn_Ref",
+          "NetworkConfiguration_AwsvpcConfiguration_AssignPublicIp",
+          "NetworkConfiguration_AwsvpcConfiguration_SecurityGroups_[]_Ref",
+          "NetworkConfiguration_AwsvpcConfiguration_Subnets_Ref", "PlatformVersion", "ServiceName",
+          "TaskDefinition_Ref"
+        ],
+        "AWS::ECS::TaskDefinition": [
+          "ContainerDefinitions_[]_Command_[]", "ContainerDefinitions_[]_Environment_[]_Name",
+          "ContainerDefinitions_[]_Environment_[]_Value", "ContainerDefinitions_[]_Environment_[]_Value_Fn::Join_[]",
+          "ContainerDefinitions_[]_Environment_[]_Value_Fn::Join_[]_[]",
+          "ContainerDefinitions_[]_Environment_[]_Value_Fn::Join_[]_[]_Ref", "ContainerDefinitions_[]_Essential",
+          "ContainerDefinitions_[]_HealthCheck_Command_[]", "ContainerDefinitions_[]_HealthCheck_Interval",
+          "ContainerDefinitions_[]_HealthCheck_Retries", "ContainerDefinitions_[]_HealthCheck_StartPeriod",
+          "ContainerDefinitions_[]_HealthCheck_Timeout", "ContainerDefinitions_[]_Image_Fn::Join_[]",
+          "ContainerDefinitions_[]_Image_Fn::Join_[]_[]", "ContainerDefinitions_[]_Image_Fn::Join_[]_[]_Ref",
+          "ContainerDefinitions_[]_LinuxParameters_Capabilities",
+          "ContainerDefinitions_[]_LinuxParameters_InitProcessEnabled",
+          "ContainerDefinitions_[]_LogConfiguration_LogDriver",
+          "ContainerDefinitions_[]_LogConfiguration_Options_awslogs-group",
+          "ContainerDefinitions_[]_LogConfiguration_Options_awslogs-region",
+          "ContainerDefinitions_[]_LogConfiguration_Options_awslogs-stream-prefix",
+          "ContainerDefinitions_[]_LogConfiguration_Options_max-buffer-size",
+          "ContainerDefinitions_[]_LogConfiguration_Options_mode", "ContainerDefinitions_[]_Name",
+          "ContainerDefinitions_[]_PortMappings_[]_ContainerPort", "ContainerDefinitions_[]_PortMappings_[]_Protocol",
+          "ContainerDefinitions_[]_ReadonlyRootFilesystem", "ContainerDefinitions_[]_Secrets_[]_Name",
+          "ContainerDefinitions_[]_Secrets_[]_ValueFrom_Ref", "ContainerDefinitions_[]_StopTimeout",
+          "ContainerDefinitions_[]_Ulimits_[]_HardLimit", "ContainerDefinitions_[]_Ulimits_[]_Name",
+          "ContainerDefinitions_[]_Ulimits_[]_SoftLimit", "ContainerDefinitions_[]_User", "Cpu",
+          "ExecutionRoleArn_Fn::Join_[]", "ExecutionRoleArn_Fn::Join_[]_[]", "ExecutionRoleArn_Fn::Join_[]_[]_Ref",
+          "Family", "Memory", "NetworkMode", "RequiresCompatibilities_[]", "RuntimePlatform_CpuArchitecture",
+          "RuntimePlatform_OperatingSystemFamily", "Tags_[]_Key", "Tags_[]_Value", "TaskRoleArn_Fn::Join_[]",
+          "TaskRoleArn_Fn::Join_[]_[]", "TaskRoleArn_Fn::Join_[]_[]_Ref"
+        ],
+        "AWS::ElastiCache::ParameterGroup": [
+          "CacheParameterGroupFamily", "Description", "Properties_maxmemory-policy"
+        ],
+        "AWS::ElastiCache::ReplicationGroup": [
+          "AtRestEncryptionEnabled", "AutomaticFailoverEnabled", "CacheNodeType", "CacheParameterGroupName_Ref",
+          "CacheSubnetGroupName_Ref", "Engine", "EngineVersion", "MultiAZEnabled", "NumCacheClusters", "Port",
+          "ReplicationGroupDescription", "ReplicationGroupId", "SecurityGroupIds_[]_Ref", "SnapshotRetentionLimit",
+          "TransitEncryptionEnabled", "TransitEncryptionMode"
+        ],
+        "AWS::ElastiCache::SubnetGroup": ["Description", "SubnetIds_Ref"],
+        "AWS::ElasticLoadBalancingV2::Listener": [
+          "Certificates_[]_CertificateArn_Ref", "DefaultActions_[]_FixedResponseConfig_ContentType",
+          "DefaultActions_[]_FixedResponseConfig_MessageBody", "DefaultActions_[]_FixedResponseConfig_StatusCode",
+          "DefaultActions_[]_Type", "LoadBalancerArn_Ref", "Port", "Protocol", "SslPolicy"
+        ],
+        "AWS::ElasticLoadBalancingV2::ListenerRule": [
+          "Actions_[]_TargetGroupArn_Ref", "Actions_[]_Type", "Conditions_[]_Field",
+          "Conditions_[]_PathPatternConfig_Values_[]", "ListenerArn_Ref", "Priority"
+        ],
+        "AWS::ElasticLoadBalancingV2::LoadBalancer": [
+          "LoadBalancerAttributes_[]_Key", "LoadBalancerAttributes_[]_Value", "Name", "Scheme",
+          "SecurityGroups_[]_Fn::GetAtt_[]", "Subnets_[]_Ref", "Type"
+        ],
+        "AWS::ElasticLoadBalancingV2::TargetGroup": [
+          "HealthCheckIntervalSeconds", "HealthCheckPath", "HealthCheckTimeoutSeconds", "HealthyThresholdCount",
+          "Matcher_HttpCode", "Name", "Port", "Protocol", "ProtocolVersion", "TargetGroupAttributes_[]_Key",
+          "TargetGroupAttributes_[]_Value", "TargetType", "UnhealthyThresholdCount", "VpcId_Ref"
+        ],
+        "AWS::IAM::Role": [
+          "AssumeRolePolicyDocument_Statement_[]_Action",
+          "AssumeRolePolicyDocument_Statement_[]_Condition_ArnLike_aws:SourceArn_Fn::Join_[]",
+          "AssumeRolePolicyDocument_Statement_[]_Condition_ArnLike_aws:SourceArn_Fn::Join_[]_[]",
+          "AssumeRolePolicyDocument_Statement_[]_Condition_ArnLike_aws:SourceArn_Fn::Join_[]_[]_Ref",
+          "AssumeRolePolicyDocument_Statement_[]_Condition_StringEquals_aws:SourceAccount_Ref",
+          "AssumeRolePolicyDocument_Statement_[]_Effect", "AssumeRolePolicyDocument_Statement_[]_Principal_Service",
+          "AssumeRolePolicyDocument_Statement_[]_Sid", "AssumeRolePolicyDocument_Version",
+          "PermissionsBoundary_Fn::Join_[]", "PermissionsBoundary_Fn::Join_[]_[]",
+          "PermissionsBoundary_Fn::Join_[]_[]_Ref", "Policies_[]_PolicyDocument_Statement_[]_Action",
+          "Policies_[]_PolicyDocument_Statement_[]_Action_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Condition_BoolIfExists_aws:ViaAWSService",
+          "Policies_[]_PolicyDocument_Statement_[]_Condition_StringNotEqualsIfExists_aws:SourceVpc_Ref",
+          "Policies_[]_PolicyDocument_Statement_[]_Effect", "Policies_[]_PolicyDocument_Statement_[]_NotAction",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_Fn::Join_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_Fn::Join_[]_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_Fn::Join_[]_[]_Ref",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_[]_Fn::Join_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_[]_Fn::Join_[]_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_[]_Fn::Join_[]_[]_Fn::GetAtt_[]",
+          "Policies_[]_PolicyDocument_Statement_[]_Resource_[]_Fn::Join_[]_[]_Ref",
+          "Policies_[]_PolicyDocument_Statement_[]_Sid", "Policies_[]_PolicyDocument_Version",
+          "Policies_[]_PolicyName", "RoleName"
+        ],
+        "AWS::Lambda::Function": [
+          "Code_S3Bucket_Fn::Sub", "Code_S3Key", "Description", "Handler", "MemorySize", "Role_Fn::GetAtt_[]",
+          "Runtime", "Timeout"
+        ],
+        "AWS::Logs::LogGroup": ["LogGroupClass", "LogGroupName", "RetentionInDays"],
+        "AWS::Route53::RecordSet": [
+          "AliasTarget_DNSName_Fn::Join_[]", "AliasTarget_DNSName_Fn::Join_[]_[]",
+          "AliasTarget_DNSName_Fn::Join_[]_[]_Fn::GetAtt_[]", "AliasTarget_HostedZoneId_Fn::GetAtt_[]",
+          "HostedZoneId_Ref", "Name", "Type"
+        ],
+        "AWS::SSM::Parameter": [
+          "Name", "Type", "Value", "Value_Fn::GetAtt_[]", "Value_Fn::Join_[]", "Value_Fn::Join_[]_[]_Ref", "Value_Ref"
+        ],
+        "AWS::SecretsManager::Secret": [
+          "Description", "GenerateSecretString_ExcludePunctuation", "GenerateSecretString_PasswordLength", "Name"
+        ],
+        "Custom::VpcRestrictDefaultSG": [
+          "Account_Ref", "DefaultSecurityGroupId_Fn::GetAtt_[]", "ServiceToken_Fn::GetAtt_[]"
+        ]
+      } as $held | def leaf: if type == "object" or type == "array" then length == 0 else true end;
+        .Resources // {} | type == "object" and all(.[]; type == "object" and (keys - ["DeletionPolicy", "DependsOn", "Metadata", "Properties", "Type", "UpdateReplacePolicy"] | length == 0) and (.Metadata // {} | type == "object" and (keys - ["aws:asset:path", "aws:asset:property", "aws:cdk:path"] | length == 0)) and (.Properties | type == "object") and ([.Properties | .. | objects | keys[] | select(test("\\A[A-Za-z0-9:-]+\\z") | not)] | length == 0) and ($held[.Type] | type == "array") and ([.Properties | paths(leaf) | map(if type == "number" then "[]" else . end) | join("_")] - $held[.Type] | length == 0))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a resource holds a key, or writes a property in a form, that a workload synth never writes for its type"
+      jq -e --arg stack "$stack" '($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
+        def rendered: if type == "string" then . elif type == "number" or type == "boolean" then tostring elif type == "object" and keys == ["Ref"] then (if .Ref == "AWS::AccountId" then "<account>" elif .Ref == "AWS::Partition" then "aws" else "<ref>" end) elif type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and (.[0] | type == "string") and (.[1] | type == "array")) then .["Fn::Join"][0] as $d | [.["Fn::Join"][1][] | rendered] | join($d) elif type == "object" and keys == ["Fn::Sub"] and (.["Fn::Sub"] | type == "string") then .["Fn::Sub"] | gsub("\\$\\{AWS::AccountId\\}"; "<account>") | gsub("\\$\\{AWS::Partition\\}"; "aws") | gsub("\\$\\{[^}]*\\}"; "<ref>") else "<ref>" end;
+        def renderings: if type == "object" and (keys == ["Ref"] or keys == ["Fn::Join"] or keys == ["Fn::Sub"]) then rendered elif type == "object" or type == "array" then .[] | renderings else rendered end;
+        (.Parameters // {} | all(.[]; .Default | type == "string" and (IN("/cdk-bootstrap/hearthapp/version", "/hearth/organisation/id") or startswith("/hearth/" + $s + "/")))) and
+        all(.Resources // {} | .[] | .Properties | renderings | ascii_downcase; (. == (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":")) or (test("(?<![a-z0-9])arn:(?!aws:[a-z0-9-]+:(ap-southeast-1)?:<account>:)") | not)) and (gsub("[0-9a-f]{64}"; "") | test("[0-9]{12}") | not) and all(scan("hearth[-/]((non)?prod|restore)(?![a-z0-9])"); .[0] == $s))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
+        def own($t): type == "string" and $r[.].Type == $t;
+        def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
+        def att($t; $a): type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | own($t)) and .[1] == $a);
+        def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
+        def of($t): $r[] | select(.Type == $t) | .Properties;
+        def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
+        all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
+        all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
+        all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
+        def own($t): type == "string" and $r[.].Type == $t;
+        def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
+        def att($t; $a): type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | own($t)) and .[1] == $a);
+        def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
+        def of($t): $r[] | select(.Type == $t) | .Properties;
+        all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and all(.SecurityGroupEgress // [] | .[]; .CidrIp == "255.255.255.255/32") and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
+        all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
+        all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
+        all(of("AWS::EC2::VPCEndpoint"); .ServiceName as $service | ($service | type == "string" and test("\\Acom\\.amazonaws\\.ap-southeast-1\\.(ecr\\.api|ecr\\.dkr|logs|secretsmanager|ssmmessages|s3)\\z")) and (.VpcId | ref("AWS::EC2::VPC")) and all(.SubnetIds // [] | .[]; ref("AWS::EC2::Subnet")) and all(.RouteTableIds // [] | .[]; ref("AWS::EC2::RouteTable")) and all(.SecurityGroupIds // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and (.PolicyDocument.Statement | type == "array" and all(.[]; (. == {"Sid": "EcrImageLayers", "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "s3:GetObject", "Resource": (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":"))} and ($service | endswith(".s3"))) or (.Effect == "Allow" and .Principal == {"AWS": "*"} and (.Condition.StringEquals["aws:PrincipalOrgID"] | param("/hearth/organisation/id")) and ((.Condition.StringEquals | has("aws:ResourceOrgID") | not) or (.Condition.StringEquals["aws:ResourceOrgID"] | param("/hearth/organisation/id"))))))) and
+        all(of("AWS::ElasticLoadBalancingV2::LoadBalancer"); .Name == "hearth-" + $s and .Type == "application" and all(.Subnets // [] | .[]; ref("AWS::EC2::Subnet")) and all(.SecurityGroups // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and all(.LoadBalancerAttributes // [] | .[]; .Key | IN("deletion_protection.enabled", "routing.http2.enabled", "idle_timeout.timeout_seconds", "routing.http.drop_invalid_header_fields.enabled", "routing.http.desync_mitigation_mode"))) and
+        all(of("AWS::ElasticLoadBalancingV2::TargetGroup"); (.Name | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime)\\z")) and .TargetType == "ip" and (.VpcId | ref("AWS::EC2::VPC")) and all(.TargetGroupAttributes // [] | .[]; .Key | IN("deregistration_delay.timeout_seconds", "stickiness.enabled", "load_balancing.algorithm.type"))) and
+        all(of("AWS::ElasticLoadBalancingV2::Listener"); (.LoadBalancerArn | ref("AWS::ElasticLoadBalancingV2::LoadBalancer")) and all(.Certificates // [] | .[]; .CertificateArn | ref("AWS::CertificateManager::Certificate")) and all(.DefaultActions // [] | .[]; .Type == "fixed-response")) and
+        all(of("AWS::ElasticLoadBalancingV2::ListenerRule"); (.ListenerArn | ref("AWS::ElasticLoadBalancingV2::Listener")) and all(.Actions // [] | .[]; .Type == "forward" and (.TargetGroupArn | ref("AWS::ElasticLoadBalancingV2::TargetGroup")))) and
+        all(of("AWS::Route53::RecordSet"); (.HostedZoneId | param("/hearth/" + $s + "/zone/app")) and (.AliasTarget.HostedZoneId | att("AWS::ElasticLoadBalancingV2::LoadBalancer"; "CanonicalHostedZoneID")) and .AliasTarget.DNSName == {"Fn::Join": ["", ["dualstack.", {"Fn::GetAtt": [.AliasTarget.HostedZoneId["Fn::GetAtt"][0], "DNSName"]}]]}) and
+        all(of("AWS::CertificateManager::Certificate"); .ValidationMethod == "DNS" and all(.DomainValidationOptions // [] | .[]; .HostedZoneId | param("/hearth/" + $s + "/zone/app"))) and
+        all(of("AWS::EC2::Route"); (.GatewayId | ref("AWS::EC2::InternetGateway")) and (.RouteTableId | ref("AWS::EC2::RouteTable"))) and
+        all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable"))) and
+        all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
+        all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
+        all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+        all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
+        def own($t): type == "string" and $r[.].Type == $t;
+        def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
+        def att($t; $a): type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | own($t)) and .[1] == $a);
+        def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
+        def of($t): $r[] | select(.Type == $t) | .Properties;
+        all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
+        all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
+        all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
+        all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+        all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
+        all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
+        all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value or a role's trust of another shape"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))

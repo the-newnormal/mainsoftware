@@ -7978,10 +7978,17 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       Properties: { TemplateURL: `https://s3.ap-southeast-1.amazonaws.com/${BUCKET}/${'a'.repeat(64)}.json` },
       Metadata: { 'aws:asset:path': path },
     })
-    // The layout re-keyed alone passes, and so does another resource of a type the synth writes, so each
-    // refusal below is its plant's.
+    // The layout re-keyed alone passes, and so does another resource of a type the synth writes, with the keys and
+    // name the synth writes for it, so each refusal below is its plant's.
     expect(check(planted(() => {}))).toBe('passed')
-    expect(check(resource({ Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'x' } }))).toBe('passed')
+    expect(
+      check(
+        resource({
+          Type: 'AWS::SSM::Parameter',
+          Properties: { Name: '/hearth/nonprod/valkey/endpoint', Type: 'String', Value: 'x' },
+        }),
+      ),
+    ).toBe('passed')
     for (const [plant, label] of [
       [
         resource(nested('nonprodServicesExtra.nested.template.json')),
@@ -8056,15 +8063,17 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const ssm = (name: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: name })
     // A resource of a type the synth writes, whose one property holds the value a case plants.
     const policy = (name: unknown) => ({ Type: 'AWS::SSM::Parameter', Properties: { Name: name } })
-    // The re-keyed layout, a Sub over a pseudo-parameter and an attribute, an empty {} and another stage's
-    // entry pass, so each refusal below is its plant's.
+    // The re-keyed layout, a Sub over a pseudo-parameter and an attribute and an empty {} (each in an output,
+    // which holds no property the round-10 holds read) and another of the stage's own entries pass, so each
+    // refusal below is its plant's. (Another stage's entry passed here before; the round-10 holds refuse it.)
+    const outputs = (template: Record<string, unknown>) => template.Outputs as Record<string, unknown>
     expect(check(planted(() => {}))).toBe('passed')
     expect(
       check(
         planted(template => {
-          resources(template).Extra = policy({ 'Fn::Sub': [`a-\${AWS::AccountId}-\${Res.Arn}`, {}] })
-          resources(template).Other = policy('x{}y')
-          parameters(template).Restore = ssm('/hearth/restore/security-group/api')
+          outputs(template).Extra = { Value: { 'Fn::Sub': [`a-\${AWS::AccountId}-\${Res.Arn}`, {}] } }
+          outputs(template).Other = { Value: 'x{}y' }
+          parameters(template).Worker = ssm('/hearth/nonprod/security-group/worker')
         }),
       ),
     ).toBe('passed')
@@ -8179,8 +8188,16 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       rekey(stage(dir), 'Services')
     }
     const all = { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }] }
-    // Another resource of a type the stacks write passes, so each refusal below is its type's.
-    expect(check(added(prod, { Type: 'AWS::Logs::LogGroup', Properties: { RetentionInDays: 30 } }))).toBe('passed')
+    // Another resource of a type the stacks write, with its stage's name, passes, so each refusal below is its
+    // type's.
+    expect(
+      check(
+        added(prod, {
+          Type: 'AWS::Logs::LogGroup',
+          Properties: { LogGroupName: '/hearth/prod/extra', RetentionInDays: 30 },
+        }),
+      ),
+    ).toBe('passed')
     for (const [stage, value, label] of [
       [
         prod,
@@ -8791,8 +8808,13 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     // The re-keyed synth passes, so each refusal below is its plant's: the five the resources and outputs write
     // and the two CDK's bootstrap version rule writes, each in its own section.
     expect(check(inTemplate('Platform', () => {}))).toBe('passed')
+    // (In an output, which the round-10 holds don't read: a container's environment holds no function now.)
     expect(
-      check(apiEnvironment({ 'Fn::Select': [0, { 'Fn::GetAZs': '' }] })),
+      check(
+        inTemplate('Services', json => {
+          outputs(json).Zone = { Value: { 'Fn::Select': [0, { 'Fn::GetAZs': '' }] } }
+        }),
+      ),
       'the functions the resources write',
     ).toBe('passed')
     for (const [name, plant] of [
@@ -8966,6 +8988,543 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     }
     expect(migrate.test('migrate: failed 0015_x: password authentication failed')).toBe(false)
   })
+
+  // The tenth review's hardening. Rounds 7 to 9 each found the next resource property through which a release's
+  // own render (code off the owner's-read list, rendered only for a real release, so CI's assertion tests over the
+  // fake release never see it) handed CloudFormation, ECS, ELB or another service a value or a grant the
+  // approver's diff shows as one line, or in non-prod, which deploys with no approver, nowhere. So ASSET_CHECK now
+  // holds every resource to the keys and forms the workload synth writes for its type, every value that can
+  // reach outside the template to the account's own ARNs and the stack's own stage, and each value a service
+  // acts on to the synth's shape. Each plant below passed the check before (but the one whose earlier rule is
+  // named), and each is refused by the rule named.
+  const KEYS = refused(
+    'a resource holds a key, or writes a property in a form, that a workload synth never writes for its type',
+  )
+  const NAMES = refused(
+    "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage",
+  )
+  const ECS = refused(
+    "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape",
+  )
+  const NETWORK = refused(
+    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape",
+  )
+  const STORED = refused(
+    "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value or a role's trust of another shape",
+  )
+  const OWN_ROLE = refused(
+    "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own",
+  )
+  const HANDLER = refused(
+    "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
+  )
+  type Planted = { Type: string; Properties: Record<string, unknown>; [key: string]: unknown }
+  type Container = Record<string, unknown> & { LogConfiguration: { Options: Record<string, unknown> } }
+  // Another account, its ARNs and an organisation id, each built from parts so none is written here.
+  const elsewhere = '1'.repeat(12)
+  const arnOf = (service: string, region: string, account: string, rest: string) =>
+    ['arn', 'aws', service, region, account, rest].join(':')
+  const ownRole = (name: string) => ({
+    'Fn::Join': ['', [['arn', 'aws', 'iam', '', ''].join(':'), { Ref: 'AWS::AccountId' }, `:role/${name}`]],
+  })
+  // Changes the first resource of a type in a stage's templates (or the first whose logical id starts with a
+  // prefix), handing the change its template too, and re-keys that template as the synth would.
+  const changed =
+    (
+      type: string,
+      change: (resource: Planted, template: Record<string, unknown>) => void,
+      prefix = '',
+      stage: (dir: string) => string = nonprod,
+    ) =>
+    (dir: string) => {
+      for (const part of ['Platform', 'Data', 'Tasks', 'Services']) {
+        const path = named(stage(dir), part, '.template.json')
+        const template = read(path)
+        const resources = template.Resources as Record<string, Planted>
+        const id = Object.keys(resources).find(key => resources[key]?.Type === type && key.startsWith(prefix))
+        const resource = id === undefined ? undefined : resources[id]
+        if (resource === undefined) continue
+        change(resource, template)
+        write(path, template)
+        rekey(stage(dir), part)
+        return
+      }
+      throw new Error(`no ${prefix}${type} in the stage`)
+    }
+  const firstContainer = (resource: Planted) =>
+    (resource.Properties.ContainerDefinitions as Container[])[0] as Container
+  // A parameter's logical id in a template, by the entry it names.
+  const parameterFor = (template: Record<string, unknown>, entry: string) => {
+    const parameters = template.Parameters as Record<string, { Default?: string }>
+    const id = Object.keys(parameters).find(key => parameters[key]?.Default === entry)
+    if (id === undefined) throw new Error(`no parameter for ${entry}`)
+    return id
+  }
+  const TYPES = [
+    'AWS::CertificateManager::Certificate',
+    'AWS::EC2::FlowLog',
+    'AWS::EC2::InternetGateway',
+    'AWS::EC2::Route',
+    'AWS::EC2::RouteTable',
+    'AWS::EC2::SecurityGroup',
+    'AWS::EC2::SecurityGroupEgress',
+    'AWS::EC2::SecurityGroupIngress',
+    'AWS::EC2::Subnet',
+    'AWS::EC2::SubnetRouteTableAssociation',
+    'AWS::EC2::VPC',
+    'AWS::EC2::VPCEndpoint',
+    'AWS::EC2::VPCGatewayAttachment',
+    'AWS::ECS::Cluster',
+    'AWS::ECS::Service',
+    'AWS::ECS::TaskDefinition',
+    'AWS::ElastiCache::ParameterGroup',
+    'AWS::ElastiCache::ReplicationGroup',
+    'AWS::ElastiCache::SubnetGroup',
+    'AWS::ElasticLoadBalancingV2::Listener',
+    'AWS::ElasticLoadBalancingV2::ListenerRule',
+    'AWS::ElasticLoadBalancingV2::LoadBalancer',
+    'AWS::ElasticLoadBalancingV2::TargetGroup',
+    'AWS::IAM::Role',
+    'AWS::Lambda::Function',
+    'AWS::Logs::LogGroup',
+    'AWS::Route53::RecordSet',
+    'AWS::SSM::Parameter',
+    'AWS::SecretsManager::Secret',
+    'Custom::VpcRestrictDefaultSG',
+  ]
+
+  // Every type the check admits holds its keys: a key no synth writes for it is refused (a role's and the handler
+  // function's by the rules that held them before, the rest by the new one).
+  it.each(TYPES)(
+    'refuses a key the workload synth never writes on a %s (round 10)',
+    type => {
+      const expected = type === 'AWS::IAM::Role' ? OWN_ROLE : type === 'AWS::Lambda::Function' ? HANDLER : KEYS
+      expect(
+        check(
+          changed(type, resource => {
+            resource.Properties.Extra = 'x'
+          }),
+        ),
+      ).toBe(expected)
+    },
+    30_000,
+  )
+
+  it.each([
+    // A resource's own keys and the property keys a path would read two ways.
+    [
+      'a resource condition',
+      changed('AWS::EC2::SecurityGroup', resource => {
+        resource.Condition = 'Open'
+      }),
+      KEYS,
+    ],
+    [
+      "metadata cfn-init would read, on the handler's function",
+      changed('AWS::Lambda::Function', resource => {
+        resource.Metadata = { 'AWS::CloudFormation::Init': { config: {} } }
+      }),
+      KEYS,
+    ],
+    [
+      'a key holding the path separator',
+      changed('AWS::ECS::Cluster', resource => {
+        resource.Properties.ClusterSettings_ = 'x'
+      }),
+      KEYS,
+    ],
+    // A task definition: its containers' secrets, environment files, roles, image, logs and tags.
+    [
+      "a container's secret from another of its stage's parameters",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        (resource, template) => {
+          const secrets = firstContainer(resource).Secrets as Array<Record<string, unknown>>
+          ;(secrets[0] as Record<string, unknown>).ValueFrom = {
+            Ref: parameterFor(template, '/hearth/nonprod/valkey/endpoint'),
+          }
+        },
+        'ApiTask',
+      ),
+      ECS,
+    ],
+    [
+      "a container's secret by another account's ARN",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          const secrets = firstContainer(resource).Secrets as Array<Record<string, unknown>>
+          ;(secrets[0] as Record<string, unknown>).ValueFrom = arnOf(
+            'secretsmanager',
+            'ap-southeast-1',
+            elsewhere,
+            'secret:x',
+          )
+        },
+        'ApiTask',
+      ),
+      KEYS,
+    ],
+    [
+      "a container's environment files",
+      changed('AWS::ECS::TaskDefinition', resource => {
+        firstContainer(resource).EnvironmentFiles = [{ Type: 's3', Value: arnOf('s3', '', '', 'elsewhere/x.env') }]
+      }),
+      KEYS,
+    ],
+    [
+      'a task role outside the workload, in the account',
+      changed('AWS::ECS::TaskDefinition', resource => {
+        resource.Properties.TaskRoleArn = ownRole('hearth-gh-deploy')
+      }),
+      ECS,
+    ],
+    [
+      "an execution role of another of the stage's families",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          resource.Properties.ExecutionRoleArn = ownRole('hearth-nonprod-api-exec')
+        },
+        'WorkerTask',
+      ),
+      ECS,
+    ],
+    [
+      "a task role of another account's",
+      changed('AWS::ECS::TaskDefinition', resource => {
+        resource.Properties.TaskRoleArn = arnOf('iam', '', elsewhere, 'role/x')
+      }),
+      KEYS,
+    ],
+    [
+      "an image in another account's registry",
+      changed('AWS::ECS::TaskDefinition', resource => {
+        const image = firstContainer(resource).Image as { 'Fn::Join': [string, unknown[]] }
+        image['Fn::Join'][1][0] = elsewhere
+      }),
+      NAMES,
+    ],
+    [
+      'a log group outside its family',
+      changed('AWS::ECS::TaskDefinition', resource => {
+        firstContainer(resource).LogConfiguration.Options['awslogs-group'] = '/aws/elsewhere'
+      }),
+      ECS,
+    ],
+    [
+      "a one-off's tag on a service's definition, which the break-glass role's grant reads",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          resource.Properties.Tags = [{ Key: 'hearth-role', Value: 'bastion' }]
+        },
+        'ApiTask',
+      ),
+      ECS,
+    ],
+    // A service: its network, ECS Exec, cluster and target groups.
+    [
+      'a public address',
+      changed('AWS::ECS::Service', resource => {
+        const network = resource.Properties.NetworkConfiguration as { AwsvpcConfiguration: Record<string, unknown> }
+        network.AwsvpcConfiguration.AssignPublicIp = 'ENABLED'
+      }),
+      ECS,
+    ],
+    [
+      'ECS Exec',
+      changed('AWS::ECS::Service', resource => {
+        resource.Properties.EnableExecuteCommand = true
+      }),
+      ECS,
+    ],
+    [
+      "another stage's cluster",
+      changed('AWS::ECS::Service', resource => {
+        resource.Properties.Cluster = 'hearth-prod'
+      }),
+      NAMES,
+    ],
+    [
+      'a target group from another of its parameters',
+      changed(
+        'AWS::ECS::Service',
+        (resource, template) => {
+          const balancers = resource.Properties.LoadBalancers as Array<Record<string, unknown>>
+          ;(balancers[0] as Record<string, unknown>).TargetGroupArn = {
+            Ref: parameterFor(template, '/hearth/nonprod/valkey/endpoint'),
+          }
+        },
+        'ApiService',
+      ),
+      ECS,
+    ],
+    // Security groups: another account's group or prefix list, and egress to anywhere.
+    [
+      'egress to a prefix list but S3’s',
+      changed(
+        'AWS::EC2::SecurityGroupEgress',
+        resource => {
+          resource.Properties.DestinationPrefixListId = `pl-${'0a'.repeat(8)}0`
+        },
+        'NetworkGroupsApiToS3',
+      ),
+      NETWORK,
+    ],
+    [
+      "ingress from another account's group",
+      changed('AWS::EC2::SecurityGroupIngress', resource => {
+        resource.Properties.SourceSecurityGroupId = `sg-${'0a'.repeat(8)}0`
+        resource.Properties.SourceSecurityGroupOwnerId = elsewhere
+      }),
+      KEYS,
+    ],
+    [
+      'inline egress to anywhere',
+      changed(
+        'AWS::EC2::SecurityGroup',
+        resource => {
+          resource.Properties.SecurityGroupEgress = [{ CidrIp: '0.0.0.0/0', Description: 'x', IpProtocol: '-1' }]
+        },
+        'NetworkGroupsApi',
+      ),
+      NETWORK,
+    ],
+    // VPC endpoints: their policies and services.
+    [
+      'an endpoint statement open to every principal',
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          const policy = resource.Properties.PolicyDocument as { Statement: unknown[] }
+          policy.Statement.push({ Effect: 'Allow', Principal: { AWS: '*' }, Action: 's3:GetObject', Resource: '*' })
+        },
+        'EndpointsS3',
+      ),
+      NETWORK,
+    ],
+    [
+      "an endpoint bound to another organisation's principals",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          const policy = resource.Properties.PolicyDocument as {
+            Statement: Array<{ Condition: { StringEquals: Record<string, unknown> } }>
+          }
+          const first = policy.Statement[0]
+          if (first === undefined) throw new Error('no statement')
+          first.Condition.StringEquals['aws:PrincipalOrgID'] = ['o', 'a'.repeat(10)].join('-')
+        },
+        'EndpointsEcrApi',
+      ),
+      KEYS,
+    ],
+    [
+      "an endpoint to another account's service",
+      changed('AWS::EC2::VPCEndpoint', resource => {
+        resource.Properties.ServiceName = `com.amazonaws.vpce.ap-southeast-1.vpce-svc-${'0a'.repeat(8)}0`
+      }),
+      NETWORK,
+    ],
+    // The load balancer, its target groups, listener and record.
+    [
+      "the load balancer's access logs",
+      changed('AWS::ElasticLoadBalancingV2::LoadBalancer', resource => {
+        const attributes = resource.Properties.LoadBalancerAttributes as unknown[]
+        attributes.push({ Key: 'access_logs.s3.enabled', Value: 'true' }, { Key: 'access_logs.s3.bucket', Value: 'x' })
+      }),
+      NETWORK,
+    ],
+    [
+      'a target registered by its address',
+      changed('AWS::ElasticLoadBalancingV2::TargetGroup', resource => {
+        resource.Properties.Targets = [{ Id: [192, 0, 2, 10].join('.'), Port: 3000 }]
+      }),
+      KEYS,
+    ],
+    [
+      'a listener redirecting elsewhere',
+      changed('AWS::ElasticLoadBalancingV2::Listener', resource => {
+        resource.Properties.DefaultActions = [
+          { Type: 'redirect', RedirectConfig: { Host: 'elsewhere.invalid', StatusCode: 'HTTP_301' } },
+        ]
+      }),
+      KEYS,
+    ],
+    [
+      'a record aliased to another target',
+      changed('AWS::Route53::RecordSet', resource => {
+        const alias = resource.Properties.AliasTarget as Record<string, unknown>
+        alias.DNSName = { 'Fn::Join': ['', ['dualstack.', 'elsewhere.invalid']] }
+      }),
+      NETWORK,
+    ],
+    // Log groups, the secret, flow logs and the cache: keys that name or send to another place.
+    [
+      "a log group's resource policy",
+      changed('AWS::Logs::LogGroup', resource => {
+        resource.Properties.ResourcePolicyDocument = { Statement: [] }
+      }),
+      KEYS,
+    ],
+    [
+      "a log group's key",
+      changed('AWS::Logs::LogGroup', resource => {
+        resource.Properties.KmsKeyId = arnOf('kms', 'ap-southeast-1', elsewhere, 'key/x')
+      }),
+      KEYS,
+    ],
+    [
+      "a log group of another stage's",
+      changed('AWS::Logs::LogGroup', resource => {
+        resource.Properties.LogGroupName = '/hearth/prod/api'
+      }),
+      NAMES,
+    ],
+    [
+      "the secret's replica in another region",
+      changed('AWS::SecretsManager::Secret', resource => {
+        resource.Properties.ReplicaRegions = [{ Region: 'us-east-1' }]
+      }),
+      KEYS,
+    ],
+    [
+      "the secret's key",
+      changed('AWS::SecretsManager::Secret', resource => {
+        resource.Properties.KmsKeyId = arnOf('kms', 'ap-southeast-1', elsewhere, 'key/x')
+      }),
+      KEYS,
+    ],
+    [
+      'flow logs delivered elsewhere',
+      changed('AWS::EC2::FlowLog', resource => {
+        resource.Properties.LogDestination = arnOf('s3', '', '', 'elsewhere')
+      }),
+      KEYS,
+    ],
+    [
+      'a cache seeded from a snapshot',
+      changed('AWS::ElastiCache::ReplicationGroup', resource => {
+        resource.Properties.SnapshotArns = [arnOf('s3', '', '', 'elsewhere/x.rdb')]
+      }),
+      KEYS,
+    ],
+    // The handler's function and its custom resource.
+    [
+      "a layer on the handler's function",
+      changed('AWS::Lambda::Function', resource => {
+        resource.Properties.Layers = [arnOf('lambda', 'ap-southeast-1', elsewhere, 'layer:x:1')]
+      }),
+      HANDLER,
+    ],
+    [
+      'the handler acting in another account',
+      changed('Custom::VpcRestrictDefaultSG', resource => {
+        resource.Properties.Account = elsewhere
+      }),
+      KEYS,
+    ],
+    // Roles: their trust and their grants' resources.
+    [
+      'a role trusted by another service',
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          const trust = resource.Properties.AssumeRolePolicyDocument as {
+            Statement: Array<{ Principal: Record<string, unknown> }>
+          }
+          const first = trust.Statement[0]
+          if (first !== undefined) first.Principal.Service = 'ec2.amazonaws.com'
+        },
+        'RolesApiTask',
+      ),
+      STORED,
+    ],
+    [
+      'a role trusted by another account',
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          const trust = resource.Properties.AssumeRolePolicyDocument as {
+            Statement: Array<{ Principal: Record<string, unknown> }>
+          }
+          const first = trust.Statement[0]
+          if (first !== undefined) first.Principal = { AWS: arnOf('iam', '', elsewhere, 'root') }
+        },
+        'RolesApiTask',
+      ),
+      KEYS,
+    ],
+    [
+      "a role's grant on another account's resource",
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          const policies = resource.Properties.Policies as Array<{ PolicyDocument: { Statement: unknown[] } }>
+          policies[0]?.PolicyDocument.Statement.push({
+            Effect: 'Allow',
+            Action: 's3:PutObject',
+            Resource: arnOf('s3', '', '', 'elsewhere/*'),
+          })
+        },
+        'RolesApiTask',
+      ),
+      NAMES,
+    ],
+    // Parameters: what a stack stores for the next, and what it reads.
+    [
+      "another account's secret stored as the stage's auth secret",
+      changed(
+        'AWS::SSM::Parameter',
+        resource => {
+          if (resource.Properties.Name !== '/hearth/nonprod/auth-secret/arn') throw new Error('not the auth secret')
+          resource.Properties.Value = arnOf('secretsmanager', 'ap-southeast-1', elsewhere, 'secret:x')
+        },
+        'ParametersAuthSecretArn',
+      ),
+      NAMES,
+    ],
+    [
+      'a security group stored by its id',
+      changed(
+        'AWS::SSM::Parameter',
+        resource => {
+          if (resource.Properties.Name !== '/hearth/nonprod/security-group/api') throw new Error('not the api group')
+          resource.Properties.Value = `sg-${'0a'.repeat(8)}0`
+        },
+        'ParametersApiGroup',
+      ),
+      STORED,
+    ],
+    [
+      "a parameter of another stage's",
+      (dir: string) => {
+        const path = named(nonprod(dir), 'Services', '.template.json')
+        const template = read(path)
+        ;(template.Parameters as Record<string, unknown>).Prod = {
+          Type: 'AWS::SSM::Parameter::Value<String>',
+          Default: '/hearth/prod/auth-secret/arn',
+        }
+        write(path, template)
+        rekey(nonprod(dir), 'Services')
+      },
+      NAMES,
+    ],
+    [
+      'a hearth-role tag on a subnet, which no grant should read',
+      changed('AWS::EC2::Subnet', resource => {
+        ;(resource.Properties.Tags as unknown[]).push({ Key: 'hearth-role', Value: 'bastion' })
+      }),
+      STORED,
+    ],
+  ] as const)(
+    'refuses %s (round 10)',
+    (_, plant, expected) => {
+      expect(check(plant)).toBe(expected)
+    },
+    30_000,
+  )
 })
 
 // The deny rules (C11-D77; T24 item 21; review RULES-01). Claude Code reads a `:*` as a prefix wildcard only
