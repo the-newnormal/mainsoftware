@@ -432,7 +432,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -484,6 +490,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -667,7 +675,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -719,6 +733,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -903,7 +919,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -955,6 +977,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -1248,7 +1272,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -1300,6 +1330,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2415,7 +2447,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -2467,6 +2505,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -3353,7 +3393,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -3405,6 +3451,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -3535,7 +3583,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -3587,6 +3641,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -4187,7 +4243,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -4239,6 +4301,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -5407,7 +5471,13 @@ jobs:
           # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-          # Conditions or Mappings, nothing branches on such a value); any symbolic link.
+          # Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+          # workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+          # and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+          # Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+          # reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+          # does either; or an output with a key but its value and description, so none exports a value another
+          # stack could import; any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -5459,6 +5529,8 @@ jobs:
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+                jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"

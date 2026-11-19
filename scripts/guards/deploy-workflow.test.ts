@@ -252,7 +252,7 @@ const SHAPE =
 // The findings for a run's own lines (every line outside a canonical text standing whole): one the table
 // doesn't name, at its line (DPW-07, DPW-10, DPW-13), and a command not held to its uses (DPW-10, DPW-13).
 const AS_BASH =
-  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
+  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions of names bash neither sets nor reads for itself, substitutions, operators, redirections after a command’s word, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 const HELD =
   'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one; and calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
 // DPW-14's finding for a check called where its refusal wouldn't end the step, in any job.
@@ -8698,6 +8698,119 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     }
   }, 120_000)
 
+  // INPUTS-A3-01 (round 9, attack 3). The check held sections, transforms, types, parameters and braces but no
+  // intrinsic function, so a release gave prod's api task role an inline policy whose Action and Resource were
+  // Fn::GetStackOutput reads of a stack in another account, through that account's role: aws-cdk-lib's own
+  // cross-stack form, which IAC-13 refuses only over CI's synth. CloudFormation reads such an output when the stack
+  // deploys, and the approver's diff showed a reference whose account the step's mask writes ***. A template now
+  // calls only the intrinsic functions the workload's templates write, each in its own section, and no output
+  // exports a value.
+  it('holds every template to the intrinsic functions the workload writes, and no output exports (INPUTS-A3-01, round 9)', () => {
+    const CALLS = refused(
+      "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output",
+    )
+    type Resource = { Type?: string; Properties?: Record<string, unknown> }
+    const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
+    const outputs = (json: Record<string, unknown>) => (json.Outputs ?? {}) as Record<string, Record<string, unknown>>
+    const first = (json: Record<string, unknown>, prefix: string, type: string) => {
+      const id = Object.keys(resources(json)).find(
+        each => each.startsWith(prefix) && resources(json)[each]?.Type === type,
+      )
+      if (id === undefined) throw new Error(`no ${prefix} ${type}`)
+      return id
+    }
+    const inTemplate = (part: string, change: (json: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(prod(dir), part, '.template.json'), change)
+      rekey(prod(dir), part)
+    }
+    // Another account's stack and role, built from parts so no account id is written here.
+    const account = '1'.repeat(12)
+    const stack = ['arn', 'aws', 'cloudformation', 'ap-southeast-1', account, 'stack/grants/x'].join(':')
+    const reader = ['arn', 'aws', 'iam', '', account, 'role/grants-reader'].join(':')
+    const output = (name: string, role = true) => ({
+      'Fn::GetStackOutput': {
+        StackName: stack,
+        OutputName: name,
+        Region: 'ap-southeast-1',
+        ...(role ? { RoleArn: reader } : {}),
+      },
+    })
+    const apiRole = (change: (properties: Record<string, unknown>) => void) =>
+      inTemplate('Platform', json => {
+        const properties = resources(json)[first(json, 'RolesApiTask', 'AWS::IAM::Role')]?.Properties
+        if (properties === undefined) throw new Error('no api task role')
+        change(properties)
+      })
+    const apiEnvironment = (value: unknown) =>
+      inTemplate('Services', json => {
+        const definitions = resources(json)[first(json, 'ApiTask', 'AWS::ECS::TaskDefinition')]?.Properties
+          ?.ContainerDefinitions as Array<{ Environment: unknown[] }>
+        definitions[0]?.Environment.push({ Name: 'NODE_OPTIONS', Value: value })
+      })
+    // The re-keyed synth passes, so each refusal below is its plant's: the five the resources and outputs write
+    // and the two CDK's bootstrap version rule writes, each in its own section.
+    expect(check(inTemplate('Platform', () => {}))).toBe('passed')
+    expect(
+      check(apiEnvironment({ 'Fn::Select': [0, { 'Fn::GetAZs': '' }] })),
+      'the functions the resources write',
+    ).toBe('passed')
+    for (const [name, plant] of [
+      // The attack's own plant: an inline policy on prod's api task role whose grant another account decides.
+      [
+        "another account's stack output granting the api task role",
+        apiRole(properties => {
+          properties.Policies = [
+            {
+              PolicyName: 'observability',
+              PolicyDocument: {
+                Version: '2012-10-17',
+                Statement: [{ Effect: 'Allow', Action: output('Action'), Resource: output('Resource') }],
+              },
+            },
+          ]
+        }),
+      ],
+      ["another account's stack output in the api's NODE_OPTIONS", apiEnvironment(output('NodeOptions'))],
+      ["another stack's output with no role", apiEnvironment(output('NodeOptions', false))],
+      [
+        "the Tasks output that decides whether migrate runs, from another stack's output",
+        inTemplate('Tasks', json => {
+          const has = outputs(json).HasDatabase
+          if (has === undefined) throw new Error('no HasDatabase output')
+          has.Value = output('HasDatabase', false)
+        }),
+      ],
+      ['an imported value', apiEnvironment({ 'Fn::ImportValue': 'observability-node-options' })],
+      ['an imported value in another letter case', apiEnvironment({ 'fn::importvalue': 'x' })],
+      ['a function AWS could add', apiEnvironment({ 'Fn::Base64': 'x' })],
+      ["a rule's function in a resource", apiEnvironment({ 'Fn::Not': [{ 'Fn::Equals': ['a', 'b'] }] })],
+      [
+        "a resource's function in a rule",
+        inTemplate('Platform', json => {
+          json.Rules = { X: { Assertions: [{ Assert: { 'Fn::Sub': 'x' } }] } }
+        }),
+      ],
+      [
+        'an export',
+        inTemplate('Tasks', json => {
+          const cluster = outputs(json).Cluster
+          if (cluster === undefined) throw new Error('no Cluster output')
+          cluster.Export = { Name: 'hearth-cluster' }
+        }),
+      ],
+      [
+        'an output under a condition',
+        inTemplate('Tasks', json => {
+          const cluster = outputs(json).Cluster
+          if (cluster === undefined) throw new Error('no Cluster output')
+          cluster.Condition = 'X'
+        }),
+      ],
+    ] as const) {
+      expect(check(plant), name).toBe(CALLS)
+    }
+  }, 120_000)
+
   it('holds the probe’s and migrate’s line patterns to what they print', () => {
     const probe = new RegExp(PROBE_LINES)
     for (const line of ['api 0 200 -', 'realtime 1 no-answer ?', 'worker 0 503 valkey,database', 'probe: failed'])
@@ -10732,5 +10845,109 @@ describe('Round 9, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
       expect(credentialed(inReadBack(from, to)), to).toContain(at('DPW-10', READBACK, SETS_INPUT))
     }
     expect(credentialed(workflows)).toEqual([])
+  }, 60_000)
+})
+
+describe('Round 9, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const TRACE =
+    'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const EXPANDS =
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+  const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
+    `${GUARD}: ${id} ${name}, line ${line}: ${rule}`
+  const plantAfter = (text: string, anchor: string, added: string) => {
+    expect(text).toContain(`${anchor}\n`)
+    const planted = text.replace(`${anchor}\n`, `${anchor}\n${added}\n`)
+    return { planted, line: planted.split('\n').indexOf(added) + 1 }
+  }
+  const refusedAs = (findings: readonly string[], where: string) =>
+    findings.some(each => each.startsWith(`${DEPLOY}: ${where}, line `) && each.endsWith(AS_BASH))
+
+  // EXPAND-A3-01: bash takes a redirection before a command's word as that command's, so 2>/dev/null set ran a
+  // bare set, which prints every variable, GH_TOKEN among them, in the gate and prod-gate. The table read the
+  // descriptor as the command's word (a command named 2, given set), and DPW-07's bare-set rule fired only on a
+  // set with nothing before it. The table now reads a redirection only after a command's word, and the rule reads
+  // a set, env, declare, typeset or export given no word whatever stands before it.
+  it('reads a redirection only after a command’s word, and a bare set whatever stands before it (EXPAND-A3-01)', () => {
+    for (const line of [
+      '2>/dev/null set',
+      '0</dev/null set',
+      '1>>"$GITHUB_STEP_SUMMARY" set',
+      '2>/dev/null echo x',
+      '>/dev/null echo x',
+      'X=1 2>/dev/null echo x',
+      'X="$(2>/dev/null echo x)"',
+    ]) {
+      expect(readShell(line).refused?.what, line).toBe("a redirection before a command's word")
+    }
+    for (const line of ['echo x 2>/dev/null', 'echo x >>"$GITHUB_STEP_SUMMARY"', 'X="$(echo x 2>/dev/null)"']) {
+      expect(readShell(line).refused, line).toBeUndefined()
+    }
+    // Through deploy.yml: the attack's plants in the gate's records step, each refused by the table and by the
+    // bare-set rule in its own right; and the same rule over an assignment before set.
+    const records = 'gate (The release, migration and restore records)'
+    for (const added of ['2>/dev/null set', '0</dev/null set', '1>>"$GITHUB_STEP_SUMMARY" set', 'X=1 set']) {
+      const planted = maskingFindings(
+        addedBefore(
+          'gate',
+          'The release, migration and restore records',
+          '          for environment in nonprod prod; do\n',
+          `          ${added}\n`,
+        ),
+      )
+      expect(planted, added).toContain(`${DEPLOY}: DPW-07 ${records}: ${TRACE}`)
+      expect(refusedAs(planted, `DPW-07 ${records}`), added).toBe(true)
+    }
+    expect(maskingFindings(workflows)).toEqual([])
+  }, 60_000)
+
+  // COMMANDS-A3-01: after STOP_COMMANDS's echo, bash's $_ holds its last word, ::stop-commands:: and the token, so
+  // two lines of a run's own (jq printing ::<token>:: from "$_", and _=x to make _ a name the run owns) resumed
+  // workflow commands in nonprod's and prod's image step, and the image archive's ##[add-mask] reached the runner.
+  // _ is now one of bash's own variables, which no line assigns, and no run's own line expands one of them.
+  it('assigns and expands none of bash’s own variables, $_ among them, on a run’s own lines (COMMANDS-A3-01)', () => {
+    for (const [line, what] of [
+      ['echo "$_"', "an expansion of one of bash's own variables"],
+      ['X=$_', "an expansion of one of bash's own variables"],
+      [`echo "$\{_}"`, "an expansion of one of bash's own variables"],
+      ['echo "$BASH_COMMAND"', "an expansion of one of bash's own variables"],
+      ['echo "$REPLY"', "an expansion of one of bash's own variables"],
+      ['_=x', "an assignment to one of bash's own variables"],
+      ['for _ in a; do\n  echo x\ndone', "an assignment to one of bash's own variables"],
+      ['local _', 'a builtin given what the table does not name'],
+      ['mapfile -t _ < <(echo x)', 'a builtin given what the table does not name'],
+    ] as const) {
+      expect(readShell(line).refused?.what, line).toBe(what)
+    }
+    for (const line of ['echo "$_x"', 'echo "$x_"', '_x=1']) expect(readShell(line).refused, line).toBeUndefined()
+    // Through deploy.yml: the attack's two lines in nonprod's image step.
+    const call = '          check_image_archive "$RUNNER_TEMP/image/image.tar"\n'
+    const unpack = '          unpack_image "$RUNNER_TEMP/image/image.tar" "$RUNNER_TEMP/image-layout"\n'
+    const jq = `          jq -n -r --arg x "$_" '$x | split("::") | "::" + .[2] + "::"' >&2\n`
+    const step = stepText(deployText, 'nonprod', 'Check and unpack the image')
+    const planted = withText(
+      DEPLOY,
+      edited(
+        deployText,
+        step,
+        edited(edited(step, call, `${jq}${call}`), unpack, `${unpack}          _=x\n`),
+        job('nonprod'),
+      ),
+    )
+    expect(
+      refusedAs(credentialedCodeFindings(planted, manifests, lockfile), 'DPW-10 nonprod (Check and unpack the image)'),
+    ).toBe(true)
+    // In a canonical text, _ is assigned in no spelling, and $_ is no name the text sets.
+    const anchor = '  local root dir file path manifests=0 queue stackfiles'
+    for (const added of ['  _=x', '  local _', '  for _ in a; do :; done', `  : "$\{_:=x}"`]) {
+      const { planted: text, line } = plantAfter(ASSET_CHECK, anchor, added)
+      expect(canonicalTextFindings({ ASSET_CHECK: text }), added).toContain(canonical('ASSET_CHECK', line, COMMANDS))
+    }
+    const { planted: text, line } = plantAfter(ASSET_CHECK, anchor, `  echo "$_"`)
+    expect(canonicalTextFindings({ ASSET_CHECK: text })).toContain(canonical('ASSET_CHECK', line, EXPANDS, 'DPW-07'))
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
   }, 60_000)
 })

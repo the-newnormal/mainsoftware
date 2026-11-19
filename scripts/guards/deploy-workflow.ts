@@ -37,7 +37,10 @@
 // diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template parameter
 // deploys from the Default that diff shows (an SSM-typed parameter's names a parameter-store entry whose value no diff
 // shows, so ASSET_CHECK holds every one to the workload's own entries and refuses Conditions, Mappings and a brace a
-// dynamic reference could be joined from), a restore's too (DPW-08), a restore taken down deploying only the stacks
+// dynamic reference could be joined from; an Fn::ImportValue or Fn::GetStackOutput reads another stack's output, another
+// account's among them, as the stack deploys, which the diff shows only as a reference, so ASSET_CHECK holds every
+// template to the intrinsic functions the workload's templates write, each in its own section, and refuses an export),
+// a restore's too (DPW-08), a restore taken down deploying only the stacks
 // that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
 // same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
 // or turn into HTML that hides the rest; a credentialed run writes no file but its outputs, its summary and /dev/null,
@@ -63,11 +66,12 @@
 // scalar but a run:, whose last line break GitHub keeps in the value and the reader drops. Each run is
 // read twice. Its own lines, every line outside a canonical text standing whole, are read by readShell()
 // through SHELL_TABLE, an allowlist of the shell forms the workflow uses (blanks, word characters, quoting,
-// expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions,
-// assignments and builtins as it holds them), so any form the table doesn't name is refused at its line
-// (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
-// review has to find it first; each command it reads in a credentialed or record job is held to the flags
-// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, read as jq
+// expansions of names bash neither sets nor reads for itself, so never $_, which holds the last word of the command
+// before, substitutions, operators, redirections after a command's word alone, since bash takes 2>/dev/null set as
+// set's, keywords, tests, case patterns, functions, assignments and builtins as it holds them), so any form the
+// table doesn't name is refused at its line (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in
+// every other), whatever it is, and no review has to find it first; each command it reads in a credentialed or
+// record job is held to the flags and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, read as jq
 // tokenises it, so a string defines and binds nothing, and no name it defines or binds, nor any word it runs, is one
 // that reaches outside it (env and $ENV, input, include, import, debug and the rest, JQ_REACH_NAMES), a name a key
 // only straight inside braces (in .[0, env:1] env is a slice's start jq runs), no word bash hands on as several
@@ -236,8 +240,10 @@ echo "::stop-commands::$stop_token"`
 // else could print ::<token>:: and resume them, so a ##[add-mask] in what the step prints after (a release's own
 // template text in prod-plan's diff, say) would hide a line of the approver's diff (the eighth review's second
 // attack). No spelling these rules read reaches it but its name: a canonical text and a run's own lines have no
-// ${!…}, eval, declare -p or bare set (a line written to reach it another way is the owner's read's: the header's
-// last paragraph).
+// ${!…}, eval, declare -p or bare set, whatever stands before it, and no $_, which holds the echo's last word, the
+// token among it, after STOP_COMMANDS (_ is one of bash's own variables, which no line assigns and no run's own line
+// expands, the ninth review's third attack); a line written to reach it another way is the owner's read's (the
+// header's last paragraph).
 // The two lines are written here as literals, never read from STOP_COMMANDS, so a third line added to it is one
 // of neither.
 const STOP_TOKEN_LINES: readonly string[] = [
@@ -382,7 +388,13 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
 # string but an empty {} and Fn::Sub's $\{name}, so no string, joined, split or substituted, makes a
 # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
-# Conditions or Mappings, nothing branches on such a value); any symbolic link.
+# Conditions or Mappings, nothing branches on such a value); or an intrinsic function but those the
+# workload's templates write (Fn::GetAtt, Fn::GetAZs, Fn::Join, Fn::Select and Fn::Sub in its resources
+# and outputs, Fn::Contains and Fn::Not in CDK's bootstrap version rule), so no Fn::ImportValue or
+# Fn::GetStackOutput hands CloudFormation another stack's output, another account's among them, which it
+# reads when the stack deploys and the diff shows only as a reference, and no intrinsic AWS adds later
+# does either; or an output with a key but its value and description, so none exports a value another
+# stack could import; any symbolic link.
 # The release check then holds the one custom resource the workload writes, CDK's
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -434,6 +446,8 @@ check_assembly() {
         asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
       jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
+      jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -4040,9 +4054,12 @@ export const SHELL_TABLE = {
   // double-quoted words, none of them a [subscript]=.
   assignment: /^[A-Za-z_][A-Za-z0-9_]*=/,
   // bash's own variables (and the loaders'), which change how it or what it runs reads: no assignment,
-  // local, for or mapfile names one.
+  // local, for or mapfile names one, and no expansion reads one, since bash sets several itself from what ran
+  // before, which no reader follows: $_ above all, the last word of the command before, which after
+  // STOP_COMMANDS's echo is ::stop-commands:: and the stop token (the ninth review's third attack), and
+  // BASH_COMMAND, BASH_REMATCH, REPLY and MAPFILE beside it.
   bashVariables:
-    /^(?:BASH\w*|COMP_\w+|LC_\w+|HIST\w*|READLINE_\w+|PS[0-4]|MAIL\w*|LD_\w+|IFS|PATH|HOME|ENV|CDPATH|SHELLOPTS|POSIXLY_CORRECT|GLOBIGNORE|GLOBSORT|EXECIGNORE|FIGNORE|FUNCNEST|PROMPT_COMMAND|PROMPT_DIRTRIM|TMPDIR|TIMEFORMAT|TMOUT|LANG|LANGUAGE|SECONDS|RANDOM|SRANDOM|LINENO|OPTIND|OPTARG|OPTERR|REPLY|MAPFILE|PIPESTATUS|FUNCNAME|DIRSTACK|GROUPS|EUID|UID|PPID|PWD|OLDPWD|SHELL|SHLVL|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|IGNOREEOF|INPUTRC|INSIDE_EMACS|EMACS|COLUMNS|LINES|CHILD_MAX|COPROC|EPOCHREALTIME|EPOCHSECONDS|HOSTFILE|FCEDIT|BASHOPTS)$/,
+    /^(?:_|BASH\w*|COMP_\w+|LC_\w+|HIST\w*|READLINE_\w+|PS[0-4]|MAIL\w*|LD_\w+|IFS|PATH|HOME|ENV|CDPATH|SHELLOPTS|POSIXLY_CORRECT|GLOBIGNORE|GLOBSORT|EXECIGNORE|FIGNORE|FUNCNEST|PROMPT_COMMAND|PROMPT_DIRTRIM|TMPDIR|TIMEFORMAT|TMOUT|LANG|LANGUAGE|SECONDS|RANDOM|SRANDOM|LINENO|OPTIND|OPTARG|OPTERR|REPLY|MAPFILE|PIPESTATUS|FUNCNAME|DIRSTACK|GROUPS|EUID|UID|PPID|PWD|OLDPWD|SHELL|SHLVL|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|IGNOREEOF|INPUTRC|INSIDE_EMACS|EMACS|COLUMNS|LINES|CHILD_MAX|COPROC|EPOCHREALTIME|EPOCHSECONDS|HOSTFILE|FCEDIT|BASHOPTS)$/,
   // The builtins a run's own lines may run, each held to what they give it; bash runs these itself.
   builtins: {
     // echo prints its words; never a first word that reads as a flag.
@@ -4566,6 +4583,9 @@ class ShellReader {
       return '='
     }
     const start = this.i
+    // bash takes a redirection before a command's word as that command's (2>/dev/null set runs set), where the
+    // word below would read its descriptor as the command, so the table reads a redirection only after the word.
+    if (/^[0-9]*[<>]/.test(this.rest())) this.refuse("a redirection before a command's word")
     let name: string
     if (this.starts('[ ')) {
       name = '['
@@ -4739,8 +4759,9 @@ class ShellReader {
       } else if (where === 'whole') {
         if (place !== 'quoted-start' || this.s[this.i + found.length] !== '"') continue
       } else if (where === 'quoted' && place === 'value') continue
-      this.i += found.length
       const name = /[A-Za-z_][A-Za-z0-9_]*|[1-9?]/.exec(found)?.[0] ?? ''
+      if (SHELL_TABLE.bashVariables.test(name)) this.refuse("an expansion of one of bash's own variables")
+      this.i += found.length
       return [name]
     }
     return this.refuse('an expansion the table does not name')
@@ -4806,7 +4827,7 @@ export function definitionsOf(run: string, read: ShellRead = readShell(run)): Ar
 const refusedAt = (where: string, read: ShellRead) =>
   read.refused === undefined ? undefined : `${where}, line ${read.refused.line + 1}`
 const AS_BASH =
-  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions, substitutions, operators, redirections, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
+  'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions of names bash neither sets nor reads for itself, substitutions, operators, redirections after a command’s word, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 
 // --- Reading an if: as GitHub reads it -------------------------------------------------------------------
 
@@ -6114,6 +6135,9 @@ export function maskingFindings(workflows: Texts): Finding[] {
       // find -exec /usr/bin/env), quoted or not, since bash hands a program the word with its quotes taken
       // off. A program the run starts is handed a script only as one word (bash -c "printenv X"), which DPW-07
       // doesn't read: that is build's and synth's, which hold no secret and run repository code by design.
+      // env, set, declare, typeset or export given no word is read whatever stands before it, by what follows
+      // its own word: a redirection (2>/dev/null set), an assignment or a wrapper leaves set printing every
+      // variable (the ninth review's third attack).
       const printsEnvironment = read.commands.some(
         command =>
           /(?:^|\/)(?:env|printenv)$/.test(command.name ?? '') ||
@@ -6125,12 +6149,7 @@ export function maskingFindings(workflows: Texts): Finding[] {
         commands.some(
           command =>
             (['env', 'set', 'declare', 'typeset', 'export'].includes(command.word) &&
-              command.prefixes.length === 0 &&
-              /^\s*(?:$|[|;&>)])/.test(
-                (lines[command.line]?.code ?? '').slice(
-                  (lines[command.line]?.code ?? '').indexOf(command.word) + command.word.length,
-                ),
-              )) ||
+              /^\s*(?:$|[|;&>)])/.test(command.tail)) ||
             (PRINTS_VARIABLES.includes(command.word) && /^(?:\s+[-+]\S+)*\s*$/.test(command.tail)),
         )
       ) {
