@@ -37,10 +37,13 @@
 // that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
 // same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
 // or turn into HTML that hides the rest; a credentialed run writes no file but its outputs, its summary and /dev/null,
-// and the diff in prod-plan's two diff runs alone; and ASSET_CHECK refuses a template that hands CloudFormation another
-// template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered type, a transform),
-// which neither the CLI's diff nor the release check reads, and a file asset whose id, which the CLI joins to the path
-// it writes a packaged zip to or uploads one from, isn't its key's digits.
+// and the diff in prod-plan's two diff runs alone; and ASSET_CHECK holds every template to the resource types the
+// workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
+// (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
+// the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
+// IAM table reads under no principal, and an added resource's properties, which it never prints), and refuses a file
+// asset whose id, which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's
+// digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -98,8 +101,10 @@
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
-// a for loop sets it, given numbers alone (never REPLY, MAPFILE, _ or a loop's words), a setter builtin's words read
-// to its command's end past its redirections (>&, <&, &> and >| among them), a
+// a for loop sets it, given numbers alone (never REPLY, MAPFILE, _ or a loop's words), and a number wherever every
+// other canonical text and pinned run sets it and set by no env:, since the texts run joined in one shell and bash's
+// variables are the shell's, not a text's (an assignment's value read to its word's end, so $((0))$y is none), a
+// setter builtin's words read to its command's end past its redirections (>&, <&, &> and >| among them), a
 // [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis holds one, a [ or test with a word bash could
 // split, glob or expand a tilde in, that expands to several ("$@", "${a[@]}"), holds a backslash outside quotes or
 // is an operator in quotes ('-v'), whose ] isn't its command's last word and only ], or that stands where no shape
@@ -134,7 +139,9 @@
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
 // command (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids
-// as a command is found where bash would run it and not where it is a jq path, a message or a URL; the
+// as a command is found where bash would run it and not where it is a jq path, a message or a URL, and a
+// group's { where a command starts is read as the keywords are, so the group's first command is read as the
+// command it is (true || { tar …; } hid its tar as the tail of a command named {); the
 // words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
@@ -316,12 +323,16 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
 # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
 # template holding a section, a transform or a resource type a workload synth never writes (a section
-# other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-# outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-# CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-# CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-# (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-# deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+# other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+# type but those the workload's stacks write, each named in the check below): so no module, registered
+# type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+# template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+# nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+# its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+# shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+# user or group policy's statements under no principal); a change that writes another type names it
+# there, and one that stops writing a type keeps it while a previous release still holds it; a template
+# that takes a value at deploy time the diff doesn't
 # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
 # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
 # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -370,8 +381,8 @@ check_assembly() {
     jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     while IFS= read -r file; do
-      jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-        asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+      jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
       jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -2397,10 +2408,13 @@ const TAIL_END = new RegExp(`${COMMAND_END}|$`)
 const REST_END = new RegExp(String.raw`${COMMAND_END}|\)|[$<>]\(|$`)
 // Where a command may start (COMMAND's first part): a line's start, after ; | ! & (not a redirection's),
 // $( (not arithmetic's $(( ), <( or >(, a subshell's (, a group's {, each followed by any keywords (then,
-// do, else, elif, if, while, until) that themselves stand where a command starts, so a keyword that is a
-// command's argument (echo then case …) starts nothing.
+// do, else, elif, if, while, until) and any group's { that themselves stand where a command starts, so a
+// keyword that is a command's argument (echo then case …) starts nothing, and the word after a { that
+// opens a group where a command starts (true || { cmd; }, then { cmd; }) is read as the command it is,
+// never as the tail of a command named { (the eighth review's fourth attack, where a group's first command,
+// a tar with --to-command among them, was seen by no rule).
 const COMMAND_BOUNDARY = String.raw`^|[;|!]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)`
-const COMMAND_START = String.raw`(?:${COMMAND_BOUNDARY})(?:\s*\b(?:then|do|else|elif|if|while|until)(?=\s))*`
+const COMMAND_START = String.raw`(?:${COMMAND_BOUNDARY})(?:\s*(?:\b(?:then|do|else|elif|if|while|until)|\{)(?=\s))*`
 const ENDS_AT_COMMAND_START = new RegExp(`(?:${COMMAND_START})\\s*$`)
 
 // The code view with the words bash reads as operands and not as commands blanked too: a [[ … ]] test's
@@ -2541,7 +2555,7 @@ export const WRAPPERS: readonly string[] = [
 const PREFIXES = String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"]+))\s+)*)`
 const COMMAND = new RegExp(
   String.raw`(${COMMAND_START})\s*${PREFIXES}` +
-    String.raw`(?!(?:then|do|else|elif|if|while|until)(?![\w-])|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
+    String.raw`(?!(?:then|do|else|elif|if|while|until)(?![\w-])|\{\s|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
   'g',
 )
 // A command whose word starts with a bare $( (bash runs what that substitution prints), which COMMAND reads
@@ -3025,7 +3039,10 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
 // since arithmetic reads a name's value as an expression in its turn, so a loop's count over the word
 // revision evaluated $revision, which held an outside value (the eighth review's third attack); and the names
 // bash sets on its own (REPLY and MAPFILE, which read and mapfile set when handed no name, BASH_REMATCH, _,
-// OPTARG and the rest) are all upper-case or _, so none is ever one. Nothing else is evaluated: no $( … ), quote, escape or
+// OPTARG and the rest) are all upper-case or _, so none is ever one. Since the texts run joined in one shell,
+// the name is also a number wherever any other canonical text or pinned run sets it (given those, Elsewhere),
+// and no env: hands it (the eighth review's fourth attack: TASKS_OUTPUTS' global revision, set from an AWS
+// answer, was PROBE's $(( revision ))). Nothing else is evaluated: no $( … ), quote, escape or
 // positional parameter inside arithmetic or a subscript, no $[ … ], ${!…} or ${…@…}, no let, no declare,
 // typeset or local given -i, -n or -A, no [[ … ]] comparing as numbers, and no -v or -R. A name printf -v
 // sets is built only from such names. So no value from a step's env, an output, an artifact's file or a
@@ -3041,7 +3058,72 @@ const REFUSED_EVALUATION =
 // literal words that aren't all numbers gives, which only a printf -v name built from it may take.
 const OWN_NAME = /^[a-z][a-z0-9_]*$/
 const WORDS = '\0words'
-export function outsideEvaluations(text: string): number[] {
+// The text inside the parentheses that open at an offset of a text, to the ) that closes them.
+function insideParentheses(text: string, open: number): string {
+  let depth = 0
+  for (let end = open; end < text.length; end++) {
+    if (text[end] === '(') depth++
+    else if (text[end] === ')' && --depth === 0) return text.slice(open + 1, end)
+  }
+  return text.slice(open + 1)
+}
+// A value as written from an offset of a text, up to a blank or a ;, a $(( … )) in it read whole: the word
+// bash assigns, so n=$((0))$y is no number when y holds a[$(…)] (the eighth review's fourth attack).
+function valueAt(text: string, from: number): string {
+  let at = from
+  while (at < text.length && !/[\s;]/.test(text[at] ?? '')) {
+    at += text.startsWith('$((', at) ? `$(${insideParentheses(text, at + 1)})`.length : 1
+  }
+  return text.slice(from, at)
+}
+// Each assignment of a name in a text, by its offset in the code view and its value as written ('' for a
+// local with none or a for loop over literal numbers; WORDS for a for loop over other literal words, which
+// only a name built from them may take; $ for one that read, mapfile, printf -v or another for loop sets).
+// An element's assignment (name[…]=) is the name's too, since $name reads its first element.
+type Assignment = { at: number; value: string }
+const ASSIGNMENTS = keptByText((text: string): ((name: string) => Assignment[]) => {
+  const code = shellViews(text).code
+  const found = new Map<string, Assignment[]>()
+  return (name: string) => {
+    const kept = found.get(name)
+    if (kept !== undefined) return kept
+    const all: Assignment[] = []
+    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}(?:\[[^\]\n]*\])?\+?=`, 'g'))) {
+      all.push({ at: match.index, value: valueAt(text, match.index + match[0].length) })
+    }
+    const local = String.raw`(?<![\w-])local\s[^;\n]*?(?<![\w$=-])${name}(?![\w=])`
+    for (const match of code.matchAll(new RegExp(local, 'g'))) all.push({ at: match.index, value: '' })
+    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w-])for\s+${name}\s+in\s+([^;\n]*)`, 'g'))) {
+      const listed = match[1] ?? ''
+      all.push({ at: match.index, value: /^[\d\s+-]+$/.test(listed) ? '' : /^[\w\s-]+$/.test(listed) ? WORDS : '$' })
+    }
+    const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^;\n|]*(?<![\w$])${name}(?!\w)`
+    for (const match of code.matchAll(new RegExp(setters, 'g'))) all.push({ at: match.index, value: '$' })
+    const printf = String.raw`(?<![\w-])printf\s+-v\s+"?${name}(?![\w])`
+    for (const match of code.matchAll(new RegExp(printf, 'g'))) all.push({ at: match.index, value: '$' })
+    found.set(name, all)
+    return all
+  }
+})
+// What sets a name outside the text being read (FLOW-A4-01, the eighth review's fourth attack): the canonical
+// texts beside it and the pinned runs that hold them, which run joined in one shell (TASKS_OUTPUTS' global
+// revision was PROBE's $(( revision )), though PROBE gave it 0 first when it was empty), and the names a
+// step's or a job's env: hands every run.
+export interface Elsewhere {
+  readonly texts: readonly string[]
+  readonly given: ReadonlySet<string>
+}
+const NOWHERE: Elsewhere = { texts: [], given: new Set() }
+// Whether a value an assignment gives is a number wherever it is evaluated: none ('' for a local or a numeric
+// loop), digits, a loop's literal words where the name is no arithmetic's, or one arithmetic whole, whose
+// result is a number and whose expression is a site of its own text.
+const numberValue = (value: string, evaluated: boolean) => {
+  if (value === '' || /^[0-9]+$/.test(value)) return true
+  if (value === WORDS) return !evaluated
+  const nested = /^\$\(\((.*)\)\)$/s.exec(value)?.[1]
+  return nested !== undefined && !OUTSIDE.test(nested)
+}
+export function outsideEvaluations(text: string, elsewhere: Elsewhere = NOWHERE): number[] {
   const views = shellViews(text)
   const code = views.code
   const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
@@ -3052,18 +3134,7 @@ export function outsideEvaluations(text: string): number[] {
   // first but $NAME and ${NAME}.
   const arithmetic = (at: number, expression: string) =>
     sites.push({ at, names: OUTSIDE.test(expression) ? undefined : namesIn(expression), arithmetic: true })
-  // The text inside the parentheses that open at an offset of the text, to the ) that closes them.
-  const inside = (open: number) => {
-    let depth = 0
-    for (let end = open; end < text.length; end++) {
-      if (text[end] === '(') depth++
-      else if (text[end] === ')' && --depth === 0) return text.slice(open + 1, end)
-    }
-    return text.slice(open + 1)
-  }
-  // A value as written from an offset of the text: $(( … )) whole, or up to a blank or a ;.
-  const valueAt = (from: number) =>
-    text.startsWith('$((', from) ? `$(${inside(from + 1)})` : (/^[^\s;]*/.exec(text.slice(from))?.[0] ?? '')
+  const inside = (open: number) => insideParentheses(text, open)
   for (const match of code.matchAll(/\$?\(\(/g)) {
     const open = match.index + match[0].length - 2
     arithmetic(match.index, inside(open).slice(1, -1))
@@ -3094,38 +3165,24 @@ export function outsideEvaluations(text: string): number[] {
     arithmetic(match.index, match[1] ?? match[2] ?? '')
   }
   for (const match of code.matchAll(/(?<![\w-])printf\s+-v\s+/g)) {
-    const name = valueAt(match.index + match[0].length)
+    const name = valueAt(text, match.index + match[0].length)
     const outside = /\[|\$\(|`|\$[0-9@*#?$!-]/.test(name)
     sites.push({
       at: match.index,
       names: outside ? undefined : [...name.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(each => each[1] ?? ''),
     })
   }
-  // Each assignment of a name, by its offset in the code and its value as written ('' for a local with none or
-  // a for loop over literal numbers; WORDS for a for loop over other literal words, which only a name built
-  // from them may take; $ for one that read, mapfile, printf -v or another for loop sets). An element's
-  // assignment (name[…]=) is the name's too, since $name reads its first element.
-  const assignments = (name: string): Array<{ at: number; value: string }> => {
-    const found: Array<{ at: number; value: string }> = []
-    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}(?:\[[^\]\n]*\])?\+?=`, 'g'))) {
-      found.push({ at: match.index, value: valueAt(match.index + match[0].length) })
-    }
-    const local = String.raw`(?<![\w-])local\s[^;\n]*?(?<![\w$=-])${name}(?![\w=])`
-    for (const match of code.matchAll(new RegExp(local, 'g'))) found.push({ at: match.index, value: '' })
-    for (const match of code.matchAll(new RegExp(String.raw`(?<![\w-])for\s+${name}\s+in\s+([^;\n]*)`, 'g'))) {
-      const listed = match[1] ?? ''
-      found.push({ at: match.index, value: /^[\d\s+-]+$/.test(listed) ? '' : /^[\w\s-]+$/.test(listed) ? WORDS : '$' })
-    }
-    const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^;\n|]*(?<![\w$])${name}(?!\w)`
-    for (const match of code.matchAll(new RegExp(setters, 'g'))) found.push({ at: match.index, value: '$' })
-    const printf = String.raw`(?<![\w-])printf\s+-v\s+"?${name}(?![\w])`
-    for (const match of code.matchAll(new RegExp(printf, 'g'))) found.push({ at: match.index, value: '$' })
-    return found
-  }
+  const assignments = ASSIGNMENTS(text)
+  // Every value the texts and runs beside this one give the name: a name evaluated here must be a number
+  // wherever else it is set, and set by no env: at all, since bash's variables are the shell's, not a text's.
+  const setElsewhere = (name: string) =>
+    elsewhere.texts.flatMap(other => (other === text ? [] : ASSIGNMENTS(other)(name).map(each => each.value)))
   const allowed = (name: string, at: number, seen: ReadonlySet<string>, evaluated: boolean): boolean => {
     const all = assignments(name)
-    if (name === 'SECONDS') return all.length === 0
+    if (elsewhere.given.has(name)) return false
+    if (name === 'SECONDS') return all.length === 0 && setElsewhere(name).length === 0
     if (!OWN_NAME.test(name) || !all.some(each => each.at < at)) return false
+    if (!setElsewhere(name).every(value => numberValue(value, evaluated))) return false
     return all.every(({ value }) => {
       if (value === '' || /^[0-9]+$/.test(value)) return true
       if (value === WORDS) return !evaluated
@@ -3717,6 +3774,20 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
   const found: Finding[] = []
   const functions = CANONICAL_FUNCTIONS(texts)
   const alsoSet = Object.values(texts).flatMap(namesSetIn)
+  // Every text a canonical text runs joined with: the others (the guard's own, with any given in their place)
+  // and every pinned run, own lines and all; and every name an env: hands a step or a job.
+  const elsewhere: Elsewhere = {
+    texts: [
+      ...new Set([
+        ...Object.values({ ...CANONICAL_BY_NAME(), ...texts }),
+        ...Object.values(PINNED_RUNS()).flatMap(steps => Object.values(steps).map(step => step.run)),
+      ]),
+    ],
+    given: new Set([
+      'STAGE',
+      ...Object.values(STEP_ENVS).flatMap(steps => Object.values(steps).flatMap(env => Object.keys(env))),
+    ]),
+  }
   for (const [name, text] of Object.entries(texts)) {
     if (!readsAsBash(text)) found.push(`${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`)
     for (const line of foreignExpansionLines(text, alsoSet)) {
@@ -3724,7 +3795,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of stopTokenLines(text))
       found.push(`${GUARD}: DPW-07 ${name}, line ${line + 1}: ${STOP_TOKEN_RULE}`)
-    for (const line of outsideEvaluations(text)) {
+    for (const line of outsideEvaluations(text, elsewhere)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`,
       )
@@ -8326,15 +8397,26 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
 // --- DPW-11, DPW-12: every workflow -----------------------------------------------------------------------
 
 // DPW-11 (C11-D48): every actions/checkout, in every workflow, leaves no credential in the checkout. The
-// action is named in any letter case (GitHub resolves an owner and a repository so), and its uses: is read
-// unquoted.
-const CHECKOUT = /^actions\/checkout(?![\w.-])/i
+// action is read as GitHub's runner reads a step's uses: (its PipelineTemplateConverter): the part before
+// the @, split at / and at \ with the empty segments dropped, the first two naming the repository in any
+// letter case, so actions\checkout@v5, actions//checkout@v5 and /actions/checkout@v5 are the checkout they
+// run (the eighth review's fourth attack); its uses: is read unquoted.
+export const actionRepository = (uses: string): string =>
+  (uses.split('@')[0] ?? '')
+    .split(/[\\/]/)
+    .filter(segment => segment !== '')
+    .slice(0, 2)
+    .join('/')
+    .toLowerCase()
 export function checkoutFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   for (const [path, text] of workflows) {
     for (const job of workflowJobs(text)) {
       parsedSteps(job).forEach((step, index) => {
-        if (CHECKOUT.test(step.uses ?? '') && step.with.get('persist-credentials') !== 'false') {
+        if (
+          actionRepository(step.uses ?? '') === 'actions/checkout' &&
+          step.with.get('persist-credentials') !== 'false'
+        ) {
           found.push(
             at(path, 'DPW-11', `${job.id} (${label(step, index)}): actions/checkout has persist-credentials: false`),
           )

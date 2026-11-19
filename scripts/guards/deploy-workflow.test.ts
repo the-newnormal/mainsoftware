@@ -35,6 +35,7 @@ import {
   ASSET_CHECK,
   AWS_CHECK,
   actionPinFindings,
+  actionRepository,
   assetCheckFindings,
   BOT_TEST,
   CANONICAL_BY_NAME,
@@ -4946,9 +4947,20 @@ describe('DPW-11 (C11-D48): every checkout leaves no credential behind', () => {
     expect(checkoutFindings(plant('          persist-credentials: false\n', '', '', CI))).toEqual([
       `${CI}: DPW-11 audit (step 1): actions/checkout has persist-credentials: false`,
     ])
-    // GUARDS-03: the action quoted, or named in another letter case, which GitHub resolves alike.
+    // GUARDS-03: the action quoted, or named in another letter case, which GitHub resolves alike; and
+    // YAML-A4-01 (the eighth review's fourth attack): a backslash for a slash, an empty segment, quoted or
+    // not, which GitHub's runner reads as actions/checkout too.
     const step = '      - uses: actions/checkout@v5\n        with:\n          persist-credentials: false\n'
-    for (const uses of ['"actions/checkout@v5"', "'actions/checkout@v5'", 'Actions/Checkout@v5']) {
+    for (const uses of [
+      '"actions/checkout@v5"',
+      "'actions/checkout@v5'",
+      'Actions/Checkout@v5',
+      'actions\\checkout@v5',
+      "'actions\\checkout@v5'",
+      'actions//checkout@v5',
+      '/actions/checkout@v5',
+      'actions/checkout/@v5',
+    ]) {
       expect(
         checkoutFindings(plant(step, `      - uses: ${uses}\n        with:\n          fetch-depth: 1\n`, '', CI)),
         uses,
@@ -7734,7 +7746,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // resource aside) outside CloudFormation's, SAM's and Service Catalog's, in any letter case.
   it('refuses a template that hands CloudFormation a template or a handler the diff and release check never read (FLOW-A4-01)', () => {
     const HANDS = refused(
-      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read',
+      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows',
     )
     const planted = (change: (template: Record<string, unknown>) => void) => (dir: string) => {
       edit(named(nonprod(dir), 'Services', '.template.json'), change)
@@ -7750,8 +7762,8 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       Properties: { TemplateURL: `https://s3.ap-southeast-1.amazonaws.com/${BUCKET}/${'a'.repeat(64)}.json` },
       Metadata: { 'aws:asset:path': path },
     })
-    // The layout re-keyed alone passes, and so does a resource of AWS's own the synth doesn't write today,
-    // so each refusal below is its plant's.
+    // The layout re-keyed alone passes, and so does another resource of a type the synth writes, so each
+    // refusal below is its plant's.
     expect(check(planted(() => {}))).toBe('passed')
     expect(check(resource({ Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'x' } }))).toBe('passed')
     for (const [plant, label] of [
@@ -7814,7 +7826,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // reference, {{resolve:…}}, which CloudFormation resolves from the store the same way.
   it('refuses a template that takes a value at deploy time the diff doesn’t show (INPUTS-A3-01)', () => {
     const HANDS = refused(
-      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read',
+      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows',
     )
     const TAKES = refused(
       "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference",
@@ -7826,7 +7838,8 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const parameters = (template: Record<string, unknown>) => template.Parameters as Record<string, unknown>
     const resources = (template: Record<string, unknown>) => template.Resources as Record<string, unknown>
     const ssm = (name: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: name })
-    const policy = (name: unknown) => ({ Type: 'AWS::IAM::Policy', Properties: { PolicyName: name } })
+    // A resource of a type the synth writes, whose one property holds the value a case plants.
+    const policy = (name: unknown) => ({ Type: 'AWS::SSM::Parameter', Properties: { Name: name } })
     // The re-keyed layout, a Sub over a pseudo-parameter and an attribute, an empty {} and another stage's
     // entry pass, so each refusal below is its plant's.
     expect(check(planted(() => {}))).toBe('passed')
@@ -7925,11 +7938,78 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ],
       [
         (template: Record<string, unknown>) =>
-          (resources(template).X = { Type: 'AWS::IAM::Policy', Properties: { '{': 'x' } }),
+          (resources(template).X = { Type: 'AWS::SSM::Parameter', Properties: { '{': 'x' } }),
         'a brace in a key',
       ],
     ] as const) {
       expect(check(planted(change)), label).toBe(TAKES)
+    }
+  }, 120_000)
+
+  // The eighth review's fourth attack (INPUTS-A4-01). The approver's diff prints an added resource as one line
+  // with no properties, and its IAM table reads a policy resource's statements only under the principals its
+  // Groups, Users and Roles name, so an AWS::IAM::RolePolicy granting * on * through its RoleName (prod's own
+  // api task role, rendered into the restore stage too) showed no grant and no role anywhere, and the asset
+  // check admitted any type of AWS's own. A template now holds only the types the workload's stacks write.
+  it('holds every template to the resource types the workload’s stacks write (INPUTS-A4-01)', () => {
+    const HANDS = refused(
+      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows',
+    )
+    const restore = (dir: string) => join(dir, 'assembly-restore')
+    const added = (stage: (dir: string) => string, value: unknown) => (dir: string) => {
+      edit(named(stage(dir), 'Services', '.template.json'), template => {
+        ;(template.Resources as Record<string, unknown>).ApiTaskLogsRead = value
+      })
+      rekey(stage(dir), 'Services')
+    }
+    const all = { Version: '2012-10-17', Statement: [{ Effect: 'Allow', Action: '*', Resource: '*' }] }
+    // Another resource of a type the stacks write passes, so each refusal below is its type's.
+    expect(check(added(prod, { Type: 'AWS::Logs::LogGroup', Properties: { RetentionInDays: 30 } }))).toBe('passed')
+    for (const [stage, value, label] of [
+      [
+        prod,
+        {
+          Type: 'AWS::IAM::RolePolicy',
+          Properties: { RoleName: 'hearth-prod-api-task', PolicyName: 'logs-read', PolicyDocument: all },
+        },
+        "a role policy on prod's api task role",
+      ],
+      [
+        restore,
+        {
+          Type: 'AWS::IAM::RolePolicy',
+          Properties: { RoleName: 'hearth-prod-api-task', PolicyName: 'logs-read', PolicyDocument: all },
+        },
+        "the same, rendered into the restore stage on prod's role",
+      ],
+      [
+        nonprod,
+        { Type: 'AWS::IAM::UserPolicy', Properties: { UserName: 'x', PolicyName: 'x', PolicyDocument: all } },
+        'a user policy',
+      ],
+      [
+        nonprod,
+        { Type: 'AWS::IAM::GroupPolicy', Properties: { GroupName: 'x', PolicyName: 'x', PolicyDocument: all } },
+        'a group policy',
+      ],
+      [
+        prod,
+        {
+          Type: 'AWS::IAM::Policy',
+          Properties: { PolicyName: 'x', Roles: ['hearth-prod-api-task'], PolicyDocument: all },
+        },
+        'a policy',
+      ],
+      [prod, { Type: 'AWS::IAM::ManagedPolicy', Properties: { PolicyDocument: all } }, 'a managed policy'],
+      [prod, { Type: 'AWS::IAM::User', Properties: {} }, 'a user'],
+      [prod, { Type: 'AWS::IAM::Group', Properties: {} }, 'a group'],
+      [prod, { Type: 'AWS::IAM::AccessKey', Properties: { UserName: 'x' } }, 'an access key'],
+      [prod, { Type: 'AWS::S3::BucketPolicy', Properties: { Bucket: 'x', PolicyDocument: all } }, 'a bucket policy'],
+      [prod, { Type: 'AWS::Lambda::Permission', Properties: {} }, "a function's permission"],
+      [prod, { Type: 'AWS::IAM::Role ', Properties: {} }, 'a type the stacks write, with a blank after it'],
+      [prod, { Type: 'aws::iam::role', Properties: {} }, 'a type the stacks write, in another letter case'],
+    ] as const) {
+      expect(check(added(stage, value)), label).toBe(HANDS)
     }
   }, 120_000)
 
@@ -9775,5 +9855,130 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
       expect(outsideEvaluations(text), text).toEqual([])
     }
     expect(canonicalTextFindings()).toEqual([])
+  })
+})
+
+describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () => {
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
+  const plantAfter = (text: string, anchor: string, added: string) => {
+    expect(text).toContain(`${anchor}\n`)
+    const planted = text.replace(`${anchor}\n`, `${anchor}\n${added}\n`)
+    return { planted, line: planted.split('\n').indexOf(added) + 1 }
+  }
+
+  // FETCH-A4-01, COMMANDS-A4-01: a { where a command starts was read as a command named {, which
+  // CANONICAL_COMMANDS and SHELL_OWN list, with the group's first command as its tail, so no rule read that
+  // command: a touch wrote outside DPW-10's write rule in CLI_FETCH and AWS_CHECK, and a tar whose
+  // --to-command ran a program per member hid in the CDK CLI's step. A group's { is now read as the keywords
+  // are, and the word after it as the command it is.
+  it("reads a group's first command as the command it is (FETCH-A4-01, COMMANDS-A4-01)", () => {
+    const touch = 'touch "$RUNNER_TEMP/hearth-plant-marker"'
+    for (const [text, anchor] of [
+      [CLI_FETCH, 'mkdir "$RUNNER_TEMP/aws-cdk"'],
+      [AWS_CHECK, '  [ "$stage" = restore ] && stage=prod'],
+    ] as const) {
+      const name = text === CLI_FETCH ? 'CLI_FETCH' : 'AWS_CHECK'
+      for (const added of [
+        `{ ${touch}; }`,
+        `{ ${touch};}`,
+        `true || { ${touch}; }`,
+        `true && { ${touch}; }`,
+        `if true; then { ${touch}; }; fi`,
+        `! { ${touch}; }`,
+        `{ { ${touch}; }; }`,
+        `time { ${touch}; }`,
+      ]) {
+        const plant = plantAfter(text, anchor, added)
+        expect(canonicalTextFindings({ [name]: plant.planted }), `${name}: ${added}`).toContain(
+          canonical(name, plant.line, COMMANDS),
+        )
+      }
+      // A held tool's flag that runs a program, or a tool off its held line, inside a group.
+      for (const added of [
+        `{ tar --to-command='touch "$RUNNER_TEMP/x"' -xf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" || true; }`,
+        `true || { sed -n p "$RUNNER_TEMP/x"; }`,
+      ]) {
+        const plant = plantAfter(text, anchor, added)
+        expect(canonicalTextFindings({ [name]: plant.planted }), `${name}: ${added}`).toContain(
+          canonical(name, plant.line, TOOLS),
+        )
+      }
+    }
+    expect(shellCommands('{ tar --to-command=X -xf y; }').map(command => command.word)).toEqual(['tar', '}'])
+    expect(shellCommands('true || { sed -n p f; }').map(command => command.word)).toEqual(['true', 'sed', '}'])
+    expect(canonicalToolLines('{ sed -n p f; }')).toEqual([0])
+    expect(canonicalCommandLines('{ touch x; }', new Set())).toEqual([0])
+    // A brace expansion as a command's word is still read as the word it is, and refused.
+    expect(canonicalCommandLines('{touch,x}', new Set())).toEqual([0])
+    // The committed groups (|| { echo …; exit 1; }, and nested ones in AWS_CHECK) still pass.
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // FLOW-A4-01: a canonical text's evaluations were read in the text alone, but the texts run joined in one
+  // shell, so TASKS_OUTPUTS' global revision, set from an AWS answer, was PROBE's $(( revision )), though PROBE
+  // gave it 0 first when it was empty, and a subscript in the answer ran a command with the deploy role's
+  // session. A name a text evaluates must now be a number wherever any other canonical text or pinned run sets
+  // it, and set by no env:. And a value holding arithmetic is read to its word's end, so n=$((0))$y is no number.
+  it('evaluates no name another text or run sets to anything but a number (FLOW-A4-01)', () => {
+    const tasks = plantAfter(
+      TASKS_OUTPUTS,
+      `      probe) PROBE_TD="$\{definition##*/}" ;;\n    esac`,
+      `    revision=$\{definition#*-$kind:}`,
+    ).planted
+    const guard = `[ -n "$\{revision:-}" ] || revision=0\n[ "$(( revision ))" -gt 0 ] || { echo 'probe: the Tasks stack names no probe revision' | mask; exit 1; }`
+    const probe = PROBE.replace("TARGETS=''\n", `${guard}\nTARGETS=''\n`)
+    expect(probe).not.toBe(PROBE)
+    const line =
+      probe
+        .split('\n')
+        .indexOf(
+          `[ "$(( revision ))" -gt 0 ] || { echo 'probe: the Tasks stack names no probe revision' | mask; exit 1; }`,
+        ) + 1
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: tasks, PROBE: probe })).toContain(canonical('PROBE', line, EVALUATES))
+    // Read with what sets the name elsewhere: another text, a pinned run's own line, an env:.
+    const evaluating = `[ -n "$\{revision:-}" ] || revision=0\nseen=$((revision))`
+    for (const elsewhere of [
+      { texts: [`revision=$\{definition#*-probe:}`], given: new Set<string>() },
+      { texts: ['revision=$(get aws ecs describe-services)'], given: new Set<string>() },
+      { texts: ['read -r revision <<<"$x"'], given: new Set<string>() },
+      { texts: ['for revision in a b; do :; done'], given: new Set<string>() },
+      { texts: [], given: new Set(['revision']) },
+    ]) {
+      expect(outsideEvaluations(evaluating, elsewhere), JSON.stringify(elsewhere)).toEqual([1])
+    }
+    // Numbers set elsewhere pass, and so does a name no other text sets.
+    for (const texts of [['revision=0'], ['revision=$((n + 1))'], ['local revision'], ['other=$1']]) {
+      expect(outsideEvaluations(evaluating, { texts, given: new Set() }), texts[0]).toEqual([])
+    }
+    // A value that holds arithmetic and more is no number.
+    expect(outsideEvaluations('y=$1\nn=$((0))$y\necho $((n))')).toEqual([2])
+    expect(outsideEvaluations('n=$((0))\necho $((n))')).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // YAML-A4-01: DPW-11 read a step as a checkout only when its uses: began actions/checkout, but GitHub's
+  // runner splits uses: at / and \ and drops empty segments, so actions\checkout@v5, actions//checkout@v5 and
+  // /actions/checkout@v5 checked out with the job's token left behind. The repository is read as the runner
+  // reads it.
+  it('reads the action a uses: names as GitHub’s runner does (YAML-A4-01)', () => {
+    for (const uses of [
+      'actions/checkout@v5',
+      'Actions/Checkout@v5',
+      'actions\\checkout@v5',
+      'actions//checkout@v5',
+      '/actions/checkout@v5',
+      'actions/checkout/@v5',
+    ]) {
+      expect(actionRepository(uses), uses).toBe('actions/checkout')
+    }
+    for (const uses of ['actions/checkout-x@v5', './actions/checkout', 'docker://actions/checkout', 'actions@v5']) {
+      expect(actionRepository(uses), uses).not.toBe('actions/checkout')
+    }
+    expect(checkoutFindings(workflows)).toEqual([])
   })
 })

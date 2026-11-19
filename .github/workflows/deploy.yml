@@ -415,12 +415,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -469,8 +473,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -637,12 +641,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -691,8 +699,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -860,12 +868,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -914,8 +926,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -1152,12 +1164,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -1206,8 +1222,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -2258,12 +2274,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -2312,8 +2332,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -3143,12 +3163,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -3197,8 +3221,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -3312,12 +3336,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -3366,8 +3394,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -3911,12 +3939,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -3965,8 +3997,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
@@ -5080,12 +5112,16 @@ jobs:
           # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
           # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
           # template holding a section, a transform or a resource type a workload synth never writes (a section
-          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
-          # outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
-          # CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
-          # CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
-          # (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
-          # deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+          # other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, or a
+          # type but those the workload's stacks write, each named in the check below): so no module, registered
+          # type, nested stack, stack set, macro, SAM or Service Catalog type, each of which hands CloudFormation a
+          # template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
+          # nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
+          # its TemplateURL names); and no IAM policy, user, group or key, whose grant the approver's diff never
+          # shows (it prints an added resource as one line with no properties, and its IAM table reads a role,
+          # user or group policy's statements under no principal); a change that writes another type names it
+          # there, and one that stops writing a type keeps it while a previous release still holds it; a template
+          # that takes a value at deploy time the diff doesn't
           # show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
           # names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
           # subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
@@ -5134,8 +5170,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
-                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+                jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
