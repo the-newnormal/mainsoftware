@@ -28,8 +28,10 @@
 // id's mask starts by stopping the runner reading workflow commands for the rest of its step (STOP_HEAD,
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
 // command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
-// build's image archive) hides a line of the log or the approver's diff or drops a job output; prod-plan
-// diffs what every approval in prod deploys, a restore's too (DPW-08), a restore taken down deploying only
+// build's image archive) hides a line of the log or the approver's diff or drops a job output, and no line of
+// any run or canonical text but STOP_COMMANDS's two names the token that would resume them; prod-plan
+// diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template
+// parameter deploys as the Default that diff shows, a restore's too (DPW-08), a restore taken down deploying only
 // the stacks that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy
 // unless it reads the same), and writes the diff into its summary as an indented code block, which no line
 // of a release's own text can end or turn into HTML that hides the rest; a credentialed run writes no file
@@ -95,8 +97,10 @@
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis holds one, a [ or test with a word bash could
-// split, glob or expand a tilde in or that stands where no shape check reads it (after a redirection, an assignment,
-// run or get) counting as a site, and a line it can't read that plainly is refused), to expanding only a name it
+// split, glob or expand a tilde in, that expands to several ("$@", "${a[@]}"), holds a backslash outside quotes or
+// is an operator in quotes ('-v'), whose ] isn't its command's last word and only ], or that stands where no shape
+// check reads it (after a redirection, an assignment, run or get) counting as a site, and a line it can't read
+// that plainly is refused), to expanding only a name it
 // sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder,
 // prod-plan's diff file or the runner's outputs, summary, folder, run ids, address and commit
 // (foreignExpansionLines(), DPW-07), so no canonical text prints the OIDC request token or another credential its
@@ -107,7 +111,9 @@
 // other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
 // DIFF, STAGE) set in any spelling but the preamble's CDK line), and to every program it runs being held by what it
 // is handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written on
-// the line and, for jq, data under the assembly's or the temp folder or a path in the checkout; printf only a
+// the line and, for jq, only data the seven words JQ_FILE_WORDS writes, whose names (dir, file, template and
+// those they're built from) only ASSET_CHECK's own lines set and its loops' own done lines feed
+// (fileNameLines()); printf only a
 // single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and options the
 // workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug), one value to each option
 // but a list's, so no expansion in a second word hands aws an option; tee only appending to the summary; no word of
@@ -173,6 +179,25 @@ function sh(strings: TemplateStringsArray, ...values: readonly string[]): string
 // reads none for the rest of the step; the account id's mask is its own step's, before.
 export const STOP_COMMANDS = sh`stop_token=$(openssl rand -hex 16)
 echo "::stop-commands::$stop_token"`
+// The stop token is named on STOP_COMMANDS's two lines alone, in every run and every canonical text: made there
+// and printed once, as the command that stops the runner reading workflow commands. A line that named it anywhere
+// else could print ::<token>:: and resume them, so a ##[add-mask] in what the step prints after (a release's own
+// template text in prod-plan's diff, say) would hide a line of the approver's diff (the eighth review's second
+// attack). No spelling reaches it but its name: a canonical text and a run's own lines have no ${!…}, eval,
+// declare -p or bare set.
+// The two lines are written here as literals, never read from STOP_COMMANDS, so a third line added to it is one
+// of neither.
+const STOP_TOKEN_LINES: readonly string[] = [
+  'stop_token=$(openssl rand -hex 16)',
+  'echo "::stop-commands::$stop_token"',
+]
+export function stopTokenLines(text: string): number[] {
+  return text
+    .split('\n')
+    .flatMap((line, n) => (line.includes('stop_token') && !STOP_TOKEN_LINES.includes(line.trim()) ? [n] : []))
+}
+const STOP_TOKEN_RULE =
+  "names the stop token only on STOP_COMMANDS's two lines, where it is made and stops the runner reading workflow commands, so no line prints ::<token>:: and resumes them"
 
 // The first lines of every run of a job that holds the deploy role, or the OIDC request token that gets it,
 // but the account id's mask (DPW-07): set -euo pipefail, then STOP_COMMANDS, before anything the run reads
@@ -898,9 +923,15 @@ fi`
 
 // The CLI's lines (C11-D52, C11-D59, C11-D76; TECH-SPEC T24 items 11 and 18, DPW-06, DPW-10): one per shape,
 // each naming its stacks through "$STAGE", which its job sets once, and its folder through "$ASSEMBLY",
-// which its step sets once; every deploy with --exclusively.
-const DEPLOY_FLAGS = '--exclusively --require-approval never --no-lookups --no-notices --ci --progress events'
-export const CDK_DEPLOY_FORWARD = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --require-approval never --no-lookups --no-notices --ci --progress events`
+// which its step sets once; every deploy with --exclusively and --no-previous-parameters. The CLI's default,
+// --previous-parameters, sends CloudFormation UsePreviousValue for every parameter the deployed stack already
+// has, so its template's Default, the only value prod-plan's diff can show, would never deploy: a release
+// could add a parameter read by nothing, then change its Default and make a grant conditional on it, and the
+// approver would read the new Default while the stack kept the old value (the eighth review's second
+// attack). With the flag, every parameter takes its template's Default, or the deploy refuses one with none.
+const DEPLOY_FLAGS =
+  '--exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events'
+export const CDK_DEPLOY_FORWARD = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events`
 export const CDK_DEPLOY_SERVICES = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" ${DEPLOY_FLAGS}`
 export const CDK_DEPLOY_DRILL = `if ${CDK_DEPLOY_SERVICES}; then`
 export const CDK_DEPLOY_ROLLBACK = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" ${DEPLOY_FLAGS}`
@@ -2801,29 +2832,57 @@ const EVALUATING_NAME =
 const TEST_START = /(?:^|[;&|(){!]|\b(?:if|then|elif|else|while|until|do)\b)[ \t]*(\[|test)(?=[ \t])/g
 const TEST_UNARY = ['-n', '-z', '-d', '-f', '-e', '-s', '-L', '-h', '-r', '-x']
 const TEST_BINARY = ['=', '==', '!=', '-eq', '-ne', '-lt', '-le', '-gt', '-ge']
-// The words of a [ or test from an offset of a code view's line, split at the blanks outside its parentheses,
-// to its ] (a [) or to the end of its command (a test); undefined for a [ that its line doesn't close.
-function testWords(line: string, from: number, bracket: boolean): string[] | undefined {
-  const found: string[] = []
-  let word = ''
+// The words of a [ or test from an offset of a code view's line, each as the code view and the text write it,
+// split at the blanks outside its parentheses (a backslash's next character is the word's, never a parenthesis
+// or a blank), to the end of its command, as bash hands [ every word to its command's end and requires only
+// the last to be ]; for a [, the words before that ], and undefined unless the last word, and no other, is ]
+// (an early ] hides the rest: [ -n ] -o '-v' "$x" ] is no [ -n ], the eighth review's second attack).
+interface TestWord {
+  readonly code: string
+  readonly raw: string
+}
+function testWords(line: string, raw: string, from: number, bracket: boolean): TestWord[] | undefined {
+  const found: TestWord[] = []
+  let start = -1
   let depth = 0
-  for (let at = from; at < line.length; at++) {
+  const end = (at: number) => {
+    if (start >= 0) found.push({ code: line.slice(start, at), raw: raw.slice(start, at) })
+    start = -1
+  }
+  let at = from
+  for (; at < line.length; at++) {
     const c = line[at] ?? ''
+    if (c === '\\') {
+      if (start < 0) start = at
+      at++
+      continue
+    }
     if (c === '(') depth++
     if (c === ')') depth--
     if (depth < 0 || (depth === 0 && /[;&|]/.test(c))) break
-    if (depth === 0 && /[ \t]/.test(c)) {
-      if (word === ']' && bracket) return found
-      if (word !== '') found.push(word)
-      word = ''
-    } else word += c
+    if (depth === 0 && /[ \t]/.test(c)) end(at)
+    else if (start < 0) start = at
   }
-  if (bracket) return word === ']' ? found : undefined
-  if (word !== '') found.push(word)
-  return found
+  end(at)
+  if (!bracket) return found
+  if (found.at(-1)?.code !== ']' || found.slice(0, -1).some(word => word.code === ']')) return undefined
+  return found.slice(0, -1)
 }
-const testShaped = (words: readonly string[] | undefined) => {
-  if (words === undefined || words.some(word => wordSplits(word))) return false
+// A word of a test bash could hand [ as several or as an operator it doesn't show: one that expands to several
+// ("$@", "$*", "${name[@]}" and the like, a helper's need() { [ "$@" ]; } among them, whose callers' words no
+// shape check reads; a count, ${#name[@]}, is one), one holding a backslash outside quotes (\( and \) are the
+// parentheses [ groups by, which no shape here has), and a quoted one bash hands [ as an operator ('-v', "(",
+// "!"), which TEST_EVALUATIONS' literal -v never sees (the eighth review's second attack).
+const TEST_COUNT = /\$\{#[A-Za-z_]\w*\[[@*]\]\}/g
+const TEST_OPERATOR = /^(?:-.*|[()![\]]|=|==|!=)$/
+const unplainTestWord = ({ code, raw }: TestWord) =>
+  wordSplits(code) ||
+  expandsToMany(raw.replace(TEST_COUNT, '')) ||
+  code.includes('\\') ||
+  (/['"]/.test(raw) && TEST_OPERATOR.test(wordAsRead(raw)))
+const testShaped = (found: readonly TestWord[] | undefined) => {
+  if (found === undefined || found.some(unplainTestWord)) return false
+  const words = found.map(word => word.code)
   const operands = words[0] === '!' ? words.slice(1) : words
   if (operands.length === 1) return true
   if (operands.length === 2) return TEST_UNARY.includes(operands[0] ?? '')
@@ -2835,6 +2894,7 @@ const testShaped = (words: readonly string[] | undefined) => {
 // (unreadTests(), given the text the code view is of).
 function unplainLines(code: string, text?: string): number[] {
   const unread = new Set(text === undefined ? [] : unreadTests(text, code))
+  const raws = (text === undefined ? code : shellViews(text).text).split('\n')
   return code.split('\n').flatMap((line, n) => {
     if (unread.has(n)) return [n]
     const names = [...line.matchAll(NAME_TAKER)].some(([, builtin, rest]) => {
@@ -2846,7 +2906,7 @@ function unplainLines(code: string, text?: string): number[] {
       return words.some(word => !PLAIN_FLAGS.includes(word) && (!PLAIN_NAME.test(word) || EVALUATING_NAME.test(word)))
     })
     const tests = [...line.matchAll(TEST_START)].some(
-      match => !testShaped(testWords(line, match.index + match[0].length, match[1] === '[')),
+      match => !testShaped(testWords(line, raws[n] ?? line, match.index + match[0].length, match[1] === '[')),
     )
     return names || tests || EVALUATING_NAME.test(line) ? [n] : []
   })
@@ -3142,10 +3202,10 @@ function withoutRedirections(words: readonly string[]): string[] {
 // What a canonical text hands jq and gh, which could take a program from a file, read a file or the
 // environment, or send a file (DPW-10): jq only -e, -r, -c, -n and -s (in any mix) and --arg and --argjson
 // with a name and a value, each written plainly, then its program written on the line (one single-quoted
-// string, or a .field path), then only data: files under the assembly's folder or the runner's temp folder
-// ("$dir/…", "$RUNNER_TEMP/…", naming no other variable but by $name or ${name}), ASSET_CHECK's list of them
-// ("${stackfiles[@]}", the one array, whose words could otherwise be jq's options after its program), or a
-// path in the checkout written plainly (infra/package.json), none with a .. part,
+// string, or a .field path), then only data: one of JQ_FILE_WORDS (an assembly's manifest, file or template,
+// ASSET_CHECK's list of asset manifests, "${stackfiles[@]}", the one array, whose words could otherwise be jq's
+// options after its program, and the CLI's unpacked manifest), whose names only ASSET_CHECK's own lines set
+// (fileNameLines()), or a path in the checkout written plainly (infra/package.json) with no .. part,
 // so never a file elsewhere (the registry login skopeo keeps under $XDG_RUNTIME_DIR, say, which jq would
 // print in slices no mask matches; the seventh review's third attack); gh only as gh api on a double-quoted
 // path under repos/, with at most --jq and a program written the same way; neither's program holding a word
@@ -3156,9 +3216,83 @@ function withoutRedirections(words: readonly string[]): string[] {
 // the flag it is (the seventh review's second attack). These are the ways a canonical text's line changed by
 // a review that reads it alone could still hand either a file, the environment or a program from elsewhere:
 // jq's -f, --from-file, -L, --rawfile, --slurpfile, --args and --jsonargs, gh's --input, -F and -f among them.
-const JQ_FILE =
-  /^"\$(?:dir|RUNNER_TEMP)\/(?:[^"$`\\]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*"$|^"\$\{stackfiles\[@\]\}"$|^[A-Za-z0-9][\w.-]*(?:\/[\w.-]+)*$/
-const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/
+// jq's data words: the seven the texts write, each a literal: ASSET_CHECK's manifest, file and template under an
+// assembly's folder and its list of asset manifests, CLI_CHECK's unpacked manifest, and the two files of the
+// checkout CLI_FETCH and CLI_CHECK read. A word that expands any other name ("$RUNNER_TEMP/$x", say) is none,
+// since what the name holds isn't on the line: a local set to a path that climbed out of the temp folder with ..
+// read the registry login skopeo keeps under XDG_RUNTIME_DIR and printed it (the eighth review's second
+// attack); nor is any other path in the checkout, where a committed link could stand. The names these words
+// expand are held to ASSET_CHECK's own lines (FILE_NAMES, fileNameLines()).
+const JQ_FILE_WORDS: readonly string[] = [
+  '"$dir/manifest.json"',
+  '"$dir/$file"',
+  '"$dir/$template"',
+  sh`"$\{stackfiles[@]}"`,
+  '"$RUNNER_TEMP/aws-cdk/package/package.json"',
+  'infra/package.json',
+  'package-lock.json',
+]
+const jqFileHeld = (word: string) => JQ_FILE_WORDS.includes(word)
+// The names JQ_FILE_WORDS expand and those their values are built from (dir from queue, queue from root, dir,
+// name and file, stackfiles from dir and file), which only ASSET_CHECK sets, each on a line of its own that
+// FILE_NAME_LINES writes here as a literal, never read from the text, and each read of one in a while loop that
+// takes its input only from a done line FILE_NAME_LOOPS pairs with it: no assignment, local, for, printf -v,
+// mapfile or read elsewhere, and no other input to its loop, gives jq a path the line doesn't show. What the
+// loops read is the assembly's own manifests, which ASSET_CHECK's checks before them hold to plain names in
+// their own folder (its tests run them).
+const FILE_NAMES = ['dir', 'file', 'template', 'stackfiles', 'queue', 'name', 'root']
+const FILE_NAME_ASSIGNMENT = assigns(FILE_NAMES.join('|'))
+const FILE_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
+  [sh`local queue=("$1") dir name`, 'ASSET_CHECK'],
+  [sh`dir=$\{queue[0]}`, 'ASSET_CHECK'],
+  [sh`queue=("$\{queue[@]:1}")`, 'ASSET_CHECK'],
+  [sh`while IFS= read -r name; do`, 'ASSET_CHECK'],
+  [sh`queue+=("$dir/$name")`, 'ASSET_CHECK'],
+  [sh`local root dir file path manifests=0 queue stackfiles`, 'ASSET_CHECK'],
+  [sh`root=$(cd "$1" && pwd -P)`, 'ASSET_CHECK'],
+  [sh`queue=("$root")`, 'ASSET_CHECK'],
+  [sh`while IFS= read -r file; do`, 'ASSET_CHECK'],
+  [sh`stackfiles=()`, 'ASSET_CHECK'],
+  [sh`stackfiles+=("$dir/$file")`, 'ASSET_CHECK'],
+  [sh`queue+=("$dir/$file")`, 'ASSET_CHECK'],
+  [sh`local root release=$2 digest services=0 dir stack template`, 'ASSET_CHECK'],
+  [sh`while IFS= read -r dir; do`, 'ASSET_CHECK'],
+  [sh`while IFS=$'\t' read -r stack template; do`, 'ASSET_CHECK'],
+]
+// Each loop that reads one of FILE_NAMES: its while line, the done line that feeds it, and the text it is in.
+const FILE_NAME_LOOPS = (): ReadonlyArray<readonly [string, string, string]> => [
+  [
+    sh`while IFS= read -r name; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:cloud-assembly") | .properties.directoryName' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+  [
+    sh`while IFS= read -r file; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+  [
+    sh`while IFS= read -r file; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+  [
+    sh`while IFS= read -r file; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:asset-manifest") | .properties.file' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+  [
+    sh`while IFS= read -r file; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | select(.type == "cdk:cloud-assembly") | .properties.directoryName' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+  [sh`while IFS= read -r dir; do`, sh`done < <(assembly_dirs "$root")`, 'ASSET_CHECK'],
+  [
+    sh`while IFS=$'\t' read -r stack template; do`,
+    sh`done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | [.properties.stackName, .properties.templateFile] | @tsv' "$dir/manifest.json")`,
+    'ASSET_CHECK',
+  ],
+]
 const JQ_FLAG = /^-[cenrs]+$/
 const JQ_PROGRAM = /^'[^']*'?$|^\.(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?$/
 const JQ_REACH =
@@ -3176,7 +3310,7 @@ function jqHeld(words: readonly string[]): boolean {
     i += 2
   }
   if (!programHeld(words[i])) return false
-  return words.slice(i + 1).every(word => JQ_FILE.test(word) && !DOT_DOT.test(wordAsRead(word)))
+  return words.slice(i + 1).every(jqFileHeld)
 }
 function ghHeld(words: readonly string[]): boolean {
   if (words.some(word => wordSplits(word) || expandsToMany(word))) return false
@@ -3283,6 +3417,57 @@ export function canonicalToolLines(text: string): number[] {
     if (lineHeld(command.word) && !isHeld(command.line)) lines.add(command.line)
   }
   for (const n of fileReadLines(views)) if (!isHeld(n)) lines.add(n)
+  return [...lines].sort((a, b) => a - b)
+}
+
+// The lines of a canonical text that set one of FILE_NAMES on a line FILE_NAME_LINES doesn't hold for that text,
+// or that read one in a loop whose done line FILE_NAME_LOOPS doesn't pair with the loop's while line (DPW-10).
+// A loop's do and done are paired by their nesting: a do ending a line or after a ;, a done starting a line or
+// after a ;, as the texts write them; a text whose do and done don't pair has every setting line refused.
+const FILE_NAME_RULE =
+  "sets a name jq's data words build a path from (dir, file, template, stackfiles, queue, name, root) only on ASSET_CHECK's own lines, and reads one only in a loop fed by its own done line, so jq reads no file a line doesn't show"
+export function fileNameLines(text: string, name: string): number[] {
+  const raw = text.split('\n')
+  const lineOf = (n: number) => raw[n]?.trim() ?? ''
+  const held = new Set(FILE_NAME_LINES().flatMap(([line, owner]) => (owner === name ? [line] : [])))
+  const loops = new Set(
+    FILE_NAME_LOOPS().flatMap(([open, close, owner]) => (owner === name ? [`${open}\n${close}`] : [])),
+  )
+  const code = shellViews(text).code.split('\n')
+  const setters = new Set<number>()
+  code.forEach((line, n) => {
+    if (FILE_NAME_ASSIGNMENT.test(line)) setters.add(n)
+  })
+  const readers = new Set<number>()
+  for (const command of shellCommands(text)) {
+    const named = builtinNames(command).filter(each => FILE_NAMES.includes(each))
+    if (named.length === 0) continue
+    setters.add(command.line)
+    if (command.word === 'read') readers.add(command.line)
+  }
+  // Each do's line, paired with its done's.
+  const closes = new Map<number, number>()
+  const open: number[] = []
+  let paired = true
+  code.forEach((line, n) => {
+    for (const match of line.matchAll(/(?:^|;)[ \t]*(do|done)(?=[ \t;<>)|&]|$)/g)) {
+      if (match[1] === 'do') open.push(n)
+      else {
+        const from = open.pop()
+        if (from === undefined) paired = false
+        else closes.set(from, n)
+      }
+    }
+  })
+  if (open.length > 0) paired = false
+  const lines = new Set<number>()
+  for (const n of setters) {
+    if (!paired || !held.has(lineOf(n))) lines.add(n)
+  }
+  for (const n of readers) {
+    const close = closes.get(n)
+    if (close === undefined || !loops.has(`${lineOf(n)}\n${lineOf(close)}`)) lines.add(close ?? n)
+  }
   return [...lines].sort((a, b) => a - b)
 }
 
@@ -3470,6 +3655,8 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of foreignExpansionLines(text, alsoSet)) {
       found.push(`${GUARD}: DPW-07 ${name}, line ${line + 1}: ${CANONICAL_EXPANDS_RULE}`)
     }
+    for (const line of stopTokenLines(text))
+      found.push(`${GUARD}: DPW-07 ${name}, line ${line + 1}: ${STOP_TOKEN_RULE}`)
     for (const line of outsideEvaluations(text)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself`,
@@ -3479,6 +3666,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
       )
+    }
+    for (const line of fileNameLines(text, name)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
     }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
@@ -5656,6 +5846,7 @@ export function maskingFindings(workflows: Texts): Finding[] {
           add(where, 'runs every aws, CDK and skopeo command as run … or $(get …)')
         }
       }
+      if (stopTokenLines(run).length > 0) add(where, STOP_TOKEN_RULE)
       if (!credentialed) return
       if (
         read.commands.some(command =>
@@ -7838,11 +8029,17 @@ const PINNED_CREDENTIALED =
   'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
 
 // What the CLI is run with (DPW-10): deploy or diff, --app "$ASSEMBLY", --no-lookups and --no-notices, and
-// for a deploy --require-approval never, --ci and --exclusively.
+// for a deploy --require-approval never, --ci, --exclusively and --no-previous-parameters, the one word on
+// its line that names previous parameters in any spelling (--previous-parameters, --previousParameters or a
+// =true after it would set them back, and the last one yargs reads wins), so every parameter deploys as its
+// template's Default, the value prod-plan's diff shows.
 function cliLineIsSafe(line: string): boolean {
   const flags = ['--no-lookups', '--no-notices']
-  if (CLI_DEPLOY.test(line)) flags.push('--require-approval never', '--ci', '--exclusively')
+  const deploy = CLI_DEPLOY.test(line)
+  if (deploy) flags.push('--require-approval never', '--ci', '--exclusively', '--no-previous-parameters')
   else if (!CLI_DIFF.test(line)) return false
+  const previous = line.match(/previous/gi) ?? []
+  if (previous.length !== (deploy ? 1 : 0)) return false
   return flags.every(flag => new RegExp(`(?:^|\\s)${flag}(?=\\s|;|$)`).test(line))
 }
 
@@ -7998,7 +8195,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       ) {
         add(
           where,
-          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively',
+          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters',
         )
       }
     })

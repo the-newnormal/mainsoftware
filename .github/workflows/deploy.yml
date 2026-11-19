@@ -1612,7 +1612,7 @@ jobs:
           # by their stage ids, each change set from the downloaded assembly alone.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Migrate
         if: ${{ needs.gate.outputs.mode == 'deploy' }}
         env:
@@ -1765,7 +1765,7 @@ jobs:
           # on (and after migrate, from C0.12).
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Roll back to the target
         if: ${{ needs.gate.outputs.mode == 'rollback' }}
         run: |
@@ -1788,7 +1788,7 @@ jobs:
           # Platform and Data that run; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: drill-break
         if: ${{ needs.gate.outputs.mode == 'drill-break' }}
         run: |
@@ -1819,7 +1819,7 @@ jobs:
           fi
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          if run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events; then
+          if run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events; then
             echo 'drill-break: the broken Services deploy succeeded, so the drill proved nothing' | mask
             exit 1
           fi
@@ -2616,7 +2616,7 @@ jobs:
           # assembly; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly-previous"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Probe
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |
@@ -4352,7 +4352,7 @@ jobs:
           # by their stage ids, each change set from the downloaded assembly alone.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Migrate
         if: ${{ needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' }}
         env:
@@ -4505,7 +4505,7 @@ jobs:
           # on (and after migrate, from C0.12).
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Roll back to the target
         if: ${{ needs.gate.outputs.mode == 'rollback' && needs.gate.outputs.target == 'prod' }}
         run: |
@@ -4528,7 +4528,7 @@ jobs:
           # Platform and Data that run; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Take the restore stage down
         if: ${{ needs.gate.outputs.target == 'restore' && needs.gate.outputs.restore == 'down' }}
         env:
@@ -4607,7 +4607,7 @@ jobs:
                 exit 1
                 ;;
             esac
-            run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/$PART" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+            run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/$PART" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
           done
           if [ -n "$KEPT" ]; then
             echo "restore down: the restore stage isn't down: tier 2 deletes$KEPT (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -5398,7 +5398,7 @@ jobs:
           # assembly; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly-previous"
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
-          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events
+          run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Probe
         if: ${{ steps.aws.outputs.go == 'true' }}
         run: |

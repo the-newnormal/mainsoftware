@@ -1738,7 +1738,7 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
   }, 30_000)
 
   it('finds each planted breakage in the CLI lines, their order, STAGE and AWS_CHECK', () => {
-    const oneCall = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --require-approval never --no-lookups --no-notices --ci --progress events`
+    const oneCall = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events`
     expect(
       find(`${indent(RESTORE_DOWN, 10)}\n`, `          ${oneCall}\n`, '      - name: Take the restore stage down\n'),
     ).toEqual([at('prod', CLI), at('prod', DOWN)])
@@ -3640,7 +3640,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const SETS =
     "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters'
   const readBack = (id: string) => `${id} (Read back what runs)`
   const STEPS =
     'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
@@ -8638,7 +8638,9 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
       `while IFS= read -r x; do :; done < <(jq -r '.a' "$dir/manifest.json")`,
       'IFS= read -r x </dev/null || true',
       'tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2',
-      `x=$(jq -r '.a' "$RUNNER_TEMP/records/x.json" "$\{stackfiles[@]}" infra/package.json)`,
+      // (jq's data words are seven literals since the eighth review's second attack, "$RUNNER_TEMP/…" no longer
+      // any path under the temp folder.)
+      `x=$(jq -r '.a' "$RUNNER_TEMP/aws-cdk/package/package.json" "$\{stackfiles[@]}" infra/package.json)`,
     ]) {
       expect(canonicalToolLines(line), line).toEqual([])
     }
@@ -9291,5 +9293,209 @@ describe('Round 8, attack 1: the ways past the allowlist (DPW-06, DPW-08, DPW-10
       down: `\${{ steps.diff.outputs.down }}`,
     })
     expect(prodPathFindings(workflows)).toEqual([])
+  })
+})
+
+describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const at10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
+  const CLI =
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters'
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const FILE_NAMES =
+    "sets a name jq's data words build a path from (dir, file, template, stackfiles, queue, name, root) only on ASSET_CHECK's own lines, and reads one only in a loop fed by its own done line, so jq reads no file a line doesn't show"
+  const STOP =
+    "names the stop token only on STOP_COMMANDS's two lines, where it is made and stops the runner reading workflow commands, so no line prints ::<token>:: and resumes them"
+  const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
+    `${GUARD}: ${id} ${name}, line ${line}: ${rule}`
+
+  // INPUTS-A2-01: the CLI deploys with --previous-parameters unless told otherwise, sending CloudFormation
+  // UsePreviousValue for every parameter the deployed stack already has, so a template's Default, all the
+  // approver's diff can show, never deployed: a release added a parameter read by nothing, then changed its
+  // Default and made a grant conditional on it. Every deploy line now passes --no-previous-parameters, the one
+  // word on its line that names previous parameters, so each parameter deploys as its template's Default.
+  it('deploys every stack with --no-previous-parameters, so each parameter is the Default the diff shows (INPUTS-A2-01)', () => {
+    const deploys = deployText.split('\n').filter(line => line.includes('"$CDK" deploy'))
+    expect(deploys).toHaveLength(10)
+    for (const line of deploys) expect(line.match(/previous/gi), line).toEqual(['previous'])
+    for (const line of deploys) expect(line).toContain(' --no-previous-parameters ')
+    for (const line of [
+      CDK_DEPLOY_FORWARD,
+      CDK_DEPLOY_SERVICES,
+      CDK_DEPLOY_DRILL,
+      CDK_DEPLOY_ROLLBACK,
+      CDK_DEPLOY_DOWN,
+    ]) {
+      expect(line).toContain(' --no-previous-parameters ')
+    }
+    // Without it, or with it set back, a deploy line is this rule's finding.
+    const services = '"$STAGE/Services" --exclusively --no-previous-parameters'
+    for (const to of [
+      '"$STAGE/Services" --exclusively',
+      '"$STAGE/Services" --exclusively --no-previous-parameters --previous-parameters',
+      '"$STAGE/Services" --exclusively --no-previous-parameters --previousParameters=true',
+      '"$STAGE/Services" --exclusively --previous-parameters=false',
+    ]) {
+      expect(credentialedCodeFindings(plant(services, to, job('nonprod')), manifests, lockfile), to).toContain(
+        at10('nonprod (Deploy Services)', CLI),
+      )
+    }
+    // A diff names none.
+    expect(
+      credentialedCodeFindings(
+        plant(
+          '--method template --no-lookups',
+          '--method template --previous-parameters --no-lookups',
+          job('prod-plan'),
+        ),
+        manifests,
+        lockfile,
+      ),
+    ).toContain(at10('prod-plan (Diff)', CLI))
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  // EXPAND-A2-01: testShaped() read a [ test's words as written, up to its first ], with \( and \) inside one
+  // word; bash hands [ "$@" or "${a[@]}" as several words, takes every word to the command's end, and reads
+  // \( as a parenthesis. So need() { [ "$@" ]; } called as need -n $x, [ -n ] -o '-v' "$x" ] and
+  // [ \( -n "$x" -o '-v' "$x" \) ] each had bash evaluate -v on a value from outside the text.
+  it('reads a [ or test as bash hands it its words (EXPAND-A2-01)', () => {
+    const definition = `    definition=$(output "$\{kind^}TaskDefinition")\n`
+    const output = '  output() {'
+    expect(TASKS_OUTPUTS).toContain(definition)
+    expect(TASKS_OUTPUTS).toContain(output)
+    const need = `  need() { [ "$@" ] || { echo "tasks: Hearth-$STAGE-Tasks has no $kind definition" | mask; exit 1; }; }`
+    const planted = TASKS_OUTPUTS.replace(output, `${need}\n${output}`).replace(
+      definition,
+      `${definition}    need -n $definition\n`,
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(
+      canonical('TASKS_OUTPUTS', planted.split('\n').indexOf(need) + 1, EVALUATES),
+    )
+    for (const test of [
+      `    [ -n ] -o '-v' "$definition" ]`,
+      `    [ \\( -n "$definition" -o '-v' "$definition" \\) ]`,
+    ]) {
+      const text = TASKS_OUTPUTS.replace(definition, `${definition}${test}\n`)
+      expect(canonicalTextFindings({ TASKS_OUTPUTS: text }), test).toContain(
+        canonical('TASKS_OUTPUTS', text.split('\n').indexOf(test) + 1, EVALUATES),
+      )
+    }
+    for (const text of [
+      'need() { [ "$@" ] || exit 1; }',
+      'need() { test "$@" || exit 1; }',
+      `[ "$\{a[@]}" ]`,
+      `test "$\{a[@]}"`,
+      `[ "$\{@:1}" ]`,
+      '[ "$*" ]',
+      `[ -n ] -o '-v' "$x" ]`,
+      `[ \\( -n "$x" -o '-v' "$x" \\) ]`,
+      '[ "(" -n "$x" ")" ]',
+      `[ '!' "$x" ]`,
+      '[ "$x" = "-v" ]',
+      '[ -n "$x" ] >/dev/null',
+    ]) {
+      expect(outsideEvaluations(`x=1\n${text}`), text).toContain(1)
+      expect(evaluatedLines(`x=1\n${text}`), text).toContain(1)
+    }
+    // A count, a quoted literal and the committed texts pass.
+    for (const text of [
+      `[ "$\{#queue[@]}" -gt 0 ]`,
+      `[ "$x" = 'Services' ]`,
+      '[ "$x" != "$y" ] || exit 1',
+      '[ ! -f "$x" ]',
+    ]) {
+      expect(evaluatedLines(`x=1\n${text}`), text).toEqual([])
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // COMMANDS-A2-01: jq's data words were held to "$RUNNER_TEMP/…" or "$dir/…" with no .. part as written, so a
+  // name set to a path climbing out by .. ("$RUNNER_TEMP/$login") read the registry login skopeo keeps outside
+  // the temp folder and printed it. jq's data words are now seven literals, and the names they build a path from
+  // are set only on ASSET_CHECK's own lines, each loop that reads one fed only by its own done line.
+  it("hands jq only the files its lines name, and the names they build from only ASSET_CHECK's lines (COMMANDS-A2-01)", () => {
+    const anchor = '  HAS_DATABASE=$(output HasDatabase)\n'
+    expect(TASKS_OUTPUTS).toContain(anchor)
+    const read = `  jq -r '.auths[] | .auth' "$RUNNER_TEMP/$login"`
+    const planted = TASKS_OUTPUTS.replace(anchor, `${anchor}  local login=../../x\n${read}\n`)
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(
+      canonical('TASKS_OUTPUTS', planted.split('\n').indexOf(read) + 1, TOOLS),
+    )
+    expect(canonicalToolLines(planted)).toContain(planted.split('\n').indexOf(read))
+    // jq's file words outside the seven.
+    for (const word of [
+      '"$RUNNER_TEMP/x.json"',
+      '"$dir/$path"',
+      'infra/x.json',
+      '../package-lock.json',
+      '"$dir/../x"',
+    ]) {
+      expect(canonicalToolLines(`jq -r . ${word}`), word).toEqual([0])
+    }
+    // Setting one of the names a file word builds from, anywhere but ASSET_CHECK's own lines.
+    for (const lines of [
+      'local dir=../../x file=auth.json',
+      'for file in ../x; do :; done',
+      "read -r file <<<'../x'",
+      "printf -v file '%s' x",
+      'template=../x',
+      'queue+=(../x)',
+    ]) {
+      const text = TASKS_OUTPUTS.replace(anchor, `${anchor}  ${lines}\n`)
+      expect(canonicalTextFindings({ TASKS_OUTPUTS: text }), lines).toContain(
+        canonical('TASKS_OUTPUTS', text.split('\n').indexOf(`  ${lines}`) + 1, FILE_NAMES),
+      )
+    }
+    // In ASSET_CHECK itself, a loop that reads one fed by another done line, a new setting line, and a while
+    // whose do stands on a line of its own.
+    const done = `    done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")`
+    expect(ASSET_CHECK).toContain(`${done}\n`)
+    const fed = ASSET_CHECK.replace(done, `    done < <(printf '%s\\n' x)`)
+    expect(canonicalTextFindings({ ASSET_CHECK: fed })).toContain(
+      canonical('ASSET_CHECK', fed.split('\n').indexOf(`    done < <(printf '%s\\n' x)`) + 1, FILE_NAMES),
+    )
+    const setter = ASSET_CHECK.replace('    stackfiles=()\n', '    stackfiles=()\n    file=../x\n')
+    expect(canonicalTextFindings({ ASSET_CHECK: setter })).toContain(
+      canonical('ASSET_CHECK', setter.split('\n').indexOf('    file=../x') + 1, FILE_NAMES),
+    )
+    const split = ASSET_CHECK.replace(
+      '    stackfiles=()\n    while IFS= read -r file; do\n',
+      '    stackfiles=()\n    while IFS= read -r file\n    do\n',
+    )
+    expect(canonicalTextFindings({ ASSET_CHECK: split })).toContain(
+      canonical('ASSET_CHECK', split.split('\n').indexOf('    while IFS= read -r file') + 1, FILE_NAMES),
+    )
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // COMMANDS-A2-02: the stop token was a name STOP_HEAD sets, so any canonical text could expand it, and
+  // echo "::$stop_token::" resumed workflow commands for the rest of the step: a ##[add-mask] in a release's
+  // own template text then hid a line of the approver's diff. The token is named on STOP_COMMANDS's two lines
+  // alone, in every run and canonical text.
+  it("names the stop token only on STOP_COMMANDS's two lines (COMMANDS-A2-02)", () => {
+    expect(STOP_COMMANDS).toBe('stop_token=$(openssl rand -hex 16)\necho "::stop-commands::$stop_token"')
+    const resume = '          echo "::$stop_token::"\n'
+    expect(maskingFindings(addedBefore('prod-plan', 'Diff', '          cat "$DIFF"\n', resume))).toContain(
+      at07('prod-plan (Diff)', STOP),
+    )
+    const anchor = '  [ "$stage" = restore ] && stage=prod\n'
+    expect(AWS_CHECK).toContain(anchor)
+    for (const line of [
+      '  echo "::$stop_token::"',
+      `  printf '%s\\n' "::$\{stop_token}::"`,
+      '  token=$stop_token',
+      '  stop_token=x',
+      '  echo "::stop-commands::$stop_token"x',
+    ]) {
+      const text = AWS_CHECK.replace(anchor, `${anchor}${line}\n`)
+      expect(canonicalTextFindings({ AWS_CHECK: text }), line).toContain(
+        canonical('AWS_CHECK', text.split('\n').indexOf(line) + 1, STOP, 'DPW-07'),
+      )
+    }
+    expect(maskingFindings(workflows)).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
   })
 })
