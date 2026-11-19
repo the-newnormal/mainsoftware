@@ -97,7 +97,8 @@
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
 // reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads. A
-// canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to evaluating
+// canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
+// paragraph says what that read holds), to bash's own reading of it (readsAsBash()), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -112,10 +113,11 @@
 // that plainly is refused), to expanding only a name it
 // sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder,
 // prod-plan's diff file or the runner's outputs, summary, folder, run ids, address and commit
-// (foreignExpansionLines(), DPW-07), so no canonical text prints the OIDC request token or another credential its
-// job holds, to running only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a
-// plain word, with no environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to
-// local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and
+// (foreignExpansionLines(), DPW-07), so no canonical text prints, in any form these rules read, the OIDC request
+// token or another credential its job holds, to running only the commands CANONICAL_COMMANDS names and the
+// canonical texts' functions, each by a plain word, with no environment of its own (canonicalCommandLines():
+// export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
+// a command but IFS's before read, no wrapper, and
 // no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
 // other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
 // DIFF, STAGE) set in any spelling but the preamble's CDK line), and to every program it runs being held by what it
@@ -147,6 +149,22 @@
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
+//
+// What holds a change to a canonical text. A canonical text changes only when its constant here and deploy.yml
+// change together, and both are on the owner's-read list, so the owner reads every changed line as written. The
+// rules over what a canonical text holds (DPW-07's, DPW-10's and DPW-13's holds on its commands, tools, names,
+// evaluation sites and writes) read full bash, which no reader short of bash models whole, so they are a second
+// layer behind that read. They catch a form an author could write by mistake, or that reads as harmless in a
+// diff: an unquoted expansion, a value carried from one text into another's arithmetic, test or command, a
+// helper that passes its arguments on, an idiom whose effect only bash's rules show. A construct written to get
+// past them or to do harm (a builtin setting a name the text then writes through, a jq program reaching the
+// environment, a subscript or callback after a redirection, a path built to climb out of its folder, a line that
+// resumes workflow commands, a form chosen to hide a command) is held by the owner's read of the changed lines,
+// which the rules don't replace, so where this file says a canonical text does, or can't do, something, it means
+// in every form these rules read. Nothing else leans on that read: a change that leaves every canonical text as
+// it is, the glue SHELL_TABLE reads (a narrow language the guard models whole), the YAML side, and the checks
+// over what code off the owner's-read list produces or AWS and GitHub answer (ASSET_CHECK, IMAGE_CHECK,
+// CLI_CHECK and the rest) are held by the rules in full.
 import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
@@ -195,8 +213,9 @@ echo "::stop-commands::$stop_token"`
 // and printed once, as the command that stops the runner reading workflow commands. A line that named it anywhere
 // else could print ::<token>:: and resume them, so a ##[add-mask] in what the step prints after (a release's own
 // template text in prod-plan's diff, say) would hide a line of the approver's diff (the eighth review's second
-// attack). No spelling reaches it but its name: a canonical text and a run's own lines have no ${!…}, eval,
-// declare -p or bare set.
+// attack). No spelling these rules read reaches it but its name: a canonical text and a run's own lines have no
+// ${!…}, eval, declare -p or bare set (a line written to reach it another way is the owner's read's: the header's
+// last paragraph).
 // The two lines are written here as literals, never read from STOP_COMMANDS, so a third line added to it is one
 // of neither.
 const STOP_TOKEN_LINES: readonly string[] = [
@@ -3073,7 +3092,8 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
 // positional parameter inside arithmetic or a subscript, no $[ … ], ${!…} or ${…@…}, no let, no declare,
 // typeset or local given -i, -n or -A, no [[ … ]] comparing as numbers, and no -v or -R. A name printf -v
 // sets is built only from such names. So no value from a step's env, an output, an artifact's file or a
-// run's own lines is ever evaluated inside a canonical text.
+// run's own lines is evaluated inside a canonical text in any form this reads (a form written to get past it
+// is the owner's read's: the header's last paragraph).
 const OUTSIDE = /\$\(|[`'"\\]|\$[0-9@*#?$!-]|\$\{(?![A-Za-z_]\w*\})/
 // Refused wherever they stand: $[ … ], ${!…}, a transformation, let, declare and typeset, a local given -i,
 // -n or -A, a default assignment (${name=…}, ${name:=…}, ${name[…]:=…}), which sets a name no assignment of
@@ -3743,7 +3763,7 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
 // GITHUB_, RUNNER_, AWS_, GH_, INPUT_, STATE_), a name a canonical text sets, one a step's env: (STEP_ENVS) or a
 // job's (STAGE) gives from no secret or token, or the one-offs' TOKEN, the assembly's folder (ASSEMBLY) and
 // prod-plan's diff file (DIFF, RESTORE_DOWN_DIFF's), which a run's own lines set before the texts that read
-// them. So no canonical text expands the OIDC request
+// them. So no canonical text expands, in any form this reads, the OIDC request
 // token or its URL, the runtime token, an AWS_ variable, the job's token or a secret an env: hands its step,
 // even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
 const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
@@ -3790,8 +3810,9 @@ const CANONICAL_EXPANDS_RULE =
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
 // evaluates nothing from outside it (outsideEvaluations()), expands no credential (foreignExpansionLines(),
 // DPW-07's), and hands jq, gh and the tools that could run a program or write a file only what
-// canonicalToolLines() holds them to, each line that does otherwise named. The guard's own texts never change
-// while it runs, so their findings are read once (CANONICAL_FOUND).
+// canonicalToolLines() holds them to, each line that does otherwise named. Each holds in every form these
+// rules read, a second layer behind the owner's read of a changed text (the header's last paragraph). The
+// guard's own texts never change while it runs, so their findings are read once (CANONICAL_FOUND).
 let CANONICAL_FOUND: readonly Finding[] | undefined
 export function canonicalTextFindings(texts?: Readonly<Record<string, string>>): Finding[] {
   if (texts === undefined) {
@@ -7362,9 +7383,10 @@ const LOADER_NAME = new RegExp(`^(?:${LOADER_NAMES})$`)
 const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
 // What a credentialed run may write to: nothing but its outputs, its summary and /dev/null, and in
 // prod-plan's two diff runs alone (DIFF_RUNS) the diff (DIFF, set by its one line and by no builtin, which
-// HELD_NAMES holds), so no file the CLI or a tool then runs (the CLI CLI_FETCH unpacked, say) is rewritten,
-// whatever a canonical text sets DIFF to. A write is any redirection that opens its target for writing: >, >>,
-// >|, &>, a descriptor's (2>) and the read-write <> (1<>file, which rewrites the file in place).
+// HELD_NAMES holds), so no write these rules read rewrites a file the CLI or a tool then runs (the CLI
+// CLI_FETCH unpacked, say), whatever a canonical text sets DIFF to. A write is any redirection that opens its
+// target for writing: >, >>, >|, &>, a descriptor's (2>) and the read-write <> (1<>file, which rewrites the
+// file in place).
 const REDIRECTION = /(?<![<>&])(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
 const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY)")$/
 const DIFF_TARGET = '"$DIFF"'
