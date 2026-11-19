@@ -2,14 +2,14 @@
 // validation and order, both incident-rollback rules and their parity (rebuilds of one commit
 // included, and ECS's deployments in any order), a target's validation, the gate's plan mode by mode,
 // prod-gate, the floors and their expansions read through git at the run's commit, the migration record,
-// and what the command line prints, plan's lines past DOMAINS among them. The commits are real ones in
-// scratch git repositories (main, a branch off it, and a second main whose floor lies between two
-// releases, after its expansion), so ancestry and the floors are git's own answers, and a developer's own
-// git settings are set aside (git's own environment variables for the whole file, a hook's
-// GIT_INDEX_FILE among them, and the system and global configuration files, a global hook or signed
-// tags, for every git command the test runs itself); every ARN, account id and address is built from
-// parts at run time (IG-01). It holds what the history must decide, so it is on the owner's-read list
-// (C11-D74).
+// and what the command line prints, plan's lines past DOMAINS, choose's check of its own pick and each
+// input it refuses among them. The commits are real ones in scratch git repositories (main, a branch off
+// it, and a second main whose floor lies between two releases, after its expansion), so ancestry and the
+// floors are git's own answers, and a developer's own git settings are set aside (git's own environment
+// variables for the whole file, a hook's GIT_INDEX_FILE among them, and the system and global
+// configuration files, a global hook or signed tags, for every git command the test runs itself); every
+// ARN, account id and address is built from parts at run time (IG-01). It holds what the history must
+// decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1674,6 +1674,53 @@ describe('C11-D58, C11-D61: the command line', () => {
     expect((await ask('validate', `${at(5)}:${D.e}`, '--target', at(4))).code).toBe(0)
   })
 
+  // The records a person saves are one page of 100, so the current commit's first record can fall
+  // outside it while a later rollback record of that commit stays in, and the record before it is then
+  // the newer release the environment was rolled back from. choose checks its own pick as validate
+  // checks a target, so it refuses that, a pick whose newest record carries the current digest, and one
+  // whose newest record was first recorded after the current release's first.
+  it('C11-D58: choose checks its own pick as validate does, refusing a newer release, the current digest and one recorded after the current', async () => {
+    const folder = join(scratch, 'choose-checked')
+    const choose = (name: string, ...entries: Array<Record<string, unknown>>) =>
+      cli([
+        ...['choose', '--env', 'nonprod', '--records', writeJson(join(folder, `${name}.json`), entries)],
+        ...['--current', `${at(4)}:${D.d}`],
+      ])
+    const refused = (reason: keyof typeof REFUSALS) => ({
+      code: 1,
+      out: [`history: refused ${reason}: ${REFUSALS[reason]}`],
+      err: [],
+    })
+    // m[4] deployed, then m[5], then a rollback to m[4]: the page whole chooses m[3], which ran before m[4]
+    // first did.
+    const deployed = deployment(204, 'nonprod', at(4), D.d, 104)
+    const newer = deployment(205, 'nonprod', at(5), D.e, 105)
+    const rolledBack = deployment(206, 'nonprod', at(4), D.d, 106, 'rollback')
+    expect(await choose('whole', deployment(203, 'nonprod', at(3), D.c, 103), deployed, newer, rolledBack)).toEqual({
+      code: 0,
+      out: [
+        `commit ${at(3)}`,
+        `digest ${D.c}`,
+        'api hearth-nonprod-api:103',
+        'realtime hearth-nonprod-realtime:103',
+        'worker hearth-nonprod-worker:103',
+      ],
+      err: [],
+    })
+    // The page cut after m[4]'s first record: m[5] comes before the rollback, and isn't older than m[4].
+    expect(await choose('cut', newer, rolledBack)).toEqual(refused('not-an-ancestor'))
+    // m[3]'s newest record carries the current release's digest.
+    const older = deployment(201, 'nonprod', at(3), D.c, 101)
+    const first = deployment(202, 'nonprod', at(4), D.d, 102)
+    expect(await choose('same', older, first, deployment(203, 'nonprod', at(3), D.d, 103))).toEqual(
+      refused('same-digest'),
+    )
+    // m[3]'s newest record is a build of it first recorded after the current release's first.
+    expect(await choose('after', older, first, deployment(203, 'nonprod', at(3), D.b, 103))).toEqual(
+      refused('recorded-after-current'),
+    )
+  })
+
   it('C11-D58: choose-ecs takes every digest of the current commit', async () => {
     const pages = join(scratch, 'pages-rebuilt')
     // R1, then two builds of R2 (D.b, then D.c, which runs).
@@ -1701,6 +1748,73 @@ describe('C11-D58, C11-D61: the command line', () => {
       expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', bad])).toEqual({
         code: 2,
         out: ['history: --current-digest is not a list of digests'],
+        err: [],
+      })
+    }
+  })
+
+  it('C11-D58: choose-ecs refuses a mistyped --drill and a saved revision with no image digest, never choosing past them', async () => {
+    const pages = join(scratch, 'pages-drill')
+    rmSync(pages, { recursive: true, force: true })
+    // R1, then R2 (current): each role's R1 is its task definition revision 1.
+    const entries: ReadonlyArray<readonly [number, string, number]> = [
+      [10, D.a, 1],
+      [20, D.b, 2],
+    ]
+    const saveRevisions = (role: string, digestOf: (digest: string) => string = digest => digest) =>
+      writeJson(
+        join(pages, `${role}-revisions-1.json`),
+        entries.map(([, digest, revision], i) => [
+          revisionArn(role, i + 1),
+          taskDefinitionArn(role, revision),
+          digestOf(digest),
+        ]),
+      )
+    for (const role of ['api', 'realtime', 'worker']) {
+      writeJson(join(pages, `${role}-deployments-1.json`), {
+        next: null,
+        deployments: entries.map(([when], i) => [new Date(when * minute).toISOString(), revisionArn(role, i + 1)]),
+      })
+      saveRevisions(role)
+    }
+    const choose = (...drill: string[]) => cli(['choose-ecs', '--pages', pages, '--current-digest', D.b, ...drill])
+    const r1 = [
+      `digest ${D.a}`,
+      'api hearth-prod-api:1',
+      'realtime hearth-prod-realtime:1',
+      'worker hearth-prod-worker:1',
+    ]
+    expect(await choose()).toEqual({ code: 0, out: r1, err: [] })
+    expect(await choose('--drill', 'hearth-prod-realtime:1')).toEqual({
+      code: 1,
+      out: [`history: refused drill-revision: ${REFUSALS['drill-revision']}`],
+      err: [],
+    })
+    // The same drill revision mistyped (a dash for the colon, alone or in a list), another role, revision
+    // 0, an empty entry or a space: bad input, never a drill list that matches nothing and lets the
+    // drill's revision be chosen.
+    const mistyped = [
+      'hearth-prod-realtime-1',
+      'hearth-prod-api:2,hearth-prod-realtime-1',
+      'hearth-prod-gateway:1',
+      'hearth-prod-realtime:0',
+      'hearth-prod-realtime:1,',
+      ' hearth-prod-realtime:1',
+    ]
+    for (const drill of mistyped) {
+      expect(await choose('--drill', drill), drill).toEqual({
+        code: 2,
+        out: ['history: --drill is not a list of family:revision'],
+        err: [],
+      })
+    }
+    // A revision saved with no image digest (an image named by tag) or with a tag in its place: bad input,
+    // never a digest to choose or compare.
+    for (const digest of ['', 'latest', 'sha256:abc']) {
+      saveRevisions('api', saved => (saved === D.a ? digest : saved))
+      expect(await choose(), JSON.stringify(digest)).toEqual({
+        code: 2,
+        out: ['history: a api revision has no image digest'],
         err: [],
       })
     }
@@ -1794,6 +1908,18 @@ describe('C11-D58, C11-D61: the command line', () => {
       headTree: git(['rev-parse', `${at(5)}^{tree}`]),
     })
     expect(await plan({ ...PUSH, checks: otherTree })).toEqual(refused('pr-tree-differs'))
+    // The checks file's pull is the merged pull request's number, or null when none produced the commit:
+    // any other value is bad input, never read as a pull request that was found.
+    for (const [i, pull] of [0, -1, 7.5, '7', true].entries()) {
+      const badPull = writeJson(join(scratch, `plan-checks-pull-${i}.json`), { ...GOOD_CHECKS(), pull })
+      expect(await plan({ ...PUSH, checks: badPull }), JSON.stringify(pull)).toEqual({
+        code: 2,
+        out: ['history: --checks is not the pull request checks'],
+        err: [],
+      })
+    }
+    const noPull = writeJson(join(scratch, 'plan-checks-no-pull.json'), { ...GOOD_CHECKS(), pull: null })
+    expect(await plan({ ...PUSH, checks: noPull })).toEqual(refused('pr-not-found'))
     expect(await plan({ mode: 'rollback', release: branch })).toEqual(refused('off-main'))
     // --repo is where git answers (the command's folder otherwise): a folder outside any clone knows
     // no commit, so the current releases read as off main.

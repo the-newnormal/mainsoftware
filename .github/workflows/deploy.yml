@@ -3453,10 +3453,10 @@ jobs:
           # The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
           # read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
           # for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
-          # down the three it deploys; into the log, and into the summary cut at 200 KB, both through the filter.
-          # A diff that fails still shows the CLI's message in both, then fails the step. In the summary it is an
-          # indented code block, each line four spaces in and each carriage return a line break, so no line of a
-          # release's own text ends the block or opens HTML that hides what follows.
+          # down the stacks it deploys (RESTORE_DOWN_DIFF); into the log, and into the summary cut at 200 KB, both
+          # through the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
+          # summary it is an indented code block, each line four spaces in and each carriage return a line break, so
+          # no line of a release's own text ends the block or opens HTML that hides what follows.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
@@ -3465,15 +3465,57 @@ jobs:
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
             } >"$DIFF" || STATUS=$?
-          elif [ "$RESTORE" = down ]; then
-            {
-              run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
-            } >"$DIFF" || STATUS=$?
-          else
+          elif [ "$RESTORE" != down ]; then
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --method template --no-lookups --no-notices --no-color --fail-on never
             } >"$DIFF" || STATUS=$?
           fi
+          # A restore taken down (RESTORE_DOWN_DIFF; C11-D45, C11-D51): only what restore=down deploys, each stack
+          # alone and in its order, decided as RESTORE_DOWN decides it, so the diff shows no stack down skips as
+          # created. One that doesn't exist, that a failed create left or whose failed create couldn't roll back is
+          # named above the diff, through the filter, and not diffed; one still moving, or one that can't be read,
+          # fails the diff, as it would fail down. Its status is DOWN_STATUS, which the run then takes as the diff's.
+          DOWN_STATUS=0
+          if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
+            : >"$DIFF"
+            for PART in Services Data Platform; do
+              if ! PART_STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
+                case "$PART_STATUS" in
+                  *'does not exist'*)
+                    echo "restore down: Hearth-$STAGE-$PART doesn't exist, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                    continue
+                    ;;
+                  *)
+                    echo "restore down: Hearth-$STAGE-$PART can't be read, so the diff fails" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                    DOWN_STATUS=1
+                    break
+                    ;;
+                esac
+              fi
+              case "$PART_STATUS" in
+                ROLLBACK_COMPLETE | REVIEW_IN_PROGRESS)
+                  echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  continue
+                  ;;
+                ROLLBACK_FAILED)
+                  echo "restore down: Hearth-$STAGE-$PART is ROLLBACK_FAILED (a failed create whose rollback failed), so down skips it and it isn't diffed: down takes the others down, then fails, since it waits for tier 2" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  continue
+                  ;;
+                *_IN_PROGRESS)
+                  echo "restore down: Hearth-$STAGE-$PART is $PART_STATUS, which down refuses, so the diff fails: wait for it to settle, then dispatch again" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  DOWN_STATUS=1
+                  break
+                  ;;
+              esac
+              {
+                run "$CDK" diff --app "$ASSEMBLY" "$STAGE/$PART" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
+              } >>"$DIFF" || {
+                DOWN_STATUS=$?
+                break
+              }
+            done
+          fi
+          if [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi
           cat "$DIFF"
           {
             if [ "$STAGE" = restore ]; then echo "### What the restore changes"; else echo "### What prod's $MODE changes"; fi
@@ -3504,10 +3546,11 @@ jobs:
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
           # The automatic rollback's diff (C11-D51): prod's previous release as prod's rollback job would deploy it
-          # (synth-previous-prod's assembly, a rebuild of that release's own code), against what prod runs before
-          # this deploy, which is that release: its Tasks and Services, read with the plan role's own credentials.
-          # It shows no change unless the rebuild differs from what runs; into the log, and into the summary cut at
-          # 200 KB, as the release's diff is.
+          # (synth-previous-prod's assembly, a rebuild of that release's own code), against the Tasks and Services
+          # deployed in prod's account now, read with the plan role's own credentials. It shows no change unless the
+          # rebuild differs from what runs, or a prod run since prod's newest record got past its Tasks deploy and
+          # wrote none, whose templates it shows going back (deploy-and-rollback.md step 4); into the log, and into
+          # the summary cut at 200 KB, as the release's diff is.
           ASSEMBLY="$RUNNER_TEMP/assembly-previous"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0

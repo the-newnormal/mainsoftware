@@ -98,6 +98,7 @@ import {
   pinnedScriptText,
   prodPathFindings,
   RESTORE_DOWN,
+  RESTORE_DOWN_DIFF,
   ROLLBACK_DIFF_RUN,
   RULESET,
   RUN_TASK_MIGRATE,
@@ -179,6 +180,18 @@ const plant = (from: string, to: string, after = '', path = DEPLOY) =>
   withText(path, edited(workflows.get(path) ?? '', from, to, after))
 
 const job = (id: string) => `\n  ${id}:\n`
+
+// An action's pin as a workflow writes it, read from its table (ACTION_PINS unless given), and the same pin at
+// another commit or under another version than its own: an action-pin PR moves deploy.yml, ci.yml and
+// action-pins.ts alone, so no case here names a pin by its text (GUARDS-02, round 7).
+const pinOf = (action: string, table: Readonly<Record<string, string>> = ACTION_PINS): string => {
+  const pin = table[action]
+  if (pin === undefined) throw new Error(`no pin for ${action}`)
+  return `${action}@${pin}`
+}
+const atCommit = (pin: string, commit: string) => pin.replace(/@[0-9a-f]{40}/, `@${commit}`)
+const nextVersion = (pin: string) =>
+  pin.replace(/# v(\d+)\.(\d+)\.(\d+)$/, (_, major, minor, patch) => `# v${major}.${minor}.${Number(patch) + 1}`)
 
 // A step's raw lines in deploy.yml: from its name's line to the next step or job.
 function stepText(text: string, jobId: string, name: string): string {
@@ -1063,7 +1076,7 @@ describe('DPW-03 (C11-D55, C11-D56): only the five environment jobs hold AWS cre
 })
 
 describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
-  const PIN = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
+  const PIN = pinOf('actions/checkout')
   const pinned = (where: string) =>
     `${DEPLOY}: DPW-04 ${where}: every uses: is checkout, setup-node, upload-artifact, download-artifact or the credentials action, at exactly the commit and version comment ACTION_PINS names, which CI proves against the action's own repository`
   const FOUND = [pinned('gate')]
@@ -1081,28 +1094,25 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     // FETCH-A1-01: a pin moved to another commit, under the same version comment or another, which GitHub
     // resolves under the action's name if a fork holds it.
     const fork = '5f1c0a7e9d2b4c6a8e0f1b3d5c7e9a1b2c4d6e8f'
-    expect(pin(`actions/checkout@${fork} # v7.0.1`)).toEqual(FOUND)
-    expect(pin('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.2')).toEqual(FOUND)
-    expect(pin(`actions/checkout@${fork} # v7.0.2`)).toEqual(FOUND)
+    expect(nextVersion(PIN)).not.toBe(PIN)
+    expect(pin(atCommit(PIN, fork))).toEqual(FOUND)
+    expect(pin(nextVersion(PIN))).toEqual(FOUND)
+    expect(pin(nextVersion(atCommit(PIN, fork)))).toEqual(FOUND)
   })
 
   it('holds each action of a credentialed job to its pin (FETCH-A1-01)', () => {
     const fork = '5f1c0a7e9d2b4c6a8e0f1b3d5c7e9a1b2c4d6e8f'
     for (const [id, from, to] of [
-      [
-        'nonprod',
-        'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
-        `actions/checkout@${fork} # v7.0.1`,
-      ],
+      ['nonprod', pinOf('actions/checkout'), atCommit(pinOf('actions/checkout'), fork)],
       [
         'prod-plan',
-        'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2',
-        `actions/download-artifact@${fork} # v8.0.3`,
+        pinOf('actions/download-artifact'),
+        nextVersion(atCommit(pinOf('actions/download-artifact'), fork)),
       ],
       [
         'rollback-prod',
-        'aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0',
-        `aws-actions/configure-aws-credentials@${fork} # v6.3.0`,
+        pinOf('aws-actions/configure-aws-credentials'),
+        atCommit(pinOf('aws-actions/configure-aws-credentials'), fork),
       ],
     ] as const) {
       expect(actionPinFindings(plant(from, to, job(id))), id).toEqual([pinned(id)])
@@ -1318,8 +1328,8 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
   // it, so the commits it proves are the ones deploy.yml runs, whatever table a test run binds it to.
   it('holds every uses: in deploy.yml, read from the file, to its ACTION_PINS entry (FETCH-A2-01, round 6)', () => {
     expect(deployPinProblems(deployText)).toEqual([])
-    const real = `actions/checkout@${ACTION_PINS['actions/checkout']}`
-    const shadow = 'actions/checkout@a81bbbf8298c0fa03ea29cdc473d45769f953675 # v7.0.1'
+    const real = pinOf('actions/checkout')
+    const shadow = atCommit(real, 'a81bbbf8298c0fa03ea29cdc473d45769f953675')
     const lines = deployText.split(real).length - 1
     expect(lines).toBeGreaterThan(1)
     expect(deployPinProblems(deployText.replaceAll(real, shadow))).toHaveLength(lines)
@@ -1331,7 +1341,7 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     const shape = `line ${at}: names uses in another shape than a step's pinned uses:`
     const unread = `line ${at}: in none of the shapes the workflow reader reads`
     expect(once(`        uses: ${shadow}\n`)).toEqual([other])
-    expect(once(`        uses: ${real.replace('v7.0.1', 'v7.0.2')}\n`)).toEqual([other])
+    expect(once(`        uses: ${nextVersion(real)}\n`)).toEqual([other])
     expect(once(`        uses: ${real.replace('actions/', 'action/')}\n`)).toEqual([
       `line ${at}: runs action/checkout at another commit or version than its ACTION_PINS entry`,
     ])
@@ -1379,8 +1389,8 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     // FETCH-A2-01 (round 6): deploy.yml's checkout moved to a commit no tag names, every table entry still its
     // tag's commit (the table a shadow file stood in for under Vitest), fails the check on deploy.yml's own text.
     it('exits 1 when deploy.yml runs a pin its table doesn’t name, every entry its tag’s commit (FETCH-A2-01, round 6)', () => {
-      const real = `actions/checkout@${ACTION_PINS['actions/checkout']}`
-      const moved = deployText.replaceAll(real, 'actions/checkout@a81bbbf8298c0fa03ea29cdc473d45769f953675 # v7.0.1')
+      const real = pinOf('actions/checkout')
+      const moved = deployText.replaceAll(real, atCommit(real, 'a81bbbf8298c0fa03ea29cdc473d45769f953675'))
       expect(quietly(answer, deployText)).toBe(0)
       expect(quietly(answer, moved)).toBe(1)
       expect(quietly(answer, '')).toBe(1)
@@ -2974,9 +2984,31 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       ['  shopt -s globstar', 'shopt'],
       ['  echo "$BASHPID"', 'a variable bash 3.2 lacks'],
       [`  for name in "\${names[@]}"; do :; done`, 'an unguarded array expansion'],
+      // A test's -v or -R wherever an operand stands, a negative substring length or subscript assignment, a
+      // brace step or zero padding, and & in a pattern substitution's replacement: bash 3.2 stops on the three
+      // [[ tests (a parse error), fails the [ test, the substring and the assignment when they run, and expands
+      // the rest otherwise than bash 5.2 (review 7 ENVS-01).
+      ['  [[ -n "$repo" && -v PROD_REVIEWERS ]] || true', 'test -v or -R'],
+      ['  [[ ( -v PROD_REVIEWERS ) ]] || true', 'test -v or -R'],
+      ['  [[ -n "$repo" ||\n    -v PROD_REVIEWERS ]] || true', 'test -v or -R'],
+      ['  [ -n "$repo" -a -v PROD_REVIEWERS ] || true', 'test -v or -R'],
+      [`  echo "\${repo:0:-1}"`, 'a negative substring length'],
+      ['  seen[-1]=x', 'a negative subscript'],
+      ['  echo {1..7..2}', 'a brace expansion with a step or zero padding'],
+      ['  echo {01..03}', 'a brace expansion with a step or zero padding'],
+      [`  echo "\${repo//x/&}"`, '& in a pattern substitution'],
     ] as const) {
       const planted = protectEnvironments.replace(applyHead, `${applyHead}${line}\n`)
-      expect(gate(workflows, environments, holds, planted)).toEqual([pinned, later(what)])
+      expect(gate(workflows, environments, holds, planted), line).toEqual([pinned, later(what)])
+    }
+    // Each of those reads as it was and passes where bash 3.2 reads it as bash 5.2 does: a default value, a
+    // negative offset, a plain range and a replacement with no &.
+    for (const line of [
+      `  echo "\${repo:-x:-y}" "\${repo: -1}" "\${repo:1:2}" {0..9} "\${repo//x/y}"`,
+      '  [[ -n "$repo" && -n "$dir" ]] || true',
+    ]) {
+      const planted = protectEnvironments.replace(applyHead, `${applyHead}${line}\n`)
+      expect(gate(workflows, environments, holds, planted), line).toEqual([pinned])
     }
     // The two lines bash 3.2 stopped on before: the refusal's test and the loop over PROD_REVIEWERS's logins.
     const guarded = `for login in \${logins[@]+"\${logins[@]}"}; do`
@@ -3540,6 +3572,28 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         'protect-environments: oidc include_claim_keys differs',
       )
     }, 30_000)
+
+    // A repo admin runs the script by its relative path from the checkout (aws-account-set-up.md step E.4), so
+    // bash's cd would look the relative folder up through an exported CDPATH and print the folder it found, which
+    // would leave the root two lines long and every file differing; the script finds its root with CDPATH
+    // emptied, so a shell that exports one (the current folder, or a folder holding scripts/) reads the
+    // checkout's own files (review 7 ENVS-02).
+    it('reads its own checkout when run by its relative path under an exported CDPATH', () => {
+      good()
+      for (const cdpath of ['.', root]) {
+        const result = spawnSync('scripts/protect-environments.sh', ['check', '--from', dir], {
+          cwd: root,
+          encoding: 'utf8',
+          env: { PATH: `${ghFolder}:${process.env.PATH ?? ''}`, HOME: ghFolder, CDPATH: cdpath },
+        })
+        expect({ cdpath, status: result.status, lines: result.stdout.trim().split('\n') }).toEqual({
+          cdpath,
+          status: 0,
+          lines: ['nonprod', 'prod-plan', 'prod', 'oidc'].map(name => `protect-environments: ${name} ok`),
+        })
+      }
+      expect(readdirSync(ghFolder)).toEqual(['gh'])
+    })
   })
 })
 
@@ -5158,7 +5212,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
     const write = '      - name: Write the record\n'
     const checkout = [
       '      - name: Check out',
-      '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+      `        uses: ${pinOf('actions/checkout')}`,
       '        with:',
       '          persist-credentials: false',
       '      - name: Run code',
@@ -6346,8 +6400,8 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
   const fork = 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12'
 
   it('holds the job’s checkout and setup-node to their commits in PINS_JOB_ACTIONS (FETCH-A4-01)', () => {
-    const checkout = `actions/checkout@${PINS_JOB_ACTIONS['actions/checkout']}`
-    const setupNode = `actions/setup-node@${PINS_JOB_ACTIONS['actions/setup-node']}`
+    const checkout = pinOf('actions/checkout', PINS_JOB_ACTIONS)
+    const setupNode = pinOf('actions/setup-node', PINS_JOB_ACTIONS)
     expect(ci).toContain(`      - uses: ${checkout}\n`)
     expect(ci).toContain(`      - uses: ${setupNode}\n`)
     for (const [what, planted] of [
@@ -6355,7 +6409,7 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
       ['checkout at a fork’s commit under its version', inJob(checkout, checkout.replace(/@[0-9a-f]{40}/, `@${fork}`))],
       ['checkout at a tag', inJob(checkout, 'actions/checkout@v7.0.1')],
       ['checkout at a branch', inJob(checkout, 'actions/checkout@main')],
-      ['checkout with another version comment', inJob(checkout, checkout.replace(/# v[\d.]+$/, '# v7.0.2'))],
+      ['checkout with another version comment', inJob(checkout, nextVersion(checkout))],
       ['checkout with no version comment', inJob(checkout, checkout.replace(/ # v[\d.]+$/, ''))],
       ['setup-node at a fork’s commit', inJob(setupNode, setupNode.replace(/@[0-9a-f]{40}/, `@${fork}`))],
       ['setup-node at a tag', inJob(setupNode, 'actions/setup-node@v7.1.0')],
@@ -6460,7 +6514,7 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
   const at = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${WITH}`
   const found = (texts: ReadonlyMap<string, string>) =>
     credentialedCodeFindings(texts, manifests, lockfile).filter(each => each.endsWith(WITH))
-  const checkout = '        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n'
+  const checkout = `        uses: ${pinOf('actions/checkout')}\n        with:\n`
   const release = `          ref: \${{ needs.gate.outputs.commit }}\n`
   const RELEASE = "synth (Check out the release's commit)"
 
@@ -8588,7 +8642,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const EXPANDS =
-    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   // TASKS_OUTPUTS with one of its lines replaced by others, and the 1-based line of the first that holds `mark`.
   const OUTPUTS = `  outputs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Tasks" --query 'Stacks[0].Outputs' --output json)`
@@ -8816,10 +8870,16 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       expect(evaluateIf(settled(gateIf), { ...known, 'needs.prod-plan.result': 'success' })).toBe(true)
     }
     // prod-plan's stage is prod's, so its diff names the stacks prod then deploys; a restore taken down diffs
-    // the three stacks it deploys, in its order, and the summary says what it shows.
+    // the stacks it deploys, one at a time and in its order (RESTORE_DOWN_DIFF, whose status the run takes),
+    // and the summary says what it shows.
     expect(STAGES['prod-plan']).toBe(STAGES.prod)
-    expect(DIFF_RUN).toContain(`elif [ "$RESTORE" = down ]; then\n  {\n    ${CDK_DIFF_DOWN}\n`)
-    expect(CDK_DIFF_DOWN).toContain('"$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively')
+    expect(DIFF_RUN).toContain('elif [ "$RESTORE" != down ]; then\n')
+    expect(DIFF_RUN).toContain(
+      `\n${RESTORE_DOWN_DIFF}\nif [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi\ncat "$DIFF"\n`,
+    )
+    expect(RESTORE_DOWN_DIFF).toContain(`for PART in Services Data Platform; do`)
+    expect(RESTORE_DOWN_DIFF).toContain(`      ${CDK_DIFF_DOWN}\n`)
+    expect(CDK_DIFF_DOWN).toContain('"$STAGE/$PART" --exclusively')
     expect(DIFF_RUN).toContain('if [ "$STAGE" = restore ]; then echo "### What the restore changes"')
     // The workflow as it was before: prod-plan for a prod target alone, prod-gate passing a restore without it.
     const OLD_PLAN =
@@ -8835,6 +8895,152 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     expect(prodPathFindings(workflows)).toEqual([])
     for (const planted of [plant(NEW_PLAN, OLD_PLAN, job('prod-plan')), plant(NEW_GATE, OLD_GATE, job('prod-gate'))]) {
       expect(prodPathFindings(planted)).toContain(`${DEPLOY}: DPW-08 ${RESTORE_PLAN}`)
+    }
+  })
+
+  // ACTIONS-01, ROLLBACK-03 (round 7). A restore taken down skips a stack that doesn't exist, one a failed
+  // create left and one whose failed create couldn't roll back, but prod-plan diffed all three, and the CLI
+  // diffs a stack that doesn't exist against an empty template, every resource as added: after an up that
+  // failed before Services, the approver read a down creating three ECS services, which the runbook's rule
+  // has them reject, and a stack whose create waits for review has no template to read, so the diff failed
+  // and down could never run. The pinned Diff run, against a stand-in aws that answers each stack's status
+  // and a stand-in CLI that names what it diffs, now diffs only what down deploys, names the rest above the
+  // diff, and fails only where down would refuse.
+  it('diffs only the stacks a restore taken down deploys, as down decides them (ACTIONS-01, ROLLBACK-03, round 7)', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw08-down-'))
+    const diff = (stacks: Readonly<Record<string, string>>, env: Readonly<Record<string, string>> = {}) => {
+      const temp = mkdtempSync(join(scratch, 'runner-'))
+      const bin = join(temp, 'bin')
+      execFileSync('mkdir', ['-p', bin, join(temp, 'aws-cdk', 'package', 'bin'), join(temp, 'stacks')])
+      // Each stack's answer: a status, or "!" and an error aws prints before it fails.
+      for (const [name, answer] of Object.entries(stacks)) writeFileSync(join(temp, 'stacks', name), answer)
+      writeFileSync(
+        join(bin, 'aws'),
+        [
+          '#!/bin/bash',
+          `echo "$*" >>'${join(temp, 'aws.log')}'`,
+          'while [ "$#" -gt 0 ] && [ "$1" != --stack-name ]; do shift; done',
+          `answer=$(cat '${join(temp, 'stacks')}/'"$2" 2>/dev/null || echo '!Stack with id '"$2"' does not exist')`,
+          'case "$answer" in',
+          `  '!'*) echo "An error occurred (ValidationError) when calling the DescribeStacks operation: \${answer#!}" >&2; exit 254 ;;`,
+          '  *) echo "$answer" ;;',
+          'esac',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      )
+      writeFileSync(
+        join(temp, 'aws-cdk', 'package', 'bin', 'cdk'),
+        [
+          '#!/bin/bash',
+          `echo "$*" >>'${join(temp, 'cdk.log')}'`,
+          'for word in "$@"; do case "$word" in restore/*|prod/*) echo "diff of $word" ;; esac; done',
+          `if [ -e '${join(temp, 'fails')}' ]; then exit 3; fi`,
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      )
+      if (env.FAILS === 'true') writeFileSync(join(temp, 'fails'), '')
+      writeFileSync(join(temp, 'summary.md'), '')
+      const result = spawnSync('bash', ['-c', DIFF_RUN], {
+        encoding: 'utf8',
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          HOME: temp,
+          RUNNER_TEMP: temp,
+          GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
+          STAGE: 'restore',
+          MODE: 'deploy',
+          RESTORE: 'down',
+          ...env,
+        },
+      })
+      const read = (name: string) => (existsSync(join(temp, name)) ? readFileSync(join(temp, name), 'utf8') : '')
+      const diffed = read('cdk.log')
+        .split('\n')
+        .filter(line => line !== '')
+        .map(line => line.split(' ').filter(word => /^(?:restore|prod)\//.test(word)))
+      return { status: result.status, diffed, summary: read('summary.md'), aws: read('aws.log') }
+    }
+    const skipped = (part: string, why: string) => `restore down: Hearth-restore-${part} ${why}`
+    const NOT_THERE = "doesn't exist, so down skips it and it isn't diffed"
+    const FAILED_CREATE = "is what a failed create left, so down skips it and it isn't diffed"
+    try {
+      // Every stack there and settled: each diffed alone, in down's order.
+      const settled = diff({
+        'Hearth-restore-Services': 'UPDATE_COMPLETE',
+        'Hearth-restore-Data': 'UPDATE_COMPLETE',
+        'Hearth-restore-Platform': 'CREATE_COMPLETE',
+      })
+      expect(settled.status).toBe(0)
+      expect(settled.diffed).toEqual([['restore/Services'], ['restore/Data'], ['restore/Platform']])
+      // An up that failed before Services: Services isn't diffed (so shown as created by no line), but named
+      // above the diff, and the other two are.
+      const noServices = diff({
+        'Hearth-restore-Data': 'UPDATE_COMPLETE',
+        'Hearth-restore-Platform': 'UPDATE_COMPLETE',
+      })
+      expect(noServices.status).toBe(0)
+      expect(noServices.diffed).toEqual([['restore/Data'], ['restore/Platform']])
+      const lines = noServices.summary.split('\n')
+      const heading = lines.indexOf('### What the restore changes')
+      expect(lines.indexOf(skipped('Services', NOT_THERE))).toBeGreaterThanOrEqual(0)
+      expect(lines.indexOf(skipped('Services', NOT_THERE))).toBeLessThan(heading)
+      expect(lines.slice(heading)).toContain('    diff of restore/Data')
+      expect(noServices.summary).not.toContain('restore/Services')
+      // A failed create's stacks, waiting for review or rolled back, and one whose rollback failed: none is
+      // diffed, the diff passes, and each is named.
+      const leftovers = diff({
+        'Hearth-restore-Services': 'REVIEW_IN_PROGRESS',
+        'Hearth-restore-Data': 'ROLLBACK_COMPLETE',
+        'Hearth-restore-Platform': 'ROLLBACK_FAILED',
+      })
+      expect(leftovers.status).toBe(0)
+      expect(leftovers.diffed).toEqual([])
+      expect(leftovers.summary).toContain(skipped('Services', FAILED_CREATE))
+      expect(leftovers.summary).toContain(skipped('Data', FAILED_CREATE))
+      expect(leftovers.summary).toContain(skipped('Platform', 'is ROLLBACK_FAILED'))
+      expect(leftovers.summary).not.toContain('The diff failed')
+      // A stack still moving, or one that can't be read, fails the diff as it would fail down, and nothing
+      // after it is diffed; a diff that fails fails the step with its own status.
+      const moving = diff({
+        'Hearth-restore-Services': 'UPDATE_COMPLETE',
+        'Hearth-restore-Data': 'UPDATE_IN_PROGRESS',
+        'Hearth-restore-Platform': 'UPDATE_COMPLETE',
+      })
+      expect(moving.status).toBe(1)
+      expect(moving.diffed).toEqual([['restore/Services']])
+      expect(moving.summary).toContain(skipped('Data', 'is UPDATE_IN_PROGRESS, which down refuses, so the diff fails'))
+      expect(moving.summary).toContain('The diff failed (exit 1), so this plan fails')
+      const unread = diff({ 'Hearth-restore-Services': '!Access denied' })
+      expect(unread.status).toBe(1)
+      expect(unread.diffed).toEqual([])
+      expect(unread.summary).toContain(skipped('Services', "can't be read, so the diff fails"))
+      const failing = diff(
+        {
+          'Hearth-restore-Services': 'UPDATE_COMPLETE',
+          'Hearth-restore-Data': 'UPDATE_COMPLETE',
+          'Hearth-restore-Platform': 'UPDATE_COMPLETE',
+        },
+        { FAILS: 'true' },
+      )
+      expect(failing.status).toBe(3)
+      expect(failing.diffed).toEqual([['restore/Services']])
+      expect(failing.summary).toContain('The diff failed (exit 3), so this plan fails')
+      // Every other diff reads no stack's status: a restore up diffs every restore stack, a prod rollback its
+      // Tasks and Services, a prod deploy every prod stack, each in one call.
+      for (const [env, want] of [
+        [{ RESTORE: 'up' }, [['restore/*']]],
+        [{ STAGE: 'prod', MODE: 'rollback', RESTORE: 'none' }, [['prod/Tasks', 'prod/Services']]],
+        [{ STAGE: 'prod', MODE: 'deploy', RESTORE: 'none' }, [['prod/*']]],
+      ] as const) {
+        const other = diff({}, env)
+        expect(other.status, JSON.stringify(env)).toBe(0)
+        expect(other.diffed, JSON.stringify(env)).toEqual(want)
+        expect(other.aws, JSON.stringify(env)).toBe('')
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
     }
   })
 })

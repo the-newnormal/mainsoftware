@@ -93,9 +93,9 @@
 // name a builtin takes, descriptor's variable and variable bash evaluates, a default or an element's
 // assignment counting as the name's, a [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis
 // holds one, and a line it can't read that plainly is refused), to expanding only a name it sets, one its
-// step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder or the
-// runner's outputs, summary, folder, run ids, address and commit (foreignExpansionLines(), DPW-07), so no
-// canonical text prints the OIDC request token or another credential its job holds, to running only the
+// step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's
+// diff file or the runner's outputs, summary, folder, run ids, address and commit (foreignExpansionLines(),
+// DPW-07), so no canonical text prints the OIDC request token or another credential its job holds, to running only the
 // commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, with no
 // environment of its own (canonicalCommandLines(): export only on its listed lines, no flag to local or
 // export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper, and no
@@ -903,8 +903,8 @@ export const CDK_DEPLOY_ROLLBACK = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/
 export const CDK_DEPLOY_DOWN = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/$PART" ${DEPLOY_FLAGS}`
 export const CDK_DIFF_PROD = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/*" --method template --no-lookups --no-notices --no-color --fail-on never`
 export const CDK_DIFF_ROLLBACK = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
-// A restore taken down's diff: the three stacks restore=down deploys (RESTORE_DOWN), in its order.
-export const CDK_DIFF_DOWN = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
+// A restore taken down's diff: one stack at a time, each one restore=down deploys (RESTORE_DOWN_DIFF).
+export const CDK_DIFF_DOWN = `run "$CDK" diff --app "$ASSEMBLY" "$STAGE/$PART" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never`
 // restore=down (C11-D45; TECH-SPEC T24 item 18, DPW-06): Services, then Data, then Platform, one call each,
 // each only for a restore stack that exists and has settled; one a failed create left (ROLLBACK_COMPLETE,
 // or REVIEW_IN_PROGRESS, which never settles) is skipped, and one whose rollback failed too
@@ -944,6 +944,60 @@ done
 if [ -n "$KEPT" ]; then
   echo "restore down: the restore stage isn't down: tier 2 deletes$KEPT (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
   exit 1
+fi`
+
+// A restore taken down's diff (C11-D45, C11-D51, DPW-08; review 7 ACTIONS-01): prod-plan diffs only what
+// restore=down deploys, each stack decided as RESTORE_DOWN decides it, by the status the diff role reads. The
+// CLI diffs a stack that doesn't exist against an empty template, every resource as added, and down skips such
+// a stack, one a failed create left and one whose failed create couldn't roll back, so a diff of all three
+// showed the approver a down creating what it never deploys (three ECS services, after an up that failed
+// before Services); and a stack whose create waits for review has no template to read, so the diff failed and
+// down could never run. Each stack down skips is named in the summary above the diff, through the filter, and
+// not diffed; one still moving, or one that can't be read, fails the diff, as down would refuse it.
+export const RESTORE_DOWN_DIFF = sh`# A restore taken down (RESTORE_DOWN_DIFF; C11-D45, C11-D51): only what restore=down deploys, each stack
+# alone and in its order, decided as RESTORE_DOWN decides it, so the diff shows no stack down skips as
+# created. One that doesn't exist, that a failed create left or whose failed create couldn't roll back is
+# named above the diff, through the filter, and not diffed; one still moving, or one that can't be read,
+# fails the diff, as it would fail down. Its status is DOWN_STATUS, which the run then takes as the diff's.
+DOWN_STATUS=0
+if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
+  : >"$DIFF"
+  for PART in Services Data Platform; do
+    if ! PART_STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
+      case "$PART_STATUS" in
+        *'does not exist'*)
+          echo "restore down: Hearth-$STAGE-$PART doesn't exist, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          continue
+          ;;
+        *)
+          echo "restore down: Hearth-$STAGE-$PART can't be read, so the diff fails" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          DOWN_STATUS=1
+          break
+          ;;
+      esac
+    fi
+    case "$PART_STATUS" in
+      ROLLBACK_COMPLETE | REVIEW_IN_PROGRESS)
+        echo "restore down: Hearth-$STAGE-$PART is what a failed create left, so down skips it and it isn't diffed" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        continue
+        ;;
+      ROLLBACK_FAILED)
+        echo "restore down: Hearth-$STAGE-$PART is ROLLBACK_FAILED (a failed create whose rollback failed), so down skips it and it isn't diffed: down takes the others down, then fails, since it waits for tier 2" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        continue
+        ;;
+      *_IN_PROGRESS)
+        echo "restore down: Hearth-$STAGE-$PART is $PART_STATUS, which down refuses, so the diff fails: wait for it to settle, then dispatch again" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        DOWN_STATUS=1
+        break
+        ;;
+    esac
+    {
+      ${CDK_DIFF_DOWN}
+    } >>"$DIFF" || {
+      DOWN_STATUS=$?
+      break
+    }
+  done
 fi`
 
 // The image check (C11-D50, C11-D79, DPW-13): check_image_archive and unpack_image, defined here and called by
@@ -1320,10 +1374,10 @@ export const DIFF_RUN = sh`${PREAMBLE}
 # The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
 # read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
 # for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
-# down the three it deploys; into the log, and into the summary cut at 200 KB, both through the filter.
-# A diff that fails still shows the CLI's message in both, then fails the step. In the summary it is an
-# indented code block, each line four spaces in and each carriage return a line break, so no line of a
-# release's own text ends the block or opens HTML that hides what follows.
+# down the stacks it deploys (RESTORE_DOWN_DIFF); into the log, and into the summary cut at 200 KB, both
+# through the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
+# summary it is an indented code block, each line four spaces in and each carriage return a line break, so
+# no line of a release's own text ends the block or opens HTML that hides what follows.
 ASSEMBLY="$RUNNER_TEMP/assembly"
 DIFF="$RUNNER_TEMP/diff.txt"
 STATUS=0
@@ -1332,15 +1386,13 @@ if [ "$MODE" = rollback ]; then
   {
     ${CDK_DIFF_ROLLBACK}
   } >"$DIFF" || STATUS=$?
-elif [ "$RESTORE" = down ]; then
-  {
-    ${CDK_DIFF_DOWN}
-  } >"$DIFF" || STATUS=$?
-else
+elif [ "$RESTORE" != down ]; then
   {
     ${CDK_DIFF_PROD}
   } >"$DIFF" || STATUS=$?
 fi
+${RESTORE_DOWN_DIFF}
+if [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi
 cat "$DIFF"
 {
   if [ "$STAGE" = restore ]; then echo "### What the restore changes"; else echo "### What prod's $MODE changes"; fi
@@ -1355,18 +1407,20 @@ exit "$STATUS"`
 
 // The automatic rollback's diff (C11-D51; the seventh review's second attack): prod's previous release as
 // prod's rollback job would deploy it, the assembly synth-previous-prod made by rebuilding that release from
-// its own code, against what prod runs before this deploy, which is that release, so it shows no change
-// unless the rebuild differs from what runs. A release's own code can tell a rebuild from its own deploy (the
+// its own code, against the Tasks and Services deployed in prod's account now, which are that release's, so
+// it shows no change unless the rebuild differs from what runs, or a prod run since prod's newest record got
+// past its Tasks deploy and wrote none (review 7 ROLLBACK-01). A release's own code can tell a rebuild from its own deploy (the
 // CLI hands the app its output folder, CDK_OUTDIR) and write a resource only into the rebuild; the rollback
 // job deploys the very artifact read here, by its id, so the approver reads before approving prod, and again
 // before approving the rollback, what the rollback would deploy. Its Tasks and Services alone, as the
 // rollback deploys them, into the log and the summary as the release's diff is.
 export const ROLLBACK_DIFF_RUN = sh`${PREAMBLE}
 # The automatic rollback's diff (C11-D51): prod's previous release as prod's rollback job would deploy it
-# (synth-previous-prod's assembly, a rebuild of that release's own code), against what prod runs before
-# this deploy, which is that release: its Tasks and Services, read with the plan role's own credentials.
-# It shows no change unless the rebuild differs from what runs; into the log, and into the summary cut at
-# 200 KB, as the release's diff is.
+# (synth-previous-prod's assembly, a rebuild of that release's own code), against the Tasks and Services
+# deployed in prod's account now, read with the plan role's own credentials. It shows no change unless the
+# rebuild differs from what runs, or a prod run since prod's newest record got past its Tasks deploy and
+# wrote none, whose templates it shows going back (deploy-and-rollback.md step 4); into the log, and into
+# the summary cut at 200 KB, as the release's diff is.
 ASSEMBLY="$RUNNER_TEMP/assembly-previous"
 DIFF="$RUNNER_TEMP/diff.txt"
 STATUS=0
@@ -1775,7 +1829,7 @@ export function codeLinesAsBash(lines: readonly string[]): string[] {
 // neither, so a line keyed on anything the two differ in (a variable, a file, what gh answers) would end the
 // check differently in the gate and in every test. Pinned, the code changes only with the pin, in the same PR,
 // an owner's read (EXPAND-A4-02, round 6). The comments above the first code line stay free to edit.
-export const PROTECT_ENVIRONMENTS_SHA256 = '85e399f0dc1973ed7ea5834620c58a5c7a8ff9311a32536338499e99ee432b95'
+export const PROTECT_ENVIRONMENTS_SHA256 = '6ca4a6c3572f7972a27166cfe2d9b71ce3aa9138dbab874ebcb6d0de4e671e39'
 export function pinnedScriptText(script: string): string {
   const lines = script.split('\n')
   const first = lines.findIndex((line, i) => i > 0 && !/^[ \t]*(?:#[\s\S]*)?$/.test(line))
@@ -1786,16 +1840,24 @@ export function pinnedScriptText(script: string): string {
 // CI runner has to run it under: DPW-09 refuses each in the script's code lines, as bash reads them. Some
 // (`[[ -v`, `|&`, `&>>`, a case fall-through) are parse errors there, and bash parses a whole compound command
 // before it runs any of it, so one inside the marker refusal's `if` stops every command before anything runs;
-// the rest fail, or mean something else, when they run (review 6 ENVS-01).
+// the rest fail, or mean something else, when they run (review 6 ENVS-01). A test's -v or -R is found wherever
+// an operand stands: after [[, [ or test, after !, &&, ||, ( or [ and test's -a and -o, and at the start of a
+// line that continues a [[ test after one of those (review 7 ENVS-01). It is a list read line by line, not a
+// parser: a construct it doesn't name, or one it can't see (built from an expansion, held in a variable, or an
+// arithmetic subscript such as $(( a[-1] ))), passes, so the list grows with each one found.
 export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
-  ['test -v or -R', /(?:\[\[?|\btest)\s+(?:!\s+)?-[vR]\s/],
+  ['test -v or -R', /(?:\[\[?|\btest|!|&&|\|\||\()\s*-[vR]\s/],
+  ['test -v or -R', /(?:\[|\btest)\s.*\s-[ao]\s+-[vR]\s/],
   ['mapfile or readarray', /\b(?:mapfile|readarray)\b/],
   [
     'an associative array, nameref, global or case attribute',
     /\b(?:declare|local|typeset|readonly)(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*[Agnlu]/,
   ],
   ['a case change or @ transformation', /\$\{[#!]?(?:\w+|[@*])(?:\[[^\]]*\])?(?:[,^]|@[a-zA-Z])/],
-  ['a negative subscript', /\$\{[#!]?\w+\[-/],
+  ['a negative subscript', /\$\{[#!]?\w+\[\s*-|(?:^|[\s;&|(])\w+\[\s*-[^\]]*\]\+?=|\bunset\s+['"]?\w+\[\s*-/],
+  ['a negative substring length', /\$\{[#!]?(?:\w+|[@*])(?:\[[^\]]*\])?:(?![-=?+])[^:}]*:\s*-/],
+  ['a brace expansion with a step or zero padding', /\{-?\w+\.\.-?\w+\.\.-?\w+\}|\{-?0\d+\.\.|\.\.-?0\d+\}/],
+  ['& in a pattern substitution', /\$\{[#!]?(?:\w+|[@*])(?:\[[^\]]*\])?\/[/#%]?[^/}]*\/[^}]*&/],
   ['coproc', /\bcoproc\b/],
   ['|& or &>>', /\|&|&>>/],
   ['a case fall-through', /;;?&/],
@@ -1806,6 +1868,10 @@ export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
   ['shopt', /\bshopt\b/],
   ['a variable bash 3.2 lacks', /\b(?:BASHPID|EPOCHSECONDS|EPOCHREALTIME|SRANDOM|BASH_ARGV0)\b/],
 ]
+// A [[ test's operands may go on over a line break after &&, || or (, and bash 3.2 stops on a -v or -R there
+// too: a code line that starts with one, after a line that ends with one of those or with !.
+const CONTINUED_TEST = /(?:&&|\|\||\(|!)[ \t]*$/
+const CONTINUED_OPERAND = /^[ \t]*-[vR]\s/
 // bash before 4.4 calls an empty array unbound under set -u, so the script expands an array's elements only as
 // ${a[@]+"${a[@]}"}, or bare for the two lists its head declares with words (markerHead), never empty.
 const GUARDED_ARRAY = /\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}/g
@@ -1813,8 +1879,9 @@ const ARRAY_ELEMENTS = /\$\{!?(\w+)\[[@*]\]/g
 const LISTED_ARRAYS = ['ENVIRONMENTS', 'AGENT_MARKERS']
 export function bashAfter32(code: readonly string[]): string[] {
   const found: string[] = []
-  for (const line of code) {
+  for (const [n, line] of code.entries()) {
     for (const [what, pattern] of BASH_AFTER_3_2) if (pattern.test(line)) found.push(what)
+    if (CONTINUED_OPERAND.test(line) && CONTINUED_TEST.test(code[n - 1] ?? '')) found.push('test -v or -R')
     for (const match of line.replace(GUARDED_ARRAY, '').matchAll(ARRAY_ELEMENTS)) {
       if (!LISTED_ARRAYS.includes(match[1] ?? '')) found.push('an unguarded array expansion')
     }
@@ -1824,7 +1891,7 @@ export function bashAfter32(code: readonly string[]): string[] {
 
 const markerHead = (markers: readonly string[]) => [
   'set -euo pipefail',
-  'root=$(cd "$(dirname "$0")/.." && pwd)',
+  'root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)',
   'dir="$root/.github/environments"',
   'ENVIRONMENTS=(nonprod prod-plan prod)',
   `AGENT_MARKERS=(${markers.join(' ')})`,
@@ -2550,6 +2617,7 @@ export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   FAST_RECHECK_PROD,
   SMOKE_ATTEMPT,
   RESTORE_DOWN,
+  RESTORE_DOWN_DIFF,
 })
 const CANONICAL_TEXTS = (): readonly string[] => Object.values(CANONICAL_BY_NAME())
 // Each canonical text standing whole in a run, from a line's start to a line's end, with its first line, but
@@ -3264,8 +3332,9 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
 // run's own lines alone): the runner's own that a run's own lines may expand (RUNNER_EXPANSIONS), the run's
 // commit (GITHUB_SHA) and bash's SECONDS; and, outside the runner's and the credentials' namespaces (ACTIONS_,
 // GITHUB_, RUNNER_, AWS_, GH_, INPUT_, STATE_), a name a canonical text sets, one a step's env: (STEP_ENVS) or a
-// job's (STAGE) gives from no secret or token, or the one-offs' TOKEN and the assembly's folder (ASSEMBLY),
-// which a run's own lines set before the texts that read them. So no canonical text expands the OIDC request
+// job's (STAGE) gives from no secret or token, or the one-offs' TOKEN, the assembly's folder (ASSEMBLY) and
+// prod-plan's diff file (DIFF, RESTORE_DOWN_DIFF's), which a run's own lines set before the texts that read
+// them. So no canonical text expands the OIDC request
 // token or its URL, the runtime token, an AWS_ variable, the job's token or a secret an env: hands its step,
 // even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
 const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
@@ -3282,6 +3351,7 @@ const canonicalGiven = (): ReadonlySet<string> => {
         'STAGE',
         'TOKEN',
         'ASSEMBLY',
+        'DIFF',
         ...Object.values(CANONICAL_BY_NAME()).flatMap(namesSetIn),
       ].filter(name => !secret.has(name) && !CREDENTIAL_NAMESPACE.test(name)),
     )
@@ -3305,7 +3375,7 @@ export function foreignExpansionLines(text: string, alsoSet: readonly string[] =
   return [...lines].sort((a, b) => a - b)
 }
 const CANONICAL_EXPANDS_RULE =
-  "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+  "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
 
 // DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
@@ -6844,7 +6914,17 @@ const SETTERS = ['read', 'mapfile', 'readarray', 'for', 'select', 'getopts']
 const isSetter = (command: ShellCommand) =>
   SETTERS.includes(command.word) || (command.word === 'printf' && /(?:^|\s)-/.test(command.rest))
 const SETTER_LINES: ReadonlySet<string> = new Set([
-  ...[PREAMBLE, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, PROBE, NEWEST_RELEASE, RESTORE_DOWN].flatMap(text => {
+  ...[
+    PREAMBLE,
+    ASSET_CHECK,
+    AWS_CHECK,
+    TASKS_OUTPUTS,
+    ONE_OFF,
+    PROBE,
+    NEWEST_RELEASE,
+    RESTORE_DOWN,
+    RESTORE_DOWN_DIFF,
+  ].flatMap(text => {
     const lines = text.split('\n')
     return shellCommands(text)
       .filter(isSetter)

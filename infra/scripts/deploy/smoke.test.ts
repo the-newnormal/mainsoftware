@@ -1,8 +1,9 @@
 // The smoke's cases, SMK-T01 to SMK-T08 (C11-D54; TECH-SPEC T24 items 16, 20 and 28): each check on
 // recorded answers, the read-back's validation, --profile-at in a scratch git repository, the command
-// line for each stage (the host, origin and profile each --env maps to), and the whole command against
-// a local TLS server with a certificate made for the test, so the network code runs too, its body limit
-// and its timeouts among it. Commits are made by git (a developer's own git settings set aside: git's own
+// line for each stage (the host, origin and profile each --env maps to), a failure it didn't expect in
+// either half of main (one line, `smoke: failed`, and exit 1), and the whole command against a local TLS
+// server with a certificate made for the test, so the network code runs too, its body limit and its
+// timeouts among it. Commits are made by git (a developer's own git settings set aside: git's own
 // environment variables for the whole file, a hook's GIT_INDEX_FILE among them, and the system and
 // global configuration files, a global hook or signed tags, for every git command the test runs itself)
 // or built as repeats, and an ARN, account id or address is built from parts at run time (IG-01). It
@@ -517,6 +518,9 @@ let after = ''
 // profiles.ts sets: prod unset with non-prod on twilio, and prod on twilio with non-prod unset.
 let prodUnset = ''
 let prodTwilio = ''
+// Non-prod's own smsProvider line, whatever the committed profiles.ts sets it to (C0.12 turns it to
+// twilio).
+const NONPROD_SMS = /(\n {2}nonprod: \{\n(?: {4}.*\n)*? {4}smsProvider: )[^,\n]*,/
 
 // git's own variables set aside for the whole file, the script's own git command included: a hook that
 // runs these tests hands git GIT_INDEX_FILE (and can hand it GIT_DIR or GIT_WORK_TREE), which would
@@ -547,21 +551,19 @@ beforeAll(() => {
   git(['init', '-q', '-b', 'main'])
   mkdirSync(join(repo, 'infra/src/config'), { recursive: true })
   const source = readFileSync(PROFILES_SOURCE, 'utf8')
-  // Non-prod's own smsProvider line, whatever the committed profiles.ts sets it to (C0.12 turns it to
-  // twilio): the release before has it unset, and the next release turns it to twilio.
-  const nonprodSms = /(\n {2}nonprod: \{\n(?: {4}.*\n)*? {4}smsProvider: )[^,\n]*,/
-  if (!nonprodSms.test(source)) throw new Error("profiles.ts no longer gives non-prod's smsProvider a line")
-  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(nonprodSms, '$1undefined,'))
+  // The release before has non-prod's smsProvider unset, and the next release turns it to twilio.
+  if (!NONPROD_SMS.test(source)) throw new Error("profiles.ts no longer gives non-prod's smsProvider a line")
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(NONPROD_SMS, '$1undefined,'))
   git(['add', '-A'])
   git(['commit', '-q', '-m', 'profiles'])
   before = git(['rev-parse', 'HEAD'])
-  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(nonprodSms, "$1'twilio',"))
+  writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(NONPROD_SMS, "$1'twilio',"))
   git(['commit', '-q', '-am', 'flip'])
   after = git(['rev-parse', 'HEAD'])
   const prodSms = /(\n {2}prod: \{\n(?: {4}.*\n)*? {4}smsProvider: )[^,\n]*,/
   if (!prodSms.test(source)) throw new Error("profiles.ts no longer gives prod's smsProvider a line")
   const both = (nonprod: string, prod: string) =>
-    source.replace(nonprodSms, `$1${nonprod},`).replace(prodSms, `$1${prod},`)
+    source.replace(NONPROD_SMS, `$1${nonprod},`).replace(prodSms, `$1${prod},`)
   writeFileSync(join(repo, 'infra/src/config/profiles.ts'), both("'twilio'", 'undefined'))
   git(['commit', '-q', '--allow-empty', '-am', 'prod unset'])
   prodUnset = git(['rev-parse', 'HEAD'])
@@ -781,6 +783,54 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     }
   }, 60_000)
 
+  // A failure it didn't expect, in each half of main: before the judgement, a --profile-at commit whose
+  // profiles.ts doesn't load; in it, a restore profile with no worker, whose count SMK-06 reads, and an
+  // output that throws the first time it's written to. Each is one line and exit 1, so a smoke that
+  // can't judge never passes, and no error message or stack reaches the log.
+  it('SMK-T08: a failure it didn’t expect is one line, `smoke: failed`, and exit 1, never the error’s message', async () => {
+    const source = readFileSync(PROFILES_SOURCE, 'utf8')
+    const restoreWorker = /(\n {2}restore: \{\n(?: {4}.*\n)*?) {6}worker: [^\n]*\n/
+    if (!restoreWorker.test(source)) throw new Error("profiles.ts no longer gives the restore profile's worker a line")
+    const committed = (text: string) => {
+      writeFileSync(join(repo, 'infra/src/config/profiles.ts'), text)
+      git(['commit', '-q', '-am', 'failed'])
+      return git(['rev-parse', 'HEAD'])
+    }
+    const unreachable = fakeTransport({ tls: 'no-answer', http: () => 'no-answer' })
+    const up = writeReadBack(restoreUpReadBack(), 'failed-up.json')
+    const restoreUp = (commit: string) => [
+      ...['--env', 'restore', '--restore', 'up', '--release', RELEASE, '--readback', up],
+      ...['--profile-at', commit, '--repo', repo],
+    ]
+    const failed = { code: 1, out: 'smoke: failed\n' }
+    try {
+      expect(await cli(restoreUp(committed(`${source}\nexport const = ${MARKER}\n`)), unreachable.transport)).toEqual(
+        failed,
+      )
+      expect(await cli(restoreUp(committed(source.replace(restoreWorker, '$1'))), unreachable.transport)).toEqual(
+        failed,
+      )
+    } finally {
+      git(['reset', '-q', '--hard', prodTwilio])
+    }
+    // The same read-back passes at the restore profile as committed, so the profile is what failed it.
+    expect(await cli(restoreUp(prodTwilio), unreachable.transport)).toEqual({ code: 0, out: 'SMK-06 pass\n' })
+    let out = ''
+    let writes = 0
+    const code = await main(restoreUp(prodTwilio), {
+      write: text => {
+        writes += 1
+        if (writes === 1) throw new Error(`stdout closed ${MARKER}`)
+        out += text
+      },
+      readText: path => readFileSync(path, 'utf8'),
+      cwd: repo,
+      transport: unreachable.transport,
+    })
+    expect([code, out]).toEqual([1, 'smoke: failed\n'])
+    expect(unreachable.hosts).toEqual([])
+  })
+
   it('SMK-T08: with answers whose bodies hold a marker, nothing the smoke prints holds it', async () => {
     const readback = writeReadBack(readBack())
     const leaky = fakeTransport({
@@ -857,6 +907,23 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
       ],
     ]
     for (const [argv, out] of cases) expect(await cli(argv, none), out).toEqual({ code: 2, out })
+    // A release whose profile names an smsProvider the smoke doesn't know: refused as bad input before
+    // anything is asked, never judged as if it were unset or twilio.
+    const source = readFileSync(PROFILES_SOURCE, 'utf8')
+    let unknown = ''
+    try {
+      writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(NONPROD_SMS, "$1'sns',"))
+      git(['commit', '-q', '-am', 'unknown smsProvider'])
+      unknown = git(['rev-parse', 'HEAD'])
+    } finally {
+      git(['reset', '-q', '--hard', prodTwilio])
+    }
+    const answers = fakeTransport({ tls: TLS_GOOD, http: goodAnswer })
+    expect(await cli([...base.slice(0, 6), '--profile-at', unknown, '--repo', repo], answers.transport)).toEqual({
+      code: 2,
+      out: "smoke: --profile-at's smsProvider is not one the smoke knows\n",
+    })
+    expect(answers.hosts).toEqual([])
   })
 })
 

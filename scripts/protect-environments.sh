@@ -11,6 +11,10 @@
 # `[[ -v`, mapfile, associative array or case-changing expansion, and an array that may be empty is
 # expanded only as ${a[@]+"${a[@]}"}, since bash before 4.4 calls an empty array unbound under set -u.
 #
+# Its checkout's root is found with CDPATH emptied for the one cd: run by its relative path, as the runbooks
+# run it, bash's cd would look the relative folder up through an exported CDPATH and print the folder it
+# found, so the root would hold two lines and every file would read as differing.
+#
 #   scripts/protect-environments.sh check [owner/repo]
 #   scripts/protect-environments.sh check --from <dir> [owner/repo]
 #   PROD_REVIEWERS=<login>[,<login>...] scripts/protect-environments.sh apply [owner/repo]
@@ -47,7 +51,7 @@
 # the person set them with `gh secret set <NAME> --env <environment>`.
 set -euo pipefail
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(CDPATH= cd "$(dirname "$0")/.." && pwd)
 dir="$root/.github/environments"
 ENVIRONMENTS=(nonprod prod-plan prod)
 AGENT_MARKERS=(CLAUDECODE CLAUDE_CODE_ENTRYPOINT AI_AGENT CI GITHUB_ACTIONS)
