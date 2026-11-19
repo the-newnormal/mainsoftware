@@ -42,7 +42,7 @@
 //   person's configuration, and must synthesise, CloudFormation Validate included, what the
 //   four-target build holds.
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -50,7 +50,7 @@ import { isDeepStrictEqual } from 'node:util'
 import * as cdk from 'aws-cdk-lib'
 import * as sns from 'aws-cdk-lib/aws-sns'
 import { ConstructOrder } from 'constructs'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { checkRun, LANDING_ZONE_TARGETS, type LandingZoneTarget, parseLandingZoneEnv } from '../src/config/env.ts'
 import { REGION } from '../src/config/profiles.ts'
 import { addLandingZone, type LandingZoneStacks } from '../src/foundation/landing-zone.ts'
@@ -69,6 +69,22 @@ function cdkJsonContext(): Record<string, unknown> {
   return json.context as Record<string, unknown>
 }
 
+// The folders this file makes for the entries' runs and the planted assembly, removed once all its
+// cases have finished, since several cases read the shared runs' assemblies. Made and removed by this
+// file itself, never through testing/synth.ts, like the entries' context above.
+const outdirs: string[] = []
+
+afterAll(() => {
+  for (const outdir of outdirs.splice(0)) rmSync(outdir, { recursive: true, force: true })
+})
+
+// A fresh folder under the system temp folder, named from the prefix, removed by the hook above.
+function scratchFolder(prefix: string): string {
+  const outdir = mkdtempSync(join(tmpdir(), prefix))
+  outdirs.push(outdir)
+  return outdir
+}
+
 interface Ran {
   code: number
   stderr: string
@@ -78,7 +94,7 @@ interface Ran {
 // Runs an entry with only the variables given (and PATH, the output folder and cdk.json's context),
 // never the caller's own HEARTH_* or AWS_*.
 function run(entry: string, environ: Record<string, string> = {}): Promise<Ran> {
-  const outdir = mkdtempSync(join(tmpdir(), 'hearth-entry-'))
+  const outdir = scratchFolder('hearth-entry-')
   return new Promise(resolve => {
     execFile(
       process.execPath,
@@ -574,7 +590,7 @@ describe('C11-D23: the entries run under plain Node', () => {
   }, 60_000)
 
   it('the binding finds a stack whose termination protection, deploy role, bootstrap version, account, Region or place a helper reports otherwise, a fact it reports that this file does not read, a stack or a manifest only one side holds, and an asset manifest that differs, on a planted assembly (C11-D70, C11-D74)', () => {
-    const outdir = mkdtempSync(join(tmpdir(), 'hearth-planted-'))
+    const outdir = scratchFolder('hearth-planted-')
     mkdirSync(join(outdir, 'assembly-x'))
     const stack = (part: string, properties: Record<string, unknown>) => ({
       type: 'aws:cloudformation:stack',
