@@ -55,9 +55,12 @@
 // deploy time, to a Platform stack, its own function's zip in the staging bucket, that function's properties CDK's
 // own and no others (no layer, environment, network or role elsewhere, so no other account's code runs before the
 // handler, as a layer and AWS_LAMBDA_EXEC_WRAPPER would make it) and no value of its template that names it, so no
-// handler of a release's own or another account's answers into a grant the diff shows only by an attribute's name,
-// and refuses a file asset whose id, which the CLI joins to the path it writes a packaged zip to
-// or uploads one from, isn't its key's digits.
+// handler of a release's own or another account's answers into a grant the diff shows only by an attribute's name
+// (the handler's code itself is the release's own, as the image is: ASSET_CHECK holds a zip asset's key to 64 hex
+// digits and .zip, never to the zip's bytes, which it doesn't read, and the CLI uploads nothing to a key already
+// in the bucket, so the first release to upload a key decides what every later one naming it runs; what that
+// code can do is its role's grant, which the diff's IAM table shows), and refuses a file asset whose id, which
+// the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -358,13 +361,14 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
 # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
 # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
-# isn't content-addressed (a file's the sha256 of its bytes and .json, read from a plain name in its own
-# folder, a zip's 64 hex digits and .zip): the CLI uploads nothing to a key that already holds an
-# object, so whatever an earlier call or run put at a template's key is what CloudFormation gets, and
-# with keys held to their bytes that is the template itself; a file asset whose id, its key in the
-# manifest's files, isn't its key's 64 hex digits (the CLI writes the zip it packages to
-# .cache/<id>.zip beside the manifest, or uploads the file already there, so a / or .. in an id would
-# have it write or read a file outside the tree); no asset manifest at all; a stack whose
+# isn't the synth's shape (a file's the sha256 of its bytes and .json, read from a plain name in its own
+# folder, a zip's 64 hex digits and .zip, which ties it to no bytes): the CLI uploads nothing to a key
+# that already holds an object, so whatever an earlier call or run put at a key is what CloudFormation
+# gets, at a template's key, held to its bytes, the template itself, and at a zip's the bytes its first
+# upload carried, which this check never reads (a zip is the release's own, as the image is); a file
+# asset whose id, its key in the manifest's files, isn't its key's 64 hex digits (the CLI writes the zip
+# it packages to .cache/<id>.zip beside the manifest, or uploads the file already there, so a / or ..
+# in an id would have it write or read a file outside the tree); no asset manifest at all; a stack whose
 # deploy facts aren't the workload synth's (its environment, its deploy, execution and lookup roles,
 # its bootstrap version and the parameter the CLI reads it from with the deploy role and prints when
 # it isn't a number, termination protection on Platform and Data alone, and no notification topic,
@@ -406,13 +410,15 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
 # is that function's Arn (never a function elsewhere, another account's among them), the function's
-# code is a zip in the staging bucket (never inline) and its properties CDK's own and no others (CDK's
-# entry point on a Node.js runtime, run by a role of its template, with no layer, environment, network
-# or other key, so no other account's code runs before the handler), and no string in its template
-# names it, so no grant, output or other value reads its answer. Then it requires every Services template's Release
-# output to be the release this job deploys, and every container image in the Tasks and Services
-# templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
-# and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
+# code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
+# is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
+# and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
+# its template, with no layer, environment, network or other key, so no other account's code runs before
+# the handler), and no string in its template names it, so no grant, output or other value reads its
+# answer. Then it requires every Services template's Release output to be the release this job deploys,
+# and every container image in the Tasks and Services templates to be the server image at its digest,
+# reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the rule,
+# never a path or value from the assembly.
 asset_refuse() {
   echo "asset-check: $1"
   exit 1
@@ -2064,8 +2070,10 @@ export function pinnedScriptText(script: string): string {
 // before it runs any of it, so one inside the marker refusal's `if` stops every command before anything runs;
 // the rest fail, or mean something else, when they run (review 6 ENVS-01). A test's -v or -R is found wherever
 // an operand stands: after [[, [ or test, after !, &&, ||, ( or [ and test's -a and -o, and at the start of a
-// line that continues a [[ test after one of those (review 7 ENVS-01) or after a bare [[ ending its line; and a
-// line a backslash continues is read joined to the next, as bash reads it (review 8 ENVS-01). It is a list read
+// line that continues a [[ test after one of those (review 7 ENVS-01) or after a bare [[ ending its line; a
+// line a backslash continues is read joined to the next, as bash reads it (review 8 ENVS-01); and a comment that
+// ends the line before (`&& # why`, or a comment line a backslash joins, whose own backslash joins nothing) is
+// read as bash reads it, to its line's end (review 9 ENVS-01). It is a list read
 // line by line, not a parser: a construct it doesn't name, or one it can't see (built from an expansion, held
 // in a variable, or an arithmetic subscript such as $(( a[-1] ))), passes, so the list grows with each one
 // found.
@@ -2093,18 +2101,50 @@ export const BASH_AFTER_3_2: readonly (readonly [string, RegExp])[] = [
   ['a variable bash 3.2 lacks', /\b(?:BASHPID|EPOCHSECONDS|EPOCHREALTIME|SRANDOM|BASH_ARGV0)\b/],
 ]
 // A [[ test's operands may go on over a line break after [[, &&, || or (, and bash 3.2 stops on a -v or -R
-// there too: a code line that starts with one, after a line that ends with one of those or with !.
+// there too: a code line that starts with one, after a line that ends with one of those or with !, as written
+// or with its comment taken off (bash reads `&& # why` and then a line break as `&&` and the break).
 const CONTINUED_TEST = /(?:\[\[|&&|\|\||\(|!)[ \t]*$/
 const CONTINUED_OPERAND = /^[ \t]*-[vR]\s/
+// A line without its comment, as bash's reader finds one: a # that starts a word (at the line's start, or after
+// a blank or one of ; & | ( ) < > that no backslash escapes) outside quotes begins a comment that runs to the
+// line's end, a backslash there included. It reads quotes and backslashes alone, not ${…}, $(…) or $'…': a #
+// inside one of the first two after a blank reads as a comment's start, which only adds a reading, since the
+// checks read every line both as written and without its comment; and a $'…' holding \' leaves the rest of its
+// line read as quoted, so a comment after one is missed (a list, not a parser, as above).
+function withoutComment(line: string): string {
+  let quote = ''
+  let wordStart = true
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i] ?? ''
+    if (quote === "'") {
+      if (c === "'") quote = ''
+      continue
+    }
+    if (c === '\\') {
+      i++
+      wordStart = false
+      continue
+    }
+    if (quote === '"') {
+      if (c === '"') quote = ''
+      continue
+    }
+    if (c === '#' && wordStart) return line.slice(0, i)
+    if (c === "'" || c === '"') quote = c
+    wordStart = quote === '' && /[ \t;&|()<>]/.test(c)
+  }
+  return line
+}
 // The code as bash reads it before it parses: a line that ends in a backslash no other backslash escapes goes
 // on with the next, the backslash and the line break dropped, so a test's operands over such a break are read
-// on one line.
-function continuedLines(code: readonly string[]): string[] {
+// on one line. Read with withoutComment, a backslash that ends a comment joins nothing, as bash reads it (a
+// continued `&& \` and then `# why \` ends at the comment's line break).
+function continuedLines(code: readonly string[], read: (line: string) => string = line => line): string[] {
   const lines: string[] = []
   let pending: string | undefined
   for (const line of code) {
     const whole = pending === undefined ? line : `${pending}${line}`
-    pending = /(?:^|[^\\])(?:\\\\)*\\$/.test(whole) ? whole.slice(0, -1) : undefined
+    pending = /(?:^|[^\\])(?:\\\\)*\\$/.test(read(whole)) ? whole.slice(0, -1) : undefined
     if (pending === undefined) lines.push(whole)
   }
   if (pending !== undefined) lines.push(pending)
@@ -2115,14 +2155,19 @@ function continuedLines(code: readonly string[]): string[] {
 const GUARDED_ARRAY = /\$\{(\w+)\[@\]\+"\$\{\1\[@\]\}"\}/g
 const ARRAY_ELEMENTS = /\$\{!?(\w+)\[[@*]\]/g
 const LISTED_ARRAYS = ['ENVIRONMENTS', 'AGENT_MARKERS']
+// The code is read twice, its lines joined as written and as bash joins them past a comment, and each line before
+// a -v or -R is read as written and without its comment, so a comment's reading only adds what it finds.
 export function bashAfter32(code: readonly string[]): string[] {
   const found: string[] = []
-  const lines = continuedLines(code)
-  for (const [n, line] of lines.entries()) {
-    for (const [what, pattern] of BASH_AFTER_3_2) if (pattern.test(line)) found.push(what)
-    if (CONTINUED_OPERAND.test(line) && CONTINUED_TEST.test(lines[n - 1] ?? '')) found.push('test -v or -R')
-    for (const match of line.replace(GUARDED_ARRAY, '').matchAll(ARRAY_ELEMENTS)) {
-      if (!LISTED_ARRAYS.includes(match[1] ?? '')) found.push('an unguarded array expansion')
+  for (const lines of [continuedLines(code), continuedLines(code, withoutComment)]) {
+    for (const [n, line] of lines.entries()) {
+      for (const [what, pattern] of BASH_AFTER_3_2) if (pattern.test(line)) found.push(what)
+      const before = lines[n - 1] ?? ''
+      if (CONTINUED_OPERAND.test(line) && (CONTINUED_TEST.test(before) || CONTINUED_TEST.test(withoutComment(before))))
+        found.push('test -v or -R')
+      for (const match of line.replace(GUARDED_ARRAY, '').matchAll(ARRAY_ELEMENTS)) {
+        if (!LISTED_ARRAYS.includes(match[1] ?? '')) found.push('an unguarded array expansion')
+      }
     }
   }
   return [...new Set(found)]

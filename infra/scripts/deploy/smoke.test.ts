@@ -594,7 +594,7 @@ async function cli(argv: readonly string[], transport: Transport): Promise<{ cod
 }
 
 describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prints', () => {
-  it('SMK-T08: parseReadBack keeps a good read-back and refuses an ARN, an address, a 12-digit run, an unknown key and schema 2', () => {
+  it('SMK-T08: parseReadBack keeps a good read-back and refuses an ARN, an address, a 12-digit run, a key more or fewer at every level and schema 2', () => {
     expect(parseReadBack(readBack())).toEqual(readBack())
     const refused = (value: unknown) => {
       try {
@@ -614,7 +614,25 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     expect(
       refused(changed(v => Object.assign(v.targetGroups[0] ?? {}, { deregistration: Number('1'.repeat(12)) }))),
     ).toBe('account')
-    expect(refused(changed(v => Object.assign(service(v, 'worker').tasks[0] ?? {}, { ip: 'x' })))).toBe('key')
+    // Exactly its keys at every level: one key more, or its first key gone, at the top, a service, a
+    // deployment, a task, a target group and the load balancer. A level the good read-back lacks edits a
+    // throwaway object, which keeps the read-back and fails the case.
+    const levels: readonly [string, (v: ReadBack) => object][] = [
+      ['top', v => v],
+      ['service', v => service(v, 'api')],
+      ['deployment', v => service(v, 'api').deployments[0] ?? {}],
+      ['task', v => service(v, 'worker').tasks[0] ?? {}],
+      ['target group', v => v.targetGroups[0] ?? {}],
+      ['load balancer', v => v.loadBalancer ?? {}],
+    ]
+    for (const [level, at] of levels) {
+      expect(refused(changed(v => Object.assign(at(v), { ip: 'x' }))), `${level} with a key more`).toBe('key')
+      const fewer = changed(v => {
+        const value = at(v)
+        Reflect.deleteProperty(value, Object.keys(value)[0] ?? '')
+      })
+      expect(refused(fewer), `${level} with a key fewer`).toBe('key')
+    }
     expect(refused(changed(v => Object.assign(v, { schema: 2 })))).toBe('schema')
     expect(refused(changed(v => Object.assign(v, { probe: 'maybe' })))).toBe('probe')
     expect(refused(changed(v => Object.assign(service(v, 'api').tasks[0] ?? {}, { digest: 'latest' })))).toBe('tasks')

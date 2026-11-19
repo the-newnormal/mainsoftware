@@ -3075,6 +3075,18 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       ['  if [[ \\\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
       ['  if [ -n "$repo" -a \\\n    -v PROD_REVIEWERS ]; then :; fi', 'test -v or -R'],
       ['  if test \\\n    -v PROD_REVIEWERS; then :; fi', 'test -v or -R'],
+      // And after a comment that ends the line before, which bash reads to its line's end whatever it holds (a
+      // backslash included) and then goes on with the test: after &&, || or !, written after a blank or right
+      // after the operator, or on a line a backslash joins (review 9 ENVS-01).
+      ['  if [[ -n "$repo" && # why\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[ -n "$repo" && \\\n    # why\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[ -n "$repo" ||   # either\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[ -n "$repo" && ! # not\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      ['  if [[ -n "$repo" &&# why\n    -v PROD_REVIEWERS ]]; then :; fi', 'test -v or -R'],
+      [
+        '  if [[ -n "$repo" && \\\n    # why, ending in a backslash \\\n    -v PROD_REVIEWERS ]]; then :; fi',
+        'test -v or -R',
+      ],
       [`  echo "\${repo:0:-1}"`, 'a negative substring length'],
       ['  seen[-1]=x', 'a negative subscript'],
       ['  echo {1..7..2}', 'a brace expansion with a step or zero padding'],
@@ -3090,6 +3102,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       `  echo "\${repo:-x:-y}" "\${repo: -1}" "\${repo:1:2}" {0..9} "\${repo//x/y}"`,
       '  [[ -n "$repo" && -n "$dir" ]] || true',
       '  if [[ -n "$repo" && \\\n    -n "$dir" ]]; then :; fi',
+      '  if [[ -n "$repo" && # why\n    -n "$dir" ]]; then :; fi',
       '  echo \\\\\n  -v',
     ]) {
       const planted = protectEnvironments.replace(applyHead, `${applyHead}${line}\n`)
@@ -7609,10 +7622,10 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     data: { packaging: 'container-image', path: 'asset.x', id: 'x', sourceHash: 'x' },
   }
 
-  function check(plant: (dir: string) => void, release = RELEASE): string {
+  function check(plant: (dir: string) => void, release = RELEASE, from = source): string {
     const dir = mkdtempSync(join(tmpdir(), 'hearth-dpw14-'))
     made.push(dir)
-    cpSync(source, dir, { recursive: true })
+    cpSync(from, dir, { recursive: true })
     plant(dir)
     const result = spawnSync(
       'bash',
@@ -7675,6 +7688,33 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     expect(readdirSync(source).some(name => name.startsWith('asset.'))).toBe(true)
     expect(check(() => {})).toBe('passed')
   }, 30_000)
+
+  // The synth checks two builds beside the committed one: a restore up's (restoreActive, the restore stage's
+  // Valkey, endpoints and services) and a drill-break's (the non-prod stage alone, realtime broken). Each passes
+  // as the committed build does, so a resource type, intrinsic function or role key that only one of them
+  // writes fails here, on the PR that adds it, and not at the first restore up or drill-break (review 9
+  // ROLLBACK-04, GUARDS-01). Each is synthesised afresh and removed after.
+  it.each([
+    [
+      "a restore up's build (restoreActive)",
+      { restoreActive: true },
+      ['assembly-nonprod', 'assembly-prod', 'assembly-restore'],
+    ],
+    ["a drill-break's build (drill)", { drill: true }, ['assembly-nonprod']],
+  ] as const)(
+    'passes %s',
+    (_, run, nested) => {
+      const built = synthWorkload({ run }).synthesised.outdir
+      made.push(built)
+      expect(
+        readdirSync(built)
+          .filter(name => name.startsWith('assembly-'))
+          .sort(),
+      ).toEqual(nested)
+      expect(check(() => {}, RELEASE, built)).toBe('passed')
+    },
+    120_000,
+  )
 
   // FLOW-A3-01 (round 6). A file asset's id, its key in the manifest's files, is a path to the CLI: it writes
   // the zip it packages to .cache/<id>.zip beside the manifest, or uploads the file already there, so an id
