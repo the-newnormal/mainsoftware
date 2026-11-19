@@ -433,10 +433,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -530,6 +535,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -659,10 +666,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -756,6 +768,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -886,10 +900,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -983,6 +1002,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -1027,6 +1048,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
       deployments: write
     env:
       STAGE: nonprod
@@ -1073,6 +1095,45 @@ jobs:
             echo "digest=$DIGEST"
             echo "release=$COMMIT:$DIGEST"
           } >>"$GITHUB_OUTPUT"
+      - name: The artifacts' names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
+          IMAGE_ID: ${{ needs.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+          # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+          # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+          # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+          # The id each download takes is another job's output, which that job's code can choose, and so the
+          # artifact's name, so before any download each id is held to one number naming an artifact of this
+          # run under the name its upload gives it; the download then prints that name alone. An empty id is
+          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
+          # its job uploaded, which no later job can replace.
+          artifact_named() {
+            local found
+            if [ -z "$1" ]; then return 0; fi
+            if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+              echo 'artifacts: an artifact id is not one number'
+              exit 1
+            fi
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+              echo "artifacts: artifact $1 is not this run's $2"
+              exit 1
+            fi
+          }
+          artifact_named "$ASSEMBLY_ID" assembly
+          artifact_named "$IMAGE_ID" image.tar
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1182,10 +1243,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -1279,6 +1345,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -2192,6 +2260,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
       deployments: read
     env:
       STAGE: nonprod
@@ -2238,6 +2307,43 @@ jobs:
             echo "release=$COMMIT:$DIGEST"
             echo "previous=$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"
           } >>"$GITHUB_OUTPUT"
+      - name: The artifacts' names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PREVIOUS_ID: ${{ needs.synth-previous-nonprod.outputs.assembly }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+          # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+          # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+          # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+          # The id each download takes is another job's output, which that job's code can choose, and so the
+          # artifact's name, so before any download each id is held to one number naming an artifact of this
+          # run under the name its upload gives it; the download then prints that name alone. An empty id is
+          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
+          # its job uploaded, which no later job can replace.
+          artifact_named() {
+            local found
+            if [ -z "$1" ]; then return 0; fi
+            if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+              echo 'artifacts: an artifact id is not one number'
+              exit 1
+            fi
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+              echo "artifacts: artifact $1 is not this run's $2"
+              exit 1
+            fi
+          }
+          artifact_named "$PREVIOUS_ID" assembly-previous-nonprod
       - name: Download the previous assembly
         if: ${{ needs.synth-previous-nonprod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -2302,10 +2408,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -2399,6 +2510,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -3082,6 +3195,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
     env:
       STAGE: ${{ needs.gate.outputs.target == 'restore' && 'restore' || 'prod' }}
     outputs:
@@ -3121,6 +3235,45 @@ jobs:
             echo "digest=$DIGEST"
             echo "release=$COMMIT:$DIGEST"
           } >>"$GITHUB_OUTPUT"
+      - name: The artifacts' names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
+          PREVIOUS_ID: ${{ needs.synth-previous-prod.outputs.assembly }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+          # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+          # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+          # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+          # The id each download takes is another job's output, which that job's code can choose, and so the
+          # artifact's name, so before any download each id is held to one number naming an artifact of this
+          # run under the name its upload gives it; the download then prints that name alone. An empty id is
+          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
+          # its job uploaded, which no later job can replace.
+          artifact_named() {
+            local found
+            if [ -z "$1" ]; then return 0; fi
+            if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+              echo 'artifacts: an artifact id is not one number'
+              exit 1
+            fi
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+              echo "artifacts: artifact $1 is not this run's $2"
+              exit 1
+            fi
+          }
+          artifact_named "$ASSEMBLY_ID" assembly
+          artifact_named "$PREVIOUS_ID" assembly-previous-prod
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3191,10 +3344,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -3288,6 +3446,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -3364,10 +3524,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -3461,6 +3626,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -3812,6 +3979,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
       deployments: write
     env:
       STAGE: ${{ needs.gate.outputs.target == 'restore' && 'restore' || 'prod' }}
@@ -3858,6 +4026,45 @@ jobs:
             echo "digest=$DIGEST"
             echo "release=$COMMIT:$DIGEST"
           } >>"$GITHUB_OUTPUT"
+      - name: The artifacts' names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
+          IMAGE_ID: ${{ needs.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+          # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+          # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+          # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+          # The id each download takes is another job's output, which that job's code can choose, and so the
+          # artifact's name, so before any download each id is held to one number naming an artifact of this
+          # run under the name its upload gives it; the download then prints that name alone. An empty id is
+          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
+          # its job uploaded, which no later job can replace.
+          artifact_named() {
+            local found
+            if [ -z "$1" ]; then return 0; fi
+            if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+              echo 'artifacts: an artifact id is not one number'
+              exit 1
+            fi
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+              echo "artifacts: artifact $1 is not this run's $2"
+              exit 1
+            fi
+          }
+          artifact_named "$ASSEMBLY_ID" assembly
+          artifact_named "$IMAGE_ID" image.tar
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3967,10 +4174,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -4064,6 +4276,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -5030,6 +5244,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read
       deployments: read
     env:
       STAGE: prod
@@ -5076,6 +5291,43 @@ jobs:
             echo "release=$COMMIT:$DIGEST"
             echo "previous=$PREVIOUS_COMMIT:$PREVIOUS_DIGEST"
           } >>"$GITHUB_OUTPUT"
+      - name: The artifacts' names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PREVIOUS_ID: ${{ needs.synth-previous-prod.outputs.assembly }}
+        run: |
+          set -euo pipefail
+          # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
+          # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
+          # so from here to the step's end it reads none: what this step prints, a downloaded file's, a template's
+          # or a tool's text among it, is only shown. The token that would resume them is made here, and the runner
+          # masks it.
+          stop_token=$(openssl rand -hex 16)
+          echo "::stop-commands::$stop_token"
+          # The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+          # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+          # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+          # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+          # The id each download takes is another job's output, which that job's code can choose, and so the
+          # artifact's name, so before any download each id is held to one number naming an artifact of this
+          # run under the name its upload gives it; the download then prints that name alone. An empty id is
+          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
+          # its job uploaded, which no later job can replace.
+          artifact_named() {
+            local found
+            if [ -z "$1" ]; then return 0; fi
+            if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+              echo 'artifacts: an artifact id is not one number'
+              exit 1
+            fi
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+              echo "artifacts: artifact $1 is not this run's $2"
+              exit 1
+            fi
+          }
+          artifact_named "$PREVIOUS_ID" assembly-previous-prod
       - name: Download the previous assembly
         if: ${{ needs.synth-previous-prod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -5140,10 +5392,15 @@ jobs:
           # string but an empty {} and Fn::Sub's ${name}, so no string, joined, split or substituted, makes a
           # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
           # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-          # The release check then requires every Services template's Release output to be the release this
-          # job deploys, and every container image in the Tasks and Services templates to be the server image
-          # at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-          # naming the rule, never a path or value from the assembly.
+          # The release check then holds the one custom resource the workload writes, CDK's
+          # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+          # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+          # is that function's Arn (never a function elsewhere, another account's among them), the function's
+          # code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+          # grant, output or other value reads its answer. Then it requires every Services template's Release
+          # output to be the release this job deploys, and every container image in the Tasks and Services
+          # templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+          # and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -5237,6 +5494,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))

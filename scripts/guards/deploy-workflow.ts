@@ -29,7 +29,11 @@
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
 // command in what it prints (the CLI's, aws's or skopeo's output, a template's text, what tar says of the
 // build's image archive) hides a line of the log or the approver's diff or drops a job output, and no line of
-// any run or canonical text but STOP_COMMANDS's two names the token that would resume them; prod-plan
+// any run or canonical text but STOP_COMMANDS's two names the token that would resume them; before any download,
+// each such job holds every artifact id it downloads, another job's output, to one number naming this run's
+// artifact under the name its upload gives it (ARTIFACT_NAMES), since download-artifact prints that name in an
+// action's step, which no stop-commands reaches, so no job's code names an artifact ##[add-mask] or the like and
+// drops services_started with it; prod-plan
 // diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template parameter
 // deploys from the Default that diff shows (an SSM-typed parameter's names a parameter-store entry whose value no diff
 // shows, so ASSET_CHECK holds every one to the workload's own entries and refuses Conditions, Mappings and a brace a
@@ -41,9 +45,12 @@
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
-// IAM table reads under no principal, and an added resource's properties, which it never prints), and refuses a file
-// asset whose id, which the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's
-// digits.
+// IAM table reads under no principal, and an added resource's properties, which it never prints), holds the one
+// custom resource the workload writes, CDK's default security group handler, whose answer its handler decides at
+// deploy time, to a Platform stack, its own function's zip in the staging bucket and no value of its template that
+// names it, so no handler of a release's own or another account's answers into a grant the diff shows only by an
+// attribute's name, and refuses a file asset whose id, which the CLI joins to the path it writes a packaged zip to
+// or uploads one from, isn't its key's digits.
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -58,7 +65,9 @@
 // assignments and builtins as it holds them), so any form the table doesn't name is refused at its line
 // (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in every other), whatever it is, and no
 // review has to find it first; each command it reads in a credentialed or record job is held to the flags
-// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, tr and sed
+// and arguments the workflow uses (GLUE_USES: a jq or gh program one whole single-quoted string, read as jq
+// tokenises it, so a string defines and binds nothing, and no name it defines or binds, nor any word it runs, is one
+// that reaches outside it (env and $ENV, input, include, import, debug and the rest, JQ_REACH_NAMES), tr and sed
 // only as prod-plan's diff summary's, every aws word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
 // whole, a canonical text's function or a record job's own only as the workflow calls it, standing alone,
 // outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step, as
@@ -117,7 +126,9 @@
 // token or another credential its job holds, to running only the commands CANONICAL_COMMANDS names and the
 // canonical texts' functions, each by a plain word, with no environment of its own (canonicalCommandLines():
 // export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
-// a command but IFS's before read, no wrapper, and
+// a command but IFS's before read, no assignment, in any spelling, to one of bash's own variables
+// (SHELL_TABLE.bashVariables: EXECIGNORE, which hides a command from bash's lookup, GLOBIGNORE, PS4 and the rest)
+// but IFS's before read, no wrapper, and
 // no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
 // other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
 // DIFF, STAGE) set in any spelling but the preamble's CDK line), and to every program it runs being held by what it
@@ -127,7 +138,10 @@
 // template and those they're built from) only ASSET_CHECK's own lines set and its loops' own done lines feed
 // (fileNameLines()); printf only a single-quoted format and a plain -v name, never one built from an expansion; aws
 // only the calls and options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or
-// --debug), one value to each option but a list's, so no expansion in a second word hands aws an option; tee only
+// --debug), one value to each option but a list's, so no expansion in a second word hands aws an option, and a value
+// that expands only as one of the words the texts write there (AWS_TEXT_VALUE_WORDS, each from a name a text
+// checks against its shape or builds with jq), never one naming a scheme, so no value read from a stack's output
+// reaches an option aws would load from a file on the runner (file://) or fetch; tee only
 // appending to the summary; no word of these bash splits, globs or expands a tilde in (~- is OLDPWD and ~+ PWD,
 // wherever bash expands one, a ${…}'s default and a double-quoted replacement among them), nor any that expands to
 // several words but PROBE's task list
@@ -136,7 +150,9 @@
 // sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection; the lines the
 // tool holds compare against (TOOL_LINE_TEXTS) are the guard's own literals, never read from a canonical text, so a
 // text can't widen what it is held to. What a variable a held line names holds is the text's own, set from AWS's
-// answers, the job's env or a literal in every text the guard writes, which a change to the text shows.
+// answers, the job's env or a literal in every text the guard writes, which a change to the text shows; the rules
+// hold which names an aws value expands, not what each holds, so a change that sets one of those names from another
+// source, or drops its shape check, is the owner's read's to catch.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -164,7 +180,7 @@
 // in every form these rules read. Nothing else leans on that read: a change that leaves every canonical text as
 // it is, the glue SHELL_TABLE reads (a narrow language the guard models whole), the YAML side, and the checks
 // over what code off the owner's-read list produces or AWS and GitHub answer (ASSET_CHECK, IMAGE_CHECK,
-// CLI_CHECK and the rest) are held by the rules in full.
+// CLI_CHECK, ARTIFACT_NAMES and the rest) are held by the rules in full.
 import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
@@ -235,7 +251,8 @@ const STOP_TOKEN_RULE =
 // or prints. The runs before the credentials action read what other jobs made, which repository code can
 // shape (the build's image archive, whose pax headers GNU tar names on stderr as they are, the synth's
 // assembly, the records), so they stop reading commands as the runs after it do; a stop lasts only its own
-// step, so the mask's step still adds its mask.
+// step, so the mask's step still adds its mask. An action's own step (download-artifact's, which prints each
+// artifact's name) is out of its reach, so ARTIFACT_NAMES holds those names before any download.
 export const STOP_HEAD = sh`set -euo pipefail
 # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
 # (add-mask among them, which hides text in the log and the summary and drops any job output it matches),
@@ -360,10 +377,15 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # string but an empty {} and Fn::Sub's $\{name}, so no string, joined, split or substituted, makes a
 # {{resolve:...}} dynamic reference, which CloudFormation resolves from the store the same way (with no
 # Conditions or Mappings, nothing branches on such a value); any symbolic link.
-# The release check then requires every Services template's Release output to be the release this
-# job deploys, and every container image in the Tasks and Services templates to be the server image
-# at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line
-# naming the rule, never a path or value from the assembly.
+# The release check then holds the one custom resource the workload writes, CDK's
+# Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
+# and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
+# is that function's Arn (never a function elsewhere, another account's among them), the function's
+# code is a zip in the staging bucket (never inline), and no string in its template names it, so no
+# grant, output or other value reads its answer. Then it requires every Services template's Release
+# output to be the release this job deploys, and every container image in the Tasks and Services
+# templates to be the server image at its digest, reading the templateFile the CLI uploads, deploys
+# and diffs. A refusal is one line naming the rule, never a path or value from the assembly.
 asset_refuse() {
   echo "asset-check: $1"
   exit 1
@@ -457,6 +479,8 @@ check_release_in() {
   root=$(cd "$1" && pwd -P)
   while IFS= read -r dir; do
     while IFS=$'\t' read -r stack template; do
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z"))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+        asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
@@ -803,6 +827,33 @@ ${tokenLine('migrate', environment, 'deploy')}
 ${NET_JQ.migrate}
 ${RUN_TASK_MIGRATE}
 one_off_end migrate "$MIGRATE_LINES" "$RUN"`
+
+// The artifacts' names (DPW-10 pins it, and DPW-14 holds each call alone; the ninth review's first attack):
+// before any download in a credentialed job, each artifact id another job's output carries is held to one number
+// naming an artifact of this run under the name its upload gives it, so download-artifact, whose own log no
+// stop-commands reaches, prints that name alone.
+export const ARTIFACT_NAMES = sh`# The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
+# a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
+# ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
+# services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
+# The id each download takes is another job's output, which that job's code can choose, and so the
+# artifact's name, so before any download each id is held to one number naming an artifact of this
+# run under the name its upload gives it; the download then prints that name alone. An empty id is
+# no download (its step's if:). The id, never a name, is what binds the download to the artifact
+# its job uploaded, which no later job can replace.
+artifact_named() {
+  local found
+  if [ -z "$1" ]; then return 0; fi
+  if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
+    echo 'artifacts: an artifact id is not one number'
+    exit 1
+  fi
+  found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+  if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
+    echo "artifacts: artifact $1 is not this run's $2"
+    exit 1
+  fi
+}`
 
 // The fast re-checks' reader (C11-D52, C11-D58, DPW-08): an environment's newest release record, its
 // payload checked as history.ts checks it (each pattern held to the whole string by \A and \z, since
@@ -1779,10 +1830,23 @@ const rollbackRuns = (): Pinned => ({
   'Read back what runs': { run: [PREAMBLE, READ_BACK].join('\n'), rule: 'DPW-08', if: GO_IF },
   'Rolled back': { run: DONE_RUN, rule: 'DPW-08', if: GO_IF },
 })
-// A credentialed job's other runs (DPW-10): before the credentials action its asset check, the fast
-// re-check (nonprod and prod), CLI_FETCH, CLI_CHECK and the mask; after them AWS_CHECK with its job's
+// A credentialed job's artifact check, before its downloads (DPW-10): STOP_HEAD, ARTIFACT_NAMES and a call for
+// each artifact the job downloads, each id from the output its download reads (STEP_ENVS) held to the name its
+// upload gives it: the release's assembly, the build's image, an environment's previous assembly.
+export const ARTIFACTS_STEP = "The artifacts' names"
+export const ARTIFACT_CALLS: Readonly<Record<string, readonly string[]>> = {
+  nonprod: ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$IMAGE_ID" image.tar'],
+  'prod-plan': ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$PREVIOUS_ID" assembly-previous-prod'],
+  prod: ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$IMAGE_ID" image.tar'],
+  'rollback-nonprod': ['artifact_named "$PREVIOUS_ID" assembly-previous-nonprod'],
+  'rollback-prod': ['artifact_named "$PREVIOUS_ID" assembly-previous-prod'],
+}
+export const artifactNamesRun = (id: string) => [STOP_HEAD, ARTIFACT_NAMES, ...(ARTIFACT_CALLS[id] ?? [])].join('\n')
+// A credentialed job's other runs (DPW-10): before the credentials action its artifact check, its asset check, the
+// fast re-check (nonprod and prod), CLI_FETCH, CLI_CHECK and the mask; after them AWS_CHECK with its job's
 // call, its CLI steps and its probe, each under its own if:.
 const checksBefore = (id: string, recheck?: string): Pinned => ({
+  [ARTIFACTS_STEP]: { run: artifactNamesRun(id), rule: 'DPW-10' },
   ...(DEPLOY_JOBS[id]?.rollback === true
     ? { 'Check the previous assembly': { run: assetCheckRun(['assembly-previous'], 'PREVIOUS'), rule: 'DPW-10' } }
     : { 'Check the assembly': { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-10' } }),
@@ -2107,8 +2171,8 @@ export const TIMEOUTS: Readonly<Record<JobId, number>> = {
 
 // Each job's permissions, exactly (C11-D55, DPW-02): an id-token in the five environment jobs alone.
 const READ = { contents: 'read' }
-const DEPLOYING = { 'id-token': 'write', contents: 'read', deployments: 'write' }
-const ROLLING_BACK = { 'id-token': 'write', contents: 'read', deployments: 'read' }
+const DEPLOYING = { 'id-token': 'write', contents: 'read', actions: 'read', deployments: 'write' }
+const ROLLING_BACK = { 'id-token': 'write', contents: 'read', actions: 'read', deployments: 'read' }
 export const JOB_PERMISSIONS: Readonly<Record<JobId, Readonly<Record<string, string>>>> = {
   gate: { contents: 'read', actions: 'read', deployments: 'read', 'pull-requests': 'read' },
   build: READ,
@@ -2120,7 +2184,7 @@ export const JOB_PERMISSIONS: Readonly<Record<JobId, Readonly<Record<string, str
   'rollback-nonprod': ROLLING_BACK,
   'resmoke-nonprod': READ,
   'record-nonprod': { deployments: 'write' },
-  'prod-plan': { 'id-token': 'write', contents: 'read' },
+  'prod-plan': { 'id-token': 'write', contents: 'read', actions: 'read' },
   'prod-gate': { contents: 'read', actions: 'read', deployments: 'read' },
   prod: DEPLOYING,
   'smoke-prod': READ,
@@ -2772,6 +2836,7 @@ export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   CLI_CHECK,
   IMAGE_CHECK,
   ASSET_CHECK,
+  ARTIFACT_NAMES,
   AWS_CHECK,
   TASKS_OUTPUTS,
   ONE_OFF,
@@ -3738,15 +3803,35 @@ export function canonicalCommandLines(text: string, functions: ReadonlySet<strin
       (word === 'set' && !/^\s+-euo\s+pipefail\s*$/.test(command.tail)) ||
       (assigned.length > 0 && !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix)))) ||
       wrapped.some(prefix => prefix !== 'run' && prefix !== 'get') ||
-      builtinNames(command).some(name => LOADER_NAME.test(name) || HELD_NAMES.includes(name))
+      builtinNames(command).some(
+        name => LOADER_NAME.test(name) || HELD_NAMES.includes(name) || SHELL_TABLE.bashVariables.test(name),
+      )
     if (!allowed || environment) lines.add(command.line)
   }
   const code = shellViews(text).code.split('\n')
   for (const [n, line] of code.entries()) {
     if (LOADER_ASSIGNMENT.test(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
     if (HELD_ASSIGNMENT.test(line) && lineOf(n) !== PREAMBLE_CDK) lines.add(n)
+    if (bashVariableAssigned(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
   }
   return [...lines].sort((a, b) => a - b)
+}
+// Whether a code view's line assigns one of bash's own variables (SHELL_TABLE.bashVariables, which the glue
+// refuses too), but IFS as a prefix before read, which the command's own rule holds to IFS_PREFIXES: they
+// change how bash reads, finds or runs what follows (the ninth review's first attack, where EXECIGNORE='*/find'
+// hid find from bash's search, so ASSET_CHECK's [ -z "$(find …)" ] read an empty answer and passed; TMOUT,
+// FUNCNEST, GLOBIGNORE, POSIXLY_CORRECT, a standalone IFS, LANG and LC_ALL change a check's reading as quietly).
+// Read in every spelling assigns() reads; builtinNames() reads the names a builtin sets.
+const ASSIGNED_NAME = /(?<![\w$.-])([A-Za-z_]\w*)(?:\[[^\]]*\])?\s*(?:[-+*/%&|^:]|<<|>>)?=(?!=)/g
+const IFS_BEFORE_READ = /^(?:\$'_*'|'_*'|"_*"|[^\s;&|]*)\s+read(?![\w-])/
+function bashVariableAssigned(line: string): boolean {
+  for (const match of line.matchAll(ASSIGNED_NAME)) {
+    const name = match[1] ?? ''
+    if (!SHELL_TABLE.bashVariables.test(name)) continue
+    if (name === 'IFS' && IFS_BEFORE_READ.test(line.slice((match.index ?? 0) + match[0].length))) continue
+    return true
+  }
+  return false
 }
 // The functions the canonical texts define, which any of them may call.
 const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlySet<string> =>
@@ -6914,18 +6999,20 @@ const JQ_WORDS = [
   'tostring',
   'type',
 ]
+// The names by which jq reaches past its input and its own program: the environment (env, $ENV), files and
+// other inputs, its own arguments and location, modules (import, include) and stderr (debug, stderr, halt).
+// No glue program names one but as an object's key, binds or defines one, so neither a definition (def env:
+// …, which would shadow nothing it may not call) nor a binding (as $ENV) ever stands in for the builtin.
+const JQ_REACH_NAMES =
+  /^(?:ENV|env|inputs?|input_filename|input_line_number|__loc__|__prog_args|import|include|modulemeta|get_search_list|get_prog_origin|get_jq_origin|debug|stderr|halt_error|halt)$/
 // Whether a jq program holds only strings with no interpolation, fields, keys, its own definitions, the
 // variables bound to it (given, or by as or a definition's parameters) and JQ_WORDS: no comment, format (@sh)
-// or other word.
+// or other word. The definitions and bindings are read from the program's tokens, after its strings, so a
+// string that reads like one ("def include:", "as $ENV") defines and binds nothing (the ninth review's first
+// attack: a string counted as a definition let jq's own include load a module from the checkout, and env read
+// a credential); and no name jq reaches past its input by (JQ_REACH_NAMES) is called, defined or bound.
 export function jqProgramIsHeld(program: string, given: readonly string[]): boolean {
-  const bound = new Set(given)
-  for (const match of program.matchAll(/\bas\s+\$([A-Za-z_]\w*)/g)) bound.add(match[1] ?? '')
-  const defined = new Set<string>()
-  for (const match of program.matchAll(/\bdef\s+([A-Za-z_]\w*)(?:\(([^)]*)\))?\s*:/g)) {
-    defined.add(match[1] ?? '')
-    for (const parameter of (match[2] ?? '').matchAll(/\$([A-Za-z_]\w*)/g)) bound.add(parameter[1] ?? '')
-  }
-  let previous = ''
+  const tokens: string[] = []
   for (let i = 0; i < program.length; ) {
     const rest = program.slice(i)
     const c = program[i] ?? ''
@@ -6938,10 +7025,31 @@ export function jqProgramIsHeld(program: string, given: readonly string[]): bool
       (/^[^"#@$\sA-Za-z_]/.test(c) ? c : undefined)
     if (token === undefined) return false
     i += token.length
+    tokens.push(token)
+  }
+  const code = tokens.filter(token => !/^\s/.test(token))
+  const bound = new Set(given)
+  const defined = new Set<string>()
+  code.forEach((token, n) => {
+    const next = code[n + 1] ?? ''
+    if (token === 'as' && next.startsWith('$')) bound.add(next.slice(1))
+    if (token !== 'def' || !/^[A-Za-z_]\w*$/.test(next)) return
+    defined.add(next)
+    if (code[n + 2] !== '(') return
+    for (let p = n + 3; p < code.length && code[p] !== ')'; p++) {
+      if (code[p]?.startsWith('$')) bound.add(code[p]?.slice(1) ?? '')
+    }
+  })
+  if ([...bound, ...defined].some(name => JQ_REACH_NAMES.test(name))) return false
+  let previous = ''
+  let at = 0
+  for (const token of tokens) {
+    at += token.length
     if (/^\s/.test(token)) continue
     if (token.startsWith('$') && !bound.has(token.slice(1))) return false
     if (/^[A-Za-z_]/.test(token)) {
-      const key = (previous === '{' || previous === ',') && /^\s*:/.test(program.slice(i))
+      const key = (previous === '{' || previous === ',') && /^\s*:/.test(program.slice(at))
+      if (JQ_REACH_NAMES.test(token) && !key) return false
       if (!(key || previous === 'def' || defined.has(token) || token === 'def' || JQ_WORDS.includes(token))) {
         return false
       }
@@ -7128,6 +7236,37 @@ const awsValueTaken = (option: string, count: number, read: string) =>
 // answers and the job's env in every text the guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
 const AWS_TEXT_OPTIONS = [...AWS_OPTIONS, '--task', '--reason', '--overrides', '--log-group-name', '--log-stream-name']
 const AWS_TEXT_FLAGS = ['--start-from-head']
+// The words an aws value in a canonical text may hold an expansion in, each exactly as the texts write it (the
+// ninth review's first attack, where a value written "$group", set from a stack output no text checked, handed
+// aws-cli a file:// to load and send): a name a text builds from the stage, its own loop or a literal call
+// (stage, STAGE, kind, ROLE, PART), the run's own ids, a digest AWS_CHECK checks, and the names a text
+// shape-checks or builds itself before aws reads them (CLUSTER, the definitions, the networks, the token, the
+// overrides, td, task and TASK_ARNS from ECS's answers). A value from an AWS answer reaches aws only after the
+// text holds it to its shape, so a new one joins this list with that check, in the same change.
+const AWS_TEXT_VALUE_WORDS = [
+  '"imageDigest=$2"',
+  sh`"imageDigest=$\{digests[0]}"`,
+  '"Hearth-$stage-Services"',
+  '"hearth-$stage"',
+  '"hearth-$stage-api"',
+  '"hearth-$stage-realtime"',
+  '"hearth-$stage-worker"',
+  '"$td"',
+  '"Hearth-$STAGE-Tasks"',
+  '"Hearth-$STAGE-$PART"',
+  '"$CLUSTER"',
+  '"$task"',
+  '"/hearth/$STAGE/$kind"',
+  sh`"$kind/server/$\{task##*/}"`,
+  '"hearth-$STAGE-$ROLE"',
+  sh`"$\{TASK_ARNS[@]}"`,
+  `"${TARGETS_QUERY}"`,
+  '"$PROBE_TD"',
+  '"$NET_PROBE"',
+  '"gha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
+  '"$TOKEN"',
+  '"$OVERRIDES"',
+]
 // An expansion bash makes into as many words as it holds: "$@", "$*", "${@…}", "${*…}" and an array's [@] or [*],
 // outside single quotes (a jq program's own text is no expansion).
 const MANY_WORDS = /\$[@*]|\$\{[@*]|\[[@*]\]/
@@ -7146,7 +7285,12 @@ function awsTextHeld(words: readonly string[]): boolean {
       values = 0
       return word === read && (AWS_TEXT_FLAGS.includes(word) || AWS_TEXT_OPTIONS.includes(word))
     }
-    return awsValueTaken(option, ++values, read) && !/:\/\/|@=/.test(read) && !/^(?:file|fileb|https?):/i.test(read)
+    return (
+      awsValueTaken(option, ++values, read) &&
+      !/:\/\/|@=/.test(read) &&
+      !/^(?:file|fileb|https?):/i.test(read) &&
+      (!read.includes('\0') || AWS_TEXT_VALUE_WORDS.includes(word))
+    )
   })
 }
 // The CLI only through run, as one of its lines; skopeo only as the push (through run) or the login (fed
@@ -7204,6 +7348,7 @@ const TABLE_HELD = [...Object.keys(SHELL_TABLE.builtins), 'if', 'for', 'case', '
 // release of another's (one_off_end given '.' prints every line of a task's log, say). mask, run and get
 // are GLUE_USES's.
 const CANONICAL_CALLS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['artifact_named', [...new Set(Object.values(ARTIFACT_CALLS).flat())]],
   ['one_off_end', ['one_off_end migrate "$MIGRATE_LINES" "$RUN"']],
   ['aws_check', ['aws_check drill', 'aws_check "$MODE"', 'aws_check auto', 'aws_check restore']],
   ['check_image_archive', ['check_image_archive "$RUNNER_TEMP/image/image.tar"']],
@@ -7395,7 +7540,16 @@ const DIFF_LINE = 'DIFF="$RUNNER_TEMP/diff.txt"'
 // The canonical texts that define functions, and the lines on which a credentialed run sets a variable by
 // printf -v, read, mapfile or for: the canonical texts' own, and the read-back's and the rollback jobs'
 // two loops, whose variables choose nothing that runs. "$@" runs only inside the preamble's run and get.
-const DEFINING_TEXTS = [PREAMBLE, IMAGE_CHECK, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE] as const
+const DEFINING_TEXTS = [
+  PREAMBLE,
+  IMAGE_CHECK,
+  ASSET_CHECK,
+  ARTIFACT_NAMES,
+  AWS_CHECK,
+  TASKS_OUTPUTS,
+  ONE_OFF,
+  NEWEST_RELEASE,
+] as const
 const SETTERS = ['read', 'mapfile', 'readarray', 'for', 'select', 'getopts']
 const isSetter = (command: ShellCommand) =>
   SETTERS.includes(command.word) || (command.word === 'printf' && /(?:^|\s)-/.test(command.rest))
@@ -7483,6 +7637,7 @@ const WITH_KEYS: Readonly<Record<string, readonly string[]>> = {
 const ENV_KEYS = [
   'ACCOUNT_ID',
   'ACTOR',
+  'ASSEMBLY_ID',
   'ATTEMPT',
   'BUILD',
   'BUILD_DIGEST',
@@ -7494,11 +7649,13 @@ const ENV_KEYS = [
   'FIRST',
   'GATE_DIGEST',
   'GH_TOKEN',
+  'IMAGE_ID',
   'MODE',
   'NONPROD_DIGEST',
   'PREVIOUS',
   'PREVIOUS_COMMIT',
   'PREVIOUS_DIGEST',
+  'PREVIOUS_ID',
   'PLAN_ATTEMPT',
   'PLANNED',
   'PROFILE_AT',
@@ -7543,8 +7700,14 @@ const RELEASE_ENV = {
 const readBackEnv = (release: string) => ({ RELEASE: release, MODE, RESTORE: gateOutput('restore') })
 const previousRelease = (stage: Stage) =>
   `${gateOutput(`previous_${stage}_commit`)}:${gateOutput(`previous_${stage}_digest`)}`
+// The artifact check's env: the job's token and repository, which gh reads, and the ids its downloads read, each
+// from the same output (STEP_WITHS).
+const ASSEMBLY_ID = expr('needs.synth.outputs.assembly')
+const IMAGE_ID = expr('needs.build.outputs.image')
+const previousId = (stage: Stage) => expr(`needs.synth-previous-${stage}.outputs.assembly`)
 const deployEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
   'The release this job deploys': RELEASE_ENV,
+  [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, IMAGE_ID },
   'Check the assembly': { RELEASE: RELEASE_OUTPUT },
   'The fast re-check':
     stage === 'nonprod'
@@ -7579,6 +7742,7 @@ const rollbackEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<str
     PREVIOUS_COMMIT: gateOutput(`previous_${stage}_commit`),
     PREVIOUS_DIGEST: gateOutput(`previous_${stage}_digest`),
   },
+  [ARTIFACTS_STEP]: { ...GH_ENV, PREVIOUS_ID: previousId(stage) },
   'Check the previous assembly': { PREVIOUS: PREVIOUS_OUTPUT },
   'Mask the account id': ACCOUNT_ENV,
   'What runs': AWS_CHECK_ENV[`rollback-${stage}`] ?? {},
@@ -7659,6 +7823,7 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'record-nonprod': recordEnv('nonprod'),
   'prod-plan': {
     'The release this job deploys': RELEASE_ENV,
+    [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, PREVIOUS_ID: previousId('prod') },
     'Check the assembly': { RELEASE: RELEASE_OUTPUT },
     'Check the previous assembly': { PREVIOUS: previousRelease('prod') },
     'Mask the account id': ACCOUNT_ENV,
@@ -8009,6 +8174,7 @@ const synthSteps = (release: string, assembly: string): Steps => [
 const deploySteps = (stage: Stage): Steps => [
   CHECKOUT_STEP,
   ['The release this job deploys'],
+  [ARTIFACTS_STEP],
   ['Download the assembly', 'actions/download-artifact'],
   ['Download the image', 'actions/download-artifact'],
   ['Check and unpack the image'],
@@ -8029,6 +8195,7 @@ const deploySteps = (stage: Stage): Steps => [
 const ROLLBACK_STEPS: Steps = [
   CHECKOUT_STEP,
   ["This run's release and the previous one"],
+  [ARTIFACTS_STEP],
   ['Download the previous assembly', 'actions/download-artifact'],
   ['Check the previous assembly'],
   ...CLI_STEPS,
@@ -8084,6 +8251,7 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
   'prod-plan': [
     CHECKOUT_STEP,
     ['The release this job deploys'],
+    [ARTIFACTS_STEP],
     ['Download the assembly', 'actions/download-artifact'],
     ["Download prod's previous assembly", 'actions/download-artifact'],
     ['Check the assembly'],
@@ -8336,7 +8504,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
-          'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does',
+          'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does',
         )
       }
       if (commands.some(command => isSetter(command) && !SETTER_LINES.has(raw(command)))) {

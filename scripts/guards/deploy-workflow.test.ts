@@ -32,10 +32,14 @@ import {
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
+  ARTIFACT_CALLS,
+  ARTIFACT_NAMES,
+  ARTIFACTS_STEP,
   ASSET_CHECK,
   AWS_CHECK,
   actionPinFindings,
   actionRepository,
+  artifactNamesRun,
   assetCheckFindings,
   BOT_TEST,
   CANONICAL_BY_NAME,
@@ -78,6 +82,7 @@ import {
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
+  jqProgramIsHeld,
   MASK_RUN,
   MIGRATE_LINES,
   maskingFindings,
@@ -99,6 +104,7 @@ import {
   permissionFindings,
   pinnedScriptText,
   prodPathFindings,
+  READ_BACK,
   RESTORE_DOWN,
   RESTORE_DOWN_DIFF,
   ROLLBACK_DIFF_RUN,
@@ -283,16 +289,16 @@ describe('DPW: the guard reads the deploy workflow', () => {
     synth: 6,
     'synth-previous-nonprod': 6,
     'synth-previous-prod': 6,
-    nonprod: 21,
+    nonprod: 22,
     'smoke-nonprod': 3,
-    'rollback-nonprod': 13,
+    'rollback-nonprod': 14,
     'resmoke-nonprod': 3,
     'record-nonprod': 1,
-    'prod-plan': 12,
+    'prod-plan': 13,
     'prod-gate': 5,
-    prod: 21,
+    prod: 22,
     'smoke-prod': 3,
-    'rollback-prod': 13,
+    'rollback-prod': 14,
     'resmoke-prod': 3,
     'record-prod': 1,
   }
@@ -2258,10 +2264,11 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
         expect(step.run.startsWith(`${STOP_HEAD}\n`), `${each.id} (${step.name})`).toBe(true)
       })
     }
-    // Before the credentials: the release (or a rollback job's two releases), the image's check (nonprod and
-    // prod), the assembly's (and prod-plan's of the previous assembly), the fast re-check (nonprod and prod),
-    // CLI_FETCH and CLI_CHECK: six in each deploy job, five in prod-plan and four in each rollback job.
-    expect(before).toBe(25)
+    // Before the credentials: the release (or a rollback job's two releases), the artifacts' names, the
+    // image's check (nonprod and prod), the assembly's (and prod-plan's of the previous assembly), the fast
+    // re-check (nonprod and prod), CLI_FETCH and CLI_CHECK: seven in each deploy job, six in prod-plan and
+    // five in each rollback job.
+    expect(before).toBe(30)
     expect(after).toBe(32)
     // The token is new each run, and the line naming it is the first the run prints.
     const tokens = [0, 1].map(() => {
@@ -3693,7 +3700,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
   const DEFINES =
-    'defines a function only where a canonical text (the preamble, ASSET_CHECK, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does'
+    'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does'
   const SETS =
     "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
@@ -8506,6 +8513,118 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     expect(check(() => {}, 'x')).toBe(refused('the release is not <commit>:<digest>'))
   }, 30_000)
 
+  // INPUTS-A1-01 (round 9). ASSET_CHECK admitted CDK's Custom::VpcRestrictDefaultSG by its type alone, so a
+  // release could add a second one whose ServiceToken named a function it added with inline code, or another
+  // account's, and grant the api task whatever that handler answered, through Fn::GetAtt of the answer, which
+  // the approver's diff shows only by the attribute's name. The one custom resource is now held to CDK's own:
+  // it and its function, one of each or neither, in a Platform stack alone, its ServiceToken that function's
+  // Arn, the function's code a zip in the staging bucket, and no string in its template naming it.
+  it("holds the one custom resource to CDK's default security group handler, and nothing reads its answer (INPUTS-A1-01, round 9)", () => {
+    const CUSTOM = refused(
+      "a custom resource isn't CDK's one default security group handler, run by its own function from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
+    )
+    type Resource = { Type?: string; Properties?: Record<string, unknown> }
+    const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
+    const idOf = (json: Record<string, unknown>, type: string) => {
+      const id = Object.keys(resources(json)).find(each => resources(json)[each]?.Type === type)
+      if (id === undefined) throw new Error(`no ${type} in the template`)
+      return id
+    }
+    // The real Platform template holds CDK's one custom resource and its function, and every other holds none.
+    const platform = read(named(nonprod(source), 'Platform', '.template.json'))
+    const CR = idOf(platform, 'Custom::VpcRestrictDefaultSG')
+    const FN = idOf(platform, 'AWS::Lambda::Function')
+    expect(resources(platform)[CR]?.Properties?.ServiceToken).toEqual({ 'Fn::GetAtt': [FN, 'Arn'] })
+    // A template of the stage's edited and re-keyed, so the check reaches this rule.
+    const inTemplate = (part: string, change: (json: Record<string, unknown>) => void) => (dir: string) => {
+      edit(named(nonprod(dir), part, '.template.json'), change)
+      rekey(nonprod(dir), part)
+    }
+    const grant = (id: string) => ({
+      PolicyName: 'logs',
+      PolicyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          { Effect: 'Allow', Action: { 'Fn::GetAtt': [id, 'Action'] }, Resource: { 'Fn::GetAtt': [id, 'Resource'] } },
+        ],
+      },
+    })
+    const anotherAccount = ['arn', 'aws', 'lambda', 'ap-southeast-1', '1'.repeat(12), 'function', 'x'].join(':')
+    expect(check(inTemplate('Platform', () => {}))).toBe('passed')
+    // A second custom resource, run by a function the release adds with inline code (the attack's plant).
+    expect(
+      check(
+        inTemplate('Platform', json => {
+          const all = resources(json)
+          all.Handler2 = { Type: 'AWS::Lambda::Function', Properties: { Code: { ZipFile: 'x' }, Handler: 'index.h' } }
+          all.Custom2 = {
+            Type: 'Custom::VpcRestrictDefaultSG',
+            Properties: { ServiceToken: { 'Fn::GetAtt': ['Handler2', 'Arn'] } },
+          }
+        }),
+      ),
+    ).toBe(CUSTOM)
+    // The one custom resource run by another account's function, or by its own with inline code or code from
+    // another bucket or key.
+    const ownCode = (change: (code: Record<string, unknown>) => void) =>
+      inTemplate('Platform', json => {
+        const code = resources(json)[FN]?.Properties?.Code as Record<string, unknown>
+        change(code)
+      })
+    for (const plant of [
+      inTemplate('Platform', json => {
+        const properties = resources(json)[CR]?.Properties
+        if (properties !== undefined) properties.ServiceToken = anotherAccount
+      }),
+      ownCode(code => {
+        for (const key of Object.keys(code)) delete code[key]
+        code.ZipFile = 'x'
+      }),
+      ownCode(code => (code.S3Bucket = 'another-bucket')),
+      ownCode(code => (code.S3Key = 'x.zip')),
+      ownCode(code => (code.ZipFile = 'x')),
+    ]) {
+      expect(check(plant)).toBe(CUSTOM)
+    }
+    // Anything that reads its answer: a role's grant, an output, a dependency, even a string that names it.
+    for (const plant of [
+      inTemplate('Platform', json => {
+        const role = idOf(json, 'AWS::IAM::Role')
+        const properties = resources(json)[role]?.Properties
+        if (properties !== undefined) properties.Policies = [grant(CR)]
+      }),
+      inTemplate('Platform', json => {
+        json.Outputs = { ...(json.Outputs as object), Answer: { Value: { 'Fn::GetAtt': [CR, 'Resource'] } } }
+      }),
+      inTemplate('Platform', json => {
+        const role = idOf(json, 'AWS::IAM::Role')
+        const all = resources(json) as Record<string, Record<string, unknown>>
+        if (all[role] !== undefined) all[role].DependsOn = [CR]
+      }),
+    ]) {
+      expect(check(plant)).toBe(CUSTOM)
+    }
+    // A custom resource and its function in any other stack.
+    expect(
+      check(
+        inTemplate('Data', json => {
+          const all = resources(json)
+          all[FN] = structuredClone(resources(platform)[FN] ?? {})
+          all[CR] = structuredClone(resources(platform)[CR] ?? {})
+        }),
+      ),
+    ).toBe(CUSTOM)
+    // Neither, the custom resource and its function both gone, passes.
+    expect(
+      check(
+        inTemplate('Platform', json => {
+          delete resources(json)[CR]
+          delete resources(json)[FN]
+        }),
+      ),
+    ).toBe('passed')
+  }, 60_000)
+
   it('holds the probe’s and migrate’s line patterns to what they print', () => {
     const probe = new RegExp(PROBE_LINES)
     for (const line of ['api 0 200 -', 'realtime 1 no-answer ?', 'worker 0 503 valkey,database', 'probe: failed'])
@@ -9162,10 +9281,10 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     ]) {
       expect(canonicalToolLines(aws), aws).toEqual([0])
     }
-    // A list's later literal words pass, as the read-back's do.
+    // A list's later words pass, each one a canonical text writes (AWS_CHECK's services, say).
     expect(
       canonicalToolLines(
-        'x=$(get aws ecs describe-services --cluster "$CLUSTER" --services "hearth-$STAGE-api" "hearth-$STAGE-realtime" --output json)',
+        'x=$(get aws ecs describe-services --cluster "hearth-$stage" --services "hearth-$stage-api" "hearth-$stage-realtime" --output json)',
       ),
     ).toEqual([])
     for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(canonicalToolLines(text), name).toEqual([])
@@ -10146,5 +10265,280 @@ describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () =
       expect(actionRepository(uses), uses).not.toBe('actions/checkout')
     }
     expect(checkoutFindings(workflows)).toEqual([])
+  })
+})
+
+describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14)', () => {
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const STEPS =
+    'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
+  const ENV =
+    'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
+  const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
+  const dpw10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const plantAfter = (text: string, anchor: string, added: string) => {
+    expect(text).toContain(`${anchor}\n`)
+    const planted = text.replace(`${anchor}\n`, `${anchor}\n${added}\n`)
+    return { planted, line: planted.split('\n').indexOf(added) + 1 }
+  }
+
+  // FETCH-A1-01: download-artifact prints, in an action's step that no stop-commands reaches, each artifact's
+  // name, which its upload's job chose: the build's code named the image ##[add-mask]true, and the mask that
+  // followed dropped services_started, and with it the pipeline's rollback. Before any download, each
+  // credentialed job now holds every artifact id it downloads to one number naming an artifact of this run
+  // under the name its upload gives it, so the download prints that name alone.
+  it("holds each artifact id a credentialed job downloads to its upload's name and this run, before any download (FETCH-A1-01)", () => {
+    const jobs = workflowJobs(deployText)
+    const jobOf = (id: string) => {
+      const found = jobs.find(each => each.id === id)
+      if (found === undefined) throw new Error(`no job ${id}`)
+      return found
+    }
+    const uploadOf = (expression: string) => {
+      // ${{ needs.<job>.outputs.<output> }} → the job's upload step whose artifact-id that output is.
+      const [, from, output] = /^\$\{\{ needs\.([\w-]+)\.outputs\.(\w+) \}\}$/.exec(expression) ?? []
+      const step = /^\$\{\{ steps\.([\w-]+)\.outputs\.artifact-id \}\}$/.exec(
+        JOB_OUTPUTS[from ?? '']?.[output ?? ''] ?? '',
+      )?.[1]
+      const upload = parsedSteps(jobOf(from ?? '')).find(each => each.id === step)
+      expect(upload?.uses?.startsWith('actions/upload-artifact@'), expression).toBe(true)
+      const name = upload?.with.get('name')
+      return name ?? (upload?.with.get('archive') === 'false' ? upload.with.get('path')?.split('/').pop() : undefined)
+    }
+    expect(Object.keys(ARTIFACT_CALLS).sort()).toEqual([
+      'nonprod',
+      'prod',
+      'prod-plan',
+      'rollback-nonprod',
+      'rollback-prod',
+    ])
+    for (const [id, calls] of Object.entries(ARTIFACT_CALLS)) {
+      const steps = parsedSteps(jobOf(id))
+      const at = steps.findIndex(step => step.name === ARTIFACTS_STEP)
+      const downloads = steps.flatMap((step, index) =>
+        step.uses?.startsWith('actions/download-artifact@') ? [index] : [],
+      )
+      const credentials = steps.findIndex(step => step.uses?.startsWith('aws-actions/configure-aws-credentials@'))
+      expect(at, id).toBeGreaterThanOrEqual(0)
+      expect(downloads.length, id).toBeGreaterThan(0)
+      expect(downloads.every(index => index > at) && credentials > at, id).toBe(true)
+      const step = steps[at]
+      expect(step?.run, id).toBe(artifactNamesRun(id))
+      expect(step?.run?.startsWith(`${STOP_HEAD}\n`), id).toBe(true)
+      const env = Object.fromEntries(step?.env ?? [])
+      expect(env, id).toEqual(STEP_ENVS[id]?.[ARTIFACTS_STEP])
+      // Each call names the artifact its download fetches by the name its upload gives it.
+      const checked = new Map(
+        calls.map(call => {
+          const [, variable, name] = /^artifact_named "\$(\w+)" (\S+)$/.exec(call) ?? []
+          const expression = env[variable ?? ''] ?? ''
+          expect(uploadOf(expression), call).toBe(name)
+          return [expression, name] as const
+        }),
+      )
+      for (const index of downloads) {
+        expect(checked.has(steps[index]?.with.get('artifact-ids') ?? ''), `${id} (${steps[index]?.name})`).toBe(true)
+      }
+    }
+    // Taken out, moved after a download, or handed another job's output: each refused.
+    expect(credentialed(removedStep('nonprod', ARTIFACTS_STEP))).toContain(dpw10('nonprod', STEPS))
+    expect(credentialed(movedStep('prod', ARTIFACTS_STEP, 'Check the assembly'))).toContain(dpw10('prod', STEPS))
+    const assembly = `          ASSEMBLY_ID: \${{ needs.synth.outputs.assembly }}\n`
+    expect(
+      credentialed(
+        plant(
+          assembly,
+          `          ASSEMBLY_ID: \${{ needs.synth-previous-nonprod.outputs.assembly }}\n`,
+          job('nonprod'),
+        ),
+      ),
+    ).toContain(dpw10(`nonprod (${ARTIFACTS_STEP})`, ENV))
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  }, 30_000)
+
+  it('refuses an artifact id that is not one number naming this run’s artifact under its name (FETCH-A1-01)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hearth-r9-gh-'))
+    try {
+      // A stand-in gh: records its arguments and answers what the case gives it, or fails as gh does.
+      writeFileSync(
+        join(dir, 'gh'),
+        '#!/bin/bash\nprintf \'%s\\n\' "$@" >>"$GH_CALLS"\n[ -n "$GH_FAILS" ] && exit 1\nprintf \'%s\\n\' "$GH_ANSWER"\n',
+        { mode: 0o755 },
+      )
+      const run = (id: string, name: string, answer: string, fails = '') => {
+        const calls = join(dir, `calls-${Math.random().toString(36).slice(2)}`)
+        writeFileSync(calls, '')
+        const result = spawnSync(
+          'bash',
+          ['-c', `set -euo pipefail\n${ARTIFACT_NAMES}\nartifact_named "$1" "$2"\necho checked`, '_', id, name],
+          {
+            encoding: 'utf8',
+            env: {
+              PATH: `${dir}:/usr/bin:/bin`,
+              REPO: 'owner/repo',
+              GITHUB_RUN_ID: '7',
+              GH_ANSWER: answer,
+              GH_FAILS: fails,
+              GH_CALLS: calls,
+            },
+          },
+        )
+        return { status: result.status, said: result.stdout.trim(), calls: readFileSync(calls, 'utf8').trim() }
+      }
+      // This run's artifact under its name passes, by one call to the artifact's own endpoint.
+      const passed = run('42', 'assembly', 'assembly 7')
+      expect(passed.status).toBe(0)
+      expect(passed.said).toBe('checked')
+      expect(passed.calls.split('\n')).toEqual([
+        'api',
+        'repos/owner/repo/actions/artifacts/42',
+        '--jq',
+        '.name + " " + (.workflow_run.id | tostring)',
+      ])
+      // No id is no download (its step's if:), and nothing is asked.
+      expect(run('', 'assembly', '')).toEqual({ status: 0, said: 'checked', calls: '' })
+      // An id that is not one number is refused before gh is asked.
+      for (const id of ['x', '0', '01', '-1', '1 2', '42/../43', '1'.repeat(20), '42\n']) {
+        expect(run(id, 'assembly', 'assembly 7'), JSON.stringify(id)).toEqual({
+          status: 1,
+          said: 'artifacts: an artifact id is not one number',
+          calls: '',
+        })
+      }
+      // Another name, another run, an answer with more, or gh failing: refused.
+      for (const answer of ['image.tar 7', 'assembly 8', 'assembly', '##[add-mask]true 7', 'assembly 7\nmore']) {
+        const refused = run('42', 'assembly', answer)
+        expect(refused.status, answer).toBe(1)
+        expect(refused.said, answer).toBe("artifacts: artifact 42 is not this run's assembly")
+      }
+      expect(run('42', 'assembly', 'assembly 7', 'yes').status).not.toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // COMMANDS-A1-02: the glue's jq hold found the names a program defines and binds with regexes over its raw
+  // text, strings included, so "def include:" in a string let include load a module from the checkout, and
+  // "as $ENV" let $ENV through, and the module read the deploy role's session credentials. The program is
+  // now read as tokens, a string is never a definition or a binding, and no definition or binding may take a
+  // name that reaches outside the program.
+  it('reads a glue jq program as tokens, and lets nothing it defines or binds reach outside it (COMMANDS-A1-02)', () => {
+    for (const program of [
+      'include "docs/read-back" {search: "./"}; "def include:" as $note | tostring | contains("arn:") | not',
+      '"as $ENV" | $ENV.AWS_SECRET_ACCESS_KEY | split("")',
+      '"def env:" | env.AWS_SECRET_ACCESS_KEY | split("")',
+      '{note: "def env: reads the job environment"} | .key = (env.AWS_SESSION_TOKEN | split(""))',
+      'def env: .; env',
+      'def debug: .; debug',
+      '. as $ENV | $ENV',
+      'def f($ENV): $ENV; f(1)',
+      'import "x" as y; .',
+      'input',
+      '$__loc__',
+      'get_search_list',
+      '. | debug(.)',
+    ]) {
+      expect(jqProgramIsHeld(program, []), program).toBe(false)
+    }
+    // A key or a string that reads like one of those names is still a key or a string.
+    for (const program of [
+      'tostring | ascii_downcase | contains("arn:") | not',
+      '{env: .a, debug: "include"} | .env',
+      '. as $x | $x.input',
+      'def f: .; f',
+    ]) {
+      expect(jqProgramIsHeld(program, []), program).toBe(true)
+    }
+    // Through deploy.yml: the attack's line in the read-back is refused, beside the pin it breaks.
+    const line = `if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then`
+    expect(READ_BACK).toContain(line)
+    const planted = line.replace(
+      "'tostring",
+      `'include "docs/read-back" {search: "./"}; "def include:" as $note | tostring`,
+    )
+    expect(credentialed(plant(line, planted, job('nonprod')))).toContain(dpw10('nonprod (Read back what runs)', HELD))
+    expect(credentialed(workflows)).toEqual([])
+  }, 30_000)
+
+  // COMMANDS-A1-01 (minor): a canonical text could set bash's own control variables, EXECIGNORE among them,
+  // which hid find from the asset check so the symbolic link test ran nothing. A canonical text now sets none of
+  // SHELL_TABLE's bash variables, by any assignment, but IFS before read.
+  it("sets none of bash's own variables in a canonical text but IFS before read (COMMANDS-A1-01)", () => {
+    const anchor = '  local root dir file path manifests=0 queue stackfiles'
+    for (const added of [
+      "EXECIGNORE='*/find'",
+      'EXECIGNORE+=:/usr/bin/find',
+      'local EXECIGNORE=/usr/bin/find',
+      'GLOBIGNORE=*',
+      'BASH_XTRACEFD=1',
+      'PS4=x',
+      'HISTFILE=x',
+      'PROMPT_COMMAND=x',
+      'IFS=x',
+      'FUNCNEST=1',
+      'BASH_ENV=x',
+      'CDPATH=x',
+      'x=1; EXECIGNORE=y',
+      '(( FUNCNEST = 1 ))',
+      "printf -v EXECIGNORE '%s' x",
+      'read -r EXECIGNORE <<<"$x"',
+      'for GLOBIGNORE in a; do :; done',
+      `: "$\{EXECIGNORE:=*/find}"`,
+    ]) {
+      const { planted, line } = plantAfter(ASSET_CHECK, anchor, `  ${added}`)
+      expect(canonicalTextFindings({ ASSET_CHECK: planted }), added).toContain(canonical('ASSET_CHECK', line, COMMANDS))
+    }
+
+    // IFS before read, as the texts write it, passes; so does a name that only holds one of those as a part.
+    for (const text of [
+      `while IFS=$'\\t' read -r a b; do :; done <<<"$x"`,
+      'IFS= read -r a <<<"$x"',
+      'MY_EXECIGNORE=1',
+      'x=$EXECIGNORE',
+    ]) {
+      expect(canonicalCommandLines(text, new Set()), text).toEqual([])
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // FLOW-A1-01: a canonical text's aws value could expand any name, so a log group read from a stack output
+  // (file://… as the release chose it) reached aws logs get-log-events, which loads such a value from a file on
+  // the runner and sends its bytes under the deploy role's session. A value that expands now is one of the
+  // words the canonical texts write, each from a name a text checks or builds; a literal names no scheme.
+  it('hands aws, in a canonical text, only the values the texts write, and no scheme (FLOW-A1-01)', () => {
+    const tasks = plantAfter(
+      TASKS_OUTPUTS,
+      '  HAS_DATABASE=$(output HasDatabase)',
+      '  PROBE_LOGS=$(output ProbeLogGroup)',
+    ).planted
+    const from = '--log-group-name "/hearth/$STAGE/$kind"'
+    expect(ONE_OFF).toContain(from)
+    const oneOff = ONE_OFF.replace(from, '--log-group-name "$PROBE_LOGS"')
+    const line = oneOff.split('\n').findIndex(each => each.includes('"$PROBE_LOGS"')) + 1
+    expect(line).toBeGreaterThan(0)
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: tasks, ONE_OFF: oneOff })).toContain(
+      canonical('ONE_OFF', line, TOOLS),
+    )
+    for (const value of [
+      '"$group"',
+      '"$PROBE_LOGS"',
+      `"$\{group}"`,
+      '"file://$x"',
+      'fileb://x',
+      '"https://x"',
+      '"x@=y"',
+    ]) {
+      const aws = `x=$(get aws logs get-log-events --log-group-name ${value} --output json)`
+      expect(canonicalToolLines(aws), value).toEqual([0])
+    }
+    expect(
+      canonicalToolLines('x=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --output json)'),
+    ).toEqual([])
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(canonicalToolLines(text), name).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
   })
 })
