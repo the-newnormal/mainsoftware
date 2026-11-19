@@ -3,10 +3,32 @@
 // every stack's template (nested stages included) and every asset manifest, which IAC-22 reads for an
 // `executable` source or a Docker image (C11-D76). No AWS credential is needed or read: the
 // workload stacks are account-agnostic and the landing-zone stacks take the fixture's made-up ids.
-import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
+// Each folder is removed once the test file that made it has finished (testOutdir()).
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as cdk from 'aws-cdk-lib'
+import { afterAll } from 'vitest'
+
+// The output folders this test file has made. Vitest loads this module afresh for each test file (its
+// default isolation, which vitest.config.ts keeps), so the hook below belongs to the file that
+// imported it. It is registered as the file's imports load, before any hook of the file's own, and
+// Vitest runs after-hooks last first, so it runs after all of them: a test, a hook or a helper's
+// cached build can read an assembly back, or synthesise its app again, until the file has finished.
+// Without it every folder stayed behind: one `npm run check` left 73, about 0.7 MB each.
+const outdirs: string[] = []
+
+afterAll(() => {
+  for (const outdir of outdirs.splice(0)) rmSync(outdir, { recursive: true, force: true })
+})
+
+// A fresh folder under the system temp folder, named from the prefix, removed with the test file's
+// other output folders once it has finished.
+export function testOutdir(prefix: string): string {
+  const outdir = mkdtempSync(join(tmpdir(), prefix))
+  outdirs.push(outdir)
+  return outdir
+}
 
 // cdk.json's context: the feature flags the CLI passes to the app.
 export function cdkContext(): Record<string, unknown> {
@@ -20,7 +42,7 @@ export function cdkContext(): Record<string, unknown> {
 // to its own temporary folder. Version reporting is off, as cdk.json's versionReporting sets it.
 export function testApp(context: Record<string, unknown> = {}): cdk.App {
   return new cdk.App({
-    outdir: mkdtempSync(join(tmpdir(), 'hearth-cdk-')),
+    outdir: testOutdir('hearth-cdk-'),
     context: { ...cdkContext(), ...context },
     analyticsReporting: false,
   })

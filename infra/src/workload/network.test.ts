@@ -24,9 +24,6 @@
 // on planted copies of real templates first, parseCidr() and confineDefaultSgHandler() on made-up
 // input; the other cases (the CIDRs, the public routes, the services' subnets, the flow log and the
 // handler's resources) compare each template exactly against literals, so they need no plant.
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import * as cdk from 'aws-cdk-lib'
 import { Construct } from 'constructs'
@@ -34,6 +31,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { ENVIRONMENTS, type EnvironmentName, PROFILES, REGION } from '../config/profiles.ts'
 import { fixtureAccount } from '../testing/fixture.ts'
 import { renderedString } from '../testing/policies.ts'
+import { testOutdir } from '../testing/synth.ts'
 import { synthWorkload, type WorkloadSynth } from '../testing/workload.ts'
 import { confineDefaultSgHandler } from './network.ts'
 
@@ -947,9 +945,10 @@ describe('T24 item 28: the VPC’s default-group handler', () => {
   }
 
   // A stack holding a made-up provider: some functions and some roles beside them, each a raw
-  // resource as aws-cdk-lib's provider makes them.
+  // resource as aws-cdk-lib's provider makes them, in a plain App (no cdk.json context), whose
+  // output folder is removed once this file has finished.
   function providerStack(functions: number, roles: number): { app: cdk.App; stack: cdk.Stack } {
-    const app = new cdk.App({ outdir: mkdtempSync(join(tmpdir(), 'hearth-planted-')) })
+    const app = new cdk.App({ outdir: testOutdir('hearth-planted-') })
     const stack = new cdk.Stack(app, 'Planted', { env: { region: REGION } })
     const provider = new Construct(stack, 'Provider')
     for (let i = 0; i < functions; i += 1) {
