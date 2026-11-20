@@ -41,6 +41,7 @@ import {
   actionRepository,
   artifactNamesRun,
   assetCheckFindings,
+  awsNameLines,
   BOT_TEST,
   CANONICAL_BY_NAME,
   CDK_DEPLOY_DOWN,
@@ -112,6 +113,7 @@ import {
   RULESET,
   RUN_TASK_MIGRATE,
   RUN_TASK_PROBE,
+  readerLines,
   readShell,
   recordRun,
   releaseFindings,
@@ -6868,8 +6870,12 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
   const D = { A: digest(1), B: digest(2), C: digest(3), D: digest(4) }
   const release = (commit: 'A' | 'B' | 'C' | 'X' | 'L', d: string) => `${c[commit]}:${d}`
   const stack = (status: string, value: string | null) => JSON.stringify([status, value])
-  const ONE = JSON.stringify({ services: ['td-api', 'td-realtime', 'td-worker'], counts: [1, 1, 1] })
-  const TWO = JSON.stringify({ services: ['td-api', 'td-api-2', 'td-realtime', 'td-worker'], counts: [2, 1, 1] })
+  // A service's task definition as ECS names it, its stage's own family's (the account built from parts, so no id
+  // is written here).
+  const td = (kind: string, revision = 1, stage = 'nonprod') =>
+    `${['arn', 'aws', 'ecs', 'ap-southeast-1', '0'.repeat(12)].join(':')}:task-definition/hearth-${stage}-${kind}:${revision}`
+  const ONE = JSON.stringify({ services: [td('api'), td('realtime'), td('worker')], counts: [1, 1, 1] })
+  const TWO = JSON.stringify({ services: [td('api'), td('api', 2), td('realtime'), td('worker')], counts: [2, 1, 1] })
   const MISSING = JSON.stringify({ services: [], counts: [] })
   const tags = (pairs: ReadonlyArray<readonly [string, 'A' | 'B' | 'C' | 'X']>) =>
     JSON.stringify(Object.fromEntries(pairs.map(([d, commit]) => [d, [`sha-${c[commit]}-11-1`]])))
@@ -6907,7 +6913,7 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
       fi
       printf '%s\\n' "$SERVICES" ;;
     'ecs describe-task-definition')
-      if [ "$4" = td-worker ] && [ -n "$DRIFT" ]; then echo "registry.invalid/hearth-server@$DRIFT"; else echo "registry.invalid/hearth-server@$RUNNING"; fi ;;
+      if [[ "$4" == *-worker:* ]] && [ -n "$DRIFT" ]; then echo "registry.invalid/hearth-server@$DRIFT"; else echo "registry.invalid/hearth-server@$RUNNING"; fi ;;
     'ecr describe-images')
       if [ "$5" = --query ]; then printf '%s\\n' "$PUSHED"; return; fi
       jq -e --arg d "\${6#imageDigest=}" '.[$d]' <<<"$ECR" || { echo 'An error occurred (ImageNotFoundException)' >&2; return 254; } ;;
@@ -7007,6 +7013,40 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
       'refused',
     )
   }, 30_000)
+
+  // The tenth review's first attack (FLOW-A1-01): a service's task definition reached aws as a value no text held
+  // to its shape, so a refactor that read it from the Services stack's outputs, which a release writes, handed
+  // aws-cli a file:// value to load and send to ECS. Each is now one of its stage's own families' before ECS is
+  // asked for its image; the stand-in answers describe-task-definition for any name, so each refusal is the check's.
+  it("refuses a service's task definition of another shape before asking ECS for its image (FLOW-A1-01)", () => {
+    const TD = "aws-check: a service's task definition isn't one of its stage's"
+    for (const other of [
+      'file:///proc/self/environ',
+      `file:///proc/self/environ:task-definition/hearth-nonprod-worker:1`,
+      td('worker', 1, 'prod'),
+      td('bastion'),
+      td('migrate'),
+      td('worker', 0),
+      td('worker', 1234567),
+      `${td('worker')}x`,
+      `x${td('worker')}`,
+      td('worker').replace('ap-southeast-1', 'us-east-1'),
+      td('worker').replace('0'.repeat(12), '0'.repeat(11)),
+      'hearth-nonprod-worker:1',
+    ]) {
+      const services = JSON.stringify({ services: [td('api'), td('realtime'), other], counts: [1, 1, 1] })
+      expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), services }), other).toEqual({
+        verdict: 'refused',
+        said: TD,
+      })
+    }
+    // The stage's own families, at any revision, pass.
+    const later = JSON.stringify({
+      services: [td('api', 7), td('realtime', 12), td('worker', 999999)],
+      counts: [1, 1, 1],
+    })
+    expect(awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), services: later }).verdict).toBe('pass')
+  })
 
   it('refuses while a deployment is in progress', () => {
     const two = awsCheck({ mode: 'deploy', release: release('C', D.C), ...runsB(), services: TWO })
@@ -8063,20 +8103,31 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const ssm = (name: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: name })
     // A resource of a type the synth writes, whose one property holds the value a case plants.
     const policy = (name: unknown) => ({ Type: 'AWS::SSM::Parameter', Properties: { Name: name } })
-    // The re-keyed layout, a Sub over a pseudo-parameter and an attribute and an empty {} (each in an output,
-    // which holds no property the round-10 holds read) and another of the stage's own entries pass, so each
-    // refusal below is its plant's. (Another stage's entry passed here before; the round-10 holds refuse it.)
+    // The re-keyed layout and another of the stage's own entries pass, and a Sub over a pseudo-parameter and an
+    // attribute and an empty {} get past this rule, refused only by the outputs' own hold (an output the synth
+    // never writes, round 10's first attack), so each refusal below is its plant's. (Another stage's entry passed
+    // here before; the round-10 holds refuse it.)
     const outputs = (template: Record<string, unknown>) => template.Outputs as Record<string, unknown>
     expect(check(planted(() => {}))).toBe('passed')
     expect(
       check(
         planted(template => {
-          outputs(template).Extra = { Value: { 'Fn::Sub': [`a-\${AWS::AccountId}-\${Res.Arn}`, {}] } }
-          outputs(template).Other = { Value: 'x{}y' }
           parameters(template).Worker = ssm('/hearth/nonprod/security-group/worker')
         }),
       ),
     ).toBe('passed')
+    expect(
+      check(
+        planted(template => {
+          outputs(template).Extra = { Value: { 'Fn::Sub': [`a-\${AWS::AccountId}-\${Res.Arn}`, {}] } }
+          outputs(template).Other = { Value: 'x{}y' }
+        }),
+      ),
+    ).toBe(
+      refused(
+        "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read",
+      ),
+    )
     // The attack's own plant: a condition over a new entry, granting * on * while it reads open.
     expect(
       check(
@@ -8808,7 +8859,8 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     // The re-keyed synth passes, so each refusal below is its plant's: the five the resources and outputs write
     // and the two CDK's bootstrap version rule writes, each in its own section.
     expect(check(inTemplate('Platform', () => {}))).toBe('passed')
-    // (In an output, which the round-10 holds don't read: a container's environment holds no function now.)
+    // (In an output, past this rule and refused only by the outputs' own hold, which no output the synth never
+    // writes gets past since round 10's first attack: a container's environment holds no function now.)
     expect(
       check(
         inTemplate('Services', json => {
@@ -8816,7 +8868,11 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         }),
       ),
       'the functions the resources write',
-    ).toBe('passed')
+    ).toBe(
+      refused(
+        "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read",
+      ),
+    )
     for (const [name, plant] of [
       // The attack's own plant: an inline policy on prod's api task role whose grant another account decides.
       [
@@ -9010,7 +9066,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape",
   )
   const STORED = refused(
-    "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value or a role's trust of another shape",
+    "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape",
   )
   const OWN_ROLE = refused(
     "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own",
@@ -9522,6 +9578,378 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     'refuses %s (round 10)',
     (_, plant, expected) => {
       expect(check(plant)).toBe(expected)
+    },
+    30_000,
+  )
+
+  // The tenth review's first attack (INPUTS-A1-01, INPUTS-A1-02, FLOW-A1-01). A release's own stage.ts, rendered
+  // only for a real release, took aws:ResourceOrgID off the S3 gateway's and the interface endpoints' statements,
+  // swapped the api task role's network perimeter for a grant to write any bucket, routed the isolated subnets
+  // to the internet gateway and dropped a group's inline egress (EC2 then allows all), and a Services output
+  // named a file aws-cli would load. Each endpoint's statements are now the synth's, its service's actions and
+  // AWS-owned exceptions exactly, the S3 gateway's in every stage and the resource statement in non-prod and
+  // restore (prod takes either until its profile turns it on); every task role carries the perimeter there;
+  // every group holds its disallow-all egress; no route sits on a table of a subnet the isolated-subnets
+  // parameter names; and each stack's outputs are the synth's, each value of its shape.
+  const OUTPUTS = refused(
+    "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read",
+  )
+  type Statement = Record<string, unknown> & { Condition?: { StringEquals?: Record<string, unknown> } }
+  const statements = (resource: Planted) => (resource.Properties.PolicyDocument as { Statement: Statement[] }).Statement
+  const perimeter = (resource: Planted) =>
+    ((resource.Properties.Policies as Array<{ PolicyDocument: { Statement: Statement[] } }>)[0]?.PolicyDocument
+      .Statement ?? [])[0] as Statement
+  // The S3 gateway, an interface endpoint, a task role and a group, by their logical ids' prefixes.
+  const S3 = 'EndpointsS3'
+  const ECR_API = 'EndpointsEcrApi'
+  const ECR_DKR = 'EndpointsEcrDkr'
+  const API_TASK = 'RolesApiTask'
+  it.each([
+    [
+      "the S3 gateway's statement without aws:ResourceOrgID",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => delete statements(resource)[1]?.Condition?.StringEquals?.['aws:ResourceOrgID'],
+        S3,
+      ),
+      NETWORK,
+    ],
+    [
+      "prod's S3 gateway statement without aws:ResourceOrgID",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => delete statements(resource)[1]?.Condition?.StringEquals?.['aws:ResourceOrgID'],
+        S3,
+        prod,
+      ),
+      NETWORK,
+    ],
+    [
+      "the restore stage's S3 gateway statement without aws:ResourceOrgID",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => delete statements(resource)[1]?.Condition?.StringEquals?.['aws:ResourceOrgID'],
+        S3,
+        dir => join(dir, 'assembly-restore'),
+      ),
+      NETWORK,
+    ],
+    [
+      "the S3 gateway's statement letting a delete through",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          ;(statements(resource)[1] as Statement).Action = ['s3:Delete*', 's3:GetObject', 's3:ListBucket']
+        },
+        S3,
+      ),
+      NETWORK,
+    ],
+    [
+      'the S3 gateway with a statement of its own',
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          statements(resource).push({ ...(statements(resource)[1] as Statement), Sid: 'More' })
+        },
+        S3,
+      ),
+      NETWORK,
+    ],
+    [
+      'the S3 gateway as an interface endpoint',
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          resource.Properties.VpcEndpointType = 'Interface'
+        },
+        S3,
+      ),
+      NETWORK,
+    ],
+    [
+      "an interface endpoint's resource statement without aws:ResourceOrgID",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => delete statements(resource)[0]?.Condition?.StringEquals?.['aws:ResourceOrgID'],
+        ECR_DKR,
+      ),
+      NETWORK,
+    ],
+    [
+      "a non-prod interface endpoint as prod's is now, with no resource statement",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          const [first] = statements(resource)
+          delete first?.Condition?.StringEquals?.['aws:ResourceOrgID']
+          resource.Properties.PolicyDocument = {
+            Version: '2012-10-17',
+            Statement: [{ ...(first as Statement), Sid: 'OrgPrincipals' }],
+          }
+        },
+        ECR_DKR,
+      ),
+      NETWORK,
+    ],
+    [
+      "an interface endpoint's actions widened to every service's",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          ;(statements(resource)[0] as Statement).Action = '*'
+        },
+        ECR_DKR,
+      ),
+      NETWORK,
+    ],
+    [
+      "an interface endpoint's AWS-owned exception widened",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          ;(statements(resource)[1] as Statement).Action = ['ecr:BatchGetImage', 'ecr:GetAuthorizationToken']
+        },
+        ECR_API,
+      ),
+      NETWORK,
+    ],
+    [
+      "the api task role's perimeter swapped for a grant to write any bucket",
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          resource.Properties.Policies = [
+            {
+              PolicyName: 'hearth-task',
+              PolicyDocument: {
+                Version: '2012-10-17',
+                Statement: [{ Sid: 'Uploads', Effect: 'Allow', Action: 's3:PutObject', Resource: '*' }],
+              },
+            },
+          ]
+        },
+        API_TASK,
+      ),
+      STORED,
+    ],
+    [
+      'the api task role with no policy, in the restore stage',
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          delete resource.Properties.Policies
+        },
+        API_TASK,
+        dir => join(dir, 'assembly-restore'),
+      ),
+      STORED,
+    ],
+    [
+      "the api task role's perimeter held to traffic through another of the template's resources",
+      changed(
+        'AWS::IAM::Role',
+        (resource, template) => {
+          const resources = template.Resources as Record<string, Planted>
+          const gateway = Object.keys(resources).find(key => resources[key]?.Type === 'AWS::EC2::InternetGateway')
+          const condition = perimeter(resource).Condition as Record<string, Record<string, unknown>>
+          condition.StringNotEqualsIfExists = { 'aws:SourceVpc': { Ref: gateway } }
+        },
+        API_TASK,
+      ),
+      STORED,
+    ],
+    [
+      "the api task role's perimeter excusing every caller",
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          const condition = perimeter(resource).Condition as Record<string, Record<string, unknown>>
+          condition.BoolIfExists = { 'aws:ViaAWSService': 'true' }
+        },
+        API_TASK,
+      ),
+      STORED,
+    ],
+    [
+      'a group with no inline egress, which EC2 opens to everything',
+      changed(
+        'AWS::EC2::SecurityGroup',
+        resource => delete resource.Properties.SecurityGroupEgress,
+        'NetworkGroupsApi',
+      ),
+      NETWORK,
+    ],
+    // (An empty list is a leaf no synth writes, so the key hold refuses it first.)
+    [
+      'a group with an empty inline egress',
+      changed(
+        'AWS::EC2::SecurityGroup',
+        resource => {
+          resource.Properties.SecurityGroupEgress = []
+        },
+        'NetworkGroupsApi',
+      ),
+      KEYS,
+    ],
+    ...[nonprod, prod].map(
+      stage =>
+        [
+          `a route out of an isolated subnet's table, in ${stage === nonprod ? 'non-prod' : 'prod'}`,
+          changed(
+            'AWS::EC2::RouteTable',
+            (_, template) => {
+              const resources = template.Resources as Record<string, Planted>
+              const gateway = Object.keys(resources).find(key => resources[key]?.Type === 'AWS::EC2::InternetGateway')
+              const table = Object.keys(resources).find(key => key.startsWith('NetworkVpcisolatedSubnet1RouteTable'))
+              resources.IsolatedOut = {
+                Type: 'AWS::EC2::Route',
+                Properties: {
+                  DestinationCidrBlock: '0.0.0.0/0',
+                  GatewayId: { Ref: gateway },
+                  RouteTableId: { Ref: table },
+                },
+              }
+            },
+            'NetworkVpcisolatedSubnet1',
+            stage,
+          ),
+          NETWORK,
+        ] as const,
+    ),
+    [
+      "an isolated subnet moved onto a public subnet's table",
+      changed(
+        'AWS::EC2::SubnetRouteTableAssociation',
+        (resource, template) => {
+          const table = Object.keys(template.Resources as Record<string, Planted>).find(key =>
+            key.startsWith('NetworkVpcpublicSubnet1RouteTable'),
+          )
+          resource.Properties.RouteTableId = { Ref: table }
+        },
+        'NetworkVpcisolatedSubnet1RouteTableAssociation',
+      ),
+      NETWORK,
+    ],
+    [
+      'a Services output naming a file aws-cli would load',
+      changed('AWS::ECS::Service', (_, template) => {
+        ;(template.Outputs as Record<string, unknown>).ApiTaskDefinition = { Value: 'file:///proc/self/environ' }
+      }),
+      OUTPUTS,
+    ],
+    [
+      'a Platform output',
+      changed('AWS::EC2::VPC', (_, template) => {
+        template.Outputs = { Vpc: { Value: { Ref: 'x' } } }
+      }),
+      OUTPUTS,
+    ],
+    [
+      "the migrate output naming the probe's definition",
+      changed('AWS::ECS::TaskDefinition', (_, template) => {
+        const outputs = template.Outputs as Record<string, { Value: unknown }>
+        if (outputs.MigrateTaskDefinition === undefined || outputs.ProbeTaskDefinition === undefined)
+          throw new Error('no definitions output')
+        outputs.MigrateTaskDefinition.Value = outputs.ProbeTaskDefinition.Value
+      }),
+      OUTPUTS,
+    ],
+    [
+      "the Tasks output's cluster another stage's",
+      changed('AWS::ECS::TaskDefinition', (_, template) => {
+        const outputs = template.Outputs as Record<string, { Value: unknown }>
+        if (outputs.Cluster === undefined) throw new Error('no Cluster output')
+        outputs.Cluster.Value = 'file:///hearth-nonprod'
+      }),
+      OUTPUTS,
+    ],
+    [
+      'the isolated subnets output written as a literal',
+      changed('AWS::ECS::TaskDefinition', (_, template) => {
+        const outputs = template.Outputs as Record<string, { Value: unknown }>
+        if (outputs.IsolatedSubnets === undefined) throw new Error('no IsolatedSubnets output')
+        outputs.IsolatedSubnets.Value = 'subnet-0123456789abcdef0'
+      }),
+      OUTPUTS,
+    ],
+    [
+      'whether migrate runs, as neither true nor false',
+      changed('AWS::ECS::TaskDefinition', (_, template) => {
+        const outputs = template.Outputs as Record<string, { Value: unknown }>
+        if (outputs.HasDatabase === undefined) throw new Error('no HasDatabase output')
+        outputs.HasDatabase.Value = 'file:///etc/hostname'
+      }),
+      OUTPUTS,
+    ],
+  ] as const)(
+    'refuses %s (round 10, attack 1)',
+    (_, plant, expected) => {
+      expect(check(plant)).toBe(expected)
+    },
+    30_000,
+  )
+
+  // What prod's profile turns on later passes there as it is now: an interface endpoint's resource statement with
+  // its AWS-owned exception, and a task role's perimeter; and the Tasks output's revision of a definition passes
+  // at its own family's.
+  it.each([
+    [
+      "prod's interface endpoint with the resource statement on",
+      changed(
+        'AWS::EC2::VPCEndpoint',
+        resource => {
+          const [first] = statements(resource)
+          const resources = { ...(first?.Condition?.StringEquals ?? {}) }
+          resources['aws:ResourceOrgID'] = resources['aws:PrincipalOrgID']
+          resource.Properties.PolicyDocument = {
+            Version: '2012-10-17',
+            Statement: [
+              { ...(first as Statement), Sid: 'OrgPrincipalsToOrgResources', Condition: { StringEquals: resources } },
+              { ...(first as Statement), Sid: 'OrgPrincipalsToAwsResources', Action: ['ecr:GetAuthorizationToken'] },
+            ],
+          }
+        },
+        ECR_API,
+        prod,
+      ),
+    ],
+    [
+      "prod's api task role with the perimeter on",
+      changed(
+        'AWS::IAM::Role',
+        (resource, template) => {
+          const resources = template.Resources as Record<string, Planted>
+          const vpc = Object.keys(resources).find(key => resources[key]?.Type === 'AWS::EC2::VPC')
+          resource.Properties.Policies = [
+            {
+              PolicyName: 'hearth-task',
+              PolicyDocument: {
+                Version: '2012-10-17',
+                Statement: [
+                  {
+                    Sid: 'NetworkPerimeter',
+                    Effect: 'Deny',
+                    NotAction: 'rds-db:connect',
+                    Resource: '*',
+                    Condition: {
+                      StringNotEqualsIfExists: { 'aws:SourceVpc': { Ref: vpc } },
+                      BoolIfExists: { 'aws:ViaAWSService': 'false' },
+                    },
+                  },
+                ],
+              },
+            },
+          ]
+        },
+        API_TASK,
+        prod,
+      ),
+    ],
+  ] as const)(
+    'passes %s (round 10, attack 1)',
+    (_, plant) => {
+      expect(check(plant)).toBe('passed')
     },
     30_000,
   )
@@ -11722,6 +12150,109 @@ describe('Round 9, attack 4: the ways past the allowlist (DPW-07, DPW-10)', () =
       const planted = TASKS_OUTPUTS.replace(anchor, `${anchor}${added}`)
       expect(canonicalTextFindings({ TASKS_OUTPUTS: planted }), added).toContain(SHELL('TASKS_OUTPUTS'))
     }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+})
+
+describe('Round 10, attack 1: the ways past the allowlist (DPW-10)', () => {
+  const READER =
+    "hands read -r, after IFS= or IFS=$'\\t', and mapfile and readarray -t, so no backslash in what it reads escapes a character or joins two lines into one, no line is trimmed and no element keeps its line break"
+  const AWS_NAMES =
+    "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
+  const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
+  const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
+
+  // EXPAND-A1-01: without -r, read takes a backslash as an escape and one at a line's end as joining the line to
+  // the next, so ASSET_CHECK's loop over each asset manifest's paths, given one path ending in a backslash, read
+  // it and the next as one path inside the assembly while the CLI read the second, outside it. Every read in a
+  // canonical text now runs with -r after IFS= or IFS=$'\t', and mapfile and readarray with -t.
+  it('hands every read -r after IFS=, and mapfile -t (EXPAND-A1-01)', () => {
+    const loop = '      while IFS= read -r path; do'
+    expect(ASSET_CHECK.split('\n')).toContain(loop)
+    for (const to of [
+      '      while IFS= read path; do',
+      '      while read -r path; do',
+      '      while IFS=, read -r path; do',
+      '      while IFS= read -e path; do',
+    ]) {
+      const text = ASSET_CHECK.replace(`${loop}\n`, `${to}\n`)
+      expect(canonicalTextFindings({ ASSET_CHECK: text }), to).toContain(
+        canonical('ASSET_CHECK', lineOf(text, to), READER),
+      )
+    }
+    const arns = `  mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`
+    expect(PROBE.split('\n')).toContain(arns)
+    const kept = `  mapfile TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`
+    const probe = PROBE.replace(arns, kept)
+    expect(canonicalTextFindings({ PROBE: probe })).toContain(canonical('PROBE', lineOf(probe, kept), READER))
+    // The rule on its own.
+    for (const text of [
+      'while IFS= read -r x; do :; done < <(echo)',
+      "IFS=$'\\t' read -r a b <<<x",
+      'mapfile -t a < <(echo)',
+      'readarray -t a < <(echo)',
+    ]) {
+      expect(readerLines(text), text).toEqual([])
+    }
+    for (const text of [
+      'read x',
+      'read -r x',
+      'IFS= read x',
+      'IFS=: read -r x',
+      'IFS= read -ra x',
+      'mapfile a',
+      'readarray -s1 a',
+    ]) {
+      expect(readerLines(text), text).toEqual([0])
+    }
+    for (const text of Object.values(CANONICAL_BY_NAME())) expect(readerLines(text)).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // FLOW-A1-01: AWS_CHECK's loop read td, which it hands aws ecs describe-task-definition, from whatever its done
+  // line fed it, and the rules held which names an aws value expands, not where each was set: a done line fed
+  // from the Services stack's outputs, which a release writes, had aws-cli load a file:// value (the runner's
+  // environment) and send it to ECS. Each such name, and each it is read from, is now set only on its text's own
+  // lines and read only in its own loop; AWS_CHECK also refuses a td of another shape (its harness case), and
+  // ASSET_CHECK an output the synth never writes (the DPW-14 cases).
+  it("sets each name an aws value is read from only on its text's own lines (FLOW-A1-01)", () => {
+    const loop = '      while IFS= read -r td; do'
+    const done = `      done < <(jq -r '.services[]' <<<"$out")`
+    expect(AWS_CHECK.split('\n')).toContain(loop)
+    expect(AWS_CHECK.split('\n')).toContain(done)
+    // The attack's own lines: the loop fed from the Services stack's outputs.
+    const outputs = `      defs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$stage-Services" --query 'Stacks[0].Outputs[?OutputKey!=\`Release\`].OutputValue' --output json)`
+    const fed = `      done < <(jq -r '.[]' <<<"$defs")`
+    const planted = AWS_CHECK.replace(`${loop}\n`, `${outputs}\n${loop}\n`).replace(done, fed)
+    expect(canonicalTextFindings({ AWS_CHECK: planted })).toContain(
+      canonical('AWS_CHECK', lineOf(planted, fed), AWS_NAMES),
+    )
+    // A setting line of one of the names that its text doesn't hold, in each text that sets them.
+    const anchors: Readonly<Record<string, string>> = {
+      AWS_CHECK: loop,
+      TASKS_OUTPUTS: '  CLUSTER=$(output Cluster)',
+      ONE_OFF: `  task=$(jq -r '.tasks[0]' <<<"$placed")`,
+      PROBE: `  mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`,
+    }
+    for (const [name, added, replace] of [
+      ['AWS_CHECK', `        td=$(jq -r '.[0]' <<<"$out")`, false],
+      ['AWS_CHECK', `        printf -v td '%s' "$out"`, false],
+      ['AWS_CHECK', `        IFS= read -r td <<<"$out"`, false],
+      ['TASKS_OUTPUTS', '  CLUSTER=$(output Release)', true],
+      ['TASKS_OUTPUTS', '  local td=$1', false],
+      ['ONE_OFF', `  task=$(jq -r '.tasks[1]' <<<"$placed")`, true],
+      ['PROBE', `  mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$OVERRIDES")`, true],
+      ['PROBE', '  for TASK_ARNS in x; do :; done', false],
+    ] as const) {
+      const anchor = anchors[name] ?? ''
+      const texts = CANONICAL_BY_NAME()
+      const before = texts[name] ?? ''
+      expect(before.split('\n'), name).toContain(anchor)
+      const text = before.replace(anchor, replace ? added : `${anchor}\n${added}`)
+      expect(awsNameLines(text, name), added).toContain(lineOf(text, added) - 1)
+      expect(canonicalTextFindings({ [name]: text }), added).toContain(canonical(name, lineOf(text, added), AWS_NAMES))
+    }
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(awsNameLines(text, name), name).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
   })
 })

@@ -64,11 +64,14 @@
 // every resource to the property paths and forms the workload synth writes for its type (one jq object literal
 // in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
 // each value a service acts on (a task's roles, image, logs, secret and tags, a service's network, ECS Exec and
-// target groups, a security group rule's peer, a VPC endpoint's service and policy, the load balancer's
-// attributes, a listener's and record's targets, a parameter's stored value, a role's trust, a tag's key) to the
-// synth's shape, since the stage's own code that writes them is rendered only for a real release and the diff
-// prints an added resource as one line (a container's environment, command and health check stay the release's
-// own, as its image is).
+// target groups, a security group's egress, which must be there, and a rule's peer, a VPC endpoint's service and
+// each statement of its policy, held to the organisation's principals and, but in prod until its reviewed change,
+// its resources, the load balancer's attributes, a listener's and record's targets, a route's table, never an
+// isolated subnet's, a parameter's stored value, a role's trust and, but in prod until that change, a task role's
+// network perimeter, a tag's key, and each stack's outputs, which the one-offs, the release checks and the
+// read-back read) to the synth's shape, since the stage's own code that writes them is rendered only for a real
+// release and the diff prints an added resource as one line (a container's environment, command and health check
+// stay the release's own, as its image is).
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -153,7 +156,9 @@
 // token or another credential its job holds, to running only the commands CANONICAL_COMMANDS names and the
 // canonical texts' functions, each by a plain word, with no environment of its own (canonicalCommandLines():
 // export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
-// a command but IFS's before read, no assignment, in any spelling, to one of bash's own variables
+// a command but IFS's before read, read only with -r after IFS= or IFS=$'\t' and mapfile only with -t, so no
+// backslash in what a loop reads joins two lines or escapes a character (readerLines()), no assignment, in any
+// spelling, to one of bash's own variables
 // (SHELL_TABLE.bashVariables: EXECIGNORE, which hides a command from bash's lookup, GLOBIGNORE, PS4 and the rest)
 // but IFS's before read, no wrapper, and
 // no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
@@ -177,9 +182,11 @@
 // sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection; the lines the
 // tool holds compare against (TOOL_LINE_TEXTS) are the guard's own literals, never read from a canonical text, so a
 // text can't widen what it is held to. What a variable a held line names holds is the text's own, set from AWS's
-// answers, the job's env or a literal in every text the guard writes, which a change to the text shows; the rules
-// hold which names an aws value expands, not what each holds, so a change that sets one of those names from another
-// source, or drops its shape check, is the owner's read's to catch.
+// answers, the job's env or a literal in every text the guard writes, which a change to the text shows; each name
+// an aws value expands, and each it is read from, is set only on its text's own lines (AWS_NAME_LINES, the
+// guard's literals) and read only in its own loop (awsNameLines()), so a change that sets one from another
+// source, a stack's outputs among them, changes the guard's list as well as the text; a change that drops a
+// value's shape check is the owner's read's to catch.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
@@ -449,18 +456,29 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
 # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
 # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
-# is CDK's disallow-all alone and its inline ingress HTTPS from anywhere alone, and each rule resource names
-# the template's own groups or S3's managed prefix list; a VPC endpoint names one of the six services the
-# synth writes in ap-southeast-1 (ecr.api, ecr.dkr, logs, secretsmanager, ssmmessages and s3), the template's
-# network and a policy whose every statement binds its principals to the organisation by aws:PrincipalOrgID,
-# but the S3 gateway's one statement for ECR's image layers; the load balancer and target groups hold the
-# attributes the synth writes (no access, connection or health-check log destination), the template's
-# network and targets by IP alone; a listener serves the template's certificates with a fixed response, a
-# rule forwards to the template's target groups, the record is an alias of the template's load balancer in
-# its stage's zone, routes reach the template's internet gateway and flow logs the template's log group by
-# its own role; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
-# parameter holding the template's own resource's value (or a host name for Valkey's endpoint) and each role
-# trusted by ECS tasks, VPC flow logs or Lambda alone, in the account. What a container is handed beside
+# is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
+# inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
+# managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
+# (ecr.api, ecr.dkr, logs, secretsmanager, ssmmessages and s3), the template's network and a policy of the
+# synth's statements alone: the S3 gateway's two, ECR's image layers and the organisation's principals
+# getting, listing and putting objects in the organisation's buckets, and each interface endpoint's, the
+# organisation's principals calling its own service in the organisation's resources (and ecr.api's and
+# ssmmessages' named calls to AWS's own), each binding principals by aws:PrincipalOrgID and resources by
+# aws:ResourceOrgID, or, in prod alone until a reviewed change turns its resource statement on, one statement
+# binding principals alone; the load balancer and target groups hold the attributes the synth writes (no
+# access, connection or health-check log destination), the template's network and targets by IP alone; a
+# listener serves the template's certificates with a fixed response, a rule forwards to the template's target
+# groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
+# template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
+# parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
+# log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
+# value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
+# in the account, and each task role, but in prod until the same change, bound by its network perimeter:
+# every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+# Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
+# database is there, isolated subnets and the one-offs' security groups and task definitions; no other
+# stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
+# value as the file it names. What a container is handed beside
 # these (its environment, command, health check and user) is the release's own, as the image is, held to
 # its keys alone. Then it requires every Services template's Release output to be the release this job
 # deploys, and every container image in the Tasks and Services templates to be the server image at its
@@ -758,10 +776,16 @@ check_release_in() {
         def att($t; $a): type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | own($t)) and .[1] == $a);
         def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
         def of($t): $r[] | select(.Type == $t) | .Properties;
-        all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and all(.SecurityGroupEgress // [] | .[]; .CidrIp == "255.255.255.255/32") and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
+        def org: param("/hearth/organisation/id");
+        def allow($sid; $action): type == "object" and keys == ["Action", "Condition", "Effect", "Principal", "Resource", "Sid"] and .Sid == $sid and .Effect == "Allow" and .Principal == {"AWS": "*"} and .Action == $action and .Resource == "*";
+        def principals: .Condition | type == "object" and keys == ["StringEquals"] and (.StringEquals | type == "object" and keys == ["aws:PrincipalOrgID"] and (.["aws:PrincipalOrgID"] | org));
+        def resources: .Condition | type == "object" and keys == ["StringEquals"] and (.StringEquals | type == "object" and keys == ["aws:PrincipalOrgID", "aws:ResourceOrgID"] and all(.[]; org));
+        ([of("AWS::SSM::Parameter") | select(.Name == "/hearth/" + $s + "/network/isolated-subnets") | .Value | objects | .["Fn::Join"] | arrays | .[1] | arrays | .[] | objects | .Ref]) as $isolated |
+        ([of("AWS::EC2::Route") | .RouteTableId | objects | .Ref]) as $routed |
+        all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; .CidrIp == "255.255.255.255/32")) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
         all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
         all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
-        all(of("AWS::EC2::VPCEndpoint"); .ServiceName as $service | ($service | type == "string" and test("\\Acom\\.amazonaws\\.ap-southeast-1\\.(ecr\\.api|ecr\\.dkr|logs|secretsmanager|ssmmessages|s3)\\z")) and (.VpcId | ref("AWS::EC2::VPC")) and all(.SubnetIds // [] | .[]; ref("AWS::EC2::Subnet")) and all(.RouteTableIds // [] | .[]; ref("AWS::EC2::RouteTable")) and all(.SecurityGroupIds // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and (.PolicyDocument.Statement | type == "array" and all(.[]; (. == {"Sid": "EcrImageLayers", "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "s3:GetObject", "Resource": (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":"))} and ($service | endswith(".s3"))) or (.Effect == "Allow" and .Principal == {"AWS": "*"} and (.Condition.StringEquals["aws:PrincipalOrgID"] | param("/hearth/organisation/id")) and ((.Condition.StringEquals | has("aws:ResourceOrgID") | not) or (.Condition.StringEquals["aws:ResourceOrgID"] | param("/hearth/organisation/id"))))))) and
+        all(of("AWS::EC2::VPCEndpoint"); .ServiceName as $service | ($service | type == "string" and test("\\Acom\\.amazonaws\\.ap-southeast-1\\.(ecr\\.api|ecr\\.dkr|logs|secretsmanager|ssmmessages|s3)\\z")) and (.VpcId | ref("AWS::EC2::VPC")) and all(.SubnetIds // [] | .[]; ref("AWS::EC2::Subnet")) and all(.RouteTableIds // [] | .[]; ref("AWS::EC2::RouteTable")) and all(.SecurityGroupIds // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and (.PolicyDocument | type == "object" and keys == ["Statement", "Version"] and .Version == "2012-10-17") and (($service | ltrimstr("com.amazonaws.ap-southeast-1.")) as $name | .PolicyDocument.Statement as $all | if $name == "s3" then .VpcEndpointType == "Gateway" and ($all | type == "array" and length == 2 and .[0] == {"Sid": "EcrImageLayers", "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "s3:GetObject", "Resource": (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":"))} and (.[1] | allow("OrgResources"; ["s3:GetObject", "s3:ListBucket", "s3:PutObject"]) and resources)) else .VpcEndpointType == "Interface" and ($name | split(".")[0] + ":*") as $actions | ({"ecr.api": ["ecr:GetAuthorizationToken"], "ssmmessages": ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]}[$name] // []) as $owned | ($all | type == "array" and ((length == (if $owned == [] then 1 else 2 end) and (.[0] | allow("OrgPrincipalsToOrgResources"; $actions) and resources) and ($owned == [] or (.[1] | allow("OrgPrincipalsToAwsResources"; $owned) and principals))) or ($s == "prod" and length == 1 and (.[0] | allow("OrgPrincipals"; $actions) and principals)))) end)) and
         all(of("AWS::ElasticLoadBalancingV2::LoadBalancer"); .Name == "hearth-" + $s and .Type == "application" and all(.Subnets // [] | .[]; ref("AWS::EC2::Subnet")) and all(.SecurityGroups // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and all(.LoadBalancerAttributes // [] | .[]; .Key | IN("deletion_protection.enabled", "routing.http2.enabled", "idle_timeout.timeout_seconds", "routing.http.drop_invalid_header_fields.enabled", "routing.http.desync_mitigation_mode"))) and
         all(of("AWS::ElasticLoadBalancingV2::TargetGroup"); (.Name | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime)\\z")) and .TargetType == "ip" and (.VpcId | ref("AWS::EC2::VPC")) and all(.TargetGroupAttributes // [] | .[]; .Key | IN("deregistration_delay.timeout_seconds", "stickiness.enabled", "load_balancing.algorithm.type"))) and
         all(of("AWS::ElasticLoadBalancingV2::Listener"); (.LoadBalancerArn | ref("AWS::ElasticLoadBalancingV2::LoadBalancer")) and all(.Certificates // [] | .[]; .CertificateArn | ref("AWS::CertificateManager::Certificate")) and all(.DefaultActions // [] | .[]; .Type == "fixed-response")) and
@@ -769,7 +793,7 @@ check_release_in() {
         all(of("AWS::Route53::RecordSet"); (.HostedZoneId | param("/hearth/" + $s + "/zone/app")) and (.AliasTarget.HostedZoneId | att("AWS::ElasticLoadBalancingV2::LoadBalancer"; "CanonicalHostedZoneID")) and .AliasTarget.DNSName == {"Fn::Join": ["", ["dualstack.", {"Fn::GetAtt": [.AliasTarget.HostedZoneId["Fn::GetAtt"][0], "DNSName"]}]]}) and
         all(of("AWS::CertificateManager::Certificate"); .ValidationMethod == "DNS" and all(.DomainValidationOptions // [] | .[]; .HostedZoneId | param("/hearth/" + $s + "/zone/app"))) and
         all(of("AWS::EC2::Route"); (.GatewayId | ref("AWS::EC2::InternetGateway")) and (.RouteTableId | ref("AWS::EC2::RouteTable"))) and
-        all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable"))) and
+        all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
         all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
         all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
         all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
@@ -785,10 +809,20 @@ check_release_in() {
         all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
         all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
         all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+        all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
         all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
         all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
         all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value or a role's trust of another shape"
+        asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
+        def own($t): type == "string" and $r[.].Type == $t;
+        def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
+        def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
+        def family($kind): ref("AWS::ECS::TaskDefinition") and $r[.Ref].Properties.Family == "hearth-" + $s + "-" + $kind;
+        (.Outputs // {}) as $o |
+        ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
+        all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
@@ -933,7 +967,8 @@ aws_check() {
       return 0
     fi
   fi
-  # The three services: one deployment each, and the image each runs (a restore leaves prod's alone).
+  # The three services: one deployment each, and the image each runs, asked of ECS by each one's task
+  # definition only once that is one of its stage's own families' (a restore leaves prod's alone).
   if [ "$mode" != restore ]; then
     if ! out=$(get aws ecs describe-services --cluster "hearth-$stage" --services "hearth-$stage-api" "hearth-$stage-realtime" "hearth-$stage-worker" --query '{services: services[?status!=\`INACTIVE\`].deployments[].taskDefinition, counts: services[?status!=\`INACTIVE\`].length(deployments)}' --output json 2>&1); then
       case "$out" in
@@ -948,6 +983,8 @@ aws_check() {
       jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null ||
         aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
       while IFS= read -r td; do
+        [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-$stage-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
+          aws_refuse "a service's task definition isn't one of its stage's"
         image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)
         [[ "$\{image##*@}" =~ ^sha256:[0-9a-f]{64}$ ]] || aws_refuse "a service's image isn't named by its digest"
         digests+=("$\{image##*@}")
@@ -4017,21 +4054,31 @@ export function canonicalToolLines(text: string): number[] {
 // after a ;, as the texts write them; a text whose do and done don't pair has every setting line refused.
 const FILE_NAME_RULE =
   "sets a name jq's data words build a path from (dir, file, template, stackfiles, queue, name, root) only on ASSET_CHECK's own lines, and reads one only in a loop fed by its own done line, so jq reads no file a line doesn't show"
-export function fileNameLines(text: string, name: string): number[] {
+export const fileNameLines = (text: string, name: string): number[] =>
+  heldNameLines(text, name, FILE_NAMES, FILE_NAME_ASSIGNMENT, FILE_NAME_LINES(), FILE_NAME_LOOPS())
+// The lines of a canonical text named owner that set one of names (by an assignment the given pattern reads, or a
+// word a builtin is handed) on a line lines doesn't hold for owner, or read one in a loop whose done line loops
+// doesn't pair with its while line.
+function heldNameLines(
+  text: string,
+  owner: string,
+  names: readonly string[],
+  assignment: RegExp,
+  heldLines: ReadonlyArray<readonly [string, string]>,
+  heldLoops: ReadonlyArray<readonly [string, string, string]>,
+): number[] {
   const raw = text.split('\n')
   const lineOf = (n: number) => raw[n]?.trim() ?? ''
-  const held = new Set(FILE_NAME_LINES().flatMap(([line, owner]) => (owner === name ? [line] : [])))
-  const loops = new Set(
-    FILE_NAME_LOOPS().flatMap(([open, close, owner]) => (owner === name ? [`${open}\n${close}`] : [])),
-  )
+  const held = new Set(heldLines.flatMap(([line, by]) => (by === owner ? [line] : [])))
+  const loops = new Set(heldLoops.flatMap(([open, close, by]) => (by === owner ? [`${open}\n${close}`] : [])))
   const code = shellViews(text).code.split('\n')
   const setters = new Set<number>()
   code.forEach((line, n) => {
-    if (FILE_NAME_ASSIGNMENT.test(line)) setters.add(n)
+    if (assignment.test(line)) setters.add(n)
   })
   const readers = new Set<number>()
   for (const command of shellCommands(text)) {
-    const named = builtinNames(command).filter(each => FILE_NAMES.includes(each))
+    const named = builtinNames(command).filter(each => names.includes(each))
     if (named.length === 0) continue
     setters.add(command.line)
     if (command.word === 'read') readers.add(command.line)
@@ -4060,6 +4107,102 @@ export function fileNameLines(text: string, name: string): number[] {
     if (close === undefined || !loops.has(`${lineOf(n)}\n${lineOf(close)}`)) lines.add(close ?? n)
   }
   return [...lines].sort((a, b) => a - b)
+}
+
+// The names an aws value in a canonical text starts with (AWS_TEXT_VALUE_WORDS' "$td", "$CLUSTER", "$task",
+// "$kind/…", "${TASK_ARNS[@]}", "$PROBE_TD", "$NET_PROBE", "$TOKEN" and "$OVERRIDES", where a value from
+// elsewhere could hand aws-cli a scheme it loads a file by), and the names each is read from, back to an aws call
+// by the stage's own names, a literal, the job's env or a function's argument: each set only on the lines
+// AWS_NAME_LINES writes here as literals, never read from a text, in the text it names, and each read of one by
+// read only in a loop whose done line AWS_NAME_LOOPS pairs with it (the tenth review's first attack, where
+// AWS_CHECK read td from the Services stack's outputs, which a release writes, and a file:// output had aws-cli
+// load the runner's environment and send it to ECS). A text that sets one anywhere else, or feeds its loop from
+// anything else, is refused, whatever its shape check; a new setter joins this list in the same change, which the
+// owner reads as a rule's change.
+const AWS_NAMES = [
+  'td',
+  'out',
+  'CLUSTER',
+  'outputs',
+  'definition',
+  'MIGRATE_TD',
+  'PROBE_TD',
+  'kind',
+  'task',
+  'placed',
+  'ARNS',
+  'TASK_ARNS',
+  'OVERRIDES',
+  'NET_PROBE',
+  'NET_MIGRATE',
+  'TOKEN',
+]
+const AWS_NAME_ASSIGNMENT = assigns(AWS_NAMES.join('|'))
+const AWS_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
+  [
+    sh`local mode=$1 stage=$STAGE out status release='' running='' digests=() td image tag pushed='' commit`,
+    'AWS_CHECK',
+  ],
+  [
+    sh`if ! out=$(get aws cloudformation describe-stacks --stack-name "Hearth-$stage-Services" --query 'Stacks[0].[StackStatus, Outputs[?OutputKey==\`Release\`].OutputValue | [0]]' --output json 2>&1); then`,
+    'AWS_CHECK',
+  ],
+  [
+    sh`out=$(get aws ecr describe-images --repository-name hearth-server --query 'imageDetails[].imageTags[]' --output json) ||`,
+    'AWS_CHECK',
+  ],
+  [
+    sh`if ! out=$(get aws ecs describe-services --cluster "hearth-$stage" --services "hearth-$stage-api" "hearth-$stage-realtime" "hearth-$stage-worker" --query '{services: services[?status!=\`INACTIVE\`].deployments[].taskDefinition, counts: services[?status!=\`INACTIVE\`].length(deployments)}' --output json 2>&1); then`,
+    'AWS_CHECK',
+  ],
+  [sh`*ClusterNotFoundException*) out='{"services": [], "counts": []}' ;;`, 'AWS_CHECK'],
+  [sh`while IFS= read -r td; do`, 'AWS_CHECK'],
+  [sh`local outputs kind definition`, 'TASKS_OUTPUTS'],
+  [
+    sh`outputs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Tasks" --query 'Stacks[0].Outputs' --output json)`,
+    'TASKS_OUTPUTS',
+  ],
+  [sh`CLUSTER=$(output Cluster)`, 'TASKS_OUTPUTS'],
+  [sh`for kind in migrate probe; do`, 'TASKS_OUTPUTS'],
+  [sh`definition=$(output "$\{kind^}TaskDefinition")`, 'TASKS_OUTPUTS'],
+  [sh`migrate) MIGRATE_TD="$\{definition##*/}" ;;`, 'TASKS_OUTPUTS'],
+  [sh`probe) PROBE_TD="$\{definition##*/}" ;;`, 'TASKS_OUTPUTS'],
+  [sh`local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping`, 'ONE_OFF'],
+  [sh`task=$(jq -r '.tasks[0]' <<<"$placed")`, 'ONE_OFF'],
+  [
+    sh`ARNS=$(get aws ecs list-tasks --cluster "$CLUSTER" --service-name "hearth-$STAGE-$ROLE" --desired-status RUNNING --query 'taskArns' --output json)`,
+    'PROBE',
+  ],
+  [sh`mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`, 'PROBE'],
+  [OVERRIDES_JQ, 'PROBE'],
+  [NET_JQ.probe, 'PROBE'],
+]
+const AWS_NAME_LOOPS = (): ReadonlyArray<readonly [string, string, string]> => [
+  [sh`while IFS= read -r td; do`, sh`done < <(jq -r '.services[]' <<<"$out")`, 'AWS_CHECK'],
+]
+const AWS_NAME_RULE =
+  "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
+export const awsNameLines = (text: string, name: string): number[] =>
+  heldNameLines(text, name, AWS_NAMES, AWS_NAME_ASSIGNMENT, AWS_NAME_LINES(), AWS_NAME_LOOPS())
+
+// The lines of a canonical text on which read is handed no -r or runs without IFS= or IFS=$'\t' before it, or
+// mapfile or readarray is handed no -t (the tenth review's first attack, where a read with no -r in ASSET_CHECK's
+// loop over asset paths joined a path that ends in a backslash to the next one, so the check read one path inside
+// the assembly while the CLI read two, the second outside it): without -r, read takes a backslash as an escape and
+// one at a line's end as joining the line to the next; without IFS=, it trims each line's blanks; and without -t,
+// mapfile keeps each line's break in its element. So every line of what a loop reads is read as written.
+const READER_RULE =
+  "hands read -r, after IFS= or IFS=$'\\t', and mapfile and readarray -t, so no backslash in what it reads escapes a character or joins two lines into one, no line is trimmed and no element keeps its line break"
+export function readerLines(text: string): number[] {
+  return shellCommands(text).flatMap(command => {
+    const given = withoutRedirections(words(command.tail))
+    if (command.word === 'read') {
+      const separated = command.prefixes.some(prefix => IFS_PREFIXES.includes(prefix))
+      return given.includes('-r') && separated ? [] : [command.line]
+    }
+    if (command.word === 'mapfile' || command.word === 'readarray') return given.includes('-t') ? [] : [command.line]
+    return []
+  })
 }
 
 // The commands a canonical text runs (DPW-10), a closed list, so it loads, sets or runs nothing its own lines
@@ -4296,6 +4439,12 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of fileNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
+    }
+    for (const line of awsNameLines(text, name)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${AWS_NAME_RULE}`)
+    }
+    for (const line of readerLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${READER_RULE}`)
     }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
@@ -7648,7 +7797,9 @@ const AWS_TEXT_FLAGS = ['--start-from-head']
 // (stage, STAGE, kind, ROLE, PART), the run's own ids, a digest AWS_CHECK checks, and the names a text
 // shape-checks or builds itself before aws reads them (CLUSTER, the definitions, the networks, the token, the
 // overrides, td, task and TASK_ARNS from ECS's answers). A value from an AWS answer reaches aws only after the
-// text holds it to its shape, so a new one joins this list with that check, in the same change.
+// text holds it to its shape (td to its stage's three service families, since the tenth review's first attack,
+// where AWS_CHECK's loop read td from the Services stack's outputs), so a new one joins this list with that
+// check, in the same change, and each name is set only on its text's own lines (AWS_NAMES, awsNameLines()).
 const AWS_TEXT_VALUE_WORDS = [
   '"imageDigest=$2"',
   sh`"imageDigest=$\{digests[0]}"`,
