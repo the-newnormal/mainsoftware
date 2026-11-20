@@ -2001,6 +2001,7 @@ jobs:
           REPO: ${{ github.repository }}
           ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
           IMAGE_ID: ${{ needs.build.outputs.image }}
+          IMAGE_DUE: ${{ needs.gate.outputs.build == 'true' && needs.gate.outputs.mode == 'deploy' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2016,12 +2017,19 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. An empty id is
-          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
-          # its job uploaded, which no later job can replace.
+          # run under the name its upload gives it; the download then prints that name alone. The id, never a
+          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+          # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+          # an empty id passes only where the call's third word is false, which its step's env sets from the
+          # gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
           artifact_named() {
             local found
-            if [ -z "$1" ]; then return 0; fi
+            if [ -z "$1" ]; then
+              if [ "$3" = false ]; then return 0; fi
+              echo "artifacts: this run makes $2 for this job, and its id is empty"
+              exit 1
+            fi
             if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
               echo 'artifacts: an artifact id is not one number'
               exit 1
@@ -2032,8 +2040,8 @@ jobs:
               exit 1
             fi
           }
-          artifact_named "$ASSEMBLY_ID" assembly
-          artifact_named "$IMAGE_ID" image.tar
+          artifact_named "$ASSEMBLY_ID" assembly true
+          artifact_named "$IMAGE_ID" image.tar "$IMAGE_DUE"
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3530,12 +3538,19 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. An empty id is
-          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
-          # its job uploaded, which no later job can replace.
+          # run under the name its upload gives it; the download then prints that name alone. The id, never a
+          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+          # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+          # an empty id passes only where the call's third word is false, which its step's env sets from the
+          # gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
           artifact_named() {
             local found
-            if [ -z "$1" ]; then return 0; fi
+            if [ -z "$1" ]; then
+              if [ "$3" = false ]; then return 0; fi
+              echo "artifacts: this run makes $2 for this job, and its id is empty"
+              exit 1
+            fi
             if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
               echo 'artifacts: an artifact id is not one number'
               exit 1
@@ -3546,7 +3561,7 @@ jobs:
               exit 1
             fi
           }
-          artifact_named "$PREVIOUS_ID" assembly-previous-nonprod
+          artifact_named "$PREVIOUS_ID" assembly-previous-nonprod true
       - name: Download the previous assembly
         if: ${{ needs.synth-previous-nonprod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -4747,6 +4762,7 @@ jobs:
           REPO: ${{ github.repository }}
           ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
           PREVIOUS_ID: ${{ needs.synth-previous-prod.outputs.assembly }}
+          PREVIOUS_DUE: ${{ needs.gate.outputs.previous_prod_commit != '' && needs.gate.outputs.mode == 'deploy' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -4762,12 +4778,19 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. An empty id is
-          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
-          # its job uploaded, which no later job can replace.
+          # run under the name its upload gives it; the download then prints that name alone. The id, never a
+          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+          # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+          # an empty id passes only where the call's third word is false, which its step's env sets from the
+          # gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
           artifact_named() {
             local found
-            if [ -z "$1" ]; then return 0; fi
+            if [ -z "$1" ]; then
+              if [ "$3" = false ]; then return 0; fi
+              echo "artifacts: this run makes $2 for this job, and its id is empty"
+              exit 1
+            fi
             if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
               echo 'artifacts: an artifact id is not one number'
               exit 1
@@ -4778,8 +4801,8 @@ jobs:
               exit 1
             fi
           }
-          artifact_named "$ASSEMBLY_ID" assembly
-          artifact_named "$PREVIOUS_ID" assembly-previous-prod
+          artifact_named "$ASSEMBLY_ID" assembly true
+          artifact_named "$PREVIOUS_ID" assembly-previous-prod "$PREVIOUS_DUE"
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -6138,6 +6161,7 @@ jobs:
           REPO: ${{ github.repository }}
           ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
           IMAGE_ID: ${{ needs.build.outputs.image }}
+          IMAGE_DUE: ${{ needs.gate.outputs.build == 'true' && needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -6153,12 +6177,19 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. An empty id is
-          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
-          # its job uploaded, which no later job can replace.
+          # run under the name its upload gives it; the download then prints that name alone. The id, never a
+          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+          # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+          # an empty id passes only where the call's third word is false, which its step's env sets from the
+          # gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
           artifact_named() {
             local found
-            if [ -z "$1" ]; then return 0; fi
+            if [ -z "$1" ]; then
+              if [ "$3" = false ]; then return 0; fi
+              echo "artifacts: this run makes $2 for this job, and its id is empty"
+              exit 1
+            fi
             if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
               echo 'artifacts: an artifact id is not one number'
               exit 1
@@ -6169,8 +6200,8 @@ jobs:
               exit 1
             fi
           }
-          artifact_named "$ASSEMBLY_ID" assembly
-          artifact_named "$IMAGE_ID" image.tar
+          artifact_named "$ASSEMBLY_ID" assembly true
+          artifact_named "$IMAGE_ID" image.tar "$IMAGE_DUE"
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -7720,12 +7751,19 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. An empty id is
-          # no download (its step's if:). The id, never a name, is what binds the download to the artifact
-          # its job uploaded, which no later job can replace.
+          # run under the name its upload gives it; the download then prints that name alone. The id, never a
+          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+          # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+          # an empty id passes only where the call's third word is false, which its step's env sets from the
+          # gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
           artifact_named() {
             local found
-            if [ -z "$1" ]; then return 0; fi
+            if [ -z "$1" ]; then
+              if [ "$3" = false ]; then return 0; fi
+              echo "artifacts: this run makes $2 for this job, and its id is empty"
+              exit 1
+            fi
             if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
               echo 'artifacts: an artifact id is not one number'
               exit 1
@@ -7736,7 +7774,7 @@ jobs:
               exit 1
             fi
           }
-          artifact_named "$PREVIOUS_ID" assembly-previous-prod
+          artifact_named "$PREVIOUS_ID" assembly-previous-prod true
       - name: Download the previous assembly
         if: ${{ needs.synth-previous-prod.outputs.assembly != '' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

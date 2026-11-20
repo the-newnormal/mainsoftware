@@ -33,7 +33,9 @@
 // each such job holds every artifact id it downloads, another job's output, to one number naming this run's
 // artifact under the name its upload gives it (ARTIFACT_NAMES), since download-artifact prints that name in an
 // action's step, which no stop-commands reaches, so no job's code names an artifact ##[add-mask] or the like and
-// drops services_started with it; prod-plan
+// drops services_started with it, and holds an empty id to the gate's word that this run makes no such artifact
+// for the job (DUE_ENVS), so no job's code skips a download, and the checks and the diff that read it, by
+// leaving its id empty; prod-plan
 // diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template parameter
 // deploys from the Default that diff shows (an SSM-typed parameter's names a parameter-store entry whose value no diff
 // shows, so ASSET_CHECK holds every one to the workload's own entries and refuses Conditions, Mappings and a brace a
@@ -1183,12 +1185,19 @@ export const ARTIFACT_NAMES = sh`# The artifacts' names (C11-D61): download-arti
 # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
 # The id each download takes is another job's output, which that job's code can choose, and so the
 # artifact's name, so before any download each id is held to one number naming an artifact of this
-# run under the name its upload gives it; the download then prints that name alone. An empty id is
-# no download (its step's if:). The id, never a name, is what binds the download to the artifact
-# its job uploaded, which no later job can replace.
+# run under the name its upload gives it; the download then prints that name alone. The id, never a
+# name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+# An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
+# the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
+# an empty id passes only where the call's third word is false, which its step's env sets from the
+# gate's outputs where this run makes no such artifact for this job; anywhere else the job stops.
 artifact_named() {
   local found
-  if [ -z "$1" ]; then return 0; fi
+  if [ -z "$1" ]; then
+    if [ "$3" = false ]; then return 0; fi
+    echo "artifacts: this run makes $2 for this job, and its id is empty"
+    exit 1
+  fi
   if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then
     echo 'artifacts: an artifact id is not one number'
     exit 1
@@ -2179,14 +2188,24 @@ const rollbackRuns = (): Pinned => ({
 })
 // A credentialed job's artifact check, before its downloads (DPW-10): STOP_HEAD, ARTIFACT_NAMES and a call for
 // each artifact the job downloads, each id from the output its download reads (STEP_ENVS) held to the name its
-// upload gives it: the release's assembly, the build's image, an environment's previous assembly.
+// upload gives it: the release's assembly, the build's image, an environment's previous assembly. Each call's
+// third word says whether this run makes that artifact for the job: true where it always does (the synth's
+// assembly, and a rollback job's previous one, which runs only when the gate names a previous release), else a
+// step env value (DUE_ENVS) that reads false only where the gate's outputs say the artifact's upload doesn't
+// run or the download wouldn't, so an empty id never skips a download, and the checks and the diff that read
+// it, that the run has an artifact for (the tenth review's second attack: prod's previous release replaced
+// the upload action on disk, its job succeeded with no id, and prod-plan skipped the previous assembly's
+// check and the rollback diff).
 export const ARTIFACTS_STEP = "The artifacts' names"
 export const ARTIFACT_CALLS: Readonly<Record<string, readonly string[]>> = {
-  nonprod: ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$IMAGE_ID" image.tar'],
-  'prod-plan': ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$PREVIOUS_ID" assembly-previous-prod'],
-  prod: ['artifact_named "$ASSEMBLY_ID" assembly', 'artifact_named "$IMAGE_ID" image.tar'],
-  'rollback-nonprod': ['artifact_named "$PREVIOUS_ID" assembly-previous-nonprod'],
-  'rollback-prod': ['artifact_named "$PREVIOUS_ID" assembly-previous-prod'],
+  nonprod: ['artifact_named "$ASSEMBLY_ID" assembly true', 'artifact_named "$IMAGE_ID" image.tar "$IMAGE_DUE"'],
+  'prod-plan': [
+    'artifact_named "$ASSEMBLY_ID" assembly true',
+    'artifact_named "$PREVIOUS_ID" assembly-previous-prod "$PREVIOUS_DUE"',
+  ],
+  prod: ['artifact_named "$ASSEMBLY_ID" assembly true', 'artifact_named "$IMAGE_ID" image.tar "$IMAGE_DUE"'],
+  'rollback-nonprod': ['artifact_named "$PREVIOUS_ID" assembly-previous-nonprod true'],
+  'rollback-prod': ['artifact_named "$PREVIOUS_ID" assembly-previous-prod true'],
 }
 export const artifactNamesRun = (id: string) => [STOP_HEAD, ARTIFACT_NAMES, ...(ARTIFACT_CALLS[id] ?? [])].join('\n')
 // A credentialed job's other runs (DPW-10): before the credentials action its artifact check, its asset check, the
@@ -8243,12 +8262,14 @@ const ENV_KEYS = [
   'FIRST',
   'GATE_DIGEST',
   'GH_TOKEN',
+  'IMAGE_DUE',
   'IMAGE_ID',
   'MODE',
   'NONPROD_DIGEST',
   'PREVIOUS',
   'PREVIOUS_COMMIT',
   'PREVIOUS_DIGEST',
+  'PREVIOUS_DUE',
   'PREVIOUS_ID',
   'PLAN_ATTEMPT',
   'PLANNED',
@@ -8299,9 +8320,22 @@ const previousRelease = (stage: Stage) =>
 const ASSEMBLY_ID = expr('needs.synth.outputs.assembly')
 const IMAGE_ID = expr('needs.build.outputs.image')
 const previousId = (stage: Stage) => expr(`needs.synth-previous-${stage}.outputs.assembly`)
+// Whether this run makes an artifact for a job's download, as the string true or false: the gate's condition
+// for the artifact's upload (the build's job if:, the previous synth's upload if:) and the download's own if:
+// but for its id, both from the gate's outputs alone, which no job that makes an artifact can change. An
+// empty id passes ARTIFACT_NAMES only where this reads false.
+const due = (condition: string) => expr(`${condition} && 'true' || 'false'`)
+const DEPLOY_MODE = "needs.gate.outputs.mode == 'deploy'"
+export const DUE_ENVS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  nonprod: { IMAGE_DUE: due(`needs.gate.outputs.build == 'true' && ${DEPLOY_MODE}`) },
+  'prod-plan': { PREVIOUS_DUE: due(`needs.gate.outputs.previous_prod_commit != '' && ${DEPLOY_MODE}`) },
+  prod: {
+    IMAGE_DUE: due(`needs.gate.outputs.build == 'true' && ${DEPLOY_MODE} && needs.gate.outputs.target == 'prod'`),
+  },
+}
 const deployEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
   'The release this job deploys': RELEASE_ENV,
-  [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, IMAGE_ID },
+  [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, IMAGE_ID, ...DUE_ENVS[stage] },
   'Check the assembly': { RELEASE: RELEASE_OUTPUT },
   'The fast re-check':
     stage === 'nonprod'
@@ -8417,7 +8451,7 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'record-nonprod': recordEnv('nonprod'),
   'prod-plan': {
     'The release this job deploys': RELEASE_ENV,
-    [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, PREVIOUS_ID: previousId('prod') },
+    [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, PREVIOUS_ID: previousId('prod'), ...DUE_ENVS['prod-plan'] },
     'Check the assembly': { RELEASE: RELEASE_OUTPUT },
     'Check the previous assembly': { PREVIOUS: previousRelease('prod') },
     'Mask the account id': ACCOUNT_ENV,

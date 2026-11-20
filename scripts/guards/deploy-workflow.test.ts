@@ -67,6 +67,7 @@ import {
   DEPLOY_WORDS,
   DIFF_CUT,
   DIFF_RUN,
+  DUE_ENVS,
   deployStepFindings,
   ENVIRONMENT_JOBS,
   evaluatedLines,
@@ -11646,7 +11647,7 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
       // Each call names the artifact its download fetches by the name its upload gives it.
       const checked = new Map(
         calls.map(call => {
-          const [, variable, name] = /^artifact_named "\$(\w+)" (\S+)$/.exec(call) ?? []
+          const [, variable, name] = /^artifact_named "\$(\w+)" (\S+) (?:true|"\$\w+_DUE")$/.exec(call) ?? []
           const expression = env[variable ?? ''] ?? ''
           expect(uploadOf(expression), call).toBe(name)
           return [expression, name] as const
@@ -11681,12 +11682,19 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
         '#!/bin/bash\nprintf \'%s\\n\' "$@" >>"$GH_CALLS"\n[ -n "$GH_FAILS" ] && exit 1\nprintf \'%s\\n\' "$GH_ANSWER"\n',
         { mode: 0o755 },
       )
-      const run = (id: string, name: string, answer: string, fails = '') => {
+      const run = (id: string, name: string, answer: string, fails = '', due = 'true') => {
         const calls = join(dir, `calls-${Math.random().toString(36).slice(2)}`)
         writeFileSync(calls, '')
         const result = spawnSync(
           'bash',
-          ['-c', `set -euo pipefail\n${ARTIFACT_NAMES}\nartifact_named "$1" "$2"\necho checked`, '_', id, name],
+          [
+            '-c',
+            `set -euo pipefail\n${ARTIFACT_NAMES}\nartifact_named "$1" "$2" "$3"\necho checked`,
+            '_',
+            id,
+            name,
+            due,
+          ],
           {
             encoding: 'utf8',
             env: {
@@ -11711,8 +11719,18 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
         '--jq',
         '.name + " " + (.workflow_run.id | tostring)',
       ])
-      // No id is no download (its step's if:), and nothing is asked.
-      expect(run('', 'assembly', '')).toEqual({ status: 0, said: 'checked', calls: '' })
+      // No id is no download (its step's if:), and nothing is asked, only where the call says this run makes no
+      // such artifact for the job (false); anywhere else it stops, whatever the word (FLOW-A2-01, round 10).
+      expect(run('', 'assembly', '', '', 'false')).toEqual({ status: 0, said: 'checked', calls: '' })
+      for (const due of ['true', '', 'False', 'no', '0', ' false']) {
+        expect(run('', 'assembly', '', '', due), JSON.stringify(due)).toEqual({
+          status: 1,
+          said: 'artifacts: this run makes assembly for this job, and its id is empty',
+          calls: '',
+        })
+      }
+      // An id is checked whatever the word says.
+      expect(run('42', 'assembly', 'assembly 8', '', 'false').status).toBe(1)
       // An id that is not one number is refused before gh is asked.
       for (const id of ['x', '0', '01', '-1', '1 2', '42/../43', '1'.repeat(20), '42\n']) {
         expect(run(id, 'assembly', 'assembly 7'), JSON.stringify(id)).toEqual({
@@ -12255,4 +12273,248 @@ describe('Round 10, attack 1: the ways past the allowlist (DPW-10)', () => {
     for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(awsNameLines(text, name), name).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
   })
+})
+
+describe('Round 10, attack 2: the ways past the allowlist (DPW-10, DPW-14)', () => {
+  const ENV =
+    'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
+  const dpw10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+  const jobs = workflowJobs(deployText)
+  const jobOf = (id: string) => {
+    const found = jobs.find(each => each.id === id)
+    if (found === undefined) throw new Error(`no job ${id}`)
+    return found
+  }
+  // When this run makes each artifact, from the gate's outputs alone: the synth's assembly always (every job
+  // that downloads it needs the synth's success, and its upload has no if:), the image when the gate builds
+  // one, and an environment's previous assembly when the gate names a previous release.
+  const MADE_WHEN: Readonly<Record<string, string | undefined>> = {
+    'needs.synth.outputs.assembly': undefined,
+    'needs.build.outputs.image': "needs.gate.outputs.build == 'true'",
+    'needs.synth-previous-nonprod.outputs.assembly': "needs.gate.outputs.previous_nonprod_commit != ''",
+    'needs.synth-previous-prod.outputs.assembly': "needs.gate.outputs.previous_prod_commit != ''",
+  }
+  const DUE_SUFFIX = " && 'true' || 'false' }}"
+  // A due word's value as GitHub renders it, for the gate outputs given: true, or its condition read by the
+  // guard's own evaluateIf, which must know it.
+  const dueOf = (value: string, known: Readonly<Record<string, string>>) => {
+    if (value === 'true') return 'true'
+    expect(value.startsWith('${{ ') && value.endsWith(DUE_SUFFIX), value).toBe(true)
+    const verdict = evaluateIf(`\${{ ${value.slice(4, -DUE_SUFFIX.length)} }}`, known)
+    expect(verdict, value).toBeDefined()
+    return String(verdict)
+  }
+  const gate = (outputs: Readonly<Record<string, string>>) =>
+    Object.fromEntries(Object.entries(outputs).map(([key, value]) => [`needs.gate.outputs.${key}`, value]))
+  const COMMIT = 'a'.repeat(40)
+
+  // FLOW-A2-01: prod's previous release, rebuilt in synth-previous-prod, replaced the upload action on disk, so
+  // that job succeeded with no artifact id; prod-plan read the empty id as no previous release, skipped the
+  // previous assembly's ASSET_CHECK and the rollback diff, and the approval went ahead with a rollback that
+  // could only fail. Each call now says whether this run makes its artifact for the job, from the gate's
+  // outputs, and an empty id passes only where it doesn't.
+  it('names each artifact a job downloads as due wherever the gate says this run makes it (FLOW-A2-01)', () => {
+    // MADE_WHEN is the workflow's own: each upload's if: is that condition, or the build job's if: ends with it.
+    for (const [output, made] of Object.entries(MADE_WHEN)) {
+      const [, from, name] = /^needs\.([\w-]+)\.outputs\.(\w+)$/.exec(output) ?? []
+      const stepId = /^\$\{\{ steps\.([\w-]+)\.outputs\.artifact-id \}\}$/.exec(
+        JOB_OUTPUTS[from ?? '']?.[name ?? ''] ?? '',
+      )?.[1]
+      const producer = jobOf(from ?? '')
+      const upload = parsedSteps(producer).find(step => step.id === stepId)
+      expect(upload?.uses?.startsWith('actions/upload-artifact@'), output).toBe(true)
+      if (made === undefined || from === 'build') expect(upload?.if, output).toBeUndefined()
+      else expect(upload?.if, output).toBe(`\${{ ${made} }}`)
+      if (from === 'build') expect(jobScalar(producer, 'if')?.endsWith(` && ${made} }}`), output).toBe(true)
+    }
+    expect(Object.keys(DUE_ENVS).sort()).toEqual(['nonprod', 'prod', 'prod-plan'])
+    for (const [id, calls] of Object.entries(ARTIFACT_CALLS)) {
+      const consumer = jobOf(id)
+      const steps = parsedSteps(consumer)
+      const env = STEP_ENVS[id]?.[ARTIFACTS_STEP] ?? {}
+      for (const call of calls) {
+        const [, variable, word] = /^artifact_named "\$(\w+)" \S+ (true|"\$\w+")$/.exec(call) ?? []
+        expect(word, call).toBeDefined()
+        const ids = env[variable ?? ''] ?? ''
+        const made = MADE_WHEN[/^\$\{\{ (\S+) \}\}$/.exec(ids)?.[1] ?? '']
+        const download = steps.find(step => step.with.get('artifact-ids') === ids)
+        expect(download, call).toBeDefined()
+        const condition = download?.if ?? ''
+        const own = `\${{ ${ids.slice(4, -3)} != ''`
+        expect(condition.startsWith(own), call).toBe(true)
+        const rest = condition.slice(own.length, -3)
+        if (word === 'true') {
+          // Always due: the synth's assembly, or a rollback job's previous one, which runs only when the gate
+          // allows its rollback, which it does only beside a previous release.
+          const rollback = new RegExp(`needs\\.gate\\.outputs\\.rollback_${id.replace('rollback-', '')} == 'true'`)
+          expect(
+            made === undefined || (id.startsWith('rollback-') && rollback.test(jobScalar(consumer, 'if') ?? '')),
+            call,
+          ).toBe(true)
+          expect(rest, call).toBe('')
+        } else {
+          // Due exactly where the artifact's upload runs and its download would, with an id.
+          const name = word?.slice(2, -1) ?? ''
+          expect(name.endsWith('_DUE'), call).toBe(true)
+          expect(env[name], call).toBe(`\${{ ${made}${rest}${DUE_SUFFIX}`)
+          expect(DUE_ENVS[id]?.[name], call).toBe(env[name])
+        }
+      }
+    }
+  })
+
+  it('stops a credentialed job at the artifacts’ names when an artifact this run makes has no id (FLOW-A2-01)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hearth-r10-names-'))
+    try {
+      // A stand-in gh: records the endpoint it is asked for and answers this run's artifacts by their ids.
+      writeFileSync(
+        join(dir, 'gh'),
+        [
+          '#!/bin/bash',
+          'printf \'%s\\n\' "$2" >>"$GH_CALLS"',
+          'case "$2" in',
+          '  */artifacts/42) echo "assembly 7" ;;',
+          '  */artifacts/43) echo "assembly-previous-prod 7" ;;',
+          '  */artifacts/44) echo "image.tar 7" ;;',
+          '  */artifacts/45) echo "assembly-previous-nonprod 7" ;;',
+          '  *) exit 1 ;;',
+          'esac',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      )
+      // The job's pinned run, with its env as GitHub renders it for these gate outputs and these ids.
+      const run = (id: string, outputs: Readonly<Record<string, string>>, ids: Readonly<Record<string, string>>) => {
+        const calls = join(dir, `calls-${Math.random().toString(36).slice(2)}`)
+        writeFileSync(calls, '')
+        const known = gate(outputs)
+        const rendered = Object.fromEntries(
+          Object.entries(DUE_ENVS[id] ?? {}).map(([name, value]) => [name, dueOf(value, known)]),
+        )
+        const result = spawnSync('bash', ['-c', artifactNamesRun(id)], {
+          encoding: 'utf8',
+          env: {
+            PATH: `${dir}:/usr/bin:/bin`,
+            REPO: 'owner/repo',
+            GITHUB_RUN_ID: '7',
+            GH_TOKEN: 'fictional',
+            GH_CALLS: calls,
+            ...rendered,
+            ...ids,
+          },
+        })
+        const said = result.stdout
+          .split('\n')
+          .filter(line => line !== '' && !line.startsWith('::stop-commands::'))
+          .join('\n')
+        const asked = readFileSync(calls, 'utf8').trim()
+        return {
+          status: result.status,
+          said,
+          asked: asked === '' ? [] : asked.split('\n').map(each => each.split('/').pop()),
+        }
+      }
+      const deploy = { mode: 'deploy', target: 'prod', build: 'true', previous_prod_commit: COMMIT }
+      // The attack: prod has a previous release, and synth-previous-prod's output is empty. prod-plan's
+      // download of it, and so its check and the rollback diff, would skip; the names step now stops first.
+      const downloadIf = parsedSteps(jobOf('prod-plan')).find(
+        step => step.name === "Download prod's previous assembly",
+      )?.if
+      expect(evaluateIf(downloadIf ?? '', { ...gate(deploy), 'needs.synth-previous-prod.outputs.assembly': '' })).toBe(
+        false,
+      )
+      expect(run('prod-plan', deploy, { ASSEMBLY_ID: '42', PREVIOUS_ID: '' })).toEqual({
+        status: 1,
+        said: 'artifacts: this run makes assembly-previous-prod for this job, and its id is empty',
+        asked: ['42'],
+      })
+      expect(run('prod-plan', deploy, { ASSEMBLY_ID: '42', PREVIOUS_ID: '43' })).toEqual({
+        status: 0,
+        said: '',
+        asked: ['42', '43'],
+      })
+      // Prod's first deploy, a dispatched rollback and a restore have no previous release: no previous id.
+      for (const outputs of [
+        { ...deploy, previous_prod_commit: '' },
+        { mode: 'rollback', target: 'prod', build: 'false', previous_prod_commit: '' },
+        { mode: 'deploy', target: 'restore', build: 'false', previous_prod_commit: '' },
+      ]) {
+        expect(run('prod-plan', outputs, { ASSEMBLY_ID: '42', PREVIOUS_ID: '' }), JSON.stringify(outputs)).toEqual({
+          status: 0,
+          said: '',
+          asked: ['42'],
+        })
+      }
+      // A rollback job always needs its previous assembly.
+      for (const [id, previous] of [
+        ['rollback-prod', '43'],
+        ['rollback-nonprod', '45'],
+      ] as const) {
+        const name = `assembly-previous-${id.replace('rollback-', '')}`
+        expect(run(id, deploy, { PREVIOUS_ID: '' }), id).toEqual({
+          status: 1,
+          said: `artifacts: this run makes ${name} for this job, and its id is empty`,
+          asked: [],
+        })
+        expect(run(id, deploy, { PREVIOUS_ID: previous }), id).toEqual({ status: 0, said: '', asked: [previous] })
+      }
+      // The image, where the gate builds one; and the synth's assembly, always.
+      for (const id of ['nonprod', 'prod']) {
+        expect(run(id, deploy, { ASSEMBLY_ID: '42', IMAGE_ID: '' }), id).toEqual({
+          status: 1,
+          said: 'artifacts: this run makes image.tar for this job, and its id is empty',
+          asked: ['42'],
+        })
+        expect(run(id, deploy, { ASSEMBLY_ID: '42', IMAGE_ID: '44' }), id).toEqual({
+          status: 0,
+          said: '',
+          asked: ['42', '44'],
+        })
+        expect(
+          run(id, { mode: 'rollback', target: id, build: 'false' }, { ASSEMBLY_ID: '42', IMAGE_ID: '' }),
+          id,
+        ).toEqual({
+          status: 0,
+          said: '',
+          asked: ['42'],
+        })
+        expect(run(id, deploy, { ASSEMBLY_ID: '', IMAGE_ID: '44' }), id).toEqual({
+          status: 1,
+          said: 'artifacts: this run makes assembly for this job, and its id is empty',
+          asked: [],
+        })
+      }
+      expect(
+        run('prod', { mode: 'deploy', target: 'restore', build: 'false' }, { ASSEMBLY_ID: '42', IMAGE_ID: '' }),
+      ).toEqual({ status: 0, said: '', asked: ['42'] })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a due word turned false, dropped or read from elsewhere (FLOW-A2-01)', () => {
+    const due = DUE_ENVS['prod-plan']?.PREVIOUS_DUE ?? ''
+    expect(deployText).toContain(`          PREVIOUS_DUE: ${due}\n`)
+    for (const to of [
+      `          PREVIOUS_DUE: 'false'\n`,
+      `          PREVIOUS_DUE: \${{ needs.synth-previous-prod.outputs.assembly != '' && 'true' || 'false' }}\n`,
+      '',
+    ]) {
+      expect(credentialed(plant(`          PREVIOUS_DUE: ${due}\n`, to, job('prod-plan'))), to).toContain(
+        dpw10(`prod-plan (${ARTIFACTS_STEP})`, ENV),
+      )
+    }
+    // The call's word, and the function's own refusal, are the pinned run's: changing either changes it.
+    for (const [from, to] of [
+      [
+        'artifact_named "$PREVIOUS_ID" assembly-previous-prod "$PREVIOUS_DUE"\n',
+        'artifact_named "$PREVIOUS_ID" assembly-previous-prod false\n',
+      ],
+      ['            if [ "$3" = false ]; then return 0; fi\n', '            return 0\n'],
+    ] as const) {
+      expect(credentialed(plant(from, to, job('prod-plan'))), to).not.toEqual([])
+    }
+    expect(credentialed(workflows)).toEqual([])
+  }, 30_000)
 })
