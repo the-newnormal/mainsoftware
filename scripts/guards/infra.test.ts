@@ -1,8 +1,9 @@
 // The infra source guard (IG, C0.11; TECH-SPEC T24 item 28): what the CDK app's source must and
 // mustn't hold, before any template is synthesised. Each case is first proved on planted text, then
 // held over the repository. The templates themselves are the assertion tests' (IAC, infra/**/*.test.ts).
-// Cases so far (C0.11 PR 1 and PR 2): IG-01 to IG-12, and C11-D62's synth:lz script, with no hook
-// around it and no script-shell in a root .npmrc, and its ci.yml step.
+// Cases so far (C0.11 PR 1 to PR 3): IG-01 to IG-12, and C11-D62's synth scripts (synth:lz, and from
+// PR 3 the workload's synth, the pipeline's, and synth:ci, CI's), with no hook around any of them and
+// no script-shell in a root .npmrc, and their ci.yml steps.
 // This file and infra.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -41,6 +42,7 @@ import {
   reasonFormLines,
   regionFindings,
   ruleFindings,
+  SYNTH_HOOKS,
   scriptFindings,
   shellFunction,
   synthHookProblems,
@@ -62,7 +64,7 @@ const workspaces: Workspace[] = files
   })
 
 describe('IG: the guard reads the infra workspace', () => {
-  it('finds both entries, the configuration and its tests, the landing zone, the helper and the bootstrap template, so no rule passes by reading nothing', () => {
+  it('finds both entries, the configuration and its tests, the landing zone, the workload, the release floors, the helper and the bootstrap template, so no rule passes by reading nothing', () => {
     expect(infraScripts).toEqual(
       expect.arrayContaining([
         'infra/bin/workload.ts',
@@ -76,6 +78,11 @@ describe('IG: the guard reads the infra workspace', () => {
         'infra/src/foundation/log-archive.ts',
         'infra/src/baseline/break-glass.ts',
         'infra/src/aspects/nag.ts',
+        // C0.11 PR 3's folders: the workload's stacks, the release floors and the boundary aspect.
+        'infra/src/workload/stage.ts',
+        'infra/src/workload/endpoints.ts',
+        'infra/src/release/floors.ts',
+        'infra/src/aspects/boundary.ts',
       ]),
     )
     expect(files).toEqual(expect.arrayContaining(['infra/bin/break-glass.sh', 'infra/bootstrap/hearth-bootstrap.yaml']))
@@ -616,9 +623,26 @@ describe('IG-08 (C11-D24, C11-D58): what infra imports', () => {
     expect(workloadGraphFindings(graph.files)).toEqual([])
   })
 
-  it('the rollback floors’ check, once it exists (C0.11 PR 4), loads no npm package', () => {
+  // The pipeline's gate runs the floors without npm ci, so floors.ts imports nothing (C11-D58): held
+  // here from now, not only once PR 4's check exists to import it.
+  it('the rollback floors import nothing, found on floors.ts with an npm import planted in it', () => {
+    const floors = 'infra/src/release/floors.ts'
     const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
-    const graph = importGraph('infra/scripts/deploy/floors-check.ts', read, importsOf)
+    const planted = (path: string) => (path === floors ? `import { z } from 'zod'\n${read(path) ?? ''}` : read(path))
+    const plantedGraph = importGraph(floors, planted, importsOf)
+    expect(plantedGraph.specifiers).not.toEqual(new Map([[floors, []]]))
+    expect(packageFindings(plantedGraph.specifiers)).toContain(`${floors}: IG-08 loads zod, but runs without npm ci`)
+    const graph = importGraph(floors, read, importsOf)
+    expect(graph.specifiers).toEqual(new Map([[floors, []]]))
+  })
+
+  // PR 4 adds the check with the deploy workflow, so once the workflow exists a check under another
+  // name fails here, rather than leaving this case reading nothing.
+  it('the rollback floors’ check loads no npm package, and is there once the deploy workflow is (C0.11 PR 4)', () => {
+    const check = 'infra/scripts/deploy/floors-check.ts'
+    const read = (path: string) => (existsSync(join(root, path)) ? readRepoFile(path) : undefined)
+    const graph = importGraph(check, read, importsOf)
+    if (existsSync(join(root, '.github/workflows/deploy.yml'))) expect(graph.files).toContain(check)
     expect(packageFindings(graph.specifiers)).toEqual([])
   })
 })
@@ -1668,7 +1692,7 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
     const afterAssume = (line: string) =>
       plant('assume_role || exit 1\nopen_session\n', `assume_role || exit 1\n${line}\nopen_session\n`)
     const inRc = (line: string) =>
-      plant('unset HISTFILE\nhearth_bg_prompt', `unset HISTFILE\n${line}\nhearth_bg_prompt`)
+      plant('LESSHISTFILE=-\nhearth_bg_prompt', `LESSHISTFILE=-\n${line}\nhearth_bg_prompt`)
     const afterModeCheck = (line: string) =>
       plant("(docs/runbooks/break-glass.md)'\nfi\n", `(docs/runbooks/break-glass.md)'\nfi\n${line}\n`)
     const profile = 'profile="hearth-$environment-entry"\n'
@@ -1683,7 +1707,20 @@ describe('IG-09 (C11-D11 to C11-D15): the break-glass helper refuses agents, iso
         inRc(`awk 'BEGIN { for (k in ENVIRON) print k, ENVIRON[k] }' >"$HOME/session.env"`),
         ['IG-09i'],
       ],
-      ['i: the rc keeps history', plant('unset HISTFILE\nhearth_bg_prompt', 'hearth_bg_prompt'), ['IG-09i']],
+      ['i: the rc keeps history', plant('unset HISTFILE\nexport PSQL_HISTORY', 'export PSQL_HISTORY'), ['IG-09i']],
+      [
+        'i: the rc keeps psql’s and its pager’s history',
+        plant('export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-\nhearth_bg_prompt', 'hearth_bg_prompt'),
+        ['IG-09i'],
+      ],
+      [
+        'i: the rc lets a psqlrc set psql’s history file',
+        plant(
+          'export PSQL_HISTORY=/dev/null PSQLRC=/dev/null LESSHISTFILE=-',
+          'export PSQL_HISTORY=/dev/null LESSHISTFILE=-',
+        ),
+        ['IG-09i'],
+      ],
       ['i: the shell keeps history', plant(' HISTFILE=/dev/null \\\n', ' \\\n'), ['IG-09i']],
       [
         'i: a line appended to the rc after it is written',
@@ -2222,18 +2259,43 @@ describe('IG-12 (C11-D76): no asset the CLI would run or build', () => {
   }, 30_000)
 })
 
-describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it after the tests with no AWS credential', () => {
-  const synth: string = JSON.parse(readRepoFile('infra/package.json')).scripts['synth:lz']
+describe('C11-D62: the synth scripts run credential-free and offline, and CI runs synth:lz and synth:ci after the tests with no AWS credential', () => {
+  const scripts: Record<string, string> = JSON.parse(readRepoFile('infra/package.json')).scripts
+  const synthLz = scripts['synth:lz'] ?? ''
+  const synth = scripts.synth ?? ''
+  const synthCi = scripts['synth:ci'] ?? ''
 
-  it('the script drops the environment, makes a HOME, and synthesises the landing-zone entry with no lookups', () => {
-    expect(synthScriptProblems(synth)).toEqual([])
-    expect(scriptFindings('infra/package.json', { scripts: { 'synth:lz': synth } })).toEqual([])
+  it('each script drops the environment, makes a HOME, and synthesises its entry with no lookups: synth:lz the landing zone over the fixture, synth the workload over the release npm appends, synth:ci the workload over a fake release', () => {
+    expect(synthScriptProblems(synthLz, 'synth:lz')).toEqual([])
+    expect(synthScriptProblems(synth, 'synth')).toEqual([])
+    expect(synthScriptProblems(synthCi, 'synth:ci')).toEqual([])
+    for (const name of ['synth:lz', 'synth', 'synth:ci']) {
+      expect(scriptFindings('infra/package.json', { scripts: { [name]: scripts[name] } }), name).toEqual([])
+    }
+    // The three strings, written out here, so a change to the guard's own constants fails too.
+    const environment =
+      'PATH="$PATH" HOME="$(mktemp -d)" AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true'
+    const flags = '--no-lookups --no-notices --quiet'
+    expect(synthLz).toBe(`env -i ${environment} HEARTH_FIXTURE=1 cdk synth --app 'node bin/landing-zone.ts' ${flags}`)
+    expect(synth).toBe(`env -i ${environment} cdk synth --app 'node bin/workload.ts' ${flags}`)
+    expect(synthCi).toBe(`env -i ${environment} HEARTH_FAKE_RELEASE=1 cdk synth --app 'node bin/workload.ts' ${flags}`)
+    // Each script is held to its own string: one passed off as another is found.
+    expect(synthScriptProblems(synthCi, 'synth')).toEqual([
+      expect.stringMatching(/^infra\/package\.json synth: C11-D62 sets exactly /),
+    ])
+    expect(synthScriptProblems(synth, 'synth:lz')).toEqual([
+      expect.stringMatching(/^infra\/package\.json synth:lz: C11-D62 sets exactly /),
+      "infra/package.json synth:lz: C11-D62 runs cdk synth --app 'node bin/landing-zone.ts'",
+    ])
   })
 
-  it('finds each change planted in a copy', () => {
+  it('finds each change planted in a copy of synth:lz', () => {
     const changed = (from: string, to: string) => {
-      expect(synth).toContain(from)
-      return synthScriptProblems(synth.replace(from, () => to))
+      expect(synthLz).toContain(from)
+      return synthScriptProblems(
+        synthLz.replace(from, () => to),
+        'synth:lz',
+      )
     }
     const env = expect.stringMatching(/C11-D62 sets exactly /)
     expect(changed('HEARTH_FIXTURE=1', 'AWS_PROFILE=x HEARTH_FIXTURE=1')).toEqual([env])
@@ -2270,9 +2332,47 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
     expect(changed('env -i ', 'env -i\n')).toEqual(whole)
   })
 
+  it('finds each change planted in a copy of synth, the pipeline’s, which never takes the fake release, and of synth:ci', () => {
+    const changed = (which: 'synth' | 'synth:ci', from: string, to: string) => {
+      const script = which === 'synth' ? synth : synthCi
+      expect(script).toContain(from)
+      return synthScriptProblems(
+        script.replace(from, () => to),
+        which,
+      )
+    }
+    const env = (which: string) =>
+      expect.stringMatching(new RegExp(`^infra/package\\.json ${which}: C11-D62 sets exactly `))
+    const whole = (which: string) =>
+      expect.stringMatching(
+        new RegExp(
+          `^infra/package\\.json ${which}: C11-D62 is exactly env -i .* --quiet, one command, so nothing runs outside env -i$`,
+        ),
+      )
+    const tail = 'CDK_DISABLE_VERSION_CHECK=true'
+    // The pipeline's synth with the marker, which would render CI's fake release in place of the real one.
+    expect(changed('synth', tail, `${tail} HEARTH_FAKE_RELEASE=1`)).toEqual([env('synth')])
+    expect(changed('synth', tail, `${tail} AWS_PROFILE=x`)).toEqual([env('synth')])
+    expect(changed('synth', 'HOME="$(mktemp -d)"', 'HOME="$HOME"')).toEqual([env('synth')])
+    expect(changed('synth', ' --no-lookups', '')).toEqual(['infra/package.json synth: C11-D62 passes --no-lookups'])
+    expect(changed('synth', ' --quiet', ' --quiet && cdk ls')).toEqual([whole('synth')])
+    expect(changed('synth', "--app 'node bin/workload.ts'", "--app 'node bin/landing-zone.ts'")).toEqual([
+      "infra/package.json synth: C11-D62 runs cdk synth --app 'node bin/workload.ts'",
+    ])
+    // A release written into the script: the pipeline appends its own (C11-D51), and the committed
+    // string holds none.
+    expect(changed('synth', ' --quiet', ' --quiet -c release=x')).toEqual([whole('synth')])
+    // CI's synth with the fixture's marker in place of the fake release's.
+    expect(changed('synth:ci', 'HEARTH_FAKE_RELEASE=1', 'HEARTH_FIXTURE=1')).toEqual([env('synth:ci')])
+    expect(changed('synth:ci', ' HEARTH_FAKE_RELEASE=1', '')).toEqual([env('synth:ci')])
+    expect(changed('synth:ci', ' --quiet', ' --quiet --role-arn x')).toEqual([
+      'infra/package.json synth:ci: C11-D62 passes no --role-arn',
+    ])
+  })
+
   // npm runs a pre or post hook, and a root .npmrc's script-shell, with the caller's environment,
   // outside env -i; IG-07 lets `cdk ls` stand in any script, so these two pins are what find one.
-  it('npm runs no hook around it, and no tracked root .npmrc names a script shell', () => {
+  it('npm runs no hook around any of them, and no tracked root .npmrc names a script shell', () => {
     const manifest = JSON.parse(readRepoFile('infra/package.json'))
     expect(synthHookProblems(manifest)).toEqual([])
     const tracked = execFileSync('git', ['ls-files', '--cached', '--', '.npmrc'], { cwd: root, encoding: 'utf8' })
@@ -2294,11 +2394,31 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
     expect(hooked(plant('    "pre\\u0073ynth:lz": "cdk ls",\n'))).toEqual([pre])
     // IG-07 passes each of them, which is why this pin exists.
     expect(scriptFindings('infra/package.json', JSON.parse(plant('    "presynth:lz": "cdk ls",\n')))).toEqual([])
-    // Hooks of other scripts, and a script whose name only starts like one, are not synth:lz's.
-    expect(hooked(plant('    "pretypecheck": "true",\n    "presynth:lzx": "true",\n'))).toEqual([])
+    // Hooks of other scripts, and a script whose name only starts like one, are not the synths'.
+    expect(
+      hooked(plant('    "pretypecheck": "true",\n    "presynth:lzx": "true",\n    "presynthx": "true",\n')),
+    ).toEqual([])
+    // The workload's two scripts' hooks too (C0.11 PR 3), each found by name.
+    expect([...SYNTH_HOOKS]).toEqual([
+      'presynth',
+      'postsynth',
+      'presynth:ci',
+      'postsynth:ci',
+      'presynth:lz',
+      'postsynth:lz',
+    ])
+    const hook = (name: string) =>
+      `infra/package.json ${name}: C11-D62 no ${name} script: npm runs it with the caller's environment, outside env -i`
+    expect(hooked(plant('    "presynth": "cdk ls",\n'))).toEqual([hook('presynth')])
+    expect(hooked(plant(`    "postsynth:ci": "cdk ls --app 'node bin/workload.ts'",\n`))).toEqual([
+      hook('postsynth:ci'),
+    ])
+    expect(
+      hooked(plant('    "postsynth": "true",\n    "presynth:ci": "true",\n    "postsynth:lz": "true",\n')),
+    ).toEqual([hook('postsynth'), hook('presynth:ci'), hook('postsynth:lz')])
 
     const shell = [
-      ".npmrc: C11-D62 sets no script-shell: npm hands synth:lz to it with the caller's environment, before env -i",
+      ".npmrc: C11-D62 sets no script-shell: npm hands the synth scripts to it with the caller's environment, before env -i",
     ]
     expect(npmrcProblems('script-shell=./scripts/sh.sh\n')).toEqual(shell)
     expect(npmrcProblems('engine-strict=true\n"script-shell" = /bin/bash\n')).toEqual(shell)
@@ -2307,7 +2427,7 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
     expect(npmrcProblems('engine-strict=true\nsave-exact=true\n; script-shell=bash\n# script-shell=bash\n')).toEqual([])
   }, 30_000)
 
-  it('ci.yml runs it straight after npm test, and holds no id-token, credentials action or AWS_ variable', () => {
+  it('ci.yml runs synth:lz straight after npm test and synth:ci straight after it, and holds no id-token, credentials action or AWS_ variable', () => {
     const ci = readRepoFile('.github/workflows/ci.yml')
     const stepsOf = (text: string) => workflowJobs(text).find(job => job.id === 'check')?.steps ?? []
     expect(stepsOf(ci).length).toBeGreaterThan(10)
@@ -2321,12 +2441,35 @@ describe('C11-D62: synth:lz runs credential-free and offline, and CI runs it aft
     const step = [
       '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:lz -w @hearth/infra straight after npm test, each step its run line alone',
     ]
+    const ciStep = [
+      '.github/workflows/ci.yml: C11-D62 the check job runs npm run synth:ci -w @hearth/infra straight after synth:lz, its run line alone',
+    ]
     const synthStep = '      - run: npm run synth:lz -w @hearth/infra\n'
-    expect(planted(synthStep, '')).toEqual(step)
+    const synthCiStep = '      - run: npm run synth:ci -w @hearth/infra\n'
+    // With synth:lz gone, synth:ci stands where it was, one step early.
+    expect(planted(synthStep, '')).toEqual([...step, ...ciStep])
     expect(planted(synthStep, '      - if: false\n        run: npm run synth:lz -w @hearth/infra\n')).toEqual(step)
     expect(planted(synthStep, `${synthStep}        continue-on-error: true\n`)).toEqual(step)
-    expect(planted('      - run: npm test\n', '      - if: false\n        run: npm test\n')).toEqual(step)
-    expect(planted('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')).toEqual(step)
+    expect(planted('      - run: npm test\n', '      - if: false\n        run: npm test\n')).toEqual([
+      ...step,
+      ...ciStep,
+    ])
+    expect(planted('      - run: npm test\n', '      - run: npm test\n        continue-on-error: true\n')).toEqual([
+      ...step,
+      ...ciStep,
+    ])
+    // CI's workload synth gone, moved, skipped, let fail, or the pipeline's in its place, which refuses
+    // with no release, so CI would go red for a reason that isn't the change's, or green on nothing.
+    expect(planted(synthCiStep, '')).toEqual(ciStep)
+    expect(planted(synthCiStep, '      - run: npm run synth -w @hearth/infra\n')).toEqual(ciStep)
+    expect(planted(synthCiStep, '      - if: false\n        run: npm run synth:ci -w @hearth/infra\n')).toEqual(ciStep)
+    expect(planted(synthCiStep, `${synthCiStep}        continue-on-error: true\n`)).toEqual(ciStep)
+    const swapped = ci
+      .replace(synthStep, () => '@@lz@@')
+      .replace(synthCiStep, () => synthStep)
+      .replace('@@lz@@', () => synthCiStep)
+    expect(swapped).not.toBe(ci)
+    expect(ciSynthProblems(swapped, stepsOf(swapped))).toEqual([...step, ...ciStep])
     expect(planted('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n')).toEqual([
       '.github/workflows/ci.yml: C11-D62 no job may ask for an id-token',
       '.github/workflows/ci.yml: C11-D62 the top-level permissions are contents: read alone',

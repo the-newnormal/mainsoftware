@@ -7,7 +7,8 @@
 // what it inherits. A deferral item 50 gives no step (attachments) names none, so neither case
 // asks for one. The guard checks that each step's row carries PR 3b's part, not every word of it;
 // review still reads the part itself. Both cases are first proved on planted text. LS-03 to LS-05
-// (C0.10, LCG-06) hold the same for T23 items 1 and 20, below.
+// (C0.10, LCG-06) hold the same for T23 items 1 and 20, below, and LS-06 (C0.11, C11-D70) for T24
+// item 33: every step it names has a BUILD-PLAN row that names C0.11.
 import { describe, expect, it } from 'vitest'
 import { readRepoFile } from './repo-files'
 
@@ -237,5 +238,72 @@ describe('C0.10 T23 items 1 and 20: what C0.10 defers is in each later step’s 
     expect(steps.has('C6.1')).toBe(true)
     expect(steps.has('A2.3')).toBe(true)
     expect(unlisted(steps, t23InheritedBy(item20))).toEqual([])
+  })
+})
+
+// LS-06 (C0.11, C11-D70): the same for C0.11's T24. Item 33's "What later steps inherit" names in
+// bold each step C0.11 leaves work to, gathering what the design gives each BUILD-PLAN row and what
+// T24's other items leave to a later step, so none is left only in an item's prose. A step there is
+// a BUILD-PLAN step or requirement, as LS-02 reads one, and its row must name C0.11, so planning that
+// step meets what it inherits. The case reads only item 33's bold names, so a bullet with no row,
+// or whose row has lost C0.11, is found; review still reads the duty itself.
+function t24InheritedBy(item33: string): Set<string> {
+  const start = item33.indexOf('**What later steps inherit')
+  if (start === -1) throw new Error('T24 item 33 has no "What later steps inherit" heading')
+  const ids = new Set<string>()
+  for (const [, name = ''] of item33.slice(start).matchAll(/\*\*([^*]+?):\*\*/g)) {
+    const id = name.split(' ')[0] ?? ''
+    if (STEP_ID.test(id)) ids.add(id)
+  }
+  return ids
+}
+
+// LS-06: each step item 33 lists whose BUILD-PLAN row is missing or doesn't name C0.11.
+const unwrittenT24 = (plan: string, inherited: ReadonlySet<string>): string[] =>
+  [...inherited].filter(id => !rowOf(plan, id)?.includes('C0.11'))
+
+const T24_SPEC = [
+  '',
+  '## T24: x',
+  '32. **The foothold table.** Not a list (C9.9).',
+  '33. **What later steps inherit (C11-D73’s later halves).** Each also in its BUILD-PLAN row:',
+  '    - **C0.12:** RDS. **C0.13:** alarms.',
+  '    - **C0.17:** the restore stage’s drill pieces.',
+  '    - **REC-23:** recordings kept as C0.11 left them.',
+  '    - **The pipeline:** not a step.',
+  '34. **The dated record.** (C8.8)',
+  '## Tooling that enforces these',
+].join('\n')
+
+const T24_PLAN = [
+  '| **C0.12** Data plane | From C0.11 (TECH-SPEC T24 item 33): RDS. | C0.11 |  |',
+  '| **C0.13** Observability | Alarms, from nothing. | C0.12 |  |',
+  '| REC-23 | P0 | core | Recordings, from C0.11’s buckets | REC-01 |  |',
+].join('\n')
+
+// The real BUILD-PLAN with one step's row stripped of every "C0.11", for the planted miss.
+const withoutC011 = (plan: string, id: string): string =>
+  plan
+    .split('\n')
+    .map(line => (line.startsWith(`| **${id}** `) ? line.replaceAll('C0.11', 'C0.x') : line))
+    .join('\n')
+
+describe('C0.11 T24 item 33: what C0.11 leaves to later steps is in each one’s BUILD-PLAN row', () => {
+  it('finds an unwritten row and a step with no row on planted text, and passes written ones', () => {
+    const inherited = t24InheritedBy(itemOf(sectionOf(T24_SPEC, 'T24'), 33))
+    expect([...inherited].sort()).toEqual(['C0.12', 'C0.13', 'C0.17', 'REC-23'])
+    expect(unwrittenT24(T24_PLAN, inherited).sort()).toEqual(['C0.13', 'C0.17'])
+  })
+
+  it('LS-06 (C11-D70): every step in T24 item 33’s inherit list has a BUILD-PLAN row naming C0.11', () => {
+    const inherited = t24InheritedBy(itemOf(sectionOf(readRepoFile('docs/TECH-SPEC.md'), 'T24'), 33))
+    // Item 33 names these steps, so a smaller match would mean the guard reads too little.
+    for (const id of ['C0.12', 'C0.13', 'C0.15', 'C0.17', 'C0.19', 'C1.11', 'C1.12']) {
+      expect(inherited.has(id), id).toBe(true)
+    }
+    const plan = readRepoFile('docs/BUILD-PLAN.md')
+    expect(unwrittenT24(plan, inherited)).toEqual([])
+    // A copy of the real plan whose C1.11 row has lost C0.11 is found, so the case reads real rows.
+    expect(unwrittenT24(withoutC011(plan, 'C1.11'), inherited)).toEqual(['C1.11'])
   })
 })

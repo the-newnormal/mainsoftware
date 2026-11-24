@@ -54,8 +54,10 @@ import {
 } from '../config/names.ts'
 import { REGION } from '../config/profiles.ts'
 import {
+  APP_ASSETS,
   APP_DEPLOY,
   APP_EXEC,
+  APP_PUBLISH,
   BASE_ASSETS,
   BASE_DEPLOY,
   BASE_PUBLISH,
@@ -78,11 +80,13 @@ import {
   NO_OTHER_WAYS_IN,
   OAAR,
   OIDC_PROVIDER_WRITES,
+  OTHER_WAYS_IN,
   ROUTE_OUT_ACTIONS,
   RULE9_EXEC,
   RULE9_ROLE_WRITES,
   smsDenies,
   TASK_ROLE,
+  WORKLOAD_STACKS,
 } from './denies.ts'
 import type { ResolvedLandingZoneOptions } from './options.ts'
 
@@ -459,9 +463,10 @@ function logProtectStatements(): IamStatement[] {
 }
 
 // hearth-workload-fences (Workloads OU): sessions into tasks and the bastion by break-glass alone,
-// the one-off tasks by the deploy role alone, each database login by its own role alone, and
-// hearthbase's staging bucket written by its file-publishing role alone (C11-D05, C11-D12, C11-D26,
-// C11-D78).
+// the one-off tasks by the deploy role alone, each database login by its own role alone,
+// hearthbase's and hearthapp's staging buckets written by their own file-publishing roles alone, the
+// workload stacks and hearthapp's toolkit changed by hearthapp's deploy role alone, and no other way
+// into a VPC than the bastion (C11-D05, C11-D12, C11-D26, C11-D40, C11-D78; TECH-SPEC T24 item 28).
 function workloadFenceStatements(): IamStatement[] {
   const logins = [
     DB_LOGIN.bootstrap,
@@ -543,6 +548,32 @@ function workloadFenceStatements(): IamStatement[] {
       Resource: BASE_ASSETS(),
       Condition: exceptFor(BASE_PUBLISH),
     },
+    // The workload stacks keep the hearthapp execution role, and anyone who may update a stack uses its
+    // stored role without passing it, so they and hearthapp's toolkit stack change only through
+    // hearthapp's deploy role (C11-D26; TECH-SPEC T24 item 28). The patterns name the four parts, never
+    // Hearth-<env>-*, which would take in the Baselines; C0.12's Edge stacks join with C0.12's change.
+    {
+      Sid: 'WorkloadStacksOnlyItsDeploy',
+      Effect: 'Deny',
+      Action: CFN_WRITE_ACTIONS,
+      Resource: WORKLOAD_STACKS().map(stack => anywhere('cloudformation', `stack/${stack}/*`)),
+      Condition: exceptFor(APP_DEPLOY),
+    },
+    // CloudFormation runs each workload stack's template from hearthapp's staging bucket as the hearthapp
+    // execution role, so only hearthapp's file-publishing role, which only hearth-gh-deploy may assume,
+    // writes it or its objects, and nobody changes its configuration or policy (C11-D26).
+    {
+      Sid: 'HearthappAssetsOnlyItsPublisher',
+      Effect: 'Deny',
+      Action: BUCKET_WRITE_ACTIONS,
+      Resource: APP_ASSETS(),
+      Condition: exceptFor(APP_PUBLISH),
+    },
+    // The bastion's port forward is the only way into a workload VPC (C11-D40), so no one, the pipeline
+    // and break-glass included, makes a Client VPN, an Instance Connect endpoint, an endpoint service,
+    // Verified Access, or VPC Lattice's resource gateway, target group or VPC association (TECH-SPEC T24
+    // item 13). An interface endpoint to a non-AWS service is held by IAC-12's exact set instead.
+    { Sid: 'NoOtherWayIn', Effect: 'Deny', Action: OTHER_WAYS_IN, Resource: '*' },
   ]
 }
 
@@ -793,7 +824,7 @@ export function guardrailPolicies(config: LandingZoneConfig, options: ResolvedLa
       name: SCP_NAMES.workloadFences,
       type: scp,
       description:
-        "Sessions, the bastion, one-off tasks, database logins and hearthbase's staging bucket (C11-D05, C11-D12, C11-D26, C11-D78)",
+        'Sessions, the bastion, one-off tasks, database logins, the staging buckets, the workload stacks and other ways in (C11-D05, C11-D12, C11-D26, C11-D40, C11-D78)',
       document: document(workloadFenceStatements()),
       targets: [workloads],
     },

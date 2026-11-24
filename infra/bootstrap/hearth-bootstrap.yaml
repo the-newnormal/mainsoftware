@@ -1731,6 +1731,17 @@
                   ]
                 },
                 {
+                  "Sid": "HearthReadParameters",
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:GetParameter",
+                    "ssm:GetParameters"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/hearth/*"
+                  }
+                },
+                {
                   "Sid": "Refactor",
                   "Effect": "Allow",
                   "Action": [

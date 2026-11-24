@@ -63,33 +63,61 @@ export const DOCUMENT_PROPERTIES: Readonly<Record<string, readonly string[]>> = 
   'AWS::SSO::PermissionSet': ['InlinePolicy'],
 }
 
-// The resource types the landing-zone and bootstrap templates hold, and the helper tests plant, that
-// hold no IAM policy document, each read against its CloudFormation schema: a parameter's Policies
-// are its expiry and notification rules, a topic's DataProtectionPolicy and ArchivePolicy and a
-// subscription's filter, delivery and redrive policies are SNS's own, and a role's or permission
-// set's ARN properties (a boundary, a managed policy) are read by managedPolicyAttachments. A type
-// in neither this list nor DOCUMENT_PROPERTIES is reported unreadable, so a new one is classified, by
-// a reviewed change to this owner's-read file, before any check over the statements passes.
+// The resource types the landing-zone, bootstrap and workload templates hold, and the helper tests
+// plant, that hold no IAM policy document, each read against its CloudFormation schema: a parameter's
+// Policies are its expiry and notification rules, a topic's DataProtectionPolicy and ArchivePolicy and
+// a subscription's filter, delivery and redrive policies are SNS's own, a role's or permission set's
+// ARN properties (a boundary, a managed policy) are read by managedPolicyAttachments, a Lambda
+// function's permissions are separate AWS::Lambda::Permission resources, a secret's resource policy is
+// a separate AWS::SecretsManager::ResourcePolicy, and the default security group's custom resource
+// takes only the account and the group's id (C0.11 PR 3's workload). A type in neither this list nor
+// DOCUMENT_PROPERTIES is reported unreadable, so a new one is classified, by a reviewed change to this
+// owner's-read file, before any check over the statements passes.
 export const NO_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
   'AWS::AccessAnalyzer::Analyzer',
   'AWS::Budgets::Budget',
   'AWS::CE::AnomalyMonitor',
   'AWS::CE::AnomalySubscription',
+  'AWS::CertificateManager::Certificate',
   'AWS::CloudTrail::Trail',
   'AWS::CloudWatch::Alarm',
+  'AWS::EC2::FlowLog',
+  'AWS::EC2::InternetGateway',
+  'AWS::EC2::Route',
+  'AWS::EC2::RouteTable',
+  'AWS::EC2::SecurityGroup',
+  'AWS::EC2::SecurityGroupEgress',
+  'AWS::EC2::SecurityGroupIngress',
+  'AWS::EC2::Subnet',
+  'AWS::EC2::SubnetRouteTableAssociation',
+  'AWS::EC2::VPC',
+  'AWS::EC2::VPCGatewayAttachment',
+  'AWS::ECS::Cluster',
+  'AWS::ECS::Service',
+  'AWS::ECS::TaskDefinition',
+  'AWS::ElastiCache::ParameterGroup',
+  'AWS::ElastiCache::ReplicationGroup',
+  'AWS::ElastiCache::SubnetGroup',
+  'AWS::ElasticLoadBalancingV2::Listener',
+  'AWS::ElasticLoadBalancingV2::ListenerRule',
+  'AWS::ElasticLoadBalancingV2::LoadBalancer',
+  'AWS::ElasticLoadBalancingV2::TargetGroup',
   'AWS::Events::Rule',
   'AWS::IAM::OIDCProvider',
   'AWS::KMS::Alias',
+  'AWS::Lambda::Function',
   'AWS::Logs::MetricFilter',
   'AWS::Logs::QueryDefinition',
   'AWS::Route53::HostedZone',
   'AWS::Route53::RecordSet',
   'AWS::S3::Bucket',
+  'AWS::SecretsManager::Secret',
   'AWS::SNS::Subscription',
   'AWS::SNS::Topic',
   'AWS::SSM::Parameter',
   'AWS::SSO::Assignment',
   'AWS::SSO::InstanceAccessControlAttributeConfiguration',
+  'Custom::VpcRestrictDefaultSG',
 ])
 
 // The Organizations policy types whose content is an IAM policy (the AI opt-out's isn't).

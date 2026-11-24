@@ -1,5 +1,5 @@
 // The CDK bootstrap template Hearth deploys in every account, for both qualifiers (C11-D26, C11-D75;
-// TECH-SPEC T24 item 11): the pinned CLI's own template with two changes that matter. Each of its
+// TECH-SPEC T24 item 11): the pinned CLI's own template with three changes that matter. Each of its
 // five roles gets an inline hearth-no-models policy denying every model action (models.ts), so the
 // roles cdk deploy assumes can never call a model, whatever the managed policies they're given
 // allow. And the deploy and file-publishing roles' trust gains one statement, allowing
@@ -8,7 +8,13 @@
 // chain unless the target's trust allows the action, so without it `cdk deploy` under an lz:pr-
 // reason couldn't take the roles it needs (C11-D11, C11-D27). Bound to that role, whose own trust
 // sets the identity to the person's sign-in name and which STS never lets a chain change, no other
-// principal in the account can stamp a name of its choosing on these roles' sessions. The only other
+// principal in the account can stamp a name of its choosing on these roles' sessions. And the deploy
+// role reads the SSM parameters under /hearth/, which the workload stacks name by type (C11-D24):
+// CloudFormation resolves a stack's AWS::SSM::Parameter::Value parameters at CreateChangeSet with the
+// caller's credentials, the deploy role's, and the stock ReadVersion statement lets it read its own
+// version parameter alone, so without this every workload change set would fail. One template serves
+// both qualifiers, so hearthbase's deploy role gains the same read: the parameters there hold ids and
+// names, never a secret, and that role already deploys the Baselines that write them. The only other
 // change is BootstrapVariant's default, so a stock `cdk bootstrap` refuses to replace a Hearth toolkit
 // stack without --force.
 //
@@ -99,12 +105,29 @@ export const BREAK_GLASS_SOURCE_IDENTITY = {
   },
 } as const
 
+// The deploy role's read of the parameters under /hearth/ (C11-D24), inserted straight after the stock
+// ReadVersion statement in its inline policy, the one statement the generator adds to any role's grants.
+// The generator was written for a deploy role holding exactly one ReadVersion and no statement of this
+// Sid anywhere, and refuses any other.
+export const DEPLOY_ROLE = 'DeploymentActionRole'
+const READ_VERSION_SID = 'ReadVersion'
+export const READ_PARAMETERS = {
+  Sid: 'HearthReadParameters',
+  Effect: 'Allow',
+  Action: ['ssm:GetParameter', 'ssm:GetParameters'],
+  Resource: {
+    'Fn::Sub': `arn:${iamVariable('AWS::Partition')}:ssm:${iamVariable('AWS::Region')}:${iamVariable('AWS::AccountId')}:parameter/hearth/*`,
+  },
+} as const
+
 export const NO_MODELS_POLICY = 'hearth-no-models'
 export const NO_MODELS_SID = 'HearthNoModels'
 export const VARIANT = 'Hearth: AWS CDK default resources with no model actions on any role (C11-D75)'
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+const propertiesOfResource = (resource: Record<string, unknown>): Record<string, unknown> =>
+  isObject(resource.Properties) ? resource.Properties : {}
 
 // Runs a function with any YAML warning thrown rather than printed: the YAML parser aws-cdk-lib
 // bundles warns, and reads the value as plain text, on a tag it doesn't know.
@@ -162,14 +185,17 @@ function noModelsPolicy(): Record<string, unknown> {
   }
 }
 
-// The CLI's template with the deny on every role, the break-glass statement in the two roles' trust
-// and the variant's default changed. It refuses, naming
+// The CLI's template with the deny on every role, the break-glass statement in the two roles' trust,
+// the deploy role's parameter read and the variant's default changed. It refuses, naming
 // what changed, anything it wasn't written for, so a CLI upgrade that moves the template is read by a
 // person before it is deployed.
 export function withModelDeny(cli: CfnTemplate): CfnTemplate {
   const template = structuredClone(cli)
   const resources = isObject(template.Resources) ? template.Resources : {}
   const problems: string[] = []
+  if (JSON.stringify(template).includes(JSON.stringify(READ_PARAMETERS.Sid))) {
+    problems.push(`the template already names ${READ_PARAMETERS.Sid}`)
+  }
   for (const key of Object.keys(template)) {
     if (!TOP_LEVEL_KEYS.includes(key)) problems.push(`the top-level key ${key} isn't one the stock template held`)
   }
@@ -218,6 +244,23 @@ export function withModelDeny(cli: CfnTemplate): CfnTemplate {
       continue
     }
     statements.push(structuredClone(BREAK_GLASS_SOURCE_IDENTITY))
+  }
+  // The parameter read, straight after the stock ReadVersion statement of the deploy role's inline policy.
+  const deployPolicies = isObject(resources[DEPLOY_ROLE]) ? propertiesOfResource(resources[DEPLOY_ROLE]).Policies : []
+  const readVersions = (Array.isArray(deployPolicies) ? deployPolicies : []).flatMap(policy => {
+    const document = isObject(policy) && isObject(policy.PolicyDocument) ? policy.PolicyDocument : {}
+    const statements = Array.isArray(document.Statement) ? (document.Statement as unknown[]) : []
+    return statements.flatMap((statement, index) =>
+      isObject(statement) && statement.Sid === READ_VERSION_SID ? [{ statements, index }] : [],
+    )
+  })
+  const [readVersion] = readVersions
+  if (readVersions.length !== 1 || readVersion === undefined) {
+    problems.push(
+      `${DEPLOY_ROLE}'s inline policies hold ${readVersions.length} ${READ_VERSION_SID} statements, not one, so ${READ_PARAMETERS.Sid} has no place`,
+    )
+  } else {
+    readVersion.statements.splice(readVersion.index + 1, 0, structuredClone(READ_PARAMETERS))
   }
   const outputs = isObject(template.Outputs) ? template.Outputs : {}
   const output = isObject(outputs.BootstrapVersion) ? outputs.BootstrapVersion.Value : undefined

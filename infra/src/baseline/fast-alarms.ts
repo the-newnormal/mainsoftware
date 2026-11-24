@@ -156,8 +156,10 @@ function rulesFor(id: FastRuleId): FastRule[] {
           cloudTrail: true,
         },
         // A task run with its environment overridden, unless it is prod's readiness probe started by
-        // hearth-gh-deploy, whose override holds only the probe's targets (C11-D53). A pattern has one
-        // `$or`, so each shape of the override is paired with each way out of the exception.
+        // hearth-gh-deploy (C11-D53). Neither way out reads a variable's name, so the exception passes
+        // whatever that override names: PR 4's DPW case pins it to the probe's targets alone (TECH-SPEC
+        // T24 item 5). A pattern has one `$or`, so each shape of the override is paired with each way
+        // out of the exception.
         {
           id: 'A7RunEnvironment',
           name: `${SEC_RULE_PREFIX}a07-run-environment`,

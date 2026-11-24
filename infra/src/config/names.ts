@@ -1,13 +1,13 @@
 // The names more than one stack, PR or guardrail rely on, fixed in one place (C11-D27): the
-// landing zone's policies name PR 3's cluster, task families, roles and log groups before they exist,
-// the SCPs except roles by name, and the Baselines and the workload stacks must agree on both. They
-// live under src/config/, the one folder both entries may import (IG-08), so the workload entry never
-// reaches the landing zone to read them.
+// landing zone's policies name the workload's stacks, cluster, task families, roles, log groups and
+// parameters, which C0.11 PR 3's stacks make, the SCPs except roles and stacks by name, and the
+// Baselines and the workload stacks must agree on both. They live under src/config/, the one folder
+// both entries may import (IG-08), so the workload entry never reaches the landing zone to read them.
 //
 // A rename here moves an SCP or RCP exception, a trust principal or an alarm's match without touching
 // the policy that uses it, so this file is on the owner's-read list (C11-D74). The ARNs built from
 // these names come from arns.ts, never from a literal.
-import type { EnvironmentName } from './profiles.ts'
+import type { EnvironmentName, ServerRole } from './profiles.ts'
 
 // The two bootstrap qualifiers (C11-D26): hearthbase for the landing zone, deployed by a person, and
 // hearthapp for the workload stacks, deployed by the pipeline. Each fits the bootstrap template's
@@ -72,8 +72,16 @@ export const SEC_TAG = 'hearth-sec'
 // session hearth-reason, which the trust, the role's statements and the workload fences read; and
 // C0.12 tags the Rule 9 secret hearth:access, which the fences and break-glass's denies match. A
 // rename on one side alone would refuse every break-glass session, deny every landing-zone deploy or
-// leave the tagged secret unfenced, so each is written here once.
-export const TAG_KEY = { user: 'hearth-user', reason: 'hearth-reason', access: 'hearth:access' } as const
+// leave the tagged secret unfenced, so each is written here once. The workload's Tasks stack tags the
+// migrate, probe and bastion definitions hearth-role (T24 item 11), which hearth-gh-deploy's
+// StopOneOffs and break-glass's exec statement match: those two Baseline policies write the literal
+// 'hearth-role', and their tests and the workload's each pin it, so a rename on one side fails a test.
+export const TAG_KEY = {
+  user: 'hearth-user',
+  reason: 'hearth-reason',
+  access: 'hearth:access',
+  role: 'hearth-role',
+} as const
 
 // The log-archive account's three buckets, each named for that account at synth, so a name crosses
 // accounts without a reference (C11-D13, C11-D17, C11-D21).
@@ -95,16 +103,37 @@ export const SERVER_REPOSITORY = 'hearth-server'
 export const GITHUB_OIDC_HOST = 'token.actions.githubusercontent.com'
 export const OIDC_AUDIENCE = 'sts.amazonaws.com'
 
-// The workload's names per environment, which PR 3's stacks make and the landing zone's policies name
-// before them (C11-D38, C11-D40).
+// The workload's four stacks per environment (C11-D27), deployed in this order under the hearthapp
+// qualifier. The workload fences name each part (`*` for every environment), never
+// `Hearth-<env>-*`, which would match the Baselines too.
+export const WORKLOAD_STACK_PARTS = ['Platform', 'Data', 'Tasks', 'Services'] as const
+export type WorkloadStackPart = (typeof WORKLOAD_STACK_PARTS)[number]
+export const workloadStackName = (env: EnvironmentName | '*', part: WorkloadStackPart) => `Hearth-${env}-${part}`
+
+// The workload's names per environment, which C0.11 PR 3's stacks make and the landing zone's policies
+// name too (C11-D38, C11-D40).
 export const clusterName = (env: EnvironmentName) => `hearth-${env}`
 export const ONE_OFF_FAMILIES = ['migrate', 'probe'] as const
-export const taskFamily = (env: EnvironmentName, kind: 'migrate' | 'probe' | 'bastion') => `hearth-${env}-${kind}`
 export const TASK_ROLE_KINDS = ['api', 'realtime', 'worker', 'migrate', 'probe', 'bastion', 'rule9'] as const
 export type TaskRoleKind = (typeof TASK_ROLE_KINDS)[number]
+// The kinds the workload makes in C0.11: every task role's but rule9, whose role, definition and
+// login are C1.11's (C11-D38).
+export type WorkloadKind = Exclude<TaskRoleKind, 'rule9'>
+// A task definition's family, for the three services and the three one-offs alike.
+export const taskFamily = (env: EnvironmentName, kind: WorkloadKind) => `hearth-${env}-${kind}`
 export const taskRoleName = (env: EnvironmentName, kind: TaskRoleKind) => `hearth-${env}-${kind}-task`
 export const execRoleName = (env: EnvironmentName, kind: TaskRoleKind) => `hearth-${env}-${kind}-exec`
 export const logGroupName = (env: EnvironmentName, kind: string) => `/hearth/${env}/${kind}`
+// The VPC's flow-log group's kind, so its group is logGroupName(env, FLOW_LOG_KIND) (C11-D32).
+export const FLOW_LOG_KIND = 'vpc-flow'
+// Each server role's ECS service (C11-D39).
+export const serviceName = (env: EnvironmentName, role: ServerRole) => `hearth-${env}-${role}`
+// The load balancer and its two target groups, each within ELB's 32 characters (C11-D41).
+export const loadBalancerName = (env: EnvironmentName) => `hearth-${env}`
+export const targetGroupName = (env: EnvironmentName, role: 'api' | 'realtime') => `hearth-${env}-${role}`
+// The Valkey replication group and the generated AUTH_SECRET's secret (C11-D35).
+export const valkeyGroupId = (env: EnvironmentName) => `hearth-${env}`
+export const authSecretName = (env: EnvironmentName) => `hearth/${env}/auth-secret`
 
 // The database logins the IAM fences name (C11-D05, C11-D65, C11-D78); C0.12 makes them.
 export const DB_LOGIN = {
@@ -120,12 +149,23 @@ export const DB_LOGIN = {
 export const bootstrapInputSecret = (env: EnvironmentName) => `hearth/${env}/bootstrap-input`
 
 // The SSM parameters a stack reads by name instead of a reference (C11-D24): the zones, the image
-// repository, and the break-glass-log bucket the helper writes to.
+// repository, and the break-glass-log bucket the helper writes to, which the Baselines write; the
+// organisation id the endpoint policies trust, which each workload Baseline writes (C11-D30); and the
+// workload's own, which its Platform and Data stacks write and its later stacks, the pipeline and
+// break-glass read: the isolated subnets, each kind's security group, the two target groups, the Valkey
+// endpoint and the AUTH_SECRET's ARN. Restore's stacks read no zone and no ecrServer: it has no load
+// balancer, and its tasks reach the repository by SERVER_REPOSITORY in prod's account.
 export const SSM_PARAMETER = {
   zoneApp: (env: EnvironmentName) => `/hearth/${env}/zone/app`,
   zoneUserContent: (env: EnvironmentName) => `/hearth/${env}/zone/usercontent`,
   ecrServer: (env: EnvironmentName) => `/hearth/${env}/ecr/server`,
   breakGlassLogBucket: '/hearth/break-glass/log-bucket',
+  organisationId: '/hearth/organisation/id',
+  isolatedSubnets: (env: EnvironmentName) => `/hearth/${env}/network/isolated-subnets`,
+  securityGroup: (env: EnvironmentName, kind: WorkloadKind | 'valkey') => `/hearth/${env}/security-group/${kind}`,
+  targetGroup: (env: EnvironmentName, role: 'api' | 'realtime') => `/hearth/${env}/target-group/${role}`,
+  valkeyEndpoint: (env: EnvironmentName) => `/hearth/${env}/valkey/endpoint`,
+  authSecretArn: (env: EnvironmentName) => `/hearth/${env}/auth-secret/arn`,
 } as const
 
 // The pipeline's stages in each workload account: the restore stage lives in prod (C11-Q02), so prod's

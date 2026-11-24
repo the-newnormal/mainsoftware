@@ -98,7 +98,9 @@ export interface Profile {
   // `cloudfront`) and deletion protection. None for restore, which has no listener (IAC-20).
   alb: { ingress: 'internet' | 'cloudfront'; deletionProtection: boolean } | undefined
   // The interface endpoints' resource-org statement (C11-D30) and the task roles' network perimeter
-  // (C11-D33) go on in non-prod first, and in prod after a week of clean deploys.
+  // (C11-D33) go on in non-prod first, and in prod after a week of clean deploys. Turning either on
+  // in prod also changes the literal pins in infra/src/aspects/templates.test.ts's IAC-10 and IAC-12
+  // cases, which are on the owner's-read list, so that switch carries the owner's read (T24 item 12).
   endpointResourceOrg: boolean
   taskRolePerimeter: boolean
 }

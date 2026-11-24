@@ -17,7 +17,7 @@ The Owner bootstrap script's set-up mode creates the organisation, Hearth's own 
 ## Before you start
 
 1. The environment exists, with its break-glass role, the bootstrap's own database login and the database's environment marker (C0.11, C0.12), and the deploy's migrate step has run against this database.
-2. Twilio Verify's and AWS's facts are complete and confirmed in writing: Twilio's log retention and the countries it stores in above all (TECH-SPEC T20 item 11), and AWS's services naming hosting and CloudWatch with RUM (TECH-SPEC T22 item 3). Each review date is after today.
+2. Twilio Verify's and AWS's facts are complete and confirmed in writing: Twilio's log retention and the countries it stores in above all (TECH-SPEC T20 item 11), and AWS's services naming hosting and CloudWatch with RUM (TECH-SPEC T22 item 3). AWS's processing countries name Singapore, and the United States for us-east-1's global services (IAM, Organizations, STS's global endpoint and console sign-ins, whose events are first recorded there, and GuardDuty there), and, from C0.12, CloudFront's edge locations, so the clearance the set-up records, and v0 after it, state them (TECH-SPEC T22 item 16). Each review date is after today.
 3. The founder's number's country is allowed in Twilio's Geo Permissions (TECH-SPEC T20 item 11).
 4. The DPO writes the set-up document into this environment's bootstrap secret in Secrets Manager, in the AWS console with their own access to that secret (C0.12), never on a command line (the shell's history and the process list would keep the founder's name and number). Its `environment` names this environment, and its reason is one sentence that names roles, never people: what this is, which role decided, and where the records are. Its shape (TECH-SPEC T22 item 64), with every fact as Transfers names it:
 
@@ -85,6 +85,21 @@ Every line the script prints starts `owner-bootstrap:`; this runbook quotes what
 
 Each run without `--commit` is a plan: it runs every check and every write, then keeps nothing. Only the same command with `--commit` added keeps anything.
 
+### In production: the network path, in order
+
+C0.11 gives production one path to the database: Session Manager's port forward through the bastion (TECH-SPEC T24 item 24). The steps that reach RDS work from C0.12, which makes the database, the bootstrap's login and the CA bundle's checksum; until then there is nothing to connect to. Non-prod takes the same path, with `nonprod` for `prod`.
+
+1. The person on call, in their own terminal outside any Claude Code session, with no AWS session open, pauses the deploy pipeline. The command is C0.11 PR 4's; until PR 4 there is no pipeline to pause.
+2. In the same terminal, still with no AWS session, they take a fresh checkout of the commit the database was migrated by (the release record's `migratedCommit`, from C0.11 PR 4) and install it with `npm ci --ignore-scripts`.
+3. From C0.12, in the same terminal: they download RDS's regional CA bundle to a path outside the checkout, check it against the checksum C0.12 documents, and `export NODE_EXTRA_CA_CERTS=<that path>`.
+4. From the checkout's root, `infra/bin/break-glass.sh prod bootstrap:set-up` (or `bootstrap:correct-number`) opens the break-glass shell in the prod account; A1 fires, as expected.
+5. From C0.12, in the break-glass shell, they start the bastion and open its port forward to the writer endpoint, as [Reaching production: the break-glass role](break-glass.md#the-bastion-and-a-port-forward) gives them, with `<env>` `prod`; the forward runs as a background job of that same shell (its step 4), never in another terminal tab or window, which holds none of the session's credentials.
+6. From C0.12, at the same shell's prompt: `export PGHOST=127.0.0.1 PGPORT=15432 OWNER_BOOTSTRAP_TLS_NAME=<writer endpoint> PGUSER=hearth_bootstrap PGSSLMODE=verify-full DEPLOY_ENV=prod`.
+7. From C0.12, just before the plan: `export PGPASSWORD="$(aws rds generate-db-auth-token --hostname <writer endpoint> --port 5432 --region ap-southeast-1 --username hearth_bootstrap)"`, and again before the commit if 15 minutes have passed. The token names the writer endpoint and port 5432, never the local forward.
+8. From C0.12, the plan, then the commit, as [Steps](#steps) says.
+9. In the break-glass shell, they stop the forward (`kill %1`) and then the bastion ([the break-glass runbook](break-glass.md#the-bastion-and-a-port-forward), step 5), check that `jobs` lists nothing, run `unset doc PGPASSWORD`, and `exit`, giving the ids the commit printed, which the helper writes into the close entry.
+10. Back in their own terminal, they resume the deploy pipeline, whether or not the commit landed.
+
 ### If it fails before it connects
 
 It exits 2, with a line `owner-bootstrap: could not connect: …`. It never names the host, the login or the database.
@@ -106,7 +121,7 @@ A refusal that names the input or the environment comes before it connects. One 
 
 ## Steps
 
-1. The person on call opens a production session under the logged break-glass role, with a path to the database.
+1. The person on call opens a production session under the logged break-glass role, with a path to the database ([In production: the network path, in order](#in-production-the-network-path-in-order), steps 1 to 7).
 2. The person on call runs the plan, `set-up --database <the database>`, loading the input from the secret as [Running the Owner bootstrap script](#running-the-owner-bootstrap-script) says, in the terminal itself, not piped to a file, so the founder's name shows.
 3. The founder checks the plan's lines with the person on call:
    - the organisation's name, letter by letter;
@@ -161,6 +176,7 @@ The correction refuses once the founder has signed in (C0.16's phone change does
 ## Code paths
 
 - `scripts/owner-bootstrap.ts`
+- `infra/src/workload/tasks.ts`
 - `bootstrap_transfer_clearance()`
 - `transfer_send_state()`
 - `person_by_phone()`

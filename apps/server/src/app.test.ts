@@ -98,6 +98,16 @@ describe('C0.7 T19 item 12 P2: the local readiness, for the load balancer', () =
   })
 })
 
+describe('T19 item 16 T24 item 16: the keep-alive behind the load balancer', () => {
+  it('T19 item 16 T24 item 16: the server keeps an idle connection open longer than the load balancer’s 60 s idle timeout', () => {
+    // The load balancer's idle timeout is 60 s (infra/src/workload/load-balancer.ts, pinned by
+    // IAC-08), and must stay under the server's keep-alive: otherwise the load balancer may send a
+    // request on a connection the server has just closed, and answer 502. Fastify sets the Node
+    // server's keepAliveTimeout when the instance is made (72 s by default), and buildApp() leaves it.
+    expect(app().server.keepAliveTimeout).toBeGreaterThan(60_000)
+  })
+})
+
 describe('C0.2 request logs', () => {
   it('never write a query string, which can carry a token or a phone number', async () => {
     const lines: string[] = []
