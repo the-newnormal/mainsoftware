@@ -21,7 +21,8 @@
 // the check can prove anything, so they are held to PINS_JOB_ACTIONS, apart from ACTION_PINS, which a person
 // proves by hand when they move, and ci.yml sets no env: or defaults: at its top, which would reach the
 // check's step, and check no key of its own but needs, if, runs-on, timeout-minutes and steps, so nothing
-// decides how its first step's exit 1 runs. .nvmrc, which chooses that job's Node and every deploy job's, is
+// decides how its first step's exit 1 runs; and check and migrations are named by their ids alone, no job's
+// name: either's, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name. .nvmrc, which chooses that job's Node and every deploy job's, is
 // 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one job a
 // Node on which a script's entry runs nothing and exits 0.
 // Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
@@ -45,7 +46,7 @@
 // dynamic reference could be joined from; an Fn::ImportValue or Fn::GetStackOutput reads another stack's output, another
 // account's among them, as the stack deploys, which the diff shows only as a reference, so ASSET_CHECK holds every
 // template to the intrinsic functions the workload's templates write, each in its own section, and refuses an export),
-// a restore's too (DPW-08), a restore taken down deploying only the stacks
+// a restore's too (DPW-08), a restore taken down read by PLAN_BASIS too and deploying only the stacks
 // that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
 // same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
 // or turn into HTML that hides the rest; a credentialed run writes no file but its outputs, its summary and /dev/null,
@@ -71,7 +72,9 @@
 // the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits, and holds
 // every resource to the property paths and forms the workload synth writes for its type (one jq object literal
 // in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
-// each value a service acts on (a task's roles, image, logs, secret and tags, a service's network, ECS Exec and
+// each value a service acts on (a task's roles, image, logs, secret and tags and its one container, named server,
+// which the canonical texts read by that name, the Services stack's three services, each on its own family, as
+// AWS_CHECK and the records need them, a service's network, ECS Exec and
 // target groups, a security group's egress, which must be there, and a rule's peer, a VPC endpoint's service and
 // each statement of its policy, held to the organisation's principals and, but in prod until its reviewed change,
 // its resources, the load balancer's attributes, a listener's and record's targets, a route's table, never an
@@ -130,9 +133,13 @@
 // rewrites what a record says; and so is every other run of every job, the five that hold the
 // deploy role and build's and the synths' (each release on a runner of its own) included, so no run of
 // deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
-// word bash joins from quoted or expanded parts, or npm's and the CLI's own aliases, would pass a rule
+// word bash joins from quoted or expanded parts, or npm's own aliases, would pass a rule
 // that reads the text), behind the owner's read of any change to a pinned run (the last paragraph); outside
-// build and the synths no other step writes an output. Build and the synths
+// build and the synths no other step writes an output. The CLI's own lines are held to the words the
+// canonical lines write (CLI_WORDS: its stacks and its flags, each once), never by a list of names to refuse,
+// since its yargs reads every option by a short alias too and options no list named (--build, a shell command
+// it runs with the job's environment, a diff's --security-only), and every CDK_ variable in its environment as
+// the option of that name, so no env: and no credentialed run names one but the preamble's two. Build and the synths
 // still run repository code by design (the install, the synth, the image), which could write a later step's
 // file by its folder, so a synth's own asset check holds only against deploy.yml's text: each credentialed
 // job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
@@ -142,7 +149,10 @@
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
 // reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads, and names
-// another repository's action (owner/repo@ref), never one of this repository's (./, .\ or $/), whose action.yml
+// another repository's action (owner/repo@ref), never one of this repository's (./, .\ or $/, or this repository
+// by its owner/name, which the tests read from GitHub's GITHUB_REPOSITORY or the origin remote, an old name GitHub
+// still redirects after a rename being the residual), nor one in any repository's .github folder or by a path with
+// a . or .. segment or a \, which the runner keeps and joins to the folder it fetched, whose action.yml
 // no rule reads and no owner's read covers, or a docker:// image (a remote action's own steps are read by no rule
 // either, behind the owner's read of its uses: line); no workflow line ends in a blank, which workflow.ts reads
 // as gone from a block scalar's line of blanks while YAML keeps it; and an environment: is a scalar on its own
@@ -151,7 +161,9 @@
 // paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
 // line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
 // joins a $ to the next line's (, { or ((, which the code view writes as quoted text, and an unquoted $ that ends a
-// brace expansion's alternative, since bash makes {$,}NAME into $NAME before it expands it), to evaluating
+// brace expansion's alternative, since bash makes {$,}NAME into $NAME before it expands it, and a # after more ((
+// or [[ than )) or ]], which bash reads as text inside an arithmetic command or a regex's group, running what
+// follows on its line, and any unquoted (( but $((), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -194,7 +206,8 @@
 // several words but PROBE's task list
 // and ASSET_CHECK's list of templates; and every other program CANONICAL_COMMANDS names (grep, wc, readlink,
 // realpath, git, node, sort, sleep, mktemp, cd and pwd as much as sed, tar, find, curl, openssl, base64, mkdir and
-// sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection; the lines the
+// sha256sum) only on its lines as the guard writes them, as is any read of a file by a redirection, glued to the
+// word before it or not; the lines the
 // tool holds compare against (TOOL_LINE_TEXTS) are the guard's own literals, never read from a canonical text, so a
 // text can't widen what it is held to. What a variable a held line names holds is the text's own, set from AWS's
 // answers, the job's env or a literal in every text the guard writes, which a change to the text shows; each name
@@ -385,7 +398,8 @@ esac`
 // environment's previous assembly (a refusal there fails that job, so nothing deploys), a rollback's target and
 // a restore at prod's newest record. So a change to what it pins exactly (a stack's properties, roles,
 // bootstrap version or termination protection, the asset manifests' shape, the outputs, and from review 10 each
-// resource type's property paths in its literal and each value it holds to the synth's shape) keeps accepting
+// resource type's property paths in its literal and each value it holds to the synth's shape, from round 11 a
+// task's one container, server, and the Services stack's three services) keeps accepting
 // each shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline
 // rollback or restore to a release before the change is refused (T24 item 22). No case can plant an older shape
 // until one exists.
@@ -474,9 +488,12 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
 # by name in the account, its image the server's repository in the account at a digest, its log group and
 # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-# which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-# service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-# behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+# which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+# holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+# name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+# groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+# exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+# records need them, and no other stack runs one; a security group's inline egress
 # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
 # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
 # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -789,8 +806,10 @@ check_release_in() {
         def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
         all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
         all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-        all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+        all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+        all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+        ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1319,7 +1338,7 @@ export const PROD_GATE_CALL = sh`set -euo pipefail
 # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release, which
 # is at or after the expansion of every floor at this commit whose migration it lacks, and its image is
 # the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
-# the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
+# the gate's digest and above every floor at this commit; and prod's newest record is the gate's.
 # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
 if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
   tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
@@ -1548,7 +1567,10 @@ fi`
 // reads each of its stage's four stacks before it diffs, its status and the time of its last change, refusing
 // one still moving, and outputs that read; prod reads the same once it holds its credentials, before it checks,
 // pushes or deploys anything, and goes on only while it reads exactly what prod-plan read. A restore taken down
-// holds its own read (RESTORE_DOWN's PLANNED), so it reads none here.
+// reads it too (round 11): its own read (RESTORE_DOWN's PLANNED) is each restore stack's status alone, which
+// decides the stacks down skips, and every restore stack reads UPDATE_COMPLETE after each up or down, so an
+// up between prod-plan's diff and down's deploy left every status as prod-plan read it and down deployed over
+// templates its approved diff never showed.
 export const PLAN_BASIS = sh`# What prod-plan diffed (PLAN_BASIS; DPW-08): each of the stage's four stacks as CloudFormation answers for
 # it, its status and the time of its last change (its last update, or its creation for one never updated), or
 # missing. prod-plan reads it before its diff and outputs it (plan), refusing a stack still moving (every
@@ -1556,12 +1578,10 @@ export const PLAN_BASIS = sh`# What prod-plan diffed (PLAN_BASIS; DPW-08): each 
 # would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
 # (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
 # diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
-# never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+# never showed it. A restore taken down reads it too: down's own read (PLANNED) holds only which stacks it
+# skips, by status alone, which an up between the two leaves as it was (every restore stack UPDATE_COMPLETE).
 plan_basis() {
   local step=$1 PART answer status basis=''
-  if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
-    return 0
-  fi
   for PART in Platform Data Tasks Services; do
     if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
       case "$answer" in
@@ -2892,7 +2912,18 @@ function readViews(run: string): ShellViews {
       // part of a word.
       if (next !== '\n') boundary = false
     } else if (c === '#' && boundary) {
-      if ((i > 0 && !/[ \t\n]/.test(run[i - 1] ?? '')) || stack.length > 0) odd.add('comment')
+      // bash reads a # as text inside an arithmetic command, (( … )), and inside a [[ … ]] test's regex group, so
+      // a # there starts no comment, and what follows the )) or ]] on its line runs (round 11): a # after more ((
+      // or [[ than )) or ]] so far is odd.
+      const open = (pattern: RegExp) => code.match(pattern)?.length ?? 0
+      if (
+        (i > 0 && !/[ \t\n]/.test(run[i - 1] ?? '')) ||
+        stack.length > 0 ||
+        open(/\(\(/g) > open(/\)\)/g) ||
+        open(/\[\[/g) > open(/\]\]/g)
+      ) {
+        odd.add('comment')
+      }
       const end = run.indexOf('\n', i)
       const stop = end < 0 ? run.length : end
       const comment = [...run.slice(i, stop)].map(blank).join('')
@@ -2975,6 +3006,9 @@ function readViews(run: string): ShellViews {
         nestedCase = true
       }
       if (frame?.kind === 'paren' && c === '(') frame.depth++
+      // An arithmetic command, (( … )), which no text writes: bash reads its text up to )) as one expression,
+      // evaluating every name in it and reading a # in it as text (round 11). $(( … )) opens a frame above.
+      if (c === '(' && next === '(') odd.add('arithmetic')
       keep(c)
       i++
       boundary = /[ \t\n;&|()]/.test(c)
@@ -3431,10 +3465,11 @@ function spansBlanked(line: string): string {
 // Whether a [[ where a command starts on a code view's line doesn't close on it: past each ${…} and $( … ) the
 // line closes, and outside any parentheses the test opens (a regex's group, an extglob's, inside which bash
 // reads ]] as text: [[ $x =~ ( ]]) ]]), no ]] stands as a word, after a blank and before a blank, an operator,
-// a ) or the line's end.
+// a ) or the line's end. A command starts after a case pattern's ) too, and a [[ at the line's end opens a test
+// whose operands bash reads from the next line (round 11).
 function testOpenAtEnd(line: string): boolean {
   const blanked = spansBlanked(line)
-  for (const match of blanked.matchAll(/(?:^|[\s;&|(!{])\[\[(?=\s)/g)) {
+  for (const match of blanked.matchAll(/(?:^|[\s;&|(!{)])\[\[(?=\s|$)/g)) {
     let depth = 0
     let closed = false
     for (let at = match.index + match[0].length; at < blanked.length && !closed; at++) {
@@ -4125,9 +4160,10 @@ const lineHeld = (word: string) =>
   CANONICAL_COMMANDS.includes(word) && !SHELL_OWN.includes(word) && !Object.hasOwn(RULE_HELD, word)
 // A redirection that reads a file (DPW-10): < or <> with a descriptor or none, $(< …) among them, but a
 // here-string (<<<), a process substitution (< <( … )) and a duplicated descriptor (<&), with the start of its
-// target. A < that compares, in (( … )) or [[ … ]], reads as one too: a canonical text compares numbers with -lt
-// or -gt in [ … ].
-const FILE_READ = /(?<![<\w$])\d*(?:<>|<(?![<(&]))[ \t]*(<\()?/g
+// target, glued to the word before it or not (bash reads x<file as the word x and a read of file: round 11). A <
+// that compares, in (( … )) or [[ … ]], reads as one too: a canonical text compares numbers with -lt or -gt in
+// [ … ].
+const FILE_READ = /(?<![<$])\d*(?:<>|<(?![<(&]))[ \t]*(<\()?/g
 // The lines of a text that read a file by a redirection, but from /dev/null.
 function fileReadLines(views: ShellViews): number[] {
   const text = views.text.split('\n')
@@ -5863,8 +5899,10 @@ function unreadCharacter(text: string): string | undefined {
 // no environment, gives no block scalar an indentation indicator (indicatorProblems), and has each job that
 // calls a reusable workflow call another of this repository's at this commit (CALLED_WORKFLOW), never
 // deploy.yml, handing it no secret. Every workflow is on the owner's-read list, so these holds are a second
-// layer behind the owner's read of a changed line (the header's last paragraph).
-export function permissionFindings(workflows: Texts): Finding[] {
+// layer behind the owner's read of a changed line (the header's last paragraph). ownRepository is this
+// repository's owner/name, which the tests read from GitHub's GITHUB_REPOSITORY in CI, or else the origin
+// remote, since a step naming this repository's own action by its full name runs a folder no rule reads.
+export function permissionFindings(workflows: Texts, ownRepository = ''): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
   const top = permissionsOf(workflowTop(deploy).get('permissions'))
@@ -5998,13 +6036,14 @@ export function permissionFindings(workflows: Texts): Finding[] {
     }
   }
   // In every workflow (round 11): a step's action is another repository's, owner/repo[/path]@ref, never one of
-  // this repository's (./, .\ or $/, whose action.yml no rule here reads and no owner's read covers, so its own
-  // checkout could keep the job's token for every later step) or a docker:// image; and no line ends in a blank,
-  // which workflow.ts reads as gone from a block scalar's line of blanks while YAML keeps it.
+  // this repository's (./, .\ or $/, or this repository by its full name, whose action.yml no rule here reads and
+  // no owner's read covers, so its own checkout could keep the job's token for every later step) or a docker://
+  // image; and no line ends in a blank, which workflow.ts reads as gone from a block scalar's line of blanks while
+  // YAML keeps it.
   for (const [path, text] of workflows) {
     for (const job of workflowJobs(text)) {
       parsedSteps(job).forEach((step, index) => {
-        if (step.uses !== undefined && !REMOTE_ACTION.test(step.uses)) {
+        if (step.uses !== undefined && !isRemoteAction(step.uses, ownRepository)) {
           found.push(at(path, 'DPW-02', `${job.id} (${label(step, index)}): ${REMOTE_ACTION_RULE}`))
         }
       })
@@ -6014,10 +6053,23 @@ export function permissionFindings(workflows: Texts): Finding[] {
   return found
 }
 // A step's action as GitHub reads one of another repository (owner/repo, a path in it, then @ and a ref), so never
-// a path in this repository (./, .\ or $/, read from the job's checkout or this commit) or a docker:// image.
-const REMOTE_ACTION = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+(?:\/[^@\s]+)?@[^@\s]+$/
+// a path in this repository (./, .\ or $/, read from the job's checkout or this commit) or a docker:// image. The
+// runner splits the part before the @ at / and at \, drops only empty segments and joins the rest to the folder
+// it fetched the repository's ref into, keeping . and .. (round 11): actions/setup-node/../../checkout/v5@v5 ran
+// the job's checkout action, and a deeper climb the job's own workspace, under another repository's name. So the
+// name and its path are segments of letters, digits, ., _ and -, split at / alone, none . or .., with no \
+// anywhere; no path segment is .github, where a repository keeps its own actions; and the repository isn't this
+// one (ownRepository, in any letter case), whose actions are its own folders, which no rule reads.
+const REMOTE_ACTION =
+  /^[A-Za-z0-9][A-Za-z0-9-]*\/(?!\.\.?(?:\/|@))[A-Za-z0-9._-]+(?:\/(?!\.\.?(?:\/|@))[A-Za-z0-9._-]+)*@[^@\s\\]+$/
+function isRemoteAction(uses: string, ownRepository: string): boolean {
+  if (!REMOTE_ACTION.test(uses)) return false
+  const segments = (uses.split('@')[0] ?? '').split('/')
+  if (segments.slice(2).some(segment => segment.toLowerCase() === '.github')) return false
+  return ownRepository === '' || segments.slice(0, 2).join('/').toLowerCase() !== ownRepository.toLowerCase()
+}
 const REMOTE_ACTION_RULE =
-  "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image"
+  "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/, or this repository by its name), whose action.yml no rule reads, an action in a repository's .github folder or a path that climbs out of its own (. or ..) or splits at \\, or a docker:// image"
 // The keys of an ordinary step, every one GitHub reads beside the step kinds (parallel, background, wait,
 // wait-all, cancel), which workflow.ts doesn't read.
 const ORDINARY_STEP_KEYS = [
@@ -6123,6 +6175,7 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
     if (SHADOW_FILE.test(path)) found.add(at(SCRIPTS, 'DPW-04', SHADOW_RULE))
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
+  if (!requiredJobsNamed(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', REQUIRED_NAMES_RULE))
   if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
   return [...found]
 }
@@ -6210,6 +6263,30 @@ function pinsJobHolds(ci: string): boolean {
     only(first, ['if', 'run']) &&
     first?.if === NEEDS_FAILED &&
     first.run === 'exit 1'
+  )
+}
+// The required checks by their names (round 11): GitHub reports a job, and the ruleset's required check, the gate's
+// PULL_CHECKS and prod-gate's MAIN_CI read one, by its name: key, or its id with none. So ci.yml's check and
+// migrations have no name:, and no other job's name: is either of theirs, in any letter case, or an expression
+// GitHub would evaluate to one, so no stand-in that always succeeds reports under a required check's name while
+// the real job fails.
+const REQUIRED_JOBS = ['check', 'migrations']
+const REQUIRED_NAMES_RULE =
+  "names check and migrations only by their ids: neither has a name:, and no other job's name: is either's, in any letter case, or an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
+function requiredJobsNamed(ci: string): boolean {
+  const jobs = workflowJobs(ci)
+  return (
+    REQUIRED_JOBS.every(id => jobs.some(job => job.id === id)) &&
+    jobs.every(job => {
+      if (!job.keys.has('name')) return true
+      const name = jobScalar(job, 'name')?.trim()
+      return (
+        name !== undefined &&
+        !REQUIRED_JOBS.includes(job.id) &&
+        !name.includes('${{') &&
+        !REQUIRED_JOBS.includes(name.toLowerCase())
+      )
+    })
   )
 }
 // A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows.
@@ -6694,7 +6771,9 @@ function quotedEnvIsKey(text: string, at: number): boolean {
 }
 const quotedEnv = (text: string) =>
   [...text.matchAll(QUOTED_ENV)].some(match => match[0] !== 'env' || !quotedEnvIsKey(text, match.index))
-const CREDENTIAL_READ = /\/proc(?![\w.-])|\/dev\/(?:fd|std(?:in|out|err))(?![\w.-])|\$\{?!?AWS_/
+// A path to the process's own environment or descriptors, /proc and /dev/fd, however its folders are spelt between
+// (/dev/./fd/../environ is /proc/self/environ: round 11), or the file's own name, or an AWS_ variable.
+const CREDENTIAL_READ = /\/proc(?![\w.-])|\/dev\/[./]*(?:fd|std(?:in|out|err))(?![\w.-])|\benviron\b|\$\{?!?AWS_/
 // A line's quoted text alone, everything else blanked: the code view writes quoted text as underscores.
 const quotedText = (line: { text: string; code: string }) =>
   [...line.text].map((c, i) => (line.code[i] === '_' ? c : ' ')).join('')
@@ -9131,6 +9210,14 @@ const ENV =
 const OUTPUTS = 'outputs only what JOB_OUTPUTS names, each from the step it names'
 const MAPPING =
   'writes env:, with: and outputs: as block mappings, never one expression GitHub would read as the whole mapping'
+// The CDK CLI's yargs reads every CDK_ variable in its environment as the option of that name (CDK_BUILD as
+// --build, a shell command it runs with the job's environment, CDK_PLUGIN as --plugin, a module it loads),
+// so no env: names one, and a credentialed run names none but the preamble's export of the two that turn
+// its telemetry and version check off (round 11).
+const CDK_VARIABLE = /^cdk_/i
+const PREAMBLE_CDK_EXPORT = 'export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true'
+const CDK_ENV =
+  "names no CDK_ variable, which the CDK CLI reads as its option of that name (CDK_BUILD as --build, CDK_PLUGIN as --plugin), but the preamble's export of its telemetry and version check"
 
 function shapeOfJobsFindings(text: string, add: (where: string, rule: string) => void): void {
   const top = yamlLines(text).flatMap(line => /^([\w-]+):/.exec(line.text)?.[1] ?? [])
@@ -9157,6 +9244,7 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       add(id, JOB_NEED)
     }
     const stage = STAGES[id]
+    if (mappingKeys(job.keys.get('env')).some(key => CDK_VARIABLE.test(key))) add(id, CDK_ENV)
     if (
       !onceEach(mappingKeys(job.keys.get('env')), ENV_KEYS) ||
       !sameValues(blockValue(job.keys.get('env') ?? []), stage === undefined ? {} : { STAGE: stage })
@@ -9202,6 +9290,7 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
       if (!onceEach([...step.env.keys()], ENV_KEYS) || !sameMap(step.env, STEP_ENVS[id]?.[step.name ?? ''] ?? {})) {
         add(where, ENV)
       }
+      if ([...step.env.keys()].some(key => CDK_VARIABLE.test(key))) add(where, CDK_ENV)
       if (inlineMappings(step.lines, 8, ['env', 'with'])) add(where, MAPPING)
       if (step.id !== STEP_IDS[id]?.[step.name ?? '']) add(where, IDS)
     })
@@ -9212,8 +9301,6 @@ const PREAMBLE_CDK = 'CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"'
 const ALLOWED_USES = /^(?:actions\/checkout|actions\/download-artifact|aws-actions\/configure-aws-credentials)@/
 const REFUSED_CLI =
   /(?<![\w-])(?:--no-rollback|-R|--express|--hotswap|--hotswap-fallback|--import-existing-resources|--force|--all|--method[= ](?:direct|prepare-change-set|execute-change-set)|--revert-drift|--outputs-file|--parameters|--notification-arns|--role-arn|--toolkit-stack-name|--plugin)(?![\w-])|"\$CDK"\s+(?:synth|destroy|bootstrap|import|publish-assets|watch|migrate|refactor|gc|drift|context|acknowledge|init|rollback)\b/
-const CLI_DEPLOY = /"\$CDK" deploy --app "\$ASSEMBLY" /
-const CLI_DIFF = /"\$CDK" diff --app "\$ASSEMBLY" /
 
 const PINNED_CREDENTIALED =
   'runs as written, whole and under its own if: (PINNED_RUNS): every run of a job that holds the deploy role, or the OIDC request token that gets it, so no line of its own reads, splits, prints or sends what the job holds or hands a pinned line another input'
@@ -9223,15 +9310,57 @@ const PINNED_CREDENTIALED =
 // its line that names previous parameters in any spelling (--previous-parameters, --previousParameters or a
 // =true after it would set them back, and the last one yargs reads wins), so every parameter deploys from its
 // template's Default, which prod-plan's diff shows: for an SSM-typed parameter, the name of the parameter-store
-// entry whose value deploys, which ASSET_CHECK holds to the workload's own entries.
+// entry whose value deploys, which ASSET_CHECK holds to the workload's own entries; and for a diff --method
+// template. Every word after the subcommand is one the canonical lines write (CLI_WORDS), each once, so no
+// option the CLI reads stands on the line in any spelling (round 11): its yargs reads every option by its
+// short alias too (-p for --plugin, which loads a module, -t for --tags, which CloudFormation applies to every
+// resource unseen, -r, -O, -f, -m), and options a list of long names never held (--build, a shell command the
+// CLI runs with the job's environment before it reads --app, and on a diff --security-only, --template or
+// --context-lines, which would show the approver less than the deploy changes).
+const CLI_SELECTOR = /^"\$STAGE\/(?:Platform|Data|Tasks|Services|\$PART|\*)"$/
+const CLI_WORDS: Readonly<Record<'deploy' | 'diff', readonly string[]>> = {
+  deploy: [
+    '--exclusively',
+    '--concurrency 2',
+    '--no-previous-parameters',
+    '--require-approval never',
+    '--no-lookups',
+    '--no-notices',
+    '--ci',
+    '--progress events',
+  ],
+  diff: ['--exclusively', '--method template', '--no-lookups', '--no-notices', '--no-color', '--fail-on never'],
+}
+const CLI_NEEDS: Readonly<Record<'deploy' | 'diff', readonly string[]>> = {
+  deploy: [
+    '--require-approval never',
+    '--ci',
+    '--exclusively',
+    '--no-previous-parameters',
+    '--no-lookups',
+    '--no-notices',
+  ],
+  diff: ['--method template', '--no-lookups', '--no-notices'],
+}
 function cliLineIsSafe(line: string): boolean {
-  const flags = ['--no-lookups', '--no-notices']
-  const deploy = CLI_DEPLOY.test(line)
-  if (deploy) flags.push('--require-approval never', '--ci', '--exclusively', '--no-previous-parameters')
-  else if (!CLI_DIFF.test(line)) return false
-  const previous = line.match(/previous/gi) ?? []
-  if (previous.length !== (deploy ? 1 : 0)) return false
-  return flags.every(flag => new RegExp(`(?:^|\\s)${flag}(?=\\s|;|$)`).test(line))
+  const shape = /^(if )?run "\$CDK" (deploy|diff) --app "\$ASSEMBLY" (.*?)(; then)?$/.exec(line.trim())
+  if (shape === null || (shape[1] === undefined) !== (shape[4] === undefined)) return false
+  const command = shape[2] as 'deploy' | 'diff'
+  const words = (shape[3] ?? '').split(' ')
+  const selectors = words.filter(word => CLI_SELECTOR.test(word))
+  if (selectors.length === 0 || new Set(selectors).size !== selectors.length) return false
+  // The selectors, then the flags, each a word or a word and its value, as the canonical lines write them.
+  const rest = words.slice(selectors.length).join(' ')
+  if (words.slice(0, selectors.length).some(word => !CLI_SELECTOR.test(word))) return false
+  const flags: string[] = []
+  let left = rest
+  while (left !== '') {
+    const flag = CLI_WORDS[command].find(each => left === each || left.startsWith(`${each} `))
+    if (flag === undefined || flags.includes(flag)) return false
+    flags.push(flag)
+    left = left.slice(flag.length).trimStart()
+  }
+  return CLI_NEEDS[command].every(flag => flags.includes(flag))
 }
 
 // DPW-10 (C11-D48, C11-D76): a credentialed job runs no repository code. Its uses: are only checkout,
@@ -9273,6 +9402,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const lines = runLines(run, views)
       if (lines.some(line => REFUSED_CLI.test(line.text)))
         add(where, 'passes none of the CLI’s refused flags or subcommands')
+      if (credentialed && lines.some(line => /cdk_/i.test(line.text) && line.raw.trim() !== PREAMBLE_CDK_EXPORT)) {
+        add(where, CDK_ENV)
+      }
       if (
         lines.some(line => CDK_ASSIGNMENT.test(line.code) && line.raw.trim() !== PREAMBLE_CDK) ||
         shellCommands(run).some(handsName('CDK'))
@@ -9386,7 +9518,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       ) {
         add(
           where,
-          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters',
+          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads',
         )
       }
     })

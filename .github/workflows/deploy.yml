@@ -472,9 +472,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -787,8 +790,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1010,9 +1015,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -1325,8 +1333,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1549,9 +1559,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -1864,8 +1877,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -2205,9 +2220,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -2520,8 +2538,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -3685,9 +3705,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -4000,8 +4023,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -4938,9 +4963,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -5253,8 +5281,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -5423,9 +5453,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -5738,8 +5771,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -5900,12 +5935,10 @@ jobs:
           # would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
           # (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
           # diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
-          # never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+          # never showed it. A restore taken down reads it too: down's own read (PLANNED) holds only which stacks it
+          # skips, by status alone, which an up between the two leaves as it was (every restore stack UPDATE_COMPLETE).
           plan_basis() {
             local step=$1 PART answer status basis=''
-            if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
-              return 0
-            fi
             for PART in Platform Data Tasks Services; do
               if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
                 case "$answer" in
@@ -6167,7 +6200,7 @@ jobs:
           # history.ts prod-gate (C11-D52, C11-D58): a deploy's commit descends from prod's newest release, which
           # is at or after the expansion of every floor at this commit whose migration it lacks, and its image is
           # the one non-prod deployed in this run; a rollback's target is still recorded, on main, at
-          # the gate's digest and above every floor at this commit; a restore's record is the one the gate read.
+          # the gate's digest and above every floor at this commit; and prod's newest record is the gate's.
           # Each record history.ts ignores gets one line naming its id (its stderr), in the log and the summary.
           if ! OUT=$(node infra/scripts/deploy/history.ts prod-gate --mode "$MODE" --target "$TARGET" --sha "$SHA" --commit "$COMMIT" --digest "$DIGEST" --record-id "$CURRENT_PROD_ID" --build-digest "$BUILD_DIGEST" --nonprod-digest "$NONPROD_DIGEST" --records "$RUNNER_TEMP/records" 2>"$RUNNER_TEMP/prod-gate-ignored.txt"); then
             tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2
@@ -6440,9 +6473,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -6755,8 +6791,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -7160,12 +7198,10 @@ jobs:
           # would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
           # (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
           # diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
-          # never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+          # never showed it. A restore taken down reads it too: down's own read (PLANNED) holds only which stacks it
+          # skips, by status alone, which an up between the two leaves as it was (every restore stack UPDATE_COMPLETE).
           plan_basis() {
             local step=$1 PART answer status basis=''
-            if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
-              return 0
-            fi
             for PART in Platform Data Tasks Services; do
               if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
                 case "$answer" in
@@ -8027,9 +8063,12 @@ jobs:
           # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
           # by name in the account, its image the server's repository in the account at a digest, its log group and
           # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
-          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone; a
-          # service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security groups,
-          # behind its stage's target groups, with no public address and no ECS Exec; a security group's inline egress
+          # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
+          # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
+          # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
+          # groups, behind its stage's target groups, with no public address and no ECS Exec, and a Services stack runs
+          # exactly the three, api, realtime and worker, each on its own family's definition, as AWS_CHECK and the
+          # records need them, and no other stack runs one; a security group's inline egress
           # is CDK's disallow-all alone, never left out (EC2 opens a group written with none to everything), and its
           # inline ingress HTTPS from anywhere alone, and each rule resource names the template's own groups or S3's
           # managed prefix list; a VPC endpoint names one of the six services the synth writes in ap-southeast-1
@@ -8342,8 +8381,10 @@ jobs:
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
-                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape"
+                  all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
+                  all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
+                  ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));

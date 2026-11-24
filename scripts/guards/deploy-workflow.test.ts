@@ -139,7 +139,7 @@ import {
   wordSplits,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
-import { readRepoFile, repoFiles, root } from './repo-files.ts'
+import { ownRepository, readRepoFile, repoFiles, root } from './repo-files.ts'
 import {
   jobConcurrency,
   jobEnvironment,
@@ -969,7 +969,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     // (The anchor is read as part of the action's name, which is no owner/repo@ref either.)
     expect(permissionFindings(plant(checkout, '      - uses: &co actions/checkout@v5\n', '', CI))).toEqual([
       shape(CI),
-      `${CI}: DPW-02 audit (step 1): uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image`,
+      `${CI}: DPW-02 audit (step 1): uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/, or this repository by its name), whose action.yml no rule reads, an action in a repository's .github folder or a path that climbs out of its own (. or ..) or splits at \\, or a docker:// image`,
     ])
     expect(permissionFindings(plant('name: ci\n', 'name: !!str ci\n', '', CI))).toEqual([shape(CI)])
     const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
@@ -1110,7 +1110,9 @@ describe('DPW-02 (C11-D55): permissions', () => {
   })
 
   it('holds the repository', () => {
-    expect(permissionFindings(workflows)).toEqual([])
+    // GitHub sets GITHUB_REPOSITORY in every CI run, so there this repository's own name is always held.
+    if (process.env.GITHUB_ACTIONS === 'true') expect(ownRepository()).toBeDefined()
+    expect(permissionFindings(workflows, ownRepository() ?? '')).toEqual([])
   })
 })
 
@@ -3751,7 +3753,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const SETS =
     "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const readBack = (id: string) => `${id} (Read back what runs)`
   const STEPS =
     'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
@@ -3817,21 +3819,25 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
+      at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --hotswap', services)).toEqual([
       pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
+      at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --all', services)).toEqual([
       pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
+      at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('"$STAGE/Services" --exclusively', '"$STAGE/Services" --exclusively --role-arn x', services)).toEqual([
       pinned('nonprod (Deploy Services)'),
       at('nonprod (Deploy Services)', REFUSED),
       at('nonprod (Deploy Services)', HELD),
+      at('nonprod (Deploy Services)', CLI),
     ])
     expect(find('run "$CDK" deploy --app', 'run "$CDK" destroy --app', services)).toEqual([
       pinned('nonprod (Deploy Services)'),
@@ -9128,7 +9134,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage",
   )
   const ECS = refused(
-    "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec or names of another shape",
+    "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family",
   )
   const NETWORK = refused(
     "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape",
@@ -9644,6 +9650,123 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     ],
   ] as const)(
     'refuses %s (round 10)',
+    (_, plant, expected) => {
+      expect(check(plant)).toBe(expected)
+    },
+    30_000,
+  )
+
+  // The containers and services the canonical texts read by name (round 11): AWS_CHECK, the probe, the read-back
+  // and the one-offs' log stream read each definition's one container as server, and AWS_CHECK and the records
+  // need the three services, each on its own family, so a release that renamed, added or dropped one passed this
+  // check and then left every automatic, dispatched and drill rollback refusing.
+  it.each([
+    [
+      "a service's container named other than server",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          firstContainer(resource).Name = 'app'
+        },
+        'ApiTask',
+      ),
+      ECS,
+    ],
+    [
+      "a one-off's container named other than server",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          firstContainer(resource).Name = 'app'
+        },
+        'MigrateTask',
+      ),
+      ECS,
+    ],
+    [
+      'a second container',
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          const containers = resource.Properties.ContainerDefinitions as Container[]
+          containers.push({ ...firstContainer(resource), Name: 'sidecar' })
+        },
+        'RealtimeTask',
+      ),
+      ECS,
+    ],
+    [
+      'a Services stack without the worker',
+      changed(
+        'AWS::ECS::Service',
+        (_resource, template) => {
+          const resources = template.Resources as Record<string, Planted>
+          for (const [id, each] of Object.entries(resources)) {
+            const name = each.Properties.ServiceName ?? each.Properties.Family
+            if (typeof name === 'string' && name.endsWith('-worker')) delete resources[id]
+          }
+        },
+        'WorkerService',
+      ),
+      ECS,
+    ],
+    [
+      "a service on another service's definition",
+      changed(
+        'AWS::ECS::Service',
+        (resource, template) => {
+          const resources = template.Resources as Record<string, Planted>
+          const api = Object.keys(resources).find(id => resources[id]?.Properties.Family === 'hearth-nonprod-api')
+          resource.Properties.TaskDefinition = { Ref: api }
+        },
+        'WorkerService',
+      ),
+      ECS,
+    ],
+    [
+      "a service on a one-off's family, with that family's roles, logs and tag",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          resource.Properties.Family = 'hearth-nonprod-bastion'
+          resource.Properties.TaskRoleArn = ownRole('hearth-nonprod-bastion-task')
+          resource.Properties.ExecutionRoleArn = ownRole('hearth-nonprod-bastion-exec')
+          resource.Properties.Tags = [{ Key: 'hearth-role', Value: 'bastion' }]
+          firstContainer(resource).LogConfiguration.Options['awslogs-group'] = '/hearth/nonprod/bastion'
+          firstContainer(resource).LogConfiguration.Options['awslogs-stream-prefix'] = 'bastion'
+        },
+        'WorkerTask',
+      ),
+      ECS,
+    ],
+    [
+      'a service in the Tasks stack, as the Services stack writes one',
+      (dir: string) => {
+        const folder = nonprod(dir)
+        const services = read(named(folder, 'Services', '.template.json'))
+        const path = named(folder, 'Tasks', '.template.json')
+        const tasks = read(path)
+        const resources = tasks.Resources as Record<string, Planted>
+        const worker = Object.values(services.Resources as Record<string, Planted>).find(
+          each => each.Type === 'AWS::ECS::Service' && each.Properties.ServiceName === 'hearth-nonprod-worker',
+        )
+        const migrate = Object.keys(resources).find(id => resources[id]?.Properties.Family === 'hearth-nonprod-migrate')
+        const copy = structuredClone(worker) as Planted
+        delete copy.DependsOn
+        copy.Properties.TaskDefinition = { Ref: migrate }
+        resources.ExtraService = copy
+        // The parameters it reads, as the Services stack declares them.
+        const parameters = tasks.Parameters as Record<string, unknown>
+        for (const [id, parameter] of Object.entries(services.Parameters as Record<string, unknown>)) {
+          parameters[id] ??= parameter
+        }
+        write(path, tasks)
+        rekey(folder, 'Tasks')
+      },
+      ECS,
+    ],
+  ] as const)(
+    'refuses %s (round 11)',
     (_, plant, expected) => {
       expect(check(plant)).toBe(expected)
     },
@@ -10393,7 +10516,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
   // name another repository's action by owner/repo@ref.
   it('refuses an action of this repository or a docker:// image, in every workflow (round 11)', () => {
     const REMOTE =
-      "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image"
+      "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/, or this repository by its name), whose action.yml no rule reads, an action in a repository's .github folder or a path that climbs out of its own (. or ..) or splits at \\, or a docker:// image"
     const added = '.github/workflows/lint.yml'
     const lint = (uses: string) =>
       [
@@ -11033,7 +11156,14 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
         [
           '#!/bin/bash',
           `echo "$*" >>'${join(temp, 'aws.log')}'`,
+          'case "$*" in *LastUpdatedTime*) basis=yes ;; *) basis=no ;; esac',
           'while [ "$#" -gt 0 ] && [ "$1" != --stack-name ]; do shift; done',
+          // PLAN_BASIS's read of the stage before the diff (round 11): a stack there reads as settled, so each
+          // case tests RESTORE_DOWN_DIFF's own reading of its status.
+          `if [ "$basis" = yes ]; then`,
+          `  [ -e '${join(temp, 'stacks')}/'"$2" ] && { echo '["UPDATE_COMPLETE", "2026-11-20T10:00:00Z"]'; exit 0; }`,
+          `  echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id $2 does not exist" >&2; exit 254`,
+          'fi',
           `answer=$(cat '${join(temp, 'stacks')}/'"$2" 2>/dev/null || echo '!Stack with id '"$2"' does not exist')`,
           'case "$answer" in',
           `  '!'*) echo "An error occurred (ValidationError) when calling the DescribeStacks operation: \${answer#!}" >&2; exit 254 ;;`,
@@ -11085,6 +11215,11 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       }
     }
     const skipped = (part: string, why: string) => `restore down: Hearth-restore-${part} ${why}`
+    // PLAN_BASIS's read before the diff, which the stand-in answers with each stack there as settled.
+    const basisOf = (...there: string[]) =>
+      ['Platform', 'Data', 'Tasks', 'Services']
+        .map(part => `${part}:${there.includes(part) ? 'UPDATE_COMPLETE@2026-11-20T10:00:00Z' : 'missing'},`)
+        .join('')
     const NOT_THERE = "doesn't exist, so down skips it and it isn't diffed"
     const FAILED_CREATE = "is what a failed create left, so down skips it and it isn't diffed"
     try {
@@ -11097,7 +11232,9 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       expect(settled.status).toBe(0)
       expect(settled.diffed).toEqual([['restore/Services'], ['restore/Data'], ['restore/Platform']])
       // What it read of each stack is the job's down output, which prod's down holds the stage to.
-      expect(settled.output).toBe('down=Services:UPDATE_COMPLETE,Data:UPDATE_COMPLETE,Platform:CREATE_COMPLETE,\n')
+      expect(settled.output).toBe(
+        `basis=${basisOf('Platform', 'Data', 'Services')}\ndown=Services:UPDATE_COMPLETE,Data:UPDATE_COMPLETE,Platform:CREATE_COMPLETE,\n`,
+      )
       // An up that failed before Services: Services isn't diffed (so shown as created by no line), but named
       // above the diff, and the other two are.
       const noServices = diff({
@@ -11106,7 +11243,9 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(noServices.status).toBe(0)
       expect(noServices.diffed).toEqual([['restore/Data'], ['restore/Platform']])
-      expect(noServices.output).toBe('down=Services:missing,Data:UPDATE_COMPLETE,Platform:UPDATE_COMPLETE,\n')
+      expect(noServices.output).toBe(
+        `basis=${basisOf('Platform', 'Data')}\ndown=Services:missing,Data:UPDATE_COMPLETE,Platform:UPDATE_COMPLETE,\n`,
+      )
       const lines = noServices.summary.split('\n')
       const heading = lines.indexOf('### What the restore changes')
       expect(lines.indexOf(skipped('Services', NOT_THERE))).toBeGreaterThanOrEqual(0)
@@ -11123,7 +11262,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       expect(leftovers.status).toBe(0)
       expect(leftovers.diffed).toEqual([])
       expect(leftovers.output).toBe(
-        'down=Services:REVIEW_IN_PROGRESS,Data:ROLLBACK_COMPLETE,Platform:ROLLBACK_FAILED,\n',
+        `basis=${basisOf('Platform', 'Data', 'Services')}\ndown=Services:REVIEW_IN_PROGRESS,Data:ROLLBACK_COMPLETE,Platform:ROLLBACK_FAILED,\n`,
       )
       expect(leftovers.summary).toContain(skipped('Services', FAILED_CREATE))
       expect(leftovers.summary).toContain(skipped('Data', FAILED_CREATE))
@@ -11138,20 +11277,20 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       })
       expect(moving.status).toBe(1)
       expect(moving.diffed).toEqual([['restore/Services']])
-      expect(moving.output).toBe('')
+      expect(moving.output).not.toContain('down=')
       expect(moving.summary).toContain(skipped('Data', 'is UPDATE_IN_PROGRESS, which down refuses, so the diff fails'))
       expect(moving.summary).toContain('The diff failed (exit 1), so this plan fails')
       const unread = diff({ 'Hearth-restore-Services': '!Access denied' })
       expect(unread.status).toBe(1)
       expect(unread.diffed).toEqual([])
       expect(unread.summary).toContain(skipped('Services', "can't be read, so the diff fails"))
-      expect(unread.output).toBe('')
+      expect(unread.output).not.toContain('down=')
       // A status of no stack's shape (a line break and another output, say) fails the diff and writes nothing.
       const odd = diff({ 'Hearth-restore-Services': 'UPDATE_COMPLETE\ngo=true' })
       expect(odd.status).toBe(1)
       expect(odd.diffed).toEqual([])
       expect(odd.summary).toContain(skipped('Services', "can't be read, so the diff fails"))
-      expect(odd.output).toBe('')
+      expect(odd.output).not.toContain('down=')
       const failing = diff(
         {
           'Hearth-restore-Services': 'UPDATE_COMPLETE',
@@ -11165,8 +11304,14 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       expect(failing.summary).toContain('The diff failed (exit 3), so this plan fails')
       // Every other diff reads no stack's status but PLAN_BASIS's read of the stage before it (round 11), which
       // is its basis output: a restore up diffs every restore stack, a prod rollback its Tasks and Services, a
-      // prod deploy every prod stack, each in one call. (A taken-down restore reads none: down's own read holds.)
-      expect(settled.aws).not.toContain('LastUpdatedTime')
+      // prod deploy every prod stack, each in one call. A taken-down restore reads it too, before its own reads
+      // (round 11).
+      expect(settled.aws.trim().split('\n').slice(0, 4)).toEqual(
+        ['Platform', 'Data', 'Tasks', 'Services'].map(
+          part =>
+            `cloudformation describe-stacks --stack-name Hearth-restore-${part} --query Stacks[0].[StackStatus, LastUpdatedTime || CreationTime] --output json`,
+        ),
+      )
       for (const [env, want] of [
         [{ RESTORE: 'up' }, [['restore/*']]],
         [{ STAGE: 'prod', MODE: 'rollback', RESTORE: 'none' }, [['prod/Tasks', 'prod/Services']]],
@@ -11344,7 +11489,7 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
   const at10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
@@ -12897,9 +13042,16 @@ describe('DPW-08: prod deploys only the stage prod-plan diffed (PLAN_BASIS, roun
       expect(refused.status, answer).toBe(1)
       expect(refused.output, answer).toBe('')
     }
-    // A restore taken down reads nothing here: its own read is RESTORE_DOWN_DIFF's.
-    expect(plan({ STAGE: 'restore', RESTORE: 'down' })).toMatchObject({ status: 0, output: '', calls: [] })
-    expect(plan({ STAGE: 'restore', RESTORE: 'up' }).output).toBe(`basis=${BASIS}\n`)
+    // A restore taken down reads its stage too (round 11): down's own read is each stack's status alone, which an
+    // up between the two leaves as it was.
+    for (const restore of ['down', 'up']) {
+      const read = plan({ STAGE: 'restore', RESTORE: restore })
+      expect(read.output, restore).toBe(`basis=${BASIS}\n`)
+      expect(read.calls, restore).toHaveLength(4)
+      expect(
+        read.calls.every(call => call.startsWith('cloudformation describe-stacks --stack-name Hearth-restore-')),
+      ).toBe(true)
+    }
   })
 
   it('goes on only while the stage reads as prod-plan read it, recorded or not', () => {
@@ -12923,7 +13075,21 @@ describe('DPW-08: prod deploys only the stage prod-plan diffed (PLAN_BASIS, roun
     for (const env of changes) {
       expect(check(env).status, JSON.stringify(env)).toBe(1)
     }
-    expect(check({ BASIS: '', STAGE: 'restore', RESTORE: 'down' })).toMatchObject({ status: 0, calls: [] })
+    // A restore taken down is held the same way (round 11): an up after prod-plan's diff updates every restore
+    // stack, each UPDATE_COMPLETE again, which down's own read by status alone took as unchanged.
+    const down = { STAGE: 'restore', RESTORE: 'down' }
+    expect(check({ ...down, BASIS }).status).toBe(0)
+    const upSince = check({
+      ...down,
+      BASIS,
+      STACK_Platform: JSON.stringify(['UPDATE_COMPLETE', T2]),
+      STACK_Data: JSON.stringify(['UPDATE_COMPLETE', T2]),
+      STACK_Tasks: JSON.stringify(['UPDATE_COMPLETE', T2]),
+      STACK_Services: JSON.stringify(['UPDATE_COMPLETE', T2]),
+    })
+    expect(upSince.status).toBe(1)
+    expect(upSince.said).toContain('plan-basis: Hearth-restore changed since prod-plan diffed it')
+    expect(check({ ...down, BASIS: '' }).status).toBe(1)
   })
 
   it("is prod's What runs' first check, before anything is checked, pushed or deployed", () => {
@@ -12945,5 +13111,215 @@ describe('DPW-08: prod deploys only the stage prod-plan diffed (PLAN_BASIS, roun
     const diff = PINNED_RUNS()['prod-plan']?.Diff?.run ?? ''
     expect(diff.indexOf('plan_basis plan\n')).toBeGreaterThan(diff.indexOf(PLAN_BASIS))
     expect(diff.indexOf('plan_basis plan\n')).toBeLessThan(diff.indexOf('if [ "$MODE" = rollback ]; then'))
+  })
+})
+
+// Round 11, iteration 2: the CLI's line as an allowlist and the CDK_ variables its yargs reads as options; a #
+// that bash reads as text inside (( … )) or a [[ … =~ ( … ) ]] group; a [[ that ends its line; a file read glued
+// to a word, and /dev/fd spelt with . and .. between; this repository's own action by its full name, and an
+// action's path that climbs out of its folder; and the required checks' names.
+describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DPW-07, DPW-10)', () => {
+  const at10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
+  const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
+  const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
+  const TOOLS =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const CLI =
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
+  const CDK_ENV =
+    "names no CDK_ variable, which the CDK CLI reads as its option of that name (CDK_BUILD as --build, CDK_PLUGIN as --plugin), but the preamble's export of its telemetry and version check"
+  const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
+  const token = ['ACTIONS', 'ID', 'TOKEN', 'REQUEST', 'TOKEN'].join('_')
+  const spaced = `printf '%s\\n' "$${token}" | sed 's/./& /g'`
+
+  // Round 11: the CLI's lines were held by a list of long option names, while its yargs reads each by its
+  // short alias too, every CDK_ variable as the option of that name, and options the list never named: --build,
+  // a shell command it runs with the job's environment before it reads --app, and on a diff --security-only,
+  // which prints only the IAM changes. Every word after the subcommand is now one the canonical lines write.
+  it('runs the CLI with no word but its stacks and the flags the canonical lines write (round 11)', () => {
+    const forward = '--no-notices --ci --progress events\n'
+    const step = 'nonprod (Deploy Platform, Data and Tasks)'
+    for (const extra of [
+      '-p /x/plugin.js',
+      '-t Project=hearth',
+      '-r x',
+      '-O o.json',
+      '-f',
+      '-m direct',
+      "--build 'npm run build'",
+      '--build true',
+      '--tags=Project=hearth',
+      '--progress events',
+      '"$STAGE/Platform"',
+    ]) {
+      const planted = plant(forward, `--no-notices --ci --progress events ${extra}\n`, job('nonprod'))
+      expect(credentialedCodeFindings(planted, manifests, lockfile), extra).toContain(at10(step, CLI))
+    }
+    const diff = '"$STAGE/*" --method template'
+    for (const extra of [
+      '--security-only',
+      '--template x.json',
+      '--context-lines 0',
+      '-q',
+      "--build 'npm run build'",
+    ]) {
+      const planted = plant(diff, `${diff} ${extra}`, job('prod-plan'))
+      expect(credentialedCodeFindings(planted, manifests, lockfile), extra).toContain(at10('prod-plan (Diff)', CLI))
+    }
+    // A diff with no --method template, which would make a change set.
+    expect(credentialedCodeFindings(plant(diff, '"$STAGE/*"', job('prod-plan')), manifests, lockfile)).toContain(
+      at10('prod-plan (Diff)', CLI),
+    )
+    // Every committed line passes as it is.
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  it('names no CDK_ variable in an env: or a credentialed run but the preamble’s two (round 11)', () => {
+    const services = '      - name: Deploy Services\n'
+    const env = `      - name: Deploy Services\n        env:\n          CDK_BUILD: npm run build\n`
+    expect(credentialedCodeFindings(plant(services, env, job('nonprod')), manifests, lockfile)).toContain(
+      at10('nonprod (Deploy Services)', CDK_ENV),
+    )
+    const jobEnv = `    env:\n      STAGE: nonprod\n`
+    expect(
+      credentialedCodeFindings(
+        plant(jobEnv, `${jobEnv}      CDK_PLUGIN: /x/plugin.js\n`, job('nonprod')),
+        manifests,
+        lockfile,
+      ),
+    ).toContain(at10('nonprod', CDK_ENV))
+    const exported = 'export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true\n'
+    for (const line of [
+      "export CDK_BUILD='npm run build'",
+      'export cdk_plugin=/x/plugin.js',
+      'declare -x CDK_BUILD=true',
+    ]) {
+      const planted = plant(exported, `${exported}          ${line}\n`, job('nonprod'))
+      expect(credentialedCodeFindings(planted, manifests, lockfile), line).toContain(
+        at10('nonprod (What runs)', CDK_ENV),
+      )
+    }
+  })
+
+  // Round 11: bash reads an arithmetic command's text up to )) as one string, and a [[ … =~ … ]] regex's
+  // group as part of the regex, so a # in either is no comment, and what follows the )) or ]] on its line ran
+  // while the code view blanked it. A # after an open (( or [[ is odd, so is any unquoted (( but $((, and a [[
+  // after a case pattern's ) opens a test.
+  it('reads a # inside (( … )) or a [[ … =~ ( … ) ]] group as bash does (round 11)', () => {
+    const end =
+      '  echo "aws-check: $mode passed: Hearth-$stage-Services is $status and runs $release" | mask | tee -a "$GITHUB_STEP_SUMMARY"\n}'
+    expect(AWS_CHECK.endsWith(end)).toBe(true)
+    const arith = AWS_CHECK.replace(end, end.replace('\n}', `\n  (( 0 #)) || ${spaced}\n}`))
+    expect(canonicalTextFindings({ AWS_CHECK: arith })).toContain(SHELL('AWS_CHECK'))
+    expect(shellViews(arith).odd.has('arithmetic')).toBe(true)
+    expect(shellViews(arith).odd.has('comment')).toBe(true)
+    const head =
+      "  local mode=$1 stage=$STAGE out status release='' running='' digests=() td image tag pushed='' commit\n"
+    expect(AWS_CHECK).toContain(head)
+    const regex = AWS_CHECK.replace(
+      head,
+      `${head}  case "$mode" in\n    *)[[ "$mode" =~ ^( #) ]] || ${spaced}\n    ;;\n  esac\n`,
+    )
+    expect(canonicalTextFindings({ AWS_CHECK: regex })).toContain(SHELL('AWS_CHECK'))
+    expect(canonicalTextFindings({ AWS_CHECK: regex })).toContain(
+      canonical('AWS_CHECK', lineOf(regex, `    *)[[ "$mode" =~ ^( #) ]] || ${spaced}`), EVALUATES),
+    )
+    // A comment after a test or a $(( … )) that closed stays one, and so does a quoted (( or [[.
+    for (const text of [
+      'x=$1\nif [[ "$x" =~ ^(a|b)$ ]]; then echo ok; fi # a comment',
+      'y=$((1 + 2)) # a comment',
+      `echo '((' "[[" # a comment`,
+    ]) {
+      expect(shellViews(text).odd.size, text).toBe(0)
+    }
+  })
+
+  // Round 11: a [[ at its line's end opens a test whose operands bash reads from the next line, where an
+  // untrusted artifact id was compared as a number before its shape check.
+  it('reads a [[ at its line’s end as a test that opens there (round 11)', () => {
+    const from = '  if ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then'
+    const to = '  if ! [[\n    true -lt "$1" ]] || ! [[ "$1" =~ ^[1-9][0-9]{0,18}$ ]]; then'
+    expect(ARTIFACT_NAMES).toContain(from)
+    const planted = ARTIFACT_NAMES.replace(from, to).replace('  local found\n', '  local found true=0\n')
+    expect(evaluatedLines(planted)).toContain(lineOf(planted, '  if ! [[') - 1)
+    expect(canonicalTextFindings({ ARTIFACT_NAMES: planted })).toContain(
+      canonical('ARTIFACT_NAMES', lineOf(planted, '  if ! [['), EVALUATES),
+    )
+    expect(evaluatedLines('if [[\n  a == b ]]; then :; fi')).toEqual([0])
+  })
+
+  // Round 11: a < glued to the word before it is still a file read (x<file reads file), and /dev/fd spelt
+  // with . and .. between its folders, or a path ending at environ, reaches the step's environment as /proc does.
+  it('reads a file read glued to a word, and the environment however its path is spelt (round 11)', () => {
+    const head =
+      "  local mode=$1 stage=$STAGE out status release='' running='' digests=() td image tag pushed='' commit\n"
+    for (const path of ['/dev/./fd/../environ', '/run/x', 'file']) {
+      const added = `  listing=$(mask x<${path})`
+      const planted = AWS_CHECK.replace(head, `${head}${added}\n  echo "$\{listing//?/& }"\n`)
+      expect(canonicalTextFindings({ AWS_CHECK: planted }), path).toContain(
+        canonical('AWS_CHECK', lineOf(planted, added), TOOLS),
+      )
+    }
+    const MASKED =
+      'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
+    for (const path of ['/dev/./fd/../environ', '/dev//fd/0', '/dev/../dev/fd/3', '/x/environ']) {
+      const planted = plant(head, `${head}          echo ${path}\n`, job('nonprod'))
+      expect(maskingFindings(planted), path).toContain(`${DEPLOY}: DPW-07 nonprod (What runs): ${MASKED}`)
+    }
+  })
+
+  // Round 11: a step that names this repository's own action by its full name, or by a path that
+  // climbs out of another action's folder with . or .., ran an action.yml no rule reads (the runner keeps . and
+  // .. and splits at \ too). The repository's own name, an action in any repository's .github folder and a .
+  // or .. segment or a \ are refused, in every workflow.
+  it('refuses this repository’s own action by its name, and a path that climbs (round 11)', () => {
+    const REMOTE =
+      "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/, or this repository by its name), whose action.yml no rule reads, an action in a repository's .github folder or a path that climbs out of its own (. or ..) or splits at \\, or a docker:// image"
+    const audit = '      - uses: actions/checkout@v5\n'
+    const own = 'an-owner/a-repo'
+    for (const uses of [
+      `${own}/.github/actions/setup@main`,
+      `${own}/tools/setup@main`,
+      'An-Owner/A-Repo/tools/setup@claude/x',
+      'someone/else/.github/actions/x@v1',
+      'actions/setup-node/../../checkout/v5@v5',
+      'actions/setup-node/../../../../a-repo/a-repo/.github/actions/setup@v5',
+      'owner/repo/./x@r',
+      'owner/..@r',
+      'owner/repo\\..\\x@r',
+    ]) {
+      expect(permissionFindings(plant(audit, `      - uses: ${uses}\n`, '  audit:\n', CI), own), uses).toContain(
+        `${CI}: DPW-02 audit (step 1): ${REMOTE}`,
+      )
+    }
+    for (const uses of ['actions/checkout@v5', 'github/codeql-action/init@v3', 'owner/repo/tools/x@main']) {
+      expect(permissionFindings(plant(audit, `      - uses: ${uses}\n`, '  audit:\n', CI), own), uses).toEqual([])
+    }
+  })
+
+  // Round 11: the gate's and prod-gate's reads of ci.yml's run, and the ruleset, find a job by its name, so a
+  // stand-in named migrations that always succeeded passed for the real job named otherwise.
+  it('names the required checks only by their ids (round 11)', () => {
+    const RULE =
+      "names check and migrations only by their ids: neither has a name:, and no other job's name: is either's, in any letter case, or an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
+    const finding = `${CI}: DPW-04 ${RULE}`
+    const ci = readRepoFile(CI)
+    const migrations = '  migrations:\n'
+    expect(ci).toContain(migrations)
+    expect(actionPinFindings(workflows)).not.toContain(finding)
+    const standIn = '  migrations-report:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n'
+    for (const [from, to] of [
+      [migrations, `${migrations}    name: migrations (Postgres 17)\n`],
+      [migrations, `${standIn}    name: migrations\n${migrations}`],
+      [migrations, `${standIn}    name: MIGRATIONS\n${migrations}`],
+      [migrations, `${standIn}    name: \${{ 'migrations' }}\n${migrations}`],
+      [migrations, `${standIn}    name: Check\n${migrations}`],
+    ] as const) {
+      expect(actionPinFindings(plant(from, to, '', CI)), to).toContain(finding)
+    }
+    expect(actionPinFindings(plant(migrations, `${standIn}    name: Report\n${migrations}`, '', CI))).not.toContain(
+      finding,
+    )
   })
 })

@@ -19,5 +19,22 @@ export function repoFiles(): string[] {
 
 export const readRepoFile = (path: string) => readFileSync(join(root, path), 'utf8')
 
+// This repository's owner/name, lower-cased: GitHub's GITHUB_REPOSITORY in CI, or else the last two folders of
+// the origin remote's URL (https://host/owner/name(.git) or git@host:owner/name(.git)); undefined when neither
+// reads as one. The DPW-02 case refuses a step that names this repository's own action by its full name.
+const OWNER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
+export function ownRepository(): string | undefined {
+  const fromCi = process.env.GITHUB_REPOSITORY ?? ''
+  if (OWNER_NAME.test(fromCi)) return fromCi.toLowerCase()
+  let url = ''
+  try {
+    url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim()
+  } catch {
+    return undefined
+  }
+  const name = /[/:]([^/:]+\/[^/:]+?)(?:\.git)?\/?$/.exec(url)?.[1] ?? ''
+  return OWNER_NAME.test(name) ? name.toLowerCase() : undefined
+}
+
 // JavaScript and TypeScript sources and configs, wherever they are.
 export const isScript = (path: string) => /\.[cm]?[jt]sx?$/.test(path)

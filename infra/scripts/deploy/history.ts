@@ -656,9 +656,13 @@ export interface ProdGateInput {
 // prod-gate's checks, before prod's approval: a deploy's commit descends from prod's newest record,
 // which holds the expansion of every floor at the run's commit whose migration it lacks (as the gate
 // checks it), and its image is the one non-prod deployed in this run; a rollback's target is still
-// recorded, on main, at the gate's digest and above every floor at the run's commit; a restore's record
-// is the one the gate read. It outputs prod's newest record id, which the prod job's fast re-check
-// compares.
+// recorded, on main, at the gate's digest and above every floor at the run's commit; and for a deploy, a
+// rollback and a restore alike prod's newest record is the one the gate read. A deploy's automatic
+// rollback goes back to the gate's newest record, which synth-previous-prod built and prod-plan diffed, so
+// a release another run recorded since (its prod deploy landing while this run waited) would otherwise
+// leave that rollback going past it, and prod-plan's rollback diff showing it go, which the approver
+// could only read as a rebuild that differs (round 11). It outputs prod's newest record id, which the prod
+// job's fast re-check compares.
 export async function prodGate(input: ProdGateInput): Promise<Outcome<{ current_prod_id: string }>> {
   const { mode, target, sha, commit, isAncestor } = input
   if (!COMMIT.test(sha) || !COMMIT.test(commit)) return no('bad-input')
@@ -669,6 +673,7 @@ export async function prodGate(input: ProdGateInput): Promise<Outcome<{ current_
     if (newest !== undefined && !isAncestor(newest.commit, sha)) return no('older-than-prod')
     if (newest !== undefined && !(await input.expansionsMet(newest.commit, sha))) return no('expansion-not-deployed')
     if (!DIGEST.test(input.buildDigest) || input.buildDigest !== input.nonprodDigest) return no('digest-differs')
+    if (outputs.current_prod_id !== input.recordId) return no('record-changed')
     return ok(outputs)
   }
   if (target === 'prod' && mode === 'rollback') {
@@ -676,6 +681,7 @@ export async function prodGate(input: ProdGateInput): Promise<Outcome<{ current_
     if (!recorded.ok) return recorded
     if (recorded.value.digest !== input.digest) return no('record-changed')
     if (!(await input.floorsAllowed(commit, sha))) return no('floor-crossed')
+    if (outputs.current_prod_id !== input.recordId) return no('record-changed')
     return ok(outputs)
   }
   if (target === 'restore' && mode === 'deploy') {

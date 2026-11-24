@@ -1104,7 +1104,10 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
       ok: true,
       value: { current_prod_id: '202' },
     })
-    expect(await prodGate({ ...base(), records: [] })).toEqual({ ok: true, value: { current_prod_id: '' } })
+    expect(await prodGate({ ...base(), recordId: '', records: [] })).toEqual({
+      ok: true,
+      value: { current_prod_id: '' },
+    })
     const ahead = [...prodRecords(), ...records('prod', deployment(209, 'prod', branch, D.e, 9))]
     expect(await prodGate({ ...base(), records: ahead })).toEqual({ ok: false, reason: 'older-than-prod' })
     expect(await prodGate({ ...base(), records: prodRecords(), nonprodDigest: D.e })).toEqual({
@@ -1146,6 +1149,31 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
     expect(await prodGate({ ...base(), commit: at(5), records: prodRecords() })).toEqual({
       ok: false,
       reason: 'bad-input',
+    })
+  })
+
+  // Two merges close together (round 11): run B's gate read prod's newest record, then run A's prod deploy
+  // landed and recorded before B's prod-gate. B's automatic rollback would go back to the gate's record,
+  // past A's release, and prod-plan's rollback diff would show A's release going, which the approver could
+  // read only as a rebuild that differs. prod-gate refuses it before the approval, for a deploy and a
+  // rollback as for a restore, and a first deploy's gate read no record at all.
+  it('round 11: a deploy and a rollback need prod’s newest record unchanged since the gate', async () => {
+    const landed = [...prodRecords(), ...records('prod', deployment(203, 'prod', at(5), D.e, 3))]
+    expect(await prodGate({ ...base(), records: landed })).toEqual({ ok: false, reason: 'record-changed' })
+    expect(await prodGate({ ...base(), recordId: '203', records: landed })).toEqual({
+      ok: true,
+      value: { current_prod_id: '203' },
+    })
+    expect(await prodGate({ ...base(), recordId: '', records: prodRecords() })).toEqual({
+      ok: false,
+      reason: 'record-changed',
+    })
+    expect(await prodGate({ ...base(), records: [] })).toEqual({ ok: false, reason: 'record-changed' })
+    const rollback = { ...base(), mode: 'rollback', commit: at(3), digest: D.c, buildDigest: '', nonprodDigest: '' }
+    expect(await prodGate({ ...rollback, records: landed })).toEqual({ ok: false, reason: 'record-changed' })
+    expect(await prodGate({ ...rollback, recordId: '203', records: landed })).toEqual({
+      ok: true,
+      value: { current_prod_id: '203' },
     })
   })
 
