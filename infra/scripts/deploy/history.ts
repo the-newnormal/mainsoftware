@@ -263,7 +263,7 @@ export const REFUSALS = {
   'pr-not-found': 'no merged pull request to main produced this commit',
   'pr-tree-differs': "the commit's tree differs from its pull request's head",
   'pr-head-shared':
-    "another pull request was opened from the merged one's head branch, and GitHub ties no ci.yml run to the pull request that started it, so the merged one's own checks can't be told: deploy the next pull request, from a branch that carried no other",
+    "another pull request from the merged one's head branch was open while it was, or has its head commit, or that branch's pull requests couldn't all be read, and GitHub ties no ci.yml run to the pull request that started it, so the merged one's own checks can't be told apart: the next merge whose head no other pull request shares deploys what this one brought",
   'pr-checks-failed': "the pull request's check and migrations jobs did not both succeed",
   'off-main': "a commit the run would use is not on main at the run's commit",
   'no-release': 'the environment has no release record',
@@ -417,10 +417,13 @@ export function chooseFromEcs(
 
 // What the gate saves of the pull request that produced a pushed commit (deploy.yml's gate writes it
 // from `gh api`): the merged pull request with base main whose merge commit is the run's (pull null
-// when there is none), its head's tree, whether any other pull request was ever opened from its head
-// branch (shared: GitHub ties no run to the pull request that started it, so another's run at the same
-// head would read as the merged one's), and the conclusions of its ci.yml run's `check` and
-// `migrations` jobs.
+// when there is none), its head's tree, whether another pull request from its head branch could have
+// made a run read as its own (shared: GitHub ties no run to the pull request that started it, so the gate
+// writes it when another from that head, in any state, was open at any moment while the merged one was or
+// has its head commit, or when that head's pull requests can't all be read; one that closed before the
+// merged one opened, at another commit, as Renovate's reused branch names leave, doesn't), and the
+// conclusions of the `check` and `migrations` jobs of its newest ci.yml run whose latest attempt started
+// while it was open (`missing` when none did, a run re-run after the merge among them).
 export interface PullChecks {
   pull: number | null
   base: string

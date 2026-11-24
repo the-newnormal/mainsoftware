@@ -22,7 +22,15 @@
 // proves by hand when they move, and ci.yml sets no env: or defaults: at its top, which would reach the
 // check's step, and check no key of its own but needs, if, runs-on, timeout-minutes and steps, so nothing
 // decides how its first step's exit 1 runs; and check and migrations are named by their ids alone, no job's
-// name: either's, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name. .nvmrc, which chooses that job's Node and every deploy job's, is
+// name: either's, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name.
+// GitHub ties no run to the pull request that started it, so the gate reads the merged pull request's own
+// ci.yml run as the newest at its head, from its head repository and branch, whose latest attempt started
+// while it was open, and refuses a head another pull request from that branch shared (open at any moment
+// while it was, or at its head commit) or whose pull requests it can't read whole (PULL_CHECKS); one that
+// closed before it opened, at another commit, as Renovate's reused branch names leave, shares nothing. What
+// stays is what GitHub's own required checks, which read a commit's checks by its sha, can't tell either: a
+// re-run, inside that window, of a closed pull request's earlier run at the same commit, which needs the
+// branch pushed back to that commit. .nvmrc, which chooses that job's Node and every deploy job's, is
 // 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one job a
 // Node on which a script's entry runs nothing and exits 0.
 // Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
@@ -1315,17 +1323,36 @@ export const NEWEST_RELEASE = sh`newest_release() {
 
 // The gate's read of a deploy's pull request (C11-D49, DPW-08): the merged pull request whose merge commit
 // is this run's, its head's tree and its ci.yml run's check and migrations, read from the newest such run
-// on its own head repository and branch (never another fork's at the same commit) and its jobs, for
-// history.ts plan to decide.
+// on its own head repository and branch (never another fork's at the same commit) whose latest attempt
+// started while the pull request was open, and its jobs; and whether another pull request from its head
+// could have made such a run (shared), read from every page of the head's pull requests; for history.ts
+// plan to decide. GitHub ties no run to the pull request that started it, so the merged one's own run is
+// told only by when it started and which pull requests from its head were open then: one from the same
+// branch name that closed before it opened, at another commit (Renovate reuses its branch names), leaves it
+// unshared, while one open at any moment while it was, or one at its head commit, shares it. GitHub's own
+// required checks read a commit's checks by its sha too, and a re-run, inside that window, of a closed pull
+// request's earlier run at the same commit (which needs the branch pushed back to that commit) can't be
+// told apart: that is what stays.
 export const PULL_CHECKS = sh`set -euo pipefail
 # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
-# head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head (the
-# newest such run from the pull request's own head repository and branch, so another fork's pull
-# request at the same commit is never read; its path read without any @<ref> GitHub adds, and read
-# from the run and its jobs, never from a check run, which any token with checks: write can make).
+# head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head: the
+# newest such run from the pull request's own head repository and branch (so another fork's pull
+# request at the same commit is never read; its path read without any @<ref> GitHub adds) whose
+# latest attempt started (run_started_at) at or after the pull request's created_at and at or before
+# its merged_at, so a run re-run after the merge isn't counted and, with no other, its checks read as
+# missing; read from the run and its jobs, never from a check run, which any token with checks: write
+# can make, and from a listing of runs read whole (a full page reads as none).
 # GitHub ties no run to the pull request that triggered it, so a run of another pull request from the
-# same head branch, into another base, would read as the merged one's: shared is true unless the pull
-# requests ever opened from that head are the merged one alone, and history.ts refuses a shared head.
+# same head at the same commit (into another base, testing another merge) would read as the merged
+# one's. So shared is true when another pull request from that head, in any state, was open at any
+# moment while the merged one was (created at or before its merged_at, and closed at or after its
+# created_at, or never closed), or has its head commit as its own, or when the head's pull requests
+# can't be read whole (every page, up to ten of 100, every entry from that head, the merged one among
+# them once), and history.ts refuses a shared head. One from the same branch that closed before this one
+# opened, at another commit, leaves it unshared: Renovate reuses its branch names. What stays: GitHub's
+# own required checks read a commit's checks by its sha too, and a re-run, inside that window, of a
+# closed pull request's earlier run at the same commit (which needs the branch pushed back to that
+# commit) can't be told apart.
 # history.ts plan decides; no merged pull request writes pull: null.
 if [ "$\{MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
 PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
@@ -1337,14 +1364,27 @@ fi
 HEAD=$(jq -er '.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"$PULL")
 TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
 LABEL=$(jq -er '.head.label | select(type == "string" and test("\\A[A-Za-z0-9-]+:[^[:cntrl:]]+\\z")) | @uri' <<<"$PULL")
-OPENED=$(gh api "repos/$REPO/pulls?state=all&head=$LABEL&per_page=100" --jq '[.[] | .number]')
+OPENED='[]'
+WHOLE=false
+for PAGE in 1 2 3 4 5 6 7 8 9 10; do
+  LISTED=$(gh api "repos/$REPO/pulls?state=all&head=$LABEL&sort=created&direction=asc&per_page=100&page=$PAGE" --jq '[.[] | {number, label: .head.label, sha: .head.sha, created_at, closed_at}]')
+  OPENED=$(jq -c --argjson listed "$LISTED" '. + $listed' <<<"$OPENED")
+  if jq -e 'length < 100' <<<"$LISTED" >/dev/null; then
+    WHOLE=true
+    break
+  fi
+done
+SHARED=$(jq --argjson pull "$PULL" --argjson whole "$WHOLE" '
+  ($pull.created_at | fromdateiso8601) as $created | ($pull.merged_at | fromdateiso8601) as $merged
+  | ($whole | not) or ([.[] | select(.number == $pull.number)] | length) != 1 or any(.[]; .label != $pull.head.label)
+    or any(.[]; .number != $pull.number and (.sha == $pull.head.sha or ((.created_at | fromdateiso8601) <= $merged and (.closed_at == null or (.closed_at | fromdateiso8601) >= $created))))' <<<"$OPENED")
 RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100")
-RUN_ID=$(jq -r --arg head "$HEAD" --argjson pull "$PULL" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $head and ($pull.head.repo.id | type == "number") and .head_repository.id == $pull.head.repo.id and .head_branch == $pull.head.ref)] | max_by(.id) | .id // ""' <<<"$RUNS")
+RUN_ID=$(jq -r --arg head "$HEAD" --argjson pull "$PULL" '($pull.created_at | fromdateiso8601) as $created | ($pull.merged_at | fromdateiso8601) as $merged | if (.workflow_runs | length) >= 100 then "" else [.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $head and ($pull.head.repo.id | type == "number") and .head_repository.id == $pull.head.repo.id and .head_branch == $pull.head.ref and (.run_started_at | type == "string") and (.run_started_at | fromdateiso8601) >= $created and (.run_started_at | fromdateiso8601) <= $merged)] | max_by(.id) | .id // "" end' <<<"$RUNS")
 JOBS='{"jobs": []}'
 if [ -n "$RUN_ID" ]; then JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"); fi
-jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" --argjson opened "$OPENED" '
+jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" --argjson shared "$SHARED" '
   def conclusion($name): [$jobs.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "missing" end;
-  {pull: $pull.number, base: $pull.base.ref, mergeCommit: $pull.merge_commit_sha, headTree: $tree, shared: ($opened != [$pull.number]), check: conclusion("check"), migrations: conclusion("migrations")}' >"$RUNNER_TEMP/checks.json"`
+  {pull: $pull.number, base: $pull.base.ref, mergeCommit: $pull.merge_commit_sha, headTree: $tree, shared: $shared, check: conclusion("check"), migrations: conclusion("migrations")}' >"$RUNNER_TEMP/checks.json"`
 
 // prod-gate's wait for main's own CI (C11-D52, DPW-08): ci.yml's push run on main for this commit, its check
 // and migrations jobs, until both succeed.

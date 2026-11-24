@@ -2866,21 +2866,35 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(prodPathFindings(workflows)).toEqual([])
   })
 
-  // SECURITY-01: the gate's choice among ci.yml's runs on the pull request's head, run with bash and jq.
+  // SECURITY-01: the gate's choice among ci.yml's runs on the pull request's head, run with bash and jq: the newest
+  // from the pull request's own head repository and branch whose latest attempt started (run_started_at, which a
+  // re-run resets) while the pull request was open, from its created_at to its merged_at, both ends counted.
   it('chooses the pull request’s own run, never another fork’s newer one at the same commit', () => {
     const line = PULL_CHECKS.split('\n').find(each => each.startsWith('RUN_ID=')) ?? ''
     expect(line).not.toBe('')
     const head = 'a'.repeat(40)
-    const run = (id: number, repo: number | null, branch: string, sha = head, path = '.github/workflows/ci.yml') => ({
+    const ci = '.github/workflows/ci.yml'
+    const created = '2026-11-01T00:00:00Z'
+    const merged = '2026-11-02T00:00:00Z'
+    const run = (
+      id: number,
+      repo: number | null,
+      branch: string,
+      sha = head,
+      path = ci,
+      started: string | null = '2026-11-01T12:00:00Z',
+    ) => ({
       id,
       path,
       head_sha: sha,
       head_branch: branch,
       head_repository: repo === null ? null : { id: repo },
+      ...(started === null ? {} : { run_started_at: started }),
     })
     const choose = (pull: unknown, runs: unknown[]) =>
       execFileSync('bash', ['-c', `set -euo pipefail\n${line}\nprintf '%s' "$RUN_ID"`], {
         encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: {
           PATH: process.env.PATH ?? '',
           HEAD: head,
@@ -2888,7 +2902,12 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
           RUNS: JSON.stringify({ workflow_runs: runs }),
         },
       })
-    const own = { number: 7, head: { sha: head, ref: 'feature', repo: { id: 11 } } }
+    const own = {
+      number: 7,
+      created_at: created,
+      merged_at: merged,
+      head: { sha: head, ref: 'feature', repo: { id: 11 } },
+    }
     const runs = [
       run(100, 11, 'feature'),
       run(105, 99, 'feature'),
@@ -2900,30 +2919,67 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     expect(choose(own, [...runs, run(101, 11, 'feature')])).toBe('101')
     // A merged pull request whose head repository is gone matches no run, so its checks read as missing.
     expect(choose({ ...own, head: { ...own.head, repo: null } }, [...runs, run(109, null, 'feature')])).toBe('')
+    // A run whose latest attempt started after the merge (a re-run, whatever it concluded) or before the pull
+    // request was opened isn't counted, nor one with no start time: the newest counted run is chosen, and with
+    // none the step's checks read as missing. The window's two ends count.
+    const after = run(110, 11, 'feature', head, ci, '2026-11-02T00:00:01Z')
+    const before = run(111, 11, 'feature', head, ci, '2026-10-31T23:59:59Z')
+    const unstarted = run(112, 11, 'feature', head, ci, null)
+    expect(choose(own, [...runs, after, before, unstarted])).toBe('100')
+    for (const each of [after, before, unstarted]) expect(choose(own, [each]), JSON.stringify(each)).toBe('')
+    expect(choose(own, [run(113, 11, 'feature', head, ci, created)])).toBe('113')
+    expect(choose(own, [run(113, 11, 'feature', head, ci, created), run(114, 11, 'feature', head, ci, merged)])).toBe(
+      '114',
+    )
+    // A start time that isn't GitHub's date-time fails the step, as an unreadable answer does.
+    expect(() => choose(own, [run(115, 11, 'feature', head, ci, '2026-11-01 12:00')])).toThrow()
+    // A full page of runs may leave the newest counted one unread, so none is chosen; one fewer is read whole.
+    const page = (count: number) => Array.from({ length: count }, (_, i) => run(200 + i, 11, 'feature'))
+    expect(choose(own, page(100))).toBe('')
+    expect(choose(own, page(99))).toBe('298')
   })
 
-  // GitHub ties no ci.yml run to the pull request that started it (a run's pull_requests lists only open ones
-  // that match its head), so a later pull request from the same head branch into another base has a run at the
-  // same head, repository and branch, which the gate took as the merged one's: a failed run passed and a green
-  // one was refused. The step, run whole with bash and jq against a stand-in gh, writes shared unless the pull
-  // requests ever opened from that head are the merged one alone, and history.ts refuses a shared head.
-  it('writes shared unless the merged pull request is the only one ever opened from its head branch', () => {
+  // GitHub ties no ci.yml run to the pull request that started it (a run's pull_requests lists only open ones that
+  // match its head), so a run of another pull request from the same head at the same commit, into another base, has
+  // the same head, repository and branch, and would read as the merged one's: a failed run passed and a green one
+  // was refused. The step, run whole with bash and jq against a stand-in gh, reads every page of the pull requests
+  // from the merged one's head label and writes shared when another of them, in any state, was open at any moment
+  // while the merged one was or has its head commit, or when that listing can't be read whole; one that closed
+  // before the merged one opened, at another commit, leaves it unshared (Renovate reuses its branch names). And
+  // history.ts plan, fed what the step wrote, deploys or refuses.
+  it('writes shared when another pull request from its head could have made its run, and deploys Renovate’s reuse', async () => {
     const head = 'a'.repeat(40)
     const sha = 'c'.repeat(40)
+    const created = '2026-11-10T00:00:00Z'
+    const merged = '2026-11-12T00:00:00Z'
     const pullOf = (label: string) => ({
       number: 7,
-      merged_at: '2026-11-01T00:00:00Z',
+      created_at: created,
+      closed_at: merged,
+      merged_at: merged,
       merge_commit_sha: sha,
       base: { ref: 'main' },
       head: { sha: head, ref: 'feature', label, repo: { id: 11 } },
     })
+    type Listed = { number: number; created_at: string; closed_at: string | null; head: { label: string; sha: string } }
+    const listed = (
+      number: number,
+      opened: string,
+      closed: string | null,
+      at = 'b'.repeat(40),
+      label = 'example:feature',
+    ): Listed => ({ number, created_at: opened, closed_at: closed, head: { label, sha: at } })
+    const self = (label = 'example:feature'): Listed => listed(7, created, merged, head, label)
     const gh = [
       'gh() {',
-      '  local answer',
+      '  local answer page',
       '  case "$2" in',
       '    "repos/$REPO/commits/$SHA/pulls") answer=$ANSWER_PULLS ;;',
       `    "repos/$REPO/git/commits/${head}") answer='{"tree": {"sha": "${'d'.repeat(40)}"}}' ;;`,
-      '    "repos/$REPO/pulls?state=all&head=$WANTED&per_page=100") answer=$ANSWER_OPENED ;;',
+      '    "repos/$REPO/pulls?state=all&head=$WANTED&sort=created&direction=asc&per_page=100&page="[1-9]*)',
+      `      page=\${2##*&page=}`,
+      '      printf \'%s\\n\' "$page" >>"$RUNNER_TEMP/pages"',
+      '      answer=$(jq -c --argjson page "$page" \'.[$page - 1] // []\' "$RUNNER_TEMP/pages.json") ;;',
       `    "repos/$REPO/actions/runs?head_sha=${head}&event=pull_request&per_page=100") answer=$ANSWER_RUNS ;;`,
       '    "repos/$REPO/actions/runs/900/jobs?per_page=100") answer=$ANSWER_JOBS ;;',
       '    *) echo "no answer for $2" >&2; return 1 ;;',
@@ -2931,7 +2987,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       `  if [ "\${3:-}" = --jq ]; then jq -r "$4" <<<"$answer"; else printf '%s\\n' "$answer"; fi`,
       '}',
     ].join('\n')
-    const runs = {
+    const runOf = (started: string) => ({
       workflow_runs: [
         {
           id: 900,
@@ -2939,18 +2995,24 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
           head_sha: head,
           head_branch: 'feature',
           head_repository: { id: 11 },
+          run_started_at: started,
         },
       ],
-    }
+    })
     const jobs = {
       jobs: [
         { name: 'check', conclusion: 'success' },
         { name: 'migrations', conclusion: 'success' },
       ],
     }
-    const written = (opened: readonly number[], label = 'example:feature', wanted = 'example%3Afeature') => {
+    const step = (
+      pages: ReadonlyArray<readonly Listed[]>,
+      { label = 'example:feature', wanted = 'example%3Afeature', started = '2026-11-11T00:00:00Z' } = {},
+    ) => {
       const temp = mkdtempSync(join(tmpdir(), 'hearth-pull-checks-'))
       try {
+        // The pages go in a file: ten full ones are longer than one environment variable may be.
+        writeFileSync(join(temp, 'pages.json'), JSON.stringify(pages))
         const result = spawnSync('bash', ['-c', `${gh}\n${PULL_CHECKS}`], {
           encoding: 'utf8',
           env: {
@@ -2962,20 +3024,27 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
             TARGET: 'prod',
             WANTED: wanted,
             ANSWER_PULLS: JSON.stringify([pullOf(label)]),
-            ANSWER_OPENED: JSON.stringify(opened.map(number => ({ number, head: { label } }))),
-            ANSWER_RUNS: JSON.stringify(runs),
+            ANSWER_RUNS: JSON.stringify(runOf(started)),
             ANSWER_JOBS: JSON.stringify(jobs),
           },
         })
         const path = join(temp, 'checks.json')
-        return result.status === 0 && existsSync(path)
-          ? parsePullChecks(JSON.parse(readFileSync(path, 'utf8')))
-          : `exit ${result.status}`
+        const asked = existsSync(join(temp, 'pages'))
+          ? readFileSync(join(temp, 'pages'), 'utf8').trim().split('\n')
+          : []
+        return {
+          checks:
+            result.status === 0 && existsSync(path)
+              ? parsePullChecks(JSON.parse(readFileSync(path, 'utf8')))
+              : `exit ${result.status}`,
+          pages: asked.map(Number),
+        }
       } finally {
         rmSync(temp, { recursive: true, force: true })
       }
     }
-    expect(written([7])).toEqual({
+    const written = (...args: Parameters<typeof step>) => step(...args).checks
+    const deployed = {
       pull: 7,
       base: 'main',
       mergeCommit: sha,
@@ -2983,16 +3052,101 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       shared: false,
       check: 'success',
       migrations: 'success',
-    })
-    for (const opened of [[9, 7], [7, 9], [], [9], [7, 7]]) {
-      expect(written(opened), JSON.stringify(opened)).toMatchObject({ shared: true, check: 'success' })
     }
+    expect(step([[self()]])).toEqual({ checks: deployed, pages: [1] })
+    // Renovate's reuse: earlier pull requests from the same branch name, merged or closed before this one opened,
+    // each at another commit, leave it unshared, in any order, up to the second before it opened.
+    const earlier = [
+      listed(3, '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z'),
+      listed(5, '2026-10-01T00:00:00Z', '2026-11-09T23:59:59Z', 'e'.repeat(40)),
+    ]
+    expect(written([[...earlier, self()]])).toEqual(deployed)
+    expect(written([[self(), ...earlier]])).toEqual(deployed)
+    // Another pull request from the head open at any moment while the merged one was, from its created_at to its
+    // merged_at, both ends counted, or still open, or at its head commit whenever it was open, shares it.
+    const overlapping: ReadonlyArray<readonly [string, Listed]> = [
+      ['closed as it opened', listed(5, '2026-10-01T00:00:00Z', created)],
+      ['closed while it was open', listed(5, '2026-10-01T00:00:00Z', '2026-11-11T00:00:00Z')],
+      ['open across it', listed(5, '2026-10-01T00:00:00Z', null)],
+      ['opened while it was open', listed(9, '2026-11-11T00:00:00Z', null)],
+      ['opened as it merged', listed(9, merged, '2026-11-13T00:00:00Z')],
+      ['closed long before, at its head commit', listed(3, '2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z', head)],
+      ['opened after it merged, at its head commit', listed(9, '2026-11-20T00:00:00Z', null, head)],
+    ]
+    for (const [name, other] of overlapping) {
+      expect(written([[other, self()]]), name).toEqual({ ...deployed, shared: true })
+    }
+    // One opened after the merge, at another commit, leaves it unshared: none of its runs started in the window.
+    expect(written([[self(), listed(9, '2026-11-12T00:00:01Z', null)]])).toEqual(deployed)
+    // The listing is read whole or the head is shared: a full page reads the next, up to ten, and a tenth full page
+    // is refused without an eleventh read; the merged pull request is in it once, and every entry is from its head.
+    const closed = (n: number) => listed(1000 + n, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')
+    const full = (from: number) => Array.from({ length: 100 }, (_, i) => closed(from + i))
+    expect(step([[...full(0).slice(1), self()], []])).toEqual({ checks: deployed, pages: [1, 2] })
+    expect(step([full(0), [self(), closed(100)]])).toEqual({ checks: deployed, pages: [1, 2] })
+    const ten = Array.from({ length: 10 }, (_, i) => full(100 * i))
+    ten[0] = [...full(0).slice(1), self()]
+    expect(step(ten)).toEqual({ checks: { ...deployed, shared: true }, pages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] })
+    expect(step([...ten.slice(0, 9), full(900).slice(1)])).toEqual({
+      checks: deployed,
+      pages: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    })
+    for (const [name, pages] of [
+      ['empty', [[]]],
+      ['without it', [earlier]],
+      ['with it twice', [[self(), self()]]],
+      ['with it on two pages', [[...full(0).slice(1), self()], [self()]]],
+      [
+        'another head’s',
+        [[self(), listed(9, '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 'b'.repeat(40), 'x:feature')]],
+      ],
+    ] as const) {
+      expect(written(pages), name).toEqual({ ...deployed, shared: true })
+    }
+    // A run re-run after the merge isn't counted, so with no other its checks read as missing and history.ts
+    // refuses; one started before the merge is counted.
+    expect(written([[self()]], { started: '2026-11-12T00:00:01Z' })).toEqual({
+      ...deployed,
+      check: 'missing',
+      migrations: 'missing',
+    })
+    expect(written([[self()]], { started: merged })).toEqual(deployed)
     // The label is read whole and asked for encoded, a branch name's own & and / among it.
-    expect(written([7], 'example:a/b&c', 'example%3Aa%2Fb%26c')).toMatchObject({ shared: false })
+    expect(written([[self('example:a/b&c')]], { label: 'example:a/b&c', wanted: 'example%3Aa%2Fb%26c' })).toEqual(
+      deployed,
+    )
     // A label that isn't an owner and a branch fails the step, as an unreadable head does.
     for (const label of ['feature', 'example:', 'exa mple:feature', 'example:a\nb']) {
-      expect(written([7], label), label).toMatch(/^exit [1-9]\d*$/)
+      expect(written([[self(label)]], { label }), label).toMatch(/^exit [1-9]\d*$/)
     }
+    // history.ts plan over what the step wrote: Renovate's reuse deploys; an overlapping pull request is refused
+    // pr-head-shared, and a run re-run after the merge pr-checks-failed.
+    const decided = async (checks: ReturnType<typeof written>) => {
+      if (typeof checks === 'string') return checks
+      const tree = checks.headTree
+      const result = await plan({
+        event: 'push',
+        ref: 'refs/heads/main',
+        actor: 'a-person',
+        triggeringActor: 'a-person',
+        sha,
+        target: '',
+        mode: '',
+        release: '',
+        restore: '',
+        records: { nonprod: [], prod: [] },
+        checks,
+        treeOf: () => tree,
+        isAncestor: () => true,
+        floorsAllowed: () => true,
+        expansionsMet: () => true,
+        domains: ['app.hearth.example', 'content.hearth.example'],
+      })
+      return result.ok ? 'allowed' : result.reason
+    }
+    expect(await decided(written([[...earlier, self()]]))).toBe('allowed')
+    expect(await decided(written([[listed(9, '2026-11-11T00:00:00Z', null), self()]]))).toBe('pr-head-shared')
+    expect(await decided(written([[self()]], { started: '2026-11-12T00:00:01Z' }))).toBe('pr-checks-failed')
   })
 })
 

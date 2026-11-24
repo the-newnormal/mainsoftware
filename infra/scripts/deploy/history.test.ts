@@ -46,6 +46,7 @@ import {
 const EMAIL = ['test', 'example.invalid'].join('@')
 const ACCOUNT = '1'.repeat(12)
 const STAGE_SOURCE = fileURLToPath(new URL('../../src/workload/stage.ts', import.meta.url))
+const RUNBOOK = fileURLToPath(new URL('../../../docs/runbooks/deploy-and-rollback.md', import.meta.url))
 
 let repo = ''
 let scratch = ''
@@ -1071,6 +1072,14 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     expect(readFileSync(STAGE_SOURCE, 'utf8')).toContain(`"${REFUSALS['domains-placeholder']}"`)
   })
 
+  // The runbook's step 1 explains a shared head by the line the gate prints, so its words and the refusal's can't
+  // drift apart (the refusal names no workaround: a later merge whose head no other pull request shares deploys).
+  it('C11-D49: the runbook quotes the shared-head refusal as history.ts prints it', () => {
+    expect(readFileSync(RUNBOOK, 'utf8')).toContain(
+      `\`history: refused pr-head-shared: ${REFUSALS['pr-head-shared']}\``,
+    )
+  })
+
   it('C11-D49: a deploy needs the merged pull request that produced the commit, its tree and its green checks', async () => {
     const checks = GOOD_CHECKS()
     expect(await refusalOf(planInput({ checks: undefined }))).toBe('pr-not-found')
@@ -1080,12 +1089,22 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     expect(await refusalOf(planInput({ checks: { ...checks, headTree: git(['rev-parse', `${at(5)}^{tree}`]) } }))).toBe(
       'pr-tree-differs',
     )
-    // Another pull request opened from the same head branch: GitHub ties no ci.yml run to the pull request
-    // that started it, so its run at the same head can't be told from the merged one's, whichever passed.
+    // Another pull request from the same head branch open while the merged one was, or at its head commit, or a
+    // listing of that branch's pull requests not read whole (shared): GitHub ties no ci.yml run to the pull request
+    // that started it, so such a run at the same head can't be told from the merged one's, whichever passed.
     expect(await refusalOf(planInput({ checks: { ...checks, shared: true } }))).toBe('pr-head-shared')
     expect(await refusalOf(planInput({ checks: { ...checks, shared: true, check: 'failure' } }))).toBe('pr-head-shared')
     expect(await refusalOf(planInput({ checks: { ...checks, check: 'failure' } }))).toBe('pr-checks-failed')
     expect(await refusalOf(planInput({ checks: { ...checks, migrations: 'skipped' } }))).toBe('pr-checks-failed')
+    // No run of the pull request's own started while it was open (its only run re-run after the merge, say): its
+    // jobs read as missing, and a run still going as pending, each refused.
+    expect(await refusalOf(planInput({ checks: { ...checks, check: 'missing', migrations: 'missing' } }))).toBe(
+      'pr-checks-failed',
+    )
+    expect(await refusalOf(planInput({ checks: { ...checks, migrations: 'pending' } }))).toBe('pr-checks-failed')
+    // Renovate's reuse: an earlier pull request from the branch name closed before this one opened, at another
+    // commit, leaves it unshared (the gate's step, DPW-08's case), and its merge deploys.
+    expect(await refusalOf(planInput({ checks: { ...checks, shared: false } }))).toBe('allowed')
     // A rollback, a drill and a restore read no pull request.
     expect(await refusalOf(dispatch({ mode: 'drill-break' }, { checks: undefined }))).toBe('allowed')
   })
