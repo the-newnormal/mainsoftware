@@ -145,6 +145,27 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     git('update-ref', '-d', 'refs/remotes/origin/main')
     expect(spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' }).status).toBe(2)
   })
+  // The working tree's manifest read in place of the committed one (round 12's second iteration): CI ran the check
+  // after npm ci and the migration order check, off the owner's-read list, and one line there that wrote the
+  // base's manifest back over the working tree's passed a commit that lowered the pin, which is what merges.
+  // The check reads HEAD's committed manifest now, whatever the working tree holds.
+  it('reads the pin HEAD commits, never the working tree’s (round 12)', () => {
+    const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' })
+    const lowered = repo('2.1146.1', '2.1100.0')
+    writeFileSync(join(lowered, 'infra/package.json'), manifest('2.1146.1'))
+    const restored = run(lowered)
+    expect(restored.status).toBe(1)
+    expect(restored.stderr).toContain('pins aws-cdk 2.1100.0, lower than 2.1146.1 on origin/main')
+    expect(restored.stdout).not.toContain('OK')
+    rmSync(join(lowered, 'infra'), { recursive: true, force: true })
+    expect(run(lowered).status).toBe(1)
+    // And the other way: a working tree that lowers the pin over a commit that keeps it passes, since the
+    // committed pin is the one that merges.
+    const kept = repo('2.1146.1', '2.1146.1')
+    writeFileSync(join(kept, 'infra/package.json'), manifest('2.1100.0'))
+    expect(run(kept).status).toBe(0)
+  })
+
   // A link read as no pin (round 11): git show prints a symbolic link's target path, which no JSON parse reads,
   // while the deploy jobs' jq reads the file it names, so a link on main, then a lower pin in the file it named,
   // passed while every deploy job fetched the lower CLI.
@@ -156,7 +177,7 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     gitIn(head)('commit', '-qm', 'link')
     const headLinked = run(head)
     expect(headLinked.status).toBe(1)
-    expect(headLinked.stderr).toContain("infra/package.json in this checkout isn't a regular file")
+    expect(headLinked.stderr).toContain("infra/package.json on this checkout's HEAD isn't a regular file")
     // The link merged to main, then a branch that lowers the pin in the file it names.
     const base = repo('2.1146.1', '2.1146.1')
     const git = gitIn(base)

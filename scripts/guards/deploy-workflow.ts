@@ -23,6 +23,10 @@
 // check's step, and check no key of its own but needs, if, runs-on, timeout-minutes and steps, so nothing
 // decides how its first step's exit 1 runs; and check and migrations are named by their ids alone, no job's
 // name: either's, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name.
+// The CDK CLI's pin check (scripts/check-cli-pin.ts) runs the same way, in ci.yml's job cli-pin that check
+// needs, behind the same two held actions with no npm cache and before any of the repository's code, reading
+// the manifest as the head commits it (round 12): in migrations it ran after npm ci and the migration order
+// check, either of which could write over what it read.
 // GitHub ties no run to the pull request that started it, so the gate reads the merged pull request's own
 // ci.yml run as the newest at its head, from its head repository and branch, whose latest attempt started
 // while it was open, and refuses a head another pull request from that branch shared (open at any moment
@@ -98,7 +102,12 @@
 // its logical id's but for CDK's hash, and a role, security group, task definition or service carries the path
 // its name, or what names it, gives it, so no release shows a grant on the api task role as one on the migrate
 // task role's, or swaps two roles' ids and paths so the diff of a restore up or prod's first deploy reads byte
-// for byte as an honest release's (round 12).
+// for byte as an honest release's (round 12). That ties principals and groups; a grant's resource is labelled
+// too, a Ref or GetAtt by its resource's path and a parameter by its logical id entry, which can read as a
+// resource's path, tied to nothing CloudFormation resolves it to (a log group's name, a parameter's stored
+// value). So no role names anything by a reference but the account's id, a template VPC and its default
+// security group, the only ones the synth writes there, and a grant names anything else by a literal ARN, which
+// the IAM table prints whole (round 12's second iteration).
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -129,9 +138,10 @@
 // AWS_VALUE_LINES writes, each from AWS's answer to a call by the stage's names, never a stack's outputs, and
 // never vouched for by its own pinned run), and none, in any job, expands a name the run doesn't own (its
 // step's or job's env: but GH_TOKEN, what it sets itself but a name the runner hands a step, and the runner's
-// outputs, summary, folder and run ids), so neither the OIDC request token the runner hands every run step of a
-// job with an id-token nor the job's token is handed, in any form the table reads, to a tool that could print it
-// in pieces. The wiring between the runs is pinned too: every job's steps are the guard's, in order, by name and
+// outputs, summary, folder and run ids), an array's elements' names among them (round 12's second iteration:
+// SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN") read none and made the token a name of the run's own), so neither the
+// OIDC request token the runner hands every run step of a job with an id-token nor the job's token is handed, in
+// any form the table reads, to a tool that could print it in pieces. The wiring between the runs is pinned too: every job's steps are the guard's, in order, by name and
 // action (JOB_STEPS), so no step of its own stands before a pinned run in any job, and no run of any job names
 // GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
@@ -141,9 +151,11 @@
 // runner that synthesises or reads an assembly runs a second commit's code), every step's id is the guard's
 // (STEP_IDS), so no step of its own answers for a pinned step's outputs, and every steps.<id> and needs.<job>
 // an expression reads is bound to what writes it (bindingFindings(): a step of the job, before a step that reads
-// it, writing the key, and a job the reader needs, its result or one of its outputs), since GitHub reads any other
-// as '' with no error, so a step's id, a job's output or a run's key renamed with the table that pins it can't
-// leave services_started or rolled empty and the pipeline's rollback off (round 12), and so are
+// it, writing the key on a code line that opens the value with <key>= after a quote or a printf \n, never in a
+// comment or a longer key, and a job the reader needs, its result or one of its outputs), since GitHub reads any
+// other as '' with no error, so a step's id, a job's output or a run's key renamed with the table that pins it
+// can't leave services_started, replaced or rolled empty and the pipeline's rollback off (round 12; replaced from
+// its second iteration, whose write AWS_CHECK's comment named), and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
@@ -214,8 +226,9 @@
 // (foreignExpansionLines(), DPW-07), so no canonical text prints, in any form these rules read, the OIDC request
 // token or another credential its job holds, to running only the commands CANONICAL_COMMANDS names and the
 // canonical texts' functions, each by a plain word, each function defined once by a plain lower-case name of its
-// own that no builtin, keyword, command or other text has (functionNameLines(): bash finds a function before a
-// builtin, so an exit() would make every later exit 1 carry on), with no environment of its own (canonicalCommandLines():
+// own that no builtin, keyword, command or other text has, nor command_not_found_handle, which bash runs for a
+// command it can't find and takes the status of (functionNameLines(): bash finds a function before a builtin, so
+// an exit() would make every later exit 1 carry on), with no environment of its own (canonicalCommandLines():
 // export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
 // a command but IFS's before read, read only with -r after IFS= or IFS=$'\t' and mapfile only with -t, so no
 // backslash in what a loop reads joins two lines or escapes a character (readerLines()), no assignment, in any
@@ -260,10 +273,12 @@
 // list's last, and run ASSET_CHECK over the real builds with a jq that notes any -e call printing other than one
 // value. jq also runs its program once for each value it reads, so a jq -e fed a stream holds its last value
 // alone whatever its program prints: no jq -e is fed by a pipe unless it is given -n or -s (JQ_PIPED_RULE,
-// jq -c '.[]' <<<"$X" | jq -e 'f' among them; round 12). A here-string or a file holding several JSON texts is
-// read the same way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or
-// an earlier jq, a variable built of several (by += or from jq -c '.[]') being the owner's read's to catch, and
-// their files are an assembly's, which the CLI parses as one JSON text each.
+// jq -c '.[]' <<<"$X" | jq -e 'f' among them; round 12), and none is given more than one file, or
+// "${stackfiles[@]}", unless it is given -n or -s, since jq reads each file as inputs of its own and -e holds the
+// last file alone (round 12's second iteration). A here-string holding several JSON texts is read the same way,
+// which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an earlier jq, a
+// variable built of several (by += or from jq -c '.[]') being the owner's read's to catch; each file is an
+// assembly's, which the CLI parses as one JSON text.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns, outside the command and process substitutions
@@ -274,8 +289,14 @@
 // command it is (true || { tar …; } hid its tar as the tail of a command named {), and an unquoted ${ … } closes
 // at the first } bash closes it at, a bare { inside it opening nothing (${mode:-{})} closed a brace late and
 // read a command after it as quoted text), and a ${ … } holding a ;, ( or ), or an unquoted \( or \), is no
-// shape it reads, since its case scanner counts those to find an item's end and a pattern's ) (round 12); the
-// words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
+// shape it reads, since its case scanner counts those to find an item's end and a pattern's ) (round 12); a ! or
+// { starts a command only as a word of its own, as bash reads them, and a ${ … } holding a | or & (or, in double
+// quotes, where its body may hold blanks, a !, { or line break), or an unquoted backslash before a ;, &, |, !,
+// {, < or >, is no shape it reads either, since a command start read there began a [[ or case whose operands or
+// patterns it blanks (ready! [[, plan.{ [[ and plan\;[[ hid the commands bash ran after them); and a
+// redirection's target before a command's word is a word of joined parts, as bash reads it, so <<<"$step"'' or
+// >&2'' hides no command after it (round 12's second iteration); the words no credentialed job may name at all
+// (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
@@ -579,7 +600,12 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
 # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
 # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-# another's label. Then it requires every Services template's Release output to be the release this job
+# another's label. And no role names anything by a reference but the account's id, a template VPC and that
+# VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+# prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+# group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+# so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+# Then it requires every Services template's Release output to be the release this job
 # deploys, and every container image in the Tasks and Services templates to be the server image at its
 # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
 # rule, never a path or value from the assembly.
@@ -928,6 +954,9 @@ check_release_in() {
         ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
         all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
         asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+      jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+        all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
         {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
         [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -3016,7 +3045,13 @@ function readViews(run: string): ShellViews {
     }
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
-  const BRACE_ODD = /['"`~;()]|\$[({]|@[A-Za-z]/
+  // From round 12's second iteration a | or & too, which the reader takes for a command's start wherever it
+  // stands, and in a double-quoted body, which may hold blanks and which the code view keeps as code, a !, { or
+  // line break as well (QUOTED_BRACE_ODD), each a command's start after a blank: "${step:+! [[ }" read as one and
+  // a [[ that blanked the commands after it. An unquoted body holds no blank (refused below), so a ! or { in it
+  // starts nothing.
+  const BRACE_ODD = /['"`~;()|&]|\$[({]|@[A-Za-z]/
+  const QUOTED_BRACE_ODD = /[!{\n]/
   // Whether the ( at an offset (a $(('s inner one) closes with a ) straight before another ), as an arithmetic
   // expansion's does: bash reads $(( … )) as arithmetic only then, and otherwise as $( … ) holding a subshell.
   const arithmeticCloses = (from: number) => {
@@ -3062,7 +3097,8 @@ function readViews(run: string): ShellViews {
       } else if (c === '$' && next === '{') {
         const end = run.indexOf('}', i)
         const stop = end < 0 ? run.length : end + 1
-        if (end < 0 || BRACE_ODD.test(run.slice(i + 2, stop - 1))) odd.add('brace')
+        const body = run.slice(i + 2, stop - 1)
+        if (end < 0 || BRACE_ODD.test(body) || QUOTED_BRACE_ODD.test(body)) odd.add('brace')
         keep(run.slice(i, stop))
         i = stop
       } else if (c === '$' && /[A-Za-z_@#?*!$0-9]/.test(next)) {
@@ -3233,8 +3269,11 @@ const REST_END = new RegExp(String.raw`${COMMAND_END}|\)|[$<>]\(|$`)
 // keyword that is a command's argument (echo then case …) starts nothing, and the word after a { that
 // opens a group where a command starts (true || { cmd; }, then { cmd; }) is read as the command it is,
 // never as the tail of a command named { (the eighth review's fourth attack, where a group's first command,
-// a tar with --to-command among them, was seen by no rule).
-const COMMAND_BOUNDARY = String.raw`^|[;|!]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![$\w])\{(?=\s)`
+// a tar with --to-command among them, was seen by no rule). A ! or { starts a command only as a word of its own,
+// as bash reads it (round 12's second iteration): read anywhere, the ! of ready! [[ or the { of plan.{ [[ had
+// commandCode() blank a [[ … ]] test's operands, or a case's patterns, from there, and the commands bash ran
+// in between were seen by no rule.
+const COMMAND_BOUNDARY = String.raw`^|[;|]|(?<![^\s;&|()])!(?=\s)|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(|(?<![^\s;&|()])\{(?=\s)`
 const COMMAND_START = String.raw`(?:${COMMAND_BOUNDARY})(?:\s*(?:\b(?:then|do|else|elif|if|while|until)|\{)(?=\s))*`
 const ENDS_AT_COMMAND_START = new RegExp(`(?:${COMMAND_START})\\s*$`)
 
@@ -3373,7 +3412,10 @@ export const WRAPPERS: readonly string[] = [
 ]
 
 // What may stand before a command's word: run, get, a wrapper with its flags, an assignment, a redirection.
-const PREFIXES = String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"]+))\s+)*)`
+// A redirection's target is a word, any run of quoted and bare parts joined, as bash reads it (round 12,
+// second iteration): read as one part alone, <<<"$step"'' or >&2'' took no prefix and the line read as no command
+// at all, so the command bash ran after it was seen by no rule.
+const PREFIXES = String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"])+)\s+)*)`
 const COMMAND = new RegExp(
   String.raw`(${COMMAND_START})\s*${PREFIXES}` +
     String.raw`(?!(?:then|do|else|elif|if|while|until)(?![\w-])|\{\s|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
@@ -3604,8 +3646,11 @@ function canonicalLines(run: string): ReadonlySet<number> {
 // unplainLines() names (a name handed to read, unset or wait -p, a test of another shape, bash's own
 // evaluating names). The tests pin each canonical text's lines that hold one.
 // A backslash before a blank, a #, a line's end, or (round 12) a ( or ), which the case scanner, counting
-// parentheses in the code view, would read as a pattern's own, so \(|*) had it blank the item's commands.
-const ESCAPED_BREAK = /\\(?:[\s#()]|$)/m
+// parentheses in the code view, would read as a pattern's own, so \(|*) had it blank the item's commands; and
+// from round 12's second iteration before a ;, &, |, !, {, < or >, which the code view keeps and the reader of
+// command starts takes for an operator, so plan\;[[ had commandCode() blank the commands after it. The
+// canonical texts' only unquoted escape is \.
+const ESCAPED_BREAK = /\\(?:[\s#();&|!{<>]|$)/m
 // A backslash at a line's end anywhere in a text as written, quoted or not: inside double quotes bash removes
 // it with the line break and joins the two lines into one word, so a $ and a backslash ending one line and
 // (cmd) or {NAME} starting the next run cmd or expand NAME, as outside quotes and in a here-document, while
@@ -4575,13 +4620,17 @@ export function jqStatusLines(text: string): number[] {
 // fed a stream of values reads the last value alone, whatever its program prints for each: printf 'false\ntrue\n'
 // | jq -e . exits 0, and jq -c '.[]' <<<"$X" | jq -e 'f', which reads as every entry holding f, holds the last
 // alone (round 12). So no jq -e a canonical text writes is fed by a pipe, unless it is given -n (it reads no
-// input) or -s (it reads every input as one array). A here-string or a file holding several JSON texts is read
-// the same way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an
-// earlier jq, and their files are an assembly's, which the CLI parses as one JSON text each.
+// input) or -s (it reads every input as one array). jq reads each file it is given as inputs of its own too, so a
+// jq -e given several files reads the last file alone (round 12's second iteration: jq -r -e '(.dockerImages //
+// {}) | length == 0' "${stackfiles[@]}" read in a diff as no asset manifest holding a container image and held
+// the last alone), so neither is one given more than one data word, or "${stackfiles[@]}", unless it is given
+// -n or -s. A here-string holding several JSON texts is read the same way, which no rule reads: the texts'
+// here-strings hand jq a value read whole from AWS, GitHub or an earlier jq; and each file is an assembly's,
+// which the CLI parses as one JSON text.
 const JQ_PIPED_RULE =
-  'hands jq -e no stream of values, so never feeds it by a pipe unless it is given -n or -s, since -e reads the last value it reads alone'
+  'hands jq -e no stream of values, so never feeds it by a pipe or gives it more than one file unless it is given -n or -s, since -e reads the last value it reads alone'
 export function jqPipedLines(text: string): number[] {
-  return lineNumbers(jqCalls(text).filter(call => call.status && call.piped && !call.oneInput))
+  return lineNumbers(jqCalls(text).filter(call => call.status && (call.piped || call.files > 1) && !call.oneInput))
 }
 const lineNumbers = (calls: ReadonlyArray<{ line: number }>) =>
   [...new Set(calls.map(call => call.line))].sort((a, b) => a - b)
@@ -4589,12 +4638,12 @@ const lineNumbers = (calls: ReadonlyArray<{ line: number }>) =>
 // a group's { or (, a ! and the keywords a command may follow.
 const PIPED = /(?:^|[^|>])\|&?(?:\s|[{(!]|\b(?:then|do|else|elif|if|while|until|time)\b)*$/
 // Each jq a text calls, as the code view reads it: its line, whether it is given -e, and -n or -s, whether a pipe
-// feeds it, and its program (a single-quoted one unquoted).
-function jqCalls(
-  text: string,
-): Array<{ line: number; status: boolean; oneInput: boolean; piped: boolean; program: string }> {
+// feeds it, how many files it is given (a word that expands to several, "${stackfiles[@]}", counted as two), and
+// its program (a single-quoted one unquoted).
+type JqCall = { line: number; status: boolean; oneInput: boolean; piped: boolean; files: number; program: string }
+function jqCalls(text: string): JqCall[] {
   const views = shellViews(text)
-  const calls: Array<{ line: number; status: boolean; oneInput: boolean; piped: boolean; program: string }> = []
+  const calls: JqCall[] = []
   let offset = 0
   for (const [n, line] of views.code.split('\n').entries()) {
     for (const match of line.matchAll(/(?<![\w$/.{-])jq(?![\w-])/g)) {
@@ -4614,7 +4663,8 @@ function jqCalls(
       const program = words[i] ?? ''
       const body = /^'[^']*'$/.test(program) ? program.slice(1, -1) : program
       const piped = PIPED.test(views.code.slice(Math.max(0, at - 200), at))
-      calls.push({ line: n, status, oneInput, piped, program: body })
+      const files = words.slice(i + 1).reduce((count, word) => count + (expandsToMany(word) ? 2 : 1), 0)
+      calls.push({ line: n, status, oneInput, piped, files, program: body })
     }
     offset += line.length + 1
   }
@@ -5001,6 +5051,10 @@ const BASH_BUILTINS_AND_KEYWORDS = new Set(
     'function time { } ! [[ ]] coproc'
   ).split(' '),
 )
+// The function names bash itself calls (round 12): bash 5.2 runs
+// command_not_found_handle, with the words of any command it can't find, and takes its status in place of 127,
+// so command_not_found_handle() { return 0; } made a call to a missing function carry on past its || refusal.
+const BASH_HOOKS = ['command_not_found_handle']
 // A function a canonical text defines (round 11): a plain lower-case name, never a builtin's or keyword's
 // (exit() { :; } made every later exit 1 in an aws_refuse or asset_refuse carry on, since bash finds a function
 // first), a command's a text or a run's own lines run (CANONICAL_COMMANDS, the glue's GLUE_USES and its own
@@ -5009,10 +5063,11 @@ const BASH_BUILTINS_AND_KEYWORDS = new Set(
 // text's functions as it does).
 const FUNCTION_NAME_SHAPE = /^[a-z][a-z0-9_]*$/
 const FUNCTION_NAME_RULE =
-  "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), a command's a text or a run runs, or one another canonical text defines"
+  "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), one bash itself calls (command_not_found_handle), a command's a text or a run runs, or one another canonical text defines"
 export function functionNameLines(text: string, all: Readonly<Record<string, string>>): number[] {
   const reserved = new Set<string>([
     ...BASH_BUILTINS_AND_KEYWORDS,
+    ...BASH_HOOKS,
     ...CANONICAL_COMMANDS,
     ...SHELL_TABLE.refused,
     ...Object.keys(SHELL_TABLE.builtins),
@@ -5828,17 +5883,21 @@ class ShellReader {
     return name
   }
 
-  // An array's literal or double-quoted words, NAME=( … ), on one line.
+  // An array's literal or double-quoted words, NAME=( … ), on one line, with every name its elements expand
+  // (round 12's second iteration): dropped, an element's names were never read by EXPANDS_ITS_OWN, so
+  // SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN") made the token a name of the run's own, which a later line may
+  // print in pieces.
   private array(): ShellWord {
     const start = this.i
+    const expands: string[] = []
     this.i++
     for (;;) {
       this.blanks()
       if (this.peek() === ')') break
-      this.word('element')
+      expands.push(...this.word('element').expands)
     }
     this.i++
-    return { raw: this.s.slice(start, this.i), value: undefined, quoted: true, expands: [] }
+    return { raw: this.s.slice(start, this.i), value: undefined, quoted: true, expands }
   }
 
   // A substitution's pipeline, after its opening, to its ).
@@ -6710,6 +6769,7 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
     if (SHADOW_FILE.test(path)) found.add(at(SCRIPTS, 'DPW-04', SHADOW_RULE))
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
+  if (!cliPinJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CLI_PIN_JOB_RULE))
   if (!requiredJobsNamed(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', REQUIRED_NAMES_RULE))
   if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
   return [...found]
@@ -6798,6 +6858,47 @@ function pinsJobHolds(ci: string): boolean {
     only(first, ['if', 'run']) &&
     first?.if === NEEDS_FAILED &&
     first.run === 'exit 1'
+  )
+}
+// The job that holds the CDK CLI's pin to its base branch's (round 12's second iteration): check-cli-pin.ts alone
+// keeps the pin from going down, and it ran in migrations after npm ci and the migration order check, both off
+// the owner's-read list, either of which could write the working tree's manifest back to the base's (one line
+// in the order check did, and a lowered pin passed), move a remote-tracking ref, or put another node or git
+// first through GITHUB_PATH; and after setup-node's npm cache, which asks npm for its folder through the pull
+// request's own .npmrc and restores into it. So it runs as the pins check does, in a job of its own whose
+// steps are only the pins job's checkout (with the whole history, which the base's manifest needs) and
+// setup-node with no cache, held to PINS_JOB_ACTIONS, and the check, on a pull request, against the base's
+// remote-tracking name; check needs it, and on a push the step is skipped and the job succeeds, since check
+// fails on a skipped need. The script reads HEAD's committed manifest too. This is a second layer, as
+// pinsJobHolds is: the owner's read of ci.yml holds it.
+export const CLI_PIN_JOB = 'cli-pin'
+export const CLI_PIN_RUN = 'node scripts/check-cli-pin.ts "$BASE"'
+const CLI_PIN_JOB_RULE = `runs ${CLI_PIN_RUN} in a job of its own, ${CLI_PIN_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it`
+function cliPinJobHolds(ci: string): boolean {
+  const jobs = workflowJobs(ci)
+  const own = jobs.filter(job => job.id === CLI_PIN_JOB)
+  const check = jobs.find(job => job.id === 'check')
+  const job = own[0]
+  if (own.length !== 1 || job === undefined || check === undefined) return false
+  const steps = parsedSteps(job)
+  const [checkout, node, run] = steps
+  const only = (step: WorkflowStep | undefined, keys: readonly string[]) =>
+    step !== undefined && onceEach(step.keyNames, keys)
+  return (
+    onceEach(job.keyNames, ['runs-on', 'timeout-minutes', 'steps']) &&
+    jobScalar(job, 'runs-on') === 'ubuntu-24.04' &&
+    steps.length === 3 &&
+    only(checkout, ['name', 'uses', 'with']) &&
+    atJobPin(checkout, 'actions/checkout') &&
+    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false', 'fetch-depth': '0' }) &&
+    only(node, ['name', 'uses', 'with']) &&
+    atJobPin(node, 'actions/setup-node') &&
+    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }) &&
+    only(run, ['name', 'if', 'env', 'run']) &&
+    run?.if === expr("github.event_name == 'pull_request'") &&
+    sameMap(run.env, { BASE: `origin/${expr('github.base_ref')}` }) &&
+    run.run === CLI_PIN_RUN &&
+    jobNeeds(check).includes(CLI_PIN_JOB)
   )
 }
 // The required checks by their names (round 11): GitHub reports a job, and the ruleset's required check, the gate's
@@ -9834,7 +9935,8 @@ const CDK_ENV =
 // read the old name reading '': the deploy jobs' services_started, and with it the pipeline's rollback, the
 // rollback jobs' rolled, with their resmoke and record, and the read-back (round 12). So in deploy.yml every
 // steps.<id> a job's outputs: reads names a step of that job, and one a step's if:, env: or with: reads a step
-// before it, and for an output one that writes the key (a run holding <key>= itself, the gate's plan and
+// before it, and for an output one that writes the key (a code line of a run opening a written value with <key>=,
+// after a quote or a printf \n, never a comment's or a longer key's, the gate's plan and
 // prod-gate's call printing their job's outputs, as history.ts does and its tests hold, and upload-artifact its
 // artifact-id); no other key of a job reads a step; and every needs.<job> names a job in its needs: and that job's
 // result or one of its outputs:.
@@ -9858,7 +9960,12 @@ function bindingFindings(jobs: ReadonlyMap<string, Job>, add: (where: string, ru
     if (action !== undefined) return ACTION_OUTPUTS[action]?.includes(key) ?? false
     const printed = PRINTED_OUTPUTS[jobId]?.[step.id ?? '']
     if (printed !== undefined) return printed().includes(key)
-    return (step.run ?? '').includes(`${key}=`)
+    // A code line of the run that opens a written value with <key>=, right after a quote or a printf \n (round 12,
+    // second iteration): read anywhere in the run, a comment naming replaced=, a longer key or an argument
+    // counted as AWS_CHECK's write of replaced, so that write renamed or removed left the rollback jobs reading
+    // '' with no finding.
+    const written = new RegExp(`(?:["']|\\\\n)${key}=`)
+    return codeLinesAsBash((step.run ?? '').split('\n')).some(line => written.test(withoutComment(line)))
   }
   for (const { id, job, steps } of jobs.values()) {
     const needs = jobNeeds(job)

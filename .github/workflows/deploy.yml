@@ -546,7 +546,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -895,6 +900,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -1113,7 +1121,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -1462,6 +1475,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -1681,7 +1697,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -2030,6 +2051,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -2375,7 +2399,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -2724,6 +2753,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -3930,7 +3962,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -4279,6 +4316,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -5238,7 +5278,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -5587,6 +5632,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -5752,7 +5800,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -6101,6 +6154,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -6805,7 +6861,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -7154,6 +7215,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
@@ -8467,7 +8531,12 @@ jobs:
           # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
           # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
           # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. Then it requires every Services template's Release output to be the release this job
+          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
+          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
+          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
+          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
+          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -8816,6 +8885,9 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
+                  all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |

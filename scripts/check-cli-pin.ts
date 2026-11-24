@@ -10,10 +10,17 @@
 //
 //   node scripts/check-cli-pin.ts [BASE]   (BASE is origin/<branch>, by default origin/main)
 //
-// CI's migrations job runs it on pull requests against the PR's base branch, which that job fetches whole.
-// It compares this checkout's infra/package.json with BASE's, and fails when the pin isn't an exact version
-// or is lower than BASE's. GitHub starts no run when a pull request's base changes, and main's ruleset reads
-// the result its head commit already holds, so a branch that already holds main's head (one a retarget to
+// CI's cli-pin job runs it on pull requests against the PR's base branch, which that job fetches whole.
+// It compares infra/package.json as this checkout's HEAD commits it with BASE's, and fails when the pin
+// isn't an exact version or is lower than BASE's. It reads HEAD's committed manifest, never the working
+// tree's, since the pin that merges is the committed one (CLI_FETCH reads it on main), and it runs in a job
+// of its own with nothing of the repository's before it (round 12): in the migrations job it ran after npm
+// ci and the migration order check, both off the owner's-read list, either of which could write the working
+// tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or put
+// another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm
+// cache, which asks npm for its folder through the pull request's own .npmrc and restores into it. GitHub
+// starts no run when a pull request's base changes, and main's ruleset reads the result its head commit already
+// holds, so a branch that already holds main's head (one a retarget to
 // main would leave up to date, needing no new push) is compared with origin/main too, whatever its base: the
 // result then holds for any base the pull request is moved to (round 11). Both manifests must be regular
 // files, each read as itself: git show prints a symbolic link's target path, never the file it names, so a
@@ -27,8 +34,6 @@
 // this file does, and CI runs it from the pull request's own head, so it is on the owner's-read list (C11-D74,
 // TECH-SPEC T24 item 31).
 import { execFileSync, spawnSync } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 
 const MANIFEST = 'infra/package.json'
 const MAIN = 'origin/main'
@@ -95,17 +100,14 @@ function manifestAt(root: string, commit: string, name: string): { text: string 
   }
 }
 
-// This checkout's manifest, read only when it and its folder are themselves (no symbolic link), as git
-// holds them.
-function headManifest(root: string): { text: string } | { problem: string } {
-  try {
-    if (!lstatSync(join(root, 'infra')).isDirectory() || !lstatSync(join(root, MANIFEST)).isFile()) {
-      return { problem: `${MANIFEST} in this checkout isn't a regular file in a folder of its own` }
-    }
-  } catch {
-    return { problem: `this checkout has no ${MANIFEST}` }
-  }
-  return { text: readFileSync(join(root, MANIFEST), 'utf8') }
+// The manifest as this checkout's HEAD commits it (a regular file there, as manifestAt reads a base's), never
+// the working tree's, which a step before the check could have written over (round 12); undefined when HEAD
+// names no commit.
+function headManifest(root: string): { text: string } | { problem: string } | undefined {
+  const head = spawnSync('git', ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], { cwd: root, encoding: 'utf8' })
+  const commit = head.stdout.trim()
+  if (head.status !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(commit)) return undefined
+  return manifestAt(root, commit, "this checkout's HEAD")
 }
 
 // A base named origin/<branch>, as the commit refs/remotes/origin/<branch> names, read by that full name alone
@@ -157,6 +159,10 @@ function run(base: string): number {
         ]
       : [[base, named]]
   const head = headManifest(root)
+  if (head === undefined || ('problem' in head && head.problem.startsWith('check-cli-pin:'))) {
+    console.error("check-cli-pin: this checkout's HEAD can't be read as a commit, so no pin was compared")
+    return 2
+  }
   const problems: string[] = 'problem' in head ? [head.problem] : []
   const pin = 'text' in head ? cliPinOf(head.text) : undefined
   for (const [name, commit] of bases) {

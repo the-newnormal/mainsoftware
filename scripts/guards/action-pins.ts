@@ -16,16 +16,21 @@ export const ACTION_PINS: Readonly<Record<string, string>> = {
   'aws-actions/configure-aws-credentials': 'e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0',
 }
 
-// The two actions ci.yml's job action-pins runs before the check (DPW-04): checkout, which brings the
-// repository in, and setup-node. They run before the check can read anything, so the check can't prove
+// The two actions ci.yml's jobs action-pins and cli-pin run before their checks (DPW-04): checkout, which
+// brings the repository in, and setup-node. They run before the pins check can read anything, so it can't prove
 // them: one at a commit pushed only to a fork would own the workspace, the check and the git it calls. So
 // they are held here, apart from ACTION_PINS (moving a pin there moves neither of these), and a person who
 // reads a change to them proves it against the action's own repository before it merges, from a folder
 // outside any repository and with git reading no configuration of theirs:
 //   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git ls-remote https://github.com/<action>.git \
-//     refs/tags/<version> 'refs/tags/<version>^{}'
-// names the commit (the ^{} line, for an annotated tag). The check reads them too, which catches a mistake,
-// never a fork's commit, which would already have run.
+//     refs/tags/<version> 'refs/tags/<version>^{}' |
+//     awk -v t=refs/tags/<version> '$2 == t || $2 == t "^{}"'
+// names the commit: the ^{} line's when it prints one (an annotated tag), and otherwise its one other line's.
+// The awk keeps only the tag's own lines, since git matches each pattern against the end of every ref's name
+// at a /, so without it the answer also holds a branch named refs/tags/<version> and a tag named
+// x/refs/tags/<version> with a ^{} line of its own, each at any commit of the action's repository, and for a
+// lightweight release tag that decoy's ^{} line would be the only one printed (round 12). The check reads
+// them too, which catches a mistake, never a fork's commit, which would already have run.
 export const PINS_JOB_ACTIONS: Readonly<Record<string, string>> = {
   'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
   'actions/setup-node': '949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0',

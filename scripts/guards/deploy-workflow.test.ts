@@ -287,6 +287,9 @@ const PINNED_08 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the pull request's checks, main's CI, the prod gate, prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
 const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
+// DPW-04's finding for ci.yml's job that holds the CDK CLI's pin (round 12).
+const CLI_PIN_JOB_FINDING =
+  "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
 // DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
 const PINS_JOB_FINDING =
   "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
@@ -703,7 +706,12 @@ describe('DPW-01 (C11-D47, C11-D62): what starts the workflow', () => {
     ])
     expect(
       triggerFindings(
-        plant('    needs: [secrets, audit, action-pins]\n', '    needs: [secrets, audit, action-pins, gate]\n', '', CI),
+        plant(
+          '    needs: [secrets, audit, action-pins, cli-pin]\n',
+          '    needs: [secrets, audit, action-pins, cli-pin, gate]\n',
+          '',
+          CI,
+        ),
         rulesetText,
       ),
     ).toEqual([`${CI}: DPW-01 check: needs no deploy.yml job`])
@@ -749,7 +757,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
       `${DEPLOY}: DPW-02 is written in block mappings: no flow mapping, anchor, alias or quoted key`,
       `${DEPLOY}: DPW-02 ${SHAPE}`,
     ])
-    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins, cli-pin]\n'
     expect(permissionFindings(plant(check, `${check}    permissions: write-all\n`, '', CI))).toEqual([
       `${CI}: DPW-02 no job may ask for an id-token`,
     ])
@@ -939,7 +947,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
 
   // The clause infra.ts's ciSynthProblems held for ci.yml until C0.11 PR 4, with its cases, as they stood.
   it('holds every other workflow to no id-token in any spelling, comments included, and no escape', () => {
-    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins, cli-pin]\n'
     const idToken = [`${CI}: DPW-02 no job may ask for an id-token`]
     const escaped = [
       `${CI}: DPW-02 no key or value is spelled with an escape, which could name id-token or write-all unseen`,
@@ -992,10 +1000,10 @@ describe('DPW-02 (C11-D55): permissions', () => {
       `${CI}: DPW-02 audit (step 1): uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/, or this repository by its name), whose action.yml no rule reads, an action in a repository's .github folder or a path that climbs out of its own (. or ..) or splits at \\, or a docker:// image`,
     ])
     expect(permissionFindings(plant('name: ci\n', 'name: !!str ci\n', '', CI))).toEqual([shape(CI)])
-    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins, cli-pin]\n'
     expect(
       permissionFindings(
-        plant(check, '  check:\n    concurrency: *g\n    needs: [secrets, audit, action-pins]\n', '', CI),
+        plant(check, '  check:\n    concurrency: *g\n    needs: [secrets, audit, action-pins, cli-pin]\n', '', CI),
       ),
     ).toEqual([shape(CI)])
     expect(permissionFindings(plant('name: ci\n', 'name: &k "id\\x2Dtoken"\n', '', CI))).toEqual([shape(CI), escaped])
@@ -1092,7 +1100,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     const shape = [`${CI}: DPW-02 ${SHAPE}`]
     const ci = (from: string, to: string) => permissionFindings(plant(from, to, '', CI))
     const branches = '    branches: [main]\n'
-    const needs = '    needs: [secrets, audit, action-pins]\n'
+    const needs = '    needs: [secrets, audit, action-pins, cli-pin]\n'
     for (const to of [
       '    branches:\n      - - main\n',
       '    branches:\n      - ? main\n',
@@ -1665,6 +1673,67 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
     }
   })
 
+  // Round 12's second iteration: the pins job's own two actions are proved by hand, with the git ls-remote line
+  // action-pins.ts gives, which printed the decoys FETCH-G1-01 names beside the tag; for a lightweight release
+  // tag, as both of those actions' are, a decoy tag's ^{} line was the only ^{} line, and the file said the
+  // commit is that line's. The line, read from the file and run as a person runs it against a repository that
+  // holds the decoys at another commit, now prints the tag's own lines alone.
+  it('gives a hand proof of PINS_JOB_ACTIONS that prints the tag’s own lines alone (round 12)', () => {
+    const source = readFileSync(join(root, 'scripts/guards/action-pins.ts'), 'utf8').split('\n')
+    const from = source.findIndex(line => line.startsWith('//   GIT_CONFIG_NOSYSTEM=1 '))
+    const hand: string[] = []
+    for (let i = from; i >= 0 && (source[i] ?? '').startsWith('//   '); i++) hand.push((source[i] ?? '').slice(5))
+    expect(hand.length).toBeGreaterThan(1)
+    expect(hand.join('\n')).toContain('https://github.com/<action>.git')
+    for (const annotated of [false, true]) {
+      const folder = mkdtempSync(join(tmpdir(), 'hearth-action-pins-'))
+      try {
+        const env = {
+          PATH: process.env.PATH ?? '',
+          HOME: join(folder, 'home'),
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_GLOBAL: '/dev/null',
+        }
+        const git = (args: readonly string[]) =>
+          execFileSync(
+            'git',
+            [
+              ...['-c', 'user.name=hearth-test', '-c', `user.email=${['test', 'example.invalid'].join('@')}`],
+              ...['-c', 'commit.gpgsign=false', '-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+            ],
+            { cwd: join(folder, 'action'), encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] },
+          ).trim()
+        execFileSync('mkdir', ['-p', join(folder, 'action'), env.HOME])
+        git(['init', '-q'])
+        git(['commit', '-q', '--allow-empty', '-m', 'release'])
+        git(annotated ? ['tag', '-a', '-m', 'release', 'v7.0.1'] : ['tag', 'v7.0.1'])
+        const tagged = git(['rev-parse', 'HEAD'])
+        const tagObject = git(['rev-parse', 'refs/tags/v7.0.1'])
+        git(['commit', '-q', '--allow-empty', '-m', 'other'])
+        const other = git(['rev-parse', 'HEAD'])
+        git(['update-ref', 'refs/heads/refs/tags/v7.0.1', other])
+        git(['tag', '-a', '-m', 'other', 'x/refs/tags/v7.0.1', other])
+        const command = hand
+          .join('\n')
+          .replace('https://github.com/<action>.git', `file://${join(folder, 'action')}`)
+          .replaceAll('<version>', 'v7.0.1')
+        const answer = execFileSync('bash', ['--noprofile', '--norc', '-c', command], {
+          cwd: folder,
+          env,
+          encoding: 'utf8',
+        })
+        expect(answer, `annotated: ${annotated}`).toBe(
+          annotated
+            ? `${tagObject}\trefs/tags/v7.0.1\n${tagged}\trefs/tags/v7.0.1^{}\n`
+            : `${tagged}\trefs/tags/v7.0.1\n`,
+        )
+        expect(answer).not.toContain(other)
+      } finally {
+        rmSync(folder, { recursive: true, force: true })
+      }
+    }
+  })
+
   // FETCH-A3-01: git read each action's repository with the configuration of whoever ran the check, so a
   // test that ran before it in CI's check job and wrote url.<fork>.insteadOf to $HOME/.gitconfig sent the read
   // to a fork whose tag names the fork's commit, and a pin moved to that commit passed. Each way git takes
@@ -1794,7 +1863,7 @@ describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
         ),
       ),
     ).toEqual([`${DEPLOY}: DPW-05 has no workflow-level concurrency`])
-    const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
+    const check = '  check:\n    needs: [secrets, audit, action-pins, cli-pin]\n'
     expect(
       timeoutAndGroupFindings(plant(check, `${check}    concurrency:\n      group: Deploy-Prod\n`, '', CI)),
     ).toEqual([`${CI}: DPW-05 names neither deploy-nonprod nor deploy-prod, in any letter case`])
@@ -4588,9 +4657,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     ]) {
       expect(added('nonprod', line), line).toEqual(only)
     }
-    for (const line of [`echo "\${a['$(${cp})']}"`, `echo "\${!x}"`, 'b[$x]=1']) {
+    for (const line of [`echo "\${a['$(${cp})']}"`, 'b[$x]=1']) {
       expect(added('nonprod', line), line).toEqual(both)
     }
+    // An indirect expansion is refused by the table; its ! starts no command, as bash reads it (round 12's
+    // second iteration), where the reader once took it for one and read x}" as a command too.
+    expect(added('nonprod', `echo "\${!x}"`)).toEqual(only)
     expect(added('nonprod', indented(`X=$(echo then case x in x\n${cp}\n)`))).toEqual(both)
     expect(added('nonprod', indented(`(\necho do case x in x\n${cp}\n)`))).toEqual(both)
     // A subshell's ) ends a word, so a # after it is a comment, as bash reads it, but the table names no
@@ -7063,8 +7135,8 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
         withText(
           CI,
           edited(edited(ci, pinsText, ''), synthCi, `${synthCi}${checkRun}`, '\n  check:\n').replace(
-            'needs: [secrets, audit, action-pins]',
-            'needs: [secrets, audit]',
+            'needs: [secrets, audit, action-pins, cli-pin]',
+            'needs: [secrets, audit, cli-pin]',
           ),
         ),
       ],
@@ -7079,7 +7151,10 @@ describe('Round 5, attack 3: the ways past the allowlist (DPW-04, DPW-08, DPW-10
       ['a runner of its own', inCi('    runs-on: ubuntu-24.04\n', '    runs-on: self-hosted\n')],
       ['a job it waits for', inCi('    runs-on: ubuntu-24.04\n', '    needs: [audit]\n    runs-on: ubuntu-24.04\n')],
       ['another check', inCi(checkRun, '      - run: node scripts/check-action-pins.ts || true\n')],
-      ['check not waiting for it', plant('needs: [secrets, audit, action-pins]', 'needs: [secrets, audit]', '', CI)],
+      [
+        'check not waiting for it',
+        plant('needs: [secrets, audit, action-pins, cli-pin]', 'needs: [secrets, audit, cli-pin]', '', CI),
+      ],
       ['check not failing first', plant("contains(needs.*.result, 'failure') || ", '', '\n  check:\n', CI)],
     ] as const) {
       expect(actionPinFindings(planted), what).toContain(finding)
@@ -7206,6 +7281,81 @@ describe('Round 5, attack 4: the job that proves the pins (DPW-04)', () => {
       ['a runner by labels', runsOn('[self-hosted, linux]')],
       ['another image', runsOn('ubuntu-latest')],
       ['a runner by expression', runsOn(`\${{ vars.RUNNER }}`)],
+    ] as const) {
+      expect(actionPinFindings(planted), what).toContain(finding)
+    }
+    expect(actionPinFindings(workflows, files)).toEqual([])
+  })
+})
+
+// Round 12, iteration 2: check-cli-pin.ts alone keeps the CDK CLI's pin from going down, and it ran
+// in migrations after npm ci and the migration order check, both off the owner's-read list: one line in the order
+// check that wrote the base's manifest back over the working tree's passed a commit that lowered the pin, and
+// setup-node's npm cache, before both, restores into the folder the pull request's .npmrc names. It runs in a job
+// of its own now, as the pins check does, and reads HEAD's committed manifest (check-cli-pin.test.ts); each way
+// back is found.
+describe('Round 12: the CLI pin’s own job (DPW-04)', () => {
+  const finding = `${CI}: DPW-04 ${CLI_PIN_JOB_FINDING}`
+  const ci = workflows.get(CI) ?? ''
+  const own = '  cli-pin:\n'
+  const inJob = (from: string, to: string) => plant(from, to, own, CI)
+  const checkRun = '        run: node scripts/check-cli-pin.ts "$BASE"\n'
+  const step = `      - if: \${{ github.event_name == 'pull_request' }}\n        env:\n          BASE: origin/\${{ github.base_ref }}\n${checkRun}`
+
+  it('runs the CLI pin check in a job of its own that check needs, before any of the repository’s code', () => {
+    const jobText = ci.slice(ci.indexOf(own), ci.indexOf('\n  # ', ci.indexOf(own)) + 1)
+    expect(jobText.endsWith(step)).toBe(true)
+    const npmCi = '      - run: npm ci --ignore-scripts\n'
+    const order = '        run: scripts/check-migration-order.sh "$BASE"\n'
+    for (const [what, planted] of [
+      [
+        'the check back in migrations, after npm ci and the order check',
+        withText(
+          CI,
+          edited(edited(ci, jobText, ''), order, `${order}${step}`, '\n  migrations:\n').replace(
+            'needs: [secrets, audit, action-pins, cli-pin]',
+            'needs: [secrets, audit, action-pins]',
+          ),
+        ),
+      ],
+      [
+        'the check moved to migrations, ahead of npm ci',
+        withText(CI, edited(edited(ci, jobText, ''), npmCi, `${step}${npmCi}`, '\n  migrations:\n')),
+      ],
+      ['check not waiting for it', plant('action-pins, cli-pin]', 'action-pins]', '\n  check:\n', CI)],
+      ['an install before it', inJob(step, `      - run: npm ci --ignore-scripts\n${step}`)],
+      ['the order check before it', inJob(step, `      - run: scripts/check-migration-order.sh origin/main\n${step}`)],
+      ['npm’s cache restored', inJob('          package-manager-cache: false\n', '          cache: npm\n')],
+      ['setup-node’s cache left on', inJob('          package-manager-cache: false\n', '')],
+      ['a shallow checkout', inJob('          fetch-depth: 0\n', '')],
+      ['credentials kept', inJob('          persist-credentials: false\n', '          persist-credentials: true\n')],
+      ['checkout at a tag', inJob(pinOf('actions/checkout', PINS_JOB_ACTIONS), 'actions/checkout@v5')],
+      ['setup-node at a tag', inJob(pinOf('actions/setup-node', PINS_JOB_ACTIONS), 'actions/setup-node@v5')],
+      [
+        'a variable for its step',
+        inJob(
+          `BASE: origin/\${{ github.base_ref }}\n`,
+          `BASE: origin/\${{ github.base_ref }}\n          NODE_OPTIONS: --import=./scripts/x.mjs\n`,
+        ),
+      ],
+      [
+        'a variable for its job',
+        inJob('    runs-on: ubuntu-24.04\n', '    runs-on: ubuntu-24.04\n    env:\n      GIT_DIR: .git-base\n'),
+      ],
+      [
+        'the job skipped on a push',
+        inJob(
+          '    runs-on: ubuntu-24.04\n',
+          `    if: \${{ github.event_name == 'pull_request' }}\n    runs-on: ubuntu-24.04\n`,
+        ),
+      ],
+      [
+        'the check on every event',
+        inJob(`      - if: \${{ github.event_name == 'pull_request' }}\n        env:\n`, '      - env:\n'),
+      ],
+      ['another base', inJob(`BASE: origin/\${{ github.base_ref }}`, 'BASE: origin/main')],
+      ['a check that never fails', inJob(checkRun, '        run: node scripts/check-cli-pin.ts "$BASE" || true\n')],
+      ['a runner of its own', inJob('    runs-on: ubuntu-24.04\n', '    runs-on: self-hosted\n')],
     ] as const) {
       expect(actionPinFindings(planted), what).toContain(finding)
     }
@@ -8353,14 +8503,20 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     data: { packaging: 'container-image', path: 'asset.x', id: 'x', sourceHash: 'x' },
   }
 
-  function check(plant: (dir: string) => void, release = RELEASE, from = source, path = process.env.PATH): string {
+  function check(
+    plant: (dir: string) => void,
+    release = RELEASE,
+    from = source,
+    path = process.env.PATH,
+    text = ASSET_CHECK,
+  ): string {
     const dir = mkdtempSync(join(tmpdir(), 'hearth-dpw14-'))
     made.push(dir)
     cpSync(from, dir, { recursive: true })
     plant(dir)
     const result = spawnSync(
       'bash',
-      ['-c', `set -euo pipefail\n${ASSET_CHECK}\ncheck_assembly "$1"\ncheck_release_in "$1" "$2"`, '_', dir, release],
+      ['-c', `set -euo pipefail\n${text}\ncheck_assembly "$1"\ncheck_release_in "$1" "$2"`, '_', dir, release],
       { encoding: 'utf8', env: { ...process.env, PATH: path } },
     )
     const said = `${result.stdout}${result.stderr}`.trim()
@@ -8369,8 +8525,9 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // ASSET_CHECK over a build, with a jq first on PATH that runs the real one with -c added and notes every
   // call handed -e whose program printed other than one value, since jq -e reads the last value alone: the
   // check's outcome, then each such call. DPW-10 (jqPrintsOne) holds the texts' programs; this holds the
-  // committed rules over the real builds, as jq reads them.
-  function counted(from = source): string {
+  // committed rules over the real builds, as jq reads them. A call is handed -e by any flag word before its
+  // program (round 12's second iteration: it read the first word alone, so jq -r -e was never counted).
+  function counted(from = source, text = ASSET_CHECK): string {
     const bin = mkdtempSync(join(tmpdir(), 'hearth-dpw14-jq-'))
     made.push(bin)
     const real = execFileSync('bash', ['-c', 'command -v jq'], { encoding: 'utf8' }).trim()
@@ -8380,7 +8537,12 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       join(bin, 'jq'),
       [
         '#!/usr/bin/env bash',
-        `case "$1" in -*e*) ;; *) exec '${real}' "$@" ;; esac`,
+        'status=no skip=0',
+        'for word in "$@"; do',
+        '  if [ "$skip" -gt 0 ]; then skip=$((skip - 1)); continue; fi',
+        '  case "$word" in --arg | --argjson) skip=2 ;; --*) ;; -*e*) status=yes ;; -*) ;; *) break ;; esac',
+        'done',
+        `if [ "$status" = no ]; then exec '${real}' "$@"; fi`,
         `out=$('${real}' -c "$@")`,
         'status=$?',
         `if [ "$status" -le 1 ] && [ "$(printf '%s' "$out" | grep -c '')" != 1 ]; then printf '%.200s\\n' "$*" >>'${many}'; fi`,
@@ -8390,7 +8552,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ].join('\n'),
       { mode: 0o755 },
     )
-    const said = check(() => {}, RELEASE, from, `${bin}:${process.env.PATH ?? ''}`)
+    const said = check(() => {}, RELEASE, from, `${bin}:${process.env.PATH ?? ''}`, text)
     return [
       said,
       ...readFileSync(many, 'utf8')
@@ -8454,6 +8616,32 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     expect(check(() => {})).toBe('passed')
     expect(counted()).toBe('passed')
   }, 30_000)
+
+  // Round 12's second iteration: a jq -e handed several files reads the last file alone, as a stream, and the
+  // stand-in above read -e in the first word alone, so the container image check moved to one jq -r -e over
+  // every asset manifest passed a plant in the first of them and was never counted. It is counted now, in any
+  // flag word before the program (and DPW-10 refuses it: JQ_PIPED_RULE).
+  it('counts a jq -e handed -e in any flag word, and several files as several values (round 12)', () => {
+    const container =
+      "      jq -e '(.dockerImages // {}) | length == 0' \"$dir/$file\" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'\n"
+    const slurped = "    jq -se '.[0] as $m"
+    expect(ASSET_CHECK).toContain(container)
+    expect(ASSET_CHECK).toContain(slurped)
+    for (const flags of ['-r -e', '-e -r', '--arg x y -e', '-e']) {
+      const variant = ASSET_CHECK.replace(container, '').replace(
+        slurped,
+        `    if [ "\${#stackfiles[@]}" -gt 0 ] && ! jq ${flags} '(.dockerImages // {}) | length == 0' "\${stackfiles[@]}" >/dev/null 2>&1; then asset_refuse 'an asset manifest holds a container image asset'; fi\n${slurped}`,
+      )
+      expect(variant).not.toBe(ASSET_CHECK)
+      const said = counted(source, variant).split('\n')
+      expect(said[0], flags).toBe('passed')
+      expect(said.length, flags).toBeGreaterThan(1)
+      expect(said[1], flags).toContain('(.dockerImages // {}) | length == 0')
+      expect(canonicalTextFindings({ ASSET_CHECK: variant }).join('\n'), flags).toContain(
+        'hands jq -e no stream of values, so never feeds it by a pipe or gives it more than one file unless it is given -n or -s',
+      )
+    }
+  }, 120_000)
 
   // The synth checks two builds beside the committed one: a restore up's (restoreActive, the restore stage's
   // Valkey, endpoints and services) and a drill-break's (the non-prod stage alone, realtime broken). Each passes
@@ -11186,6 +11374,135 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     ).toBe('passed')
     expect(
       check(inPart(restore, 'Platform', resources => withGrant(resources[idOfPrefix(resources, 'RolesMigrateTask')]))),
+    ).toBe('passed')
+  }, 30_000)
+
+  // Round 12's second iteration: the label rule tied principals and groups, while a grant's resource is labelled
+  // too: the IAM table prints a Ref or GetAtt in a statement by the resource's path, or a parameter's by its
+  // logical id entry, which no rule tied to what CloudFormation resolves it to. A restore up whose two log
+  // groups swapped names gave the worker's task role a grant on the api's log group under the worker's label,
+  // byte for byte the honest diff; and a parameter holding the zone's id, labelled as the VPC, made the network
+  // perimeter's condition one that never holds, reading as the VPC. No role names anything by a reference now
+  // but the account's id, a template VPC and its default security group; anything else is named by a literal ARN.
+  const ROLE_REFERENCE = refused(
+    "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN",
+  )
+  type Template = { Parameters?: Record<string, unknown>; Resources: Record<string, Labelled> }
+  // Edits a stage's template of one part whole (its parameters too) and re-keys it.
+  const inTemplate =
+    (stage: (dir: string) => string, part: string, change: (json: Template) => void) => (dir: string) => {
+      edit(named(stage(dir), part, '.template.json'), json => change(json as unknown as Template))
+      rekey(stage(dir), part)
+    }
+  const statementOn = (resource: Labelled | undefined, statement: Record<string, unknown>) => {
+    if (resource === undefined) throw new Error('no role')
+    resource.Properties.Policies = [
+      ...((resource.Properties.Policies as unknown[] | undefined) ?? []),
+      { PolicyName: 'hearth-planted', PolicyDocument: { Version: '2012-10-17', Statement: [statement] } },
+    ]
+  }
+  const readsLogs = (group: string) => ({
+    Sid: 'ReadLogs',
+    Effect: 'Allow',
+    Action: ['logs:FilterLogEvents', 'logs:GetLogEvents'],
+    Resource: [{ 'Fn::Join': ['', [{ 'Fn::GetAtt': [group, 'Arn'] }, ':*']] }],
+  })
+  const outsideTheVpc = (vpc: unknown) => ({
+    Sid: 'OutsideTheVpcOnly',
+    Effect: 'Allow',
+    Action: 'secretsmanager:GetSecretValue',
+    Resource: {
+      'Fn::Join': ['', ['arn:aws:secretsmanager:ap-southeast-1:', { Ref: 'AWS::AccountId' }, ':secret:hearth/prod/*']],
+    },
+    Condition: { StringNotEqualsIfExists: { 'aws:SourceVpc': vpc } },
+  })
+  // A new SSM-typed parameter whose default is one of the workload's own entries, with a logical id entry at the
+  // VPC's label.
+  const vpcLabelledParameter = (dir: string) =>
+    edit(named(prod(dir), 'Platform', '.metadata.json'), json => {
+      json['/prod/Platform/Network/Vpc'] = [
+        ...((json['/prod/Platform/Network/Vpc'] as unknown[] | undefined) ?? []),
+        { type: 'aws:cdk:logicalId', data: 'NetworkVpcRef' },
+      ]
+    })
+  const withParameter = (json: Template) => {
+    json.Parameters = {
+      ...(json.Parameters ?? {}),
+      NetworkVpcRef: { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/hearth/prod/zone/app' },
+    }
+  }
+  it.each([
+    [
+      "the worker's task role reading the api's log group under the worker's label (a restore up, two log groups' names swapped)",
+      inTemplate(restore, 'Platform', json => {
+        const worker = idOfPrefix(json.Resources, 'LogGroupsWorker')
+        const api = idOfPrefix(json.Resources, 'LogGroupsApi')
+        const [workerGroup, apiGroup] = [json.Resources[worker], json.Resources[api]]
+        if (workerGroup === undefined || apiGroup === undefined) throw new Error('no log groups')
+        workerGroup.Properties.LogGroupName = '/hearth/restore/api'
+        apiGroup.Properties.LogGroupName = '/hearth/restore/worker'
+        statementOn(json.Resources[idOfPrefix(json.Resources, 'RolesWorkerTask')], readsLogs(worker))
+      }),
+    ],
+    [
+      "the worker's task role reading its own log group by a reference",
+      inTemplate(restore, 'Platform', json =>
+        statementOn(
+          json.Resources[idOfPrefix(json.Resources, 'RolesWorkerTask')],
+          readsLogs(idOfPrefix(json.Resources, 'LogGroupsWorker')),
+        ),
+      ),
+    ],
+    [
+      "a condition on a parameter labelled as the VPC, in the api's task role",
+      (dir: string) => {
+        inTemplate(prod, 'Platform', json => {
+          withParameter(json)
+          statementOn(json.Resources[idOfPrefix(json.Resources, API_TASK)], outsideTheVpc({ Ref: 'NetworkVpcRef' }))
+        })(dir)
+        vpcLabelledParameter(dir)
+      },
+    ],
+    [
+      "a role's grant naming a security group by its id",
+      inTemplate(prod, 'Platform', json =>
+        statementOn(json.Resources[idOfPrefix(json.Resources, API_TASK)], {
+          Sid: 'Group',
+          Effect: 'Allow',
+          Action: 'ec2:DescribeSecurityGroups',
+          Resource: [
+            {
+              'Fn::Join': [
+                '',
+                [
+                  'arn:aws:ec2:ap-southeast-1:',
+                  { Ref: 'AWS::AccountId' },
+                  ':security-group/',
+                  { 'Fn::GetAtt': [idOfPrefix(json.Resources, 'NetworkGroupsApi'), 'GroupId'] },
+                ],
+              ],
+            },
+          ],
+        }),
+      ),
+    ],
+  ] as const)(
+    'refuses %s (round 12)',
+    (_, plant) => {
+      expect(check(plant)).toBe(ROLE_REFERENCE)
+    },
+    30_000,
+  )
+  it('passes the perimeter’s condition on the template’s own VPC (round 12)', () => {
+    expect(
+      check(
+        inTemplate(prod, 'Platform', json =>
+          statementOn(
+            json.Resources[idOfPrefix(json.Resources, API_TASK)],
+            outsideTheVpc({ Ref: idOfPrefix(json.Resources, 'NetworkVpc') }),
+          ),
+        ),
+      ),
     ).toBe('passed')
   }, 30_000)
 })
@@ -14524,7 +14841,7 @@ describe('Round 11, iteration 3: the ways past the allowlist (DPW-06, DPW-08, DP
   // function before a builtin, so exit() { :; } made every later exit 1 (each aws_refuse and asset_refuse) carry on.
   it('defines a function only by a plain name of its own, once (round 11)', () => {
     const RULE =
-      "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), a command's a text or a run runs, or one another canonical text defines"
+      "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), one bash itself calls (command_not_found_handle), a command's a text or a run runs, or one another canonical text defines"
     const anchor = 'is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }\n'
     expect(AWS_CHECK).toContain(anchor)
     const lineAfter = AWS_CHECK.slice(0, AWS_CHECK.indexOf(anchor) + anchor.length).split('\n').length
@@ -14543,6 +14860,9 @@ describe('Round 11, iteration 3: the ways past the allowlist (DPW-06, DPW-08, DP
       'is_ancestor() { :; }',
       'Exit() { :; }',
       'x.y() { :; }',
+      // Round 12's second iteration: bash runs this one for any command it can't find, and takes its status.
+      'command_not_found_handle() { return 0; }',
+      'function command_not_found_handle { :; }',
     ]) {
       const planted = AWS_CHECK.replace(anchor, `${anchor}${definition}\n`)
       expect(canonicalTextFindings({ AWS_CHECK: planted }), definition).toContain(
@@ -14610,7 +14930,7 @@ describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02,
   // a stream, jq -c '.[]' <<<"$X" | jq -e 'f', holds the last value alone, though its program prints one value.
   it('refuses a jq -e fed by a pipe unless it is given -n or -s (COMMANDS-G1-02)', () => {
     const RULE =
-      'hands jq -e no stream of values, so never feeds it by a pipe unless it is given -n or -s, since -e reads the last value it reads alone'
+      'hands jq -e no stream of values, so never feeds it by a pipe or gives it more than one file unless it is given -n or -s, since -e reads the last value it reads alone'
     const shape = 'all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))'
     const probeLine = PROBE.split('\n').find(each => each.includes(shape)) ?? ''
     expect(probeLine).toContain(`'length == $n and ${shape}' <<<"$ADDRESSES" >/dev/null`)
@@ -14748,5 +15068,141 @@ describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02,
     } finally {
       rmSync(folder, { recursive: true, force: true })
     }
+  })
+})
+
+// Round 12, iteration 2: the gaps the finders proved past the reader and the rules after the first iteration's
+// fixes, each planted as they planted it and found at its root.
+describe('Round 12, iteration 2: the ways past the reader and the rules (DPW-07, DPW-10)', () => {
+  const PROCESS_TOOL =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const SHELL = `${GUARD}: DPW-10 PLAN_BASIS: is written in the shell shellViews() reads`
+  const anchor = "  local step=$1 PART answer status basis=''\n"
+  const line = PLAN_BASIS.slice(0, PLAN_BASIS.indexOf(anchor) + anchor.length).split('\n').length
+  const plantedBasis = (added: string) => {
+    expect(PLAN_BASIS).toContain(anchor)
+    return PLAN_BASIS.replace(anchor, `${anchor}${added}`)
+  }
+  const tool = `${GUARD}: DPW-10 PLAN_BASIS, line ${line}: ${PROCESS_TOOL}`
+  const grep = 'grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
+  const bs = '\\'
+
+  // commandCode() blanks a [[ … ]] test's operands and a case's patterns from a [[ or case it reads at a command's
+  // start, and it read one after a ! or { anywhere in a word (ready!, plan.{), after an escaped ;, | or & (plan\;),
+  // and after a !, |, &, { or line break in a ${…} body, which the code view keeps as code; bash reads each as data,
+  // so the commands from there to the next ]] or ) ran while no rule read them: a held tool printing a file one
+  // character a line, or AWS_CHECK's refusal redefined to carry on.
+  it('reads a ! or { as a command start only as a word of its own, and refuses an escaped operator or one in a parameter expansion’s body', () => {
+    const redefined = 'aws_refuse() { echo "aws-check: $1, and so on"; }'
+    const led = (lead: string, then = grep) => plantedBasis(`  ${lead} ; ${then}; [[ -n "$step" ]]\n`)
+    for (const [what, planted] of [
+      ['an in-word ! before [[', led('echo "plan_basis $step:" ready! [[')],
+      ['an in-word { before [[', led('echo plan.{ [[')],
+      [
+        'an in-word ! before case',
+        plantedBasis(`  echo "plan_basis $step:" ready! case it in ; ${grep}; case "$step" in plan) true ;; esac\n`),
+      ],
+    ] as const) {
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), what).toContain(tool)
+    }
+    expect(canonicalTextFindings({ PLAN_BASIS: led('echo "plan_basis $step:" ready! [[', redefined) })).toContain(
+      `${GUARD}: DPW-10 PLAN_BASIS, line ${line}: defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), one bash itself calls (command_not_found_handle), a command's a text or a run runs, or one another canonical text defines`,
+    )
+    for (const op of [';', '|', '&', '!', '{', '<', '>']) {
+      expect(canonicalTextFindings({ PLAN_BASIS: led(`echo plan${bs}${op}[[`) }), op).toContain(SHELL)
+    }
+    for (const body of ['! [[ ', '| [[ ', '& [[ ', '{ [[ ', '\n  [[ ']) {
+      expect(
+        canonicalTextFindings({ PLAN_BASIS: plantedBasis(`  echo "\${step:+${body}}"; ${grep}; [[ -n "$step" ]]\n`) }),
+        JSON.stringify(body),
+      ).toContain(SHELL)
+    }
+    // bash reads each of those as data and runs the command after it, as the plants above assume.
+    const ran = spawnSync(
+      'bash',
+      [
+        '--noprofile',
+        '--norc',
+        '-c',
+        `step=plan; echo ready! [[ ; echo one; [[ -n x ]]\necho "\${step:+! [[ }"; echo two\necho plan${bs};[[ ; echo three\necho plan.{ [[ ; echo four`,
+      ],
+      { encoding: 'utf8' },
+    )
+    expect(ran.stdout.split('\n').filter(each => /^(?:one|two|three|four)$/.test(each))).toEqual([
+      'one',
+      'two',
+      'three',
+      'four',
+    ])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A redirection standing before a command's word had its target read as one quoted or bare part alone, so with
+  // an empty quote joined to it (<<<"$step"'', >&2'', 2>&1"") the line read as no command at all and the grep bash
+  // ran after it was seen by no rule; a here-string is neither a write nor a read, which the other rules hold.
+  it('reads a redirection’s target before a command’s word as a word of joined parts', () => {
+    for (const lead of [`<<<"$step"''`, ">&2''", '2>&1""', '<<<a"$step"']) {
+      expect(canonicalTextFindings({ PLAN_BASIS: plantedBasis(`  ${lead} ${grep}\n`) }), lead).toContain(tool)
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // An array's elements were read and their names dropped, so SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN") on a
+  // run's own line expanded the OIDC request token unseen by EXPANDS_ITS_OWN and made SEEN a name of the run's
+  // own, which a held jq then printed one character apart, past GitHub's masking.
+  it('reads the names an array’s elements expand on a run’s own lines (DPW-07)', () => {
+    const OWN =
+      "expands on its own lines only a name its step's or job's env: sets (never GH_TOKEN, which gh reads itself), one its run sets, a function's argument, the last status or the runner's outputs, summary, folder and run ids, so no line reads the OIDC request token or another credential the runner hands it"
+    const before = '          plan_basis check\n'
+    for (const added of [
+      '          SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN")\n',
+      `          SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN")\n          jq -nc --arg t "$SEEN" '$t | split("")'\n`,
+      `          SEEN=(x "$GH_TOKEN")\n          jq -nc --arg t "$SEEN" '$t | split("")'\n`,
+    ]) {
+      expect(maskingFindings(addedBefore('prod', 'What runs', before, added)), added).toContain(
+        `${DEPLOY}: DPW-07 prod (What runs): ${OWN}`,
+      )
+    }
+    expect(maskingFindings(workflows)).toEqual([])
+  })
+
+  // jq reads each file it is given as inputs of its own, so a jq -e handed several files, or "${stackfiles[@]}",
+  // reads the last alone, as one fed by a pipe does.
+  it('refuses a jq -e given more than one file unless it is given -n or -s (DPW-10)', () => {
+    for (const [text, lines] of [
+      [`jq -e 'f' "$dir/manifest.json" "$dir/$file"`, [0]],
+      [`jq -r -e '(.dockerImages // {}) | length == 0' "\${stackfiles[@]}" >/dev/null 2>&1`, [0]],
+      [`jq --arg x y -e 'f' "$dir/manifest.json" "$dir/$file"`, [0]],
+      [`jq -se 'all(.[]; f)' "$dir/manifest.json" "\${stackfiles[@]}"`, []],
+      [`jq -ne 'true' "$dir/manifest.json" "$dir/$file"`, []],
+      [`jq -e 'f' "$dir/manifest.json" >/dev/null`, []],
+      [`jq -r 'f' "$dir/manifest.json" "$dir/$file"`, []],
+    ] as const) {
+      expect(jqPipedLines(text), text).toEqual(lines)
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // bindingFindings() took any <key>= in a step's run as the write of that output, a comment's included, and
+  // AWS_CHECK's comment names replaced=, so its one write of replaced renamed or removed left nonprod's and prod's
+  // replaced reading '' and every pipeline rollback rolling nothing back, with no finding.
+  it('counts an output written only by a code line that opens the value (DPW-10)', () => {
+    const binding = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${BINDING}`
+    const write = '              deploy | drill) echo "replaced=$release" >>"$GITHUB_OUTPUT" ;;\n'
+    expect(deployText).toContain(write)
+    expect(deployText).toContain(
+      "# It writes go=true, or go=false, to the step's outputs (deploy and drill also replaced=<the release",
+    )
+    const found = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+    for (const id of ['nonprod', 'prod']) {
+      for (const [what, to] of [
+        ['renamed', '              deploy | drill) echo "running=$release" >>"$GITHUB_OUTPUT" ;;\n'],
+        ['a longer key', '              deploy | drill) echo "was_replaced=$release" >>"$GITHUB_OUTPUT" ;;\n'],
+        ['removed', '              deploy | drill) ;;\n'],
+      ] as const) {
+        expect(found(plant(write, to, job(id))), `${id} ${what}`).toContain(binding(id))
+      }
+    }
+    expect(found(workflows)).toEqual([])
   })
 })
