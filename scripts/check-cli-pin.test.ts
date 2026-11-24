@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cliPinOf, cliPinProblems } from './check-cli-pin.ts'
 import { root } from './guards/repo-files.ts'
@@ -13,6 +13,8 @@ afterEach(() => {
 })
 
 const manifest = (pin: string) => JSON.stringify({ devDependencies: { 'aws-cdk': pin } })
+const DRIFT =
+  "check-cli-pin: the checkout isn't what HEAD commits (a git attribute, such as ident, eol, text, filter or working-tree-encoding, or a step before this wrote other bytes), so nothing was checked"
 
 // git in a throwaway repo, with no configuration of the machine's.
 function gitIn(dir: string) {
@@ -148,22 +150,64 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
   // The working tree's manifest read in place of the committed one (round 12's second iteration): CI ran the check
   // after npm ci and the migration order check, off the owner's-read list, and one line there that wrote the
   // base's manifest back over the working tree's passed a commit that lowered the pin, which is what merges.
-  // The check reads HEAD's committed manifest now, whatever the working tree holds.
-  it('reads the pin HEAD commits, never the working tree’s (round 12)', () => {
+  // The check reads HEAD's committed manifest; and from round 12's third iteration it refuses first a working
+  // tree that isn't HEAD's blobs, either way, since main's checkout is what the deploy jobs read.
+  it('refuses a working tree that isn’t what HEAD commits, either way (round 12)', () => {
     const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' })
     const lowered = repo('2.1146.1', '2.1100.0')
     writeFileSync(join(lowered, 'infra/package.json'), manifest('2.1146.1'))
     const restored = run(lowered)
     expect(restored.status).toBe(1)
-    expect(restored.stderr).toContain('pins aws-cdk 2.1100.0, lower than 2.1146.1 on origin/main')
+    expect(restored.stderr).toContain(DRIFT)
     expect(restored.stdout).not.toContain('OK')
     rmSync(join(lowered, 'infra'), { recursive: true, force: true })
-    expect(run(lowered).status).toBe(1)
-    // And the other way: a working tree that lowers the pin over a commit that keeps it passes, since the
-    // committed pin is the one that merges.
+    const removed = run(lowered)
+    expect(removed.status).toBe(1)
+    expect(removed.stderr).toContain("infra/package.json: the checkout doesn't hold it")
     const kept = repo('2.1146.1', '2.1146.1')
     writeFileSync(join(kept, 'infra/package.json'), manifest('2.1100.0'))
+    const lowering = run(kept)
+    expect(lowering.status).toBe(1)
+    expect(lowering.stderr).toContain(DRIFT)
+    expect(lowering.stdout).not.toContain('OK')
+    // A clean working tree over the same commits is compared as before.
+    writeFileSync(join(kept, 'infra/package.json'), manifest('2.1146.1'))
     expect(run(kept).status).toBe(0)
+    gitIn(lowered)('checkout', '-q', '--', 'infra')
+    expect(run(lowered).stderr).toContain('pins aws-cdk 2.1100.0, lower than 2.1146.1 on origin/main')
+  })
+
+  // Round 12's third iteration: CLI_FETCH and CLI_CHECK read the pin from main's checkout, which git writes
+  // through .gitattributes, while this check read the blob. An ident attribute rewrites a span from $Id: to the
+  // next $ with no blank in it, so a manifest whose blob holds two devDependencies, the last keeping main's pin,
+  // checked out holding the first alone, pinning a lower CLI: the blob passed here, and every deploy job fetched
+  // the lower CLI. The check now refuses a checkout whose files aren't HEAD's blobs, as a fresh clone writes it.
+  it('refuses a checkout whose manifest an ident attribute rewrote (round 12)', () => {
+    const dir = repo('2.1146.1', '2.1146.1')
+    const git = gitIn(dir)
+    writeFileSync(
+      join(dir, 'infra/package.json'),
+      '{"devDependencies":{"aws-cdk":"2.1000.0"},"x":"$Id:","devDependencies":{"aws-cdk":"2.1146.1"},"y":"$"}\n',
+    )
+    const blob = execFileSync('git', ['hash-object', '-w', '--no-filters', 'infra/package.json'], {
+      cwd: dir,
+      encoding: 'utf8',
+    }).trim()
+    git('update-index', '--cacheinfo', `100644,${blob},infra/package.json`)
+    writeFileSync(join(dir, '.gitattributes'), 'infra/package.json ident\n')
+    git('add', '.gitattributes')
+    git('commit', '-qm', 'the CLI lowered in the checkout alone')
+    const committed = execFileSync('git', ['show', 'HEAD:infra/package.json'], { cwd: dir, encoding: 'utf8' })
+    expect(cliPinOf(committed)).toBe('2.1146.1')
+    const job = join(mkdtempSync(join(tmpdir(), 'hearth-cli-pin-')), 'job')
+    repos.push(dirname(job))
+    git('clone', '-q', '--branch', 'feature', dir, job)
+    expect(cliPinOf(readFileSync(join(job, 'infra/package.json'), 'utf8'))).toBe('2.1000.0')
+    const run = spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: job, encoding: 'utf8' })
+    expect(run.status).toBe(1)
+    expect(run.stderr).toContain("infra/package.json: the checkout's bytes aren't its committed blob's")
+    expect(run.stderr).toContain(DRIFT)
+    expect(run.stdout).not.toContain('OK')
   })
 
   // A link read as no pin (round 11): git show prints a symbolic link's target path, which no JSON parse reads,

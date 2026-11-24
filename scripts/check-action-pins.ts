@@ -29,7 +29,11 @@
 // action-pins, which DPW-04 holds), so nothing earlier on its runner can change the check itself either.
 // That job's checkout and setup-node run before this, each at its commit in PINS_JOB_ACTIONS, which this
 // reads too: that catches a mistake there, though never a fork's commit, which would already have run, so a
-// person proves a change to them by hand (action-pins.ts says how). What this check decides holds a pin
+// person proves a change to them by hand (action-pins.ts says how). Node runs this file, and it reads
+// deploy.yml and the tables, as the checkout writes them through .gitattributes, while the owner reads their
+// blobs: an ident attribute on this file turned a comparison the blob made into one that never held (round
+// 12's third iteration). So before reading any tag it refuses a checkout whose files aren't HEAD's blobs, byte
+// for byte (checkout-blobs.ts). What this check decides holds a pin
 // only as long as this file does, and CI runs it from the pull request's own head, so it is on the
 // owner's-read list (C11-D74); DPW-04's tests run its decision (run) and its address (actionUrl) on planted
 // answers.
@@ -37,6 +41,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { checkoutDrift, refusedDrift } from './checkout-blobs.ts'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './guards/action-pins.ts'
 import { shapeProblems } from './guards/workflow.ts'
 
@@ -206,11 +212,21 @@ export function run(
   return 0
 }
 
-// Node 24.2 added import.meta.main. On an older Node it is undefined, so run would never be called and the
+// The script: the checkout first, as the repository this file stands in holds it, and then the pins.
+export function main(): number {
+  const drift = checkoutDrift(fileURLToPath(new URL('..', import.meta.url)))
+  if (drift.length > 0) {
+    for (const line of refusedDrift('check-action-pins', drift)) console.error(line)
+    return 1
+  }
+  return run(lsRemote)
+}
+
+// Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never be called and the
 // script would exit 0 having read no tag: it refuses such a Node instead (CI's comes from .nvmrc, which
 // DPW-04 holds to 24 alone, and a person runs it on Node 24).
 if (typeof import.meta.main !== 'boolean') {
   console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')
   process.exit(1)
 }
-if (import.meta.main) process.exit(run(lsRemote))
+if (import.meta.main) process.exit(main())

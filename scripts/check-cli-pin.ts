@@ -12,12 +12,16 @@
 //
 // CI's cli-pin job runs it on pull requests against the PR's base branch, which that job fetches whole.
 // It compares infra/package.json as this checkout's HEAD commits it with BASE's, and fails when the pin
-// isn't an exact version or is lower than BASE's. It reads HEAD's committed manifest, never the working
-// tree's, since the pin that merges is the committed one (CLI_FETCH reads it on main), and it runs in a job
-// of its own with nothing of the repository's before it (round 12): in the migrations job it ran after npm
-// ci and the migration order check, both off the owner's-read list, either of which could write the working
-// tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or put
-// another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm
+// isn't an exact version or is lower than BASE's. CLI_FETCH and CLI_CHECK read the pin from main's checkout,
+// which git writes through .gitattributes, while the owner reads the blob: an ident attribute on the manifest
+// checked out a lower pin than its blob held, so the blob passed here while every deploy job fetched the lower
+// CLI (round 12's third iteration). So it first refuses a checkout whose files aren't HEAD's blobs byte for
+// byte (checkout-blobs.ts), which its job, running nothing of the repository's before it, writes through the
+// attributes main's checkout will; then it reads HEAD's committed manifest, which that checkout holds. It runs
+// in a job of its own with nothing of the repository's before it (round 12): in the migrations job it ran
+// after npm ci and the migration order check, both off the owner's-read list, either of which could write the
+// working tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or
+// put another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm
 // cache, which asks npm for its folder through the pull request's own .npmrc and restores into it. GitHub
 // starts no run when a pull request's base changes, and main's ruleset reads the result its head commit already
 // holds, so a branch that already holds main's head (one a retarget to
@@ -34,6 +38,7 @@
 // this file does, and CI runs it from the pull request's own head, so it is on the owner's-read list (C11-D74,
 // TECH-SPEC T24 item 31).
 import { execFileSync, spawnSync } from 'node:child_process'
+import { checkoutDrift, refusedDrift } from './checkout-blobs.ts'
 
 const MANIFEST = 'infra/package.json'
 const MAIN = 'origin/main'
@@ -130,6 +135,12 @@ export function baseCommit(root: string, base: string): string | undefined {
 
 function run(base: string): number {
   const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  // The checkout first, so the manifest the deploy jobs' jq reads on main is the blob compared below.
+  const drift = checkoutDrift(root)
+  if (drift.length > 0) {
+    for (const line of refusedDrift('check-cli-pin', drift)) console.error(line)
+    return 1
+  }
   // The bases to compare with, each as the commit its full ref names: BASE, and origin/main whenever this
   // checkout already holds its head.
   if (!base.startsWith('origin/')) {

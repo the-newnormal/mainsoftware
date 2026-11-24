@@ -87,6 +87,7 @@ import {
   GENERAL_WORDS,
   GUARD,
   gateFindings,
+  gitAttributeFindings,
   IMAGE_CHECK,
   IMAGE_LAYOUT,
   IMAGE_UNPACK_RUN,
@@ -129,6 +130,7 @@ import {
   RUN_TASK_PROBE,
   readerLines,
   readShell,
+  readsAsBash,
   recordRun,
   releaseFindings,
   SHELL_TABLE,
@@ -150,7 +152,6 @@ import {
   whatRunsText,
   wordAsRead,
   wordSplits,
-  workflowAttributeFindings,
   workflowSizeFindings,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
@@ -1581,18 +1582,29 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         ).toBe('answer')
         expect(asked).toEqual([`https://github.com/${action}.git ${version}`])
       }
-      // The script's last line exits with run's answer over lsRemote, so neither a skipped exit nor another
-      // reader stands in for it; and before it, a Node without import.meta.main (older than 24.2), on which
-      // that line would never call run and the script would exit 0 having read nothing, exits 1
-      // (FETCH-A6-01, round 6).
+      // The script's last line exits with main's answer, the checkout's drift and then run's over lsRemote, so
+      // neither a skipped exit nor another reader stands in for it; and before it, a Node without
+      // import.meta.main (older than 24.2), on which that line would never call main and the script would exit
+      // 0 having read nothing, exits 1 (FETCH-A6-01, round 6; the drift from round 12's third iteration).
       const source = readRepoFile('scripts/check-action-pins.ts')
       const code = source.trimEnd().split('\n')
+      const mainAt = code.indexOf('export function main(): number {')
+      expect(code.slice(mainAt, mainAt + 8)).toEqual([
+        'export function main(): number {',
+        "  const drift = checkoutDrift(fileURLToPath(new URL('..', import.meta.url)))",
+        '  if (drift.length > 0) {',
+        "    for (const line of refusedDrift('check-action-pins', drift)) console.error(line)",
+        '    return 1',
+        '  }',
+        '  return run(lsRemote)',
+        '}',
+      ])
       const refusal = [
         "if (typeof import.meta.main !== 'boolean') {",
         "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
         '  process.exit(1)',
         '}',
-        'if (import.meta.main) process.exit(run(lsRemote))',
+        'if (import.meta.main) process.exit(main())',
       ]
       expect(code.slice(-refusal.length)).toEqual(refusal)
       expect(
@@ -1604,7 +1616,7 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         "if (typeof import.meta.main !== 'boolean') {",
         "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
         '  process.exit(1)',
-        'if (import.meta.main) process.exit(run(lsRemote))',
+        'if (import.meta.main) process.exit(main())',
       ])
       // Run as a Node older than 24.2 runs it, import.meta.main undefined: it says so and exits 1.
       const older = spawnSync(
@@ -1672,6 +1684,63 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
       rmSync(folder, { recursive: true, force: true })
     }
   })
+
+  // Round 12's third iteration: Node runs the check, and it reads deploy.yml and the tables, as the checkout
+  // writes them through .gitattributes, while the owner reads their blobs, so an ident attribute on the check
+  // turned a comparison its blob made into one that never held. The script now refuses, before reading any tag,
+  // a checkout whose files aren't HEAD's blobs: here a fresh clone of a repository holding the check's files,
+  // whose .gitattributes writes deploy.yml with other line endings, run as CI runs it (with a proxy that answers
+  // nothing, so no tag could be read had it gone on).
+  it('refuses a checkout whose files aren’t HEAD’s blobs before it reads a tag (round 12)', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-action-pins-'))
+    try {
+      const env = { PATH: process.env.PATH ?? '', HOME: join(folder, 'home') }
+      const gitEnv = { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+      const git = (cwd: string, args: readonly string[]) =>
+        execFileSync(
+          'git',
+          [
+            ...['-c', 'user.name=hearth-test', '-c', `user.email=${['test', 'example.invalid'].join('@')}`],
+            ...['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+          ],
+          { cwd, encoding: 'utf8', env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+        )
+      const source = join(folder, 'source')
+      execFileSync('mkdir', ['-p', join(source, 'scripts/guards'), join(source, '.github/workflows'), env.HOME])
+      for (const path of [
+        'scripts/check-action-pins.ts',
+        'scripts/checkout-blobs.ts',
+        'scripts/guards/action-pins.ts',
+        'scripts/guards/workflow.ts',
+        DEPLOY,
+      ])
+        writeFileSync(join(source, path), readRepoFile(path))
+      writeFileSync(join(source, 'package.json'), '{ "type": "module" }\n')
+      writeFileSync(join(source, '.gitattributes'), `${DEPLOY} eol=crlf\n`)
+      git(source, ['init', '-q'])
+      git(source, ['add', '-A'])
+      git(source, ['commit', '-qm', 'the check'])
+      git(folder, ['clone', '-q', source, 'job'])
+      const job = join(folder, 'job')
+      expect(readFileSync(join(job, DEPLOY), 'utf8')).toContain('\r\n')
+      const proxy = 'http://127.0.0.1:9'
+      const checked = spawnSync(process.execPath, ['scripts/check-action-pins.ts'], {
+        cwd: job,
+        encoding: 'utf8',
+        env: { ...env, https_proxy: proxy, HTTPS_PROXY: proxy, http_proxy: proxy, HTTP_PROXY: proxy },
+        timeout: 120_000,
+      })
+      expect(checked.status).toBe(1)
+      expect(checked.stderr).toContain(`${DEPLOY}: the checkout's bytes aren't its committed blob's`)
+      expect(checked.stderr).toContain(
+        "check-action-pins: the checkout isn't what HEAD commits (a git attribute, such as ident, eol, text, filter or working-tree-encoding, or a step before this wrote other bytes), so nothing was checked",
+      )
+      expect(checked.stdout).not.toContain("its tag's commit")
+      expect(checked.stderr).not.toContain("couldn't read")
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  }, 150_000)
 
   // Round 12's second iteration: the pins job's own two actions are proved by hand, with the git ls-remote line
   // action-pins.ts gives, which printed the decoys FETCH-G1-01 names beside the tag; for a lightweight release
@@ -8638,7 +8707,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       expect(said.length, flags).toBeGreaterThan(1)
       expect(said[1], flags).toContain('(.dockerImages // {}) | length == 0')
       expect(canonicalTextFindings({ ASSET_CHECK: variant }).join('\n'), flags).toContain(
-        'hands jq -e no stream of values, so never feeds it by a pipe or gives it more than one file unless it is given -n or -s',
+        'hands jq -e no stream of values: it reads one file or a here-string on its own command, unless it is given -n or -s',
       )
     }
   }, 120_000)
@@ -11177,7 +11246,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // resource's path is now under its stack, of plain construct ids, unique, its logical id's but for CDK's hash,
   // and a role, group, task definition or service carries the path its name, or what uses it, gives it.
   const LABEL = refused(
-    "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it",
+    "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it",
   )
   const LOGICAL_ID = refused(
     "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by",
@@ -11385,7 +11454,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // perimeter's condition one that never holds, reading as the VPC. No role names anything by a reference now
   // but the account's id, a template VPC and its default security group; anything else is named by a literal ARN.
   const ROLE_REFERENCE = refused(
-    "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN",
+    "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN",
   )
   type Template = { Parameters?: Record<string, unknown>; Resources: Record<string, Labelled> }
   // Edits a stage's template of one part whole (its parameters too) and re-keys it.
@@ -11505,6 +11574,84 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ),
     ).toBe('passed')
   }, 30_000)
+
+  // Round 12's third iteration: the reference rule let a role name a template VPC, and every rule that reads the
+  // template's network held a VPC by its type alone, while nothing tied a VPC's label: the CLI prints a path less
+  // its stage and a last Resource or Default, so a second VPC at <stage>/Platform/Network/Vpc printed as the
+  // workload VPC (<stage>/Platform/Network/Vpc/Resource) does. A condition naming it read as the perimeter's own,
+  // and a restore up moved the flow log and CDK's default security group handler to it, each line of the diff as
+  // an honest release's but the added VPC's one, under the workload VPC's label. A template now holds one VPC at
+  // most, at the synth's path, and no two resources the diff prints under one label.
+  const SECOND_VPC = 'NetworkVpcD3C0AB1E'
+  const secondVpc = (json: Template, stage: string, path = `${stage}/Platform/Network/Vpc`, id = SECOND_VPC) => {
+    json.Resources[id] = {
+      Type: 'AWS::EC2::VPC',
+      Properties: {
+        CidrBlock: '10.31.0.0/16',
+        EnableDnsHostnames: true,
+        EnableDnsSupport: true,
+        InstanceTenancy: 'default',
+        Tags: [{ Key: 'Name', Value: `hearth-${stage}` }],
+      },
+      Metadata: { 'aws:cdk:path': path },
+    } as unknown as Labelled
+  }
+  it.each([
+    ["a second VPC under the workload VPC's label", inTemplate(prod, 'Platform', json => secondVpc(json, 'prod'))],
+    [
+      "a condition naming a second VPC under the workload VPC's label, in the api's task role",
+      inTemplate(prod, 'Platform', json => {
+        secondVpc(json, 'prod')
+        statementOn(json.Resources[idOfPrefix(json.Resources, API_TASK)], outsideTheVpc({ Ref: SECOND_VPC }))
+      }),
+    ],
+    [
+      "the flow log and CDK's default security group handler moved to a second VPC under the workload VPC's label (a restore up)",
+      inTemplate(restore, 'Platform', json => {
+        const vpc = idOfPrefix(json.Resources, 'NetworkVpc')
+        secondVpc(json, 'restore')
+        const flowLog = json.Resources[idOfPrefix(json.Resources, 'NetworkFlowLog')]
+        const handler =
+          json.Resources[idOfPrefix(json.Resources, 'NetworkVpcRestrictDefaultSecurityGroupCustomResource')]
+        if (flowLog === undefined || handler === undefined) throw new Error('no flow log or handler')
+        flowLog.Properties.ResourceId = { Ref: SECOND_VPC }
+        handler.Properties.DefaultSecurityGroupId = { 'Fn::GetAtt': [SECOND_VPC, 'DefaultSecurityGroup'] }
+        const role = idOfPrefix(json.Resources, 'CustomVpcRestrictDefaultSGCustomResourceProviderRole')
+        const walk = (value: unknown): unknown =>
+          Array.isArray(value)
+            ? value.length === 2 && value[0] === vpc && value[1] === 'DefaultSecurityGroup'
+              ? [SECOND_VPC, 'DefaultSecurityGroup']
+              : value.map(walk)
+            : typeof value === 'object' && value !== null
+              ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, walk(inner)]))
+              : value
+        const grant = json.Resources[role]
+        if (grant === undefined) throw new Error('no handler role')
+        grant.Properties = walk(grant.Properties) as Labelled['Properties']
+      }),
+    ],
+    [
+      'a second VPC at a label of its own',
+      inTemplate(prod, 'Platform', json =>
+        secondVpc(json, 'prod', 'prod/Platform/Network/Spare/Resource', 'NetworkSpare0A1B2C3D'),
+      ),
+    ],
+    [
+      "a security group the diff prints under the api group's label",
+      inTemplate(prod, 'Platform', json => {
+        const api = json.Resources[idOfPrefix(json.Resources, 'NetworkGroupsApi')]
+        const twin = structuredClone(api) as Labelled
+        labelOf(twin)['aws:cdk:path'] = `${labelOf(api)['aws:cdk:path']}/Resource`
+        json.Resources.NetworkGroupsApi0A1B2C3D = twin
+      }),
+    ],
+  ] as const)(
+    'refuses %s (round 12)',
+    (_, plant) => {
+      expect(check(plant)).toBe(LABEL)
+    },
+    30_000,
+  )
 })
 
 // The deny rules (C11-D77; T24 item 21; review RULES-01). Claude Code reads a `:*` as a prefix wildcard only
@@ -12249,7 +12396,9 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
   // as quoted text. It now closes where bash does, so the command is read and refused.
   it(`closes an unquoted \${ … } at the first } bash closes it at, a bare { inside it opening nothing`, () => {
     const planted = `f() {\n  local mode=x seen\n  seen="$(echo \${mode:-{})}" ;uname -s; : "x)"\n}`
-    expect(shellCommands(planted).map(command => command.word)).toEqual(['f', 'local', 'echo', 'uname', ':', '}'])
+    // (From round 12's third iteration the definition's name is no command: its head stands where a command starts,
+    // and the { that ends its line is read as the group's word, as the } that closes it is.)
+    expect(shellCommands(planted).map(command => command.word)).toEqual(['{', 'local', 'echo', 'uname', ':', '}'])
     expect(canonicalTextFindings({ X: planted }).join('\n')).toMatch(
       /DPW-10 X, line 3: runs only the commands CANONICAL_COMMANDS names/,
     )
@@ -14930,7 +15079,7 @@ describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02,
   // a stream, jq -c '.[]' <<<"$X" | jq -e 'f', holds the last value alone, though its program prints one value.
   it('refuses a jq -e fed by a pipe unless it is given -n or -s (COMMANDS-G1-02)', () => {
     const RULE =
-      'hands jq -e no stream of values, so never feeds it by a pipe or gives it more than one file unless it is given -n or -s, since -e reads the last value it reads alone'
+      "hands jq -e no stream of values: it reads one file or a here-string on its own command, unless it is given -n or -s, and never its standard input otherwise (a pipe, a group, a function's caller, < <( … )) or more than one file, since -e reads the last value it reads alone"
     const shape = 'all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))'
     const probeLine = PROBE.split('\n').find(each => each.includes(shape)) ?? ''
     expect(probeLine).toContain(`'length == $n and ${shape}' <<<"$ADDRESSES" >/dev/null`)
@@ -15041,30 +15190,66 @@ describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02,
     expect(Object.keys(JOB_OUTPUTS.gate ?? {})).toEqual([...PLAN_OUTPUTS])
   })
 
-  // YAML-G1-01: GitHub reads a workflow's blob, while the rules read the working tree, which a checkout writes
+  // Round 12: GitHub reads a workflow's blob, while the rules read the working tree, which a checkout writes
   // through git attributes: a working-tree-encoding of ISO-8859-1 wrote a NEL as one byte Node reads as U+FFFD,
-  // so the lines GitHub read after it, a job naming prod-plan's environment among them, stayed in a comment.
-  it('refuses a git attribute on any workflow (YAML-G1-01)', () => {
-    const paths = files.filter(path => path.startsWith('.github/workflows/'))
-    expect(paths).toContain(DEPLOY)
-    expect(workflowAttributeFindings(gitAttributes(paths))).toEqual([])
+  // so the lines GitHub read after it, a job naming prod-plan's environment among them, stayed in a comment. From
+  // round 12's third iteration no tracked file carries one, since the owner reads every blob while CI and the
+  // deploy jobs read the checkout (an ident attribute on infra/package.json checked out a lower CDK CLI than its
+  // blob pinned), and the attributes are read as the index's .gitattributes gives them too: a .gitattributes
+  // that gave itself a working-tree-encoding checked out, in a fresh clone, as text git's parser can't read, so
+  // the working tree's reading named nothing while the checkout had re-encoded ci.yml through the index's.
+  const ATTRIBUTE =
+    'DPW-02 carries no git attribute, so a checkout writes its blob, which the owner reads and GitHub runs a workflow from, and CI, the deploy jobs and these rules read the same bytes (an ident, eol, text, filter or working-tree-encoding would write others)'
+  it('refuses a git attribute on any file, as the working tree’s or the index’s .gitattributes gives it (round 12)', () => {
+    expect(files).toContain(DEPLOY)
+    expect(gitAttributeFindings(gitAttributes(files))).toEqual([])
     const folder = mkdtempSync(join(tmpdir(), 'hearth-attributes-'))
     try {
-      execFileSync('git', ['init', '-q'], { cwd: folder, env: { PATH: process.env.PATH ?? '', HOME: folder } })
-      execFileSync('mkdir', ['-p', join(folder, '.github/workflows')])
-      writeFileSync(join(folder, '.github/workflows/ci.yml'), 'name: CI\n')
-      writeFileSync(join(folder, '.github/workflows/deploy.yml'), 'name: Deploy\n')
+      const env = {
+        PATH: process.env.PATH ?? '',
+        HOME: folder,
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_GLOBAL: '/dev/null',
+      }
+      const git = (cwd: string, args: readonly string[]) =>
+        execFileSync(
+          'git',
+          [
+            ...['-c', 'user.name=hearth-test', '-c', `user.email=${['test', 'example.invalid'].join('@')}`],
+            ...['-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+          ],
+          { cwd, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] },
+        )
+      const ci = '.github/workflows/ci.yml'
+      const source = join(folder, 'source')
+      execFileSync('mkdir', ['-p', join(source, '.github/workflows'), join(source, 'infra')])
+      git(source, ['init', '-q'])
+      writeFileSync(join(source, ci), 'name: CI\n')
+      writeFileSync(join(source, DEPLOY), 'name: Deploy\n')
+      writeFileSync(join(source, 'infra/package.json'), '{}\n')
+      const read = (paths: readonly string[], where = source) => gitAttributeFindings(gitAttributes(paths, where))
+      writeFileSync(join(source, '.gitattributes'), `${ci} working-tree-encoding=ISO-8859-1\n*.md text\n`)
+      expect(gitAttributes([ci, DEPLOY, 'x.md'], source).get(ci)).toEqual(['working-tree-encoding'])
+      expect(read([ci, DEPLOY, 'x.md'])).toEqual([`${ci}: ${ATTRIBUTE}`, `x.md: ${ATTRIBUTE}`])
+      writeFileSync(join(source, '.gitattributes'), '.github/** eol=crlf\n')
+      expect(read([DEPLOY])).toEqual([`${DEPLOY}: ${ATTRIBUTE}`])
+      writeFileSync(join(source, '.gitattributes'), 'infra/package.json ident\n')
+      expect(read(['infra/package.json', DEPLOY])).toEqual([`infra/package.json: ${ATTRIBUTE}`])
+      // The self-encoding .gitattributes, committed as its blob, as are the files, and cloned afresh.
       writeFileSync(
-        join(folder, '.gitattributes'),
-        '.github/workflows/ci.yml working-tree-encoding=ISO-8859-1\n*.md text\n',
+        join(source, '.gitattributes'),
+        `.gitattributes working-tree-encoding=UTF-16LE-BOM\n${ci} working-tree-encoding=ISO-8859-1\n`,
       )
-      const attributes = gitAttributes(['.github/workflows/ci.yml', '.github/workflows/deploy.yml', 'x.md'], folder)
-      expect(attributes.get('.github/workflows/ci.yml')).toEqual(['working-tree-encoding'])
-      expect(workflowAttributeFindings(attributes)).toEqual([
-        '.github/workflows/ci.yml: DPW-02 carries no git attribute, so a checkout writes the blob GitHub reads and the rules read the same bytes (a working-tree-encoding, eol, text, ident or filter would write others)',
-      ])
-      writeFileSync(join(folder, '.gitattributes'), '.github/** eol=crlf\n')
-      expect(workflowAttributeFindings(gitAttributes(['.github/workflows/deploy.yml'], folder))).toHaveLength(1)
+      for (const path of ['.gitattributes', ci, DEPLOY]) {
+        const blob = git(source, ['hash-object', '-w', '--no-filters', path]).trim()
+        git(source, ['update-index', '--add', '--cacheinfo', `100644,${blob},${path}`])
+      }
+      git(source, ['commit', '-qm', 'attributes'])
+      git(folder, ['clone', '-q', source, 'job'])
+      const job = join(folder, 'job')
+      expect([...readFileSync(join(job, '.gitattributes')).subarray(0, 2)]).toEqual([0xff, 0xfe])
+      expect(git(job, ['check-attr', '-z', '--all', '--', ci])).toBe('')
+      expect(read([ci, DEPLOY], job)).toEqual([`${ci}: ${ATTRIBUTE}`])
     } finally {
       rmSync(folder, { recursive: true, force: true })
     }
@@ -15203,6 +15388,234 @@ describe('Round 12, iteration 2: the ways past the reader and the rules (DPW-07,
         expect(found(plant(write, to, job(id))), `${id} ${what}`).toContain(binding(id))
       }
     }
+    expect(found(workflows)).toEqual([])
+  })
+})
+
+// Round 12, iteration 3: the gaps the finders proved past the reader and the rules after the second iteration's
+// fixes, each planted as they planted it and found at its root.
+describe('Round 12, iteration 3: the ways past the reader and the rules (DPW-07, DPW-10)', () => {
+  const PROCESS_TOOL =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const COMMANDS_RULE =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const anchor = "  local step=$1 PART answer status basis=''\n"
+  const line = PLAN_BASIS.slice(0, PLAN_BASIS.indexOf(anchor) + anchor.length).split('\n').length
+  const plantedBasis = (added: string) => {
+    expect(PLAN_BASIS).toContain(anchor)
+    return PLAN_BASIS.replace(anchor, `${anchor}${added}`)
+  }
+  const grep = 'grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
+  // A canonical text with whole lines replaced, each FROM found exactly once.
+  const replaced = (text: string, ...pairs: ReadonlyArray<readonly [string, string]>) =>
+    pairs.reduce((each, [from, to]) => {
+      expect(each.split(from).length - 1, from).toBe(1)
+      return each.replace(from, to)
+    }, text)
+  const bash = (script: string) => spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8' })
+
+  // A ! or { as an argument: the second iteration read a ! or { as a command start only as a word of its own, but
+  // anywhere, while bash reads one so only where a command starts: echo x ! [[ hands echo the words ! and [[, and
+  // the reader blanked from that [[ to the next ]] (or from a case to its next ) ), so the grep bash ran in between,
+  // or a refusal redefined to carry on, was seen by no rule.
+  it('reads a ! or { as a command start only where a command starts', () => {
+    const led = (lead: string, then = grep) => plantedBasis(`  ${lead} ; ${then}; [[ -n "$step" ]]\n`)
+    const tool = `${GUARD}: DPW-10 PLAN_BASIS, line ${line}: ${PROCESS_TOOL}`
+    for (const [what, planted] of [
+      ['an argument ! before [[', led('echo "plan_basis $step" ! [[')],
+      ['an argument { before [[', led('echo "plan_basis $step" { [[')],
+      [
+        'an argument ! before case',
+        plantedBasis(`  echo "plan_basis $step" ! case it in ; ${grep}; case "$step" in plan) true ;; esac\n`),
+      ],
+    ] as const) {
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), what).toContain(tool)
+    }
+    expect(
+      canonicalTextFindings({
+        PLAN_BASIS: led('echo "plan_basis $step" ! [[', 'aws_refuse() { echo "aws-check: $1, and so on"; }'),
+      }),
+    ).toContain(
+      `${GUARD}: DPW-10 PLAN_BASIS, line ${line}: defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), one bash itself calls (command_not_found_handle), a command's a text or a run runs, or one another canonical text defines`,
+    )
+    // bash hands echo the ! and the { as words, and runs the command after them.
+    const ran = bash('step=plan; echo x ! [[ ; echo one; [[ -n x ]]\necho x { [[ ; echo two; [[ -n x ]]')
+    expect(ran.stdout.split('\n').filter(each => /^(?:one|two)$/.test(each))).toEqual(['one', 'two'])
+    // A ! or { where a command starts still starts one: a negated test, a group and a function's body.
+    expect(shellCommands('if ! [[ -n "$x" ]]; then grep a b; fi').map(command => command.word)).toContain('grep')
+    expect(shellCommands('true || { grep a b; }').map(command => command.word)).toContain('grep')
+    expect(shellCommands('f() { grep a b; }').map(command => command.word)).toContain('grep')
+    expect(shellCommands('function f { grep a b; }').map(command => command.word)).toContain('grep')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // Where a jq -e reads: JQ_PIPED_RULE asked whether a | stood before a jq -e, while what matters is where it
+  // reads: a comment between the | and the jq, a helper its caller pipes into, a < <( … ), a group after the pipe
+  // and get each fed it a stream the reader saw no pipe before, and -e held the last value alone, so AWS_CHECK's
+  // every count is one passed with a service mid-rollout and another with no deployment.
+  it('holds a jq -e to one file or a here-string of its own, never its standard input (DPW-10)', () => {
+    for (const [text, lines] of [
+      [`jq -c '.counts[]' <<<"$out" |\n  # Each count, one a line.\n  jq -e '. == 1' >/dev/null`, [2]],
+      [`one_deployment() { jq -e '. == 1' >/dev/null; }\njq -c '.counts[]' <<<"$out" | one_deployment`, [0]],
+      [`jq -e '. == 1' < <(jq -c '.counts[]' <<<"$out") >/dev/null`, [0]],
+      [`jq -c '.counts[]' <<<"$out" | { true; jq -e '. == 1' >/dev/null; }`, [0]],
+      [`jq -c '.counts[]' <<<"$out" | get jq -e '. == 1'`, [0]],
+      [`jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null`, []],
+      [`jq -e 'f' "$dir/manifest.json" >/dev/null`, []],
+      [`jq -ne 'true'`, []],
+      [`jq -c '.[]' <<<"$out" | jq -se 'all(.[]; . == 1)'`, []],
+      [`jq -c '.counts[]' <<<"$out" | jq -r '.'`, []],
+    ] as const) {
+      expect(jqPipedLines(text), text).toEqual(lines)
+    }
+    const counts = '      jq -e \'all(.counts[]; . == 1)\' <<<"$out" >/dev/null ||\n'
+    const helper = '# Whether ECR holds the digest $2 under a tag of commit $1.\n'
+    for (const [what, planted] of [
+      [
+        'a comment between',
+        replaced(AWS_CHECK, [
+          counts,
+          "      jq -c '.counts[]' <<<\"$out\" |\n        # Each service's deployment count, one a line, and each must be one.\n        jq -e '. == 1' >/dev/null ||\n",
+        ]),
+      ],
+      [
+        'a helper',
+        replaced(
+          AWS_CHECK,
+          [
+            helper,
+            `# Whether the count on the input is one.\none_deployment() { jq -e '. == 1' >/dev/null; }\n${helper}`,
+          ],
+          [counts, '      jq -c \'.counts[]\' <<<"$out" | one_deployment ||\n'],
+        ),
+      ],
+    ] as const) {
+      expect(canonicalTextFindings({ AWS_CHECK: planted }).join('\n'), what).toContain(
+        'hands jq -e no stream of values',
+      )
+    }
+    // A run's own jq reads a here-string of its own, or its standard input counts as a pipe's: a group after a
+    // pipe holds a jq no previous command feeds.
+    const before = '          plan_basis check\n'
+    const glue = (added: string) =>
+      credentialedCodeFindings(
+        addedBefore('prod', 'What runs', before, `          ${added}\n`),
+        manifests,
+        lockfile,
+      ).some(each =>
+        each.startsWith(`${DEPLOY}: DPW-10 prod (What runs): gives each command its own lines run only the flags`),
+      )
+    expect(glue(`jq -c '.[]' <<<"$BASIS" | { jq -e '. == 1' >/dev/null; }`)).toBe(true)
+    expect(glue(`{ jq -e '. == 1' >/dev/null; } <<<"$BASIS"`)).toBe(true)
+    expect(glue(`jq -e '. == 1' <<<"$BASIS" >/dev/null`)).toBe(false)
+    // jq runs its program for each value it reads, and -e takes the last output alone.
+    expect(bash(`printf '2\\n0\\n1\\n' | jq -e '. == 1' >/dev/null`).status).toBe(0)
+    expect(bash(`jq -e 'all(.[]; . == 1)' <<<'[2,0,1]' >/dev/null`).status).toBe(1)
+    expect(canonicalTextFindings()).toEqual([])
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  // A loop's do or done after &, ) or }: heldNameLines() paired a loop's do and done only after a line's start or
+  // a ;, while bash also ends a loop's list at a do or done after &, a subshell's ) or a group's }, so : & done <
+  // <(…) fed the held read of td from any line, and the held done line was left to close an until : & do : loop the
+  // pairing never saw: the services' images read as the api's three times.
+  it('refuses a held name read in a loop whose do or done it can’t pair (DPW-10)', () => {
+    const loop = `        digests+=("\${image##*@}")\n      done < <(jq -r '.services[]' <<<"$out")\n`
+    for (const [what, close, open] of [
+      ['after an &', ': & done', 'until : & do :'],
+      ['after a subshell', '(:) done', 'until (:) do :'],
+    ] as const) {
+      const planted = replaced(AWS_CHECK, [
+        loop,
+        `        digests+=("\${image##*@}")\n        ${close} < <(jq -r '.services[0], .services[0], .services[0]' <<<"$out")\n      ${open}\n      done < <(jq -r '.services[]' <<<"$out")\n`,
+      ])
+      expect(
+        canonicalTextFindings({ AWS_CHECK: planted }).some(each =>
+          each.includes("sets a name an aws value starts with, or one it is read from, only on its text's own lines"),
+        ),
+        what,
+      ).toBe(true)
+    }
+    expect(bash(`while read -r x; do echo "$x"; : & done < <(printf 'decoy\\n')`).stdout).toBe('decoy\n')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A check run in the background: no rule over a canonical text read & as a control operator, and bash runs the list
+  // before it in a subshell of its own in the background, where its exit 1 ends that subshell alone and set -e
+  // never sees its status; no text may wait for it. A refusal, a group, a subshell or an if … fi followed by & let
+  // the step go on as if the check had passed.
+  it('refuses an & that runs a check in the background (DPW-10)', () => {
+    const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
+    // Each form after a refusal, and the same without its &.
+    for (const form of [
+      'release_shape "$release" &',
+      '[ "$status" != UPDATE_ROLLBACK_FAILED ] || aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED" &',
+      "{ jq -e 'length > 0' <<<\"$out\" >/dev/null || aws_refuse 'x'; } &",
+      '( release_shape "$release" || aws_refuse \'x\' ) &',
+      'if ! release_shape "$release"; then\n  exit 1\nfi &',
+    ]) {
+      expect(readsAsBash(form), form).toBe(false)
+      expect(readsAsBash(form.replace(/ &$/, '')), form).toBe(true)
+    }
+    const step = plantedBasis('  { [ -n "$step" ] || exit 1; } &\n')
+    expect(canonicalTextFindings({ PLAN_BASIS: step })).toContain(SHELL('PLAN_BASIS'))
+    expect(canonicalTextFindings({ PLAN_BASIS: plantedBasis('  { [ -n "$step" ] || exit 1; }\n') })).toEqual([])
+    // TASKS_OUTPUTS' shape check of the Tasks stack's outputs, its if … fi run in the background.
+    const lines = TASKS_OUTPUTS.split('\n')
+    const at = lines.findIndex((each, n) => /^\s*fi$/.test(each) && /^\s*exit 1$/.test(lines[n - 1] ?? ''))
+    expect(at).toBeGreaterThan(0)
+    lines[at] = `${lines[at]} &`
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: lines.join('\n') })).toContain(SHELL('TASKS_OUTPUTS'))
+    // An & in a redirection, an and-or list or a case item's terminator is none.
+    for (const text of ['a 2>&1 && b', 'a >&2', 'a &>/dev/null', 'a |& b', 'case x in a) b ;;& *) c ;; esac']) {
+      expect(readsAsBash(text), text).toBe(true)
+    }
+    const ran = bash('set -e; { echo refused; exit 1; } & sleep 0.2; echo went on')
+    expect(ran.status).toBe(0)
+    expect(ran.stdout).toBe('refused\nwent on\n')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // An AWS_ name set by a builtin: the workflow-level rule read an AWS_ name set only as NAME=, so a builtin handed
+  // AWS_REGION (a for loop, read, printf -v, local) moved every later aws read of the text to another region,
+  // since the credentials action exports it for every later step.
+  it('refuses an AWS_ name set by a builtin or an assignment in a canonical text (DPW-10)', () => {
+    const at = `    release=$(jq -r '.[1] // ""' <<<"$out")\n`
+    const where = AWS_CHECK.slice(0, AWS_CHECK.indexOf(at) + at.length).split('\n').length
+    for (const added of [
+      'for AWS_REGION in us-east-1; do break; done',
+      'IFS= read -r AWS_REGION <<<"us-east-1"',
+      "printf -v AWS_REGION '%s' us-east-1",
+      'local AWS_REGION',
+      'AWS_REGION=us-east-1',
+      'local ROLE_TO_ASSUME=x',
+    ]) {
+      expect(canonicalTextFindings({ AWS_CHECK: replaced(AWS_CHECK, [at, `${at}    ${added}\n`]) }), added).toContain(
+        `${GUARD}: DPW-10 AWS_CHECK, line ${where}: ${COMMANDS_RULE}`,
+      )
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // An output's write sent to the log: a write was any code line opening <key>= after a quote, wherever the line
+  // wrote it, so the mark's services_started, a rollback's rolled or AWS_CHECK's replaced sent to the log through
+  // mask left the output reading '' and the pipeline's rollback off, with no finding.
+  it('counts an output written only by a line that writes it to the output file (DPW-10)', () => {
+    const binding = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${BINDING}`
+    const found = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+    for (const [jobs, from] of [
+      [['nonprod', 'prod'], 'echo "services_started=true" >>"$GITHUB_OUTPUT"'],
+      [['rollback-nonprod', 'rollback-prod'], 'echo "rolled=true" >>"$GITHUB_OUTPUT"'],
+      [['nonprod', 'prod'], 'deploy | drill) echo "replaced=$release" >>"$GITHUB_OUTPUT" ;;'],
+    ] as const) {
+      expect(deployText).toContain(from)
+      for (const id of jobs) {
+        const to = from.replace(' >>"$GITHUB_OUTPUT"', ' | mask')
+        expect(found(plant(from, to, job(id))), `${id} ${from}`).toContain(binding(id))
+      }
+    }
+    // A group whose closing line writes to the output writes each key in it.
+    expect(deployText).toContain('            echo "readback=$READBACK"\n')
     expect(found(workflows)).toEqual([])
   })
 })

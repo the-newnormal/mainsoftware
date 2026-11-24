@@ -541,16 +541,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -902,18 +906,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -1116,16 +1121,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -1477,18 +1486,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -1692,16 +1702,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -2053,18 +2067,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -2394,16 +2409,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -2755,18 +2774,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -3957,16 +3977,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -4318,18 +4342,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -5273,16 +5298,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -5634,18 +5663,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -5795,16 +5825,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -6156,18 +6190,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -6856,16 +6891,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -7217,18 +7256,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -8526,16 +8566,20 @@ jobs:
           # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
           # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
           # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
-          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
-          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
-          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
-          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
-          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
-          # another's label. And no role names anything by a reference but the account's id, a template VPC and that
-          # VPC's default security group (the network perimeter's aws:SourceVpc and CDK's handler's grant): the diff
-          # prints any other reference in a grant or a trust by a label no rule ties to what it resolves to (a log
-          # group's name, or a parameter's stored value under a logical id entry that can read as a resource's path),
-          # so a release names anything else a grant reaches by a literal ARN, which the IAM table prints whole.
+          # digits and :, so no line break), unique in its template as the diff prints it (less its stage and a last
+          # Default or Resource, so no two resources share a label), and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; a VPC to the one a template holds at most, at
+          # the synth's path, so every rule that reads the template's network (a VPC endpoint's, a group's, a flow
+          # log's, CDK's handler's, a task role's network perimeter) reads the workload's own; and a role, security
+          # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
+          # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
+          # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
+          # on one group, under another's label. And no role names anything by a reference but the account's id, the
+          # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
+          # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
+          # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
+          # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
+          # prints whole.
           # Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
@@ -8887,18 +8931,19 @@ jobs:
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
                 jq -e '(.Resources // {}) as $r | [$r[] | select(.Type == "AWS::IAM::Role") | .Properties | .. | objects | select(has("Ref") or has("Fn::GetAtt"))] |
                   all(.[]; . == {"Ref": "AWS::AccountId"} or (keys == ["Ref"] and (.Ref | type == "string") and $r[.Ref].Type == "AWS::EC2::VPC") or (keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and (.[0] | type == "string") and $r[.[0]].Type == "AWS::EC2::VPC" and .[1] == "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a role names something by a reference but the account's id, a template VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
+                  asset_refuse "a role names something by a reference but the account's id, the template's VPC or its default security group, which the diff prints by a label no rule ties to what it resolves to: a grant names anything else by a literal ARN"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
                   {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
                   [$r[] | .Metadata["aws:cdk:path"]] as $paths |
                   all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
-                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
+                  ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
                   all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
                   all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
                   all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
                   all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
                   all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
