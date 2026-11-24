@@ -5971,7 +5971,7 @@ jobs:
                 ;;
               check)
                 if [ "$basis" != "$BASIS" ]; then
-                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
                   exit 1
                 fi
                 echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"
@@ -6887,12 +6887,14 @@ jobs:
           # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy, rollback
           # or restore is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
           # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
-          # was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
+          # was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it,
+          # while no prod release has been recorded since the gate (prod-gate refuses record-changed then, and
+          # all jobs are re-run, or the run dispatched afresh).
           # Then prod's newest release record, read again and checked by its shape, is the one prod-gate
           # read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
           # build made and non-prod deployed in this run.
           if [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
-            echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
+            echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)"
             exit 1
           fi
           newest_release() {
@@ -7234,7 +7236,7 @@ jobs:
                 ;;
               check)
                 if [ "$basis" != "$BASIS" ]; then
-                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
                   exit 1
                 fi
                 echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"

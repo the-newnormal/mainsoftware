@@ -158,15 +158,19 @@
 // a . or .. segment or a \, which the runner keeps and joins to the folder it fetched, whose action.yml
 // no rule reads and no owner's read covers, or a docker:// image (a remote action's own steps are read by no rule
 // either, behind the owner's read of its uses: line); no workflow line ends in a blank, which workflow.ts reads
-// as gone from a block scalar's line of blanks while YAML keeps it; and an environment: is a scalar on its own
-// line, never a mapping, whose deployment: false would have GitHub record no deployment for the job. A
+// as gone from a block scalar's line of blanks while YAML keeps it; an environment: is a scalar on its own
+// line, never a mapping, whose deployment: false would have GitHub record no deployment for the job; and every
+// workflow is at most 500,000 bytes (workflowSizeFindings()), since GitHub starts no run of a workflow file over
+// 500 KB: deploy.yml is over it as committed, so no run of it starts until the owner's change to its structure
+// (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. A
 // canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
 // paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
 // line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
 // joins a $ to the next line's (, { or ((, which the code view writes as quoted text, and an unquoted $ that ends a
 // brace expansion's alternative, since bash makes {$,}NAME into $NAME before it expands it, and a # after more ((
 // or [[ than )) or ]], which bash reads as text inside an arithmetic command or a regex's group, running what
-// follows on its line, and any unquoted (( but $((), to evaluating
+// follows on its line, any unquoted (( but $((, and a $(( whose inner ( doesn't close with )), or any <(( or >((,
+// which bash reads as a substitution holding a subshell whose command no rule here would read), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -183,7 +187,9 @@
 // prod-plan's diff file or the runner's outputs, summary, folder, run ids, address and commit
 // (foreignExpansionLines(), DPW-07), so no canonical text prints, in any form these rules read, the OIDC request
 // token or another credential its job holds, to running only the commands CANONICAL_COMMANDS names and the
-// canonical texts' functions, each by a plain word, with no environment of its own (canonicalCommandLines():
+// canonical texts' functions, each by a plain word, each function defined once by a plain lower-case name of its
+// own that no builtin, keyword, command or other text has (functionNameLines(): bash finds a function before a
+// builtin, so an exit() would make every later exit 1 carry on), with no environment of its own (canonicalCommandLines():
 // export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
 // a command but IFS's before read, read only with -r after IFS= or IFS=$'\t' and mapfile only with -t, so no
 // backslash in what a loop reads joins two lines or escapes a character (readerLines()), no assignment, in any
@@ -1377,12 +1383,14 @@ export const FAST_RECHECK_PROD = sh`${STOP_HEAD}
 # The fast re-check (C11-D52), after the approval and before the credentials. A prod deploy, rollback
 # or restore is approved against the diff prod-plan read in this attempt: a re-run of this job alone,
 # or of the failed jobs, keeps an earlier attempt's diff (and prod-gate's read, unless prod-gate
-# was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it.
+# was re-run too), so it refuses, and re-running prod-plan re-runs prod-gate and this job after it,
+# while no prod release has been recorded since the gate (prod-gate refuses record-changed then, and
+# all jobs are re-run, or the run dispatched afresh).
 # Then prod's newest release record, read again and checked by its shape, is the one prod-gate
 # read; a deploy's commit descends from it (none on a first deploy) and its image is the one the
 # build made and non-prod deployed in this run.
 if [ "$PLAN_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]; then
-  echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh"
+  echo "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)"
   exit 1
 fi
 ${NEWEST_RELEASE}
@@ -1617,7 +1625,7 @@ plan_basis() {
       ;;
     check)
       if [ "$basis" != "$BASIS" ]; then
-        echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
         exit 1
       fi
       echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"

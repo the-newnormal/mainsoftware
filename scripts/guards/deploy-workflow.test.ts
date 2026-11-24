@@ -2763,7 +2763,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       expect(said({ MODE: 'rollback' }).status).toBe(0)
       const stale = {
         status: 1,
-        said: "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or dispatch afresh",
+        said: "fast re-check: prod-plan's diff is from another attempt of this run: re-run prod-plan, which re-runs prod-gate and this job after it, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)",
       }
       expect(said({ PLAN_ATTEMPT: '1' })).toEqual(stale)
       expect(said({ PLAN_ATTEMPT: '' })).toEqual(stale)
@@ -13095,6 +13095,11 @@ describe('DPW-08: prod deploys only the stage prod-plan diffed (PLAN_BASIS, roun
     })
     expect(rolledBack.status).toBe(1)
     expect(rolledBack.said).toContain('plan-basis: Hearth-prod changed since prod-plan diffed it')
+    // The refusal names both ways on (round 11): prod-plan re-run alone refuses record-changed at prod-gate once
+    // the run that moved the stage has recorded its release.
+    expect(rolledBack.said).toContain(
+      "re-run prod-plan, read its fresh diff and approve again, or, once a prod release has been recorded since this run's gate, re-run all jobs (while the commit is main's head) or dispatch afresh (deploy-and-rollback.md)",
+    )
     const changes: ReadonlyArray<Record<string, string>> = [
       { BASIS: '' },
       { BASIS: BASIS.replace('Platform:', 'Platform:x') },
