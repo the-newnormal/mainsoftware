@@ -5,8 +5,9 @@
 // stacks and templates, CloudFormation Validate included, and writes its assembly to a temporary
 // folder. The CLI adds settings of its own to that context, and of those only its path and asset
 // metadata change what it writes: aws:cdk:path in each resource's Metadata, and aws:asset:path and
-// aws:asset:property in the VPC handler's, which deploy nothing and which no assertion reads, and so
-// each template's hash where the manifests name it.
+// aws:asset:property in the VPC handler's, which deploy nothing and which no assertion here reads, and so
+// each template's hash where the manifests name it (the pipeline's asset check holds the paths, and its
+// cases ask the helper for them by name, cliMetadata, as cdk synth adds them).
 // - The workload entry builds its twelve stacks from CI's fake release (HEARTH_FAKE_RELEASE=1, as
 //   synth:ci runs it; C11-D62) and prints nothing; its assembly, nested stages included, publishes
 //   templates and the VPC's one handler zip alone (IAC-22). It refuses every run it can't build with

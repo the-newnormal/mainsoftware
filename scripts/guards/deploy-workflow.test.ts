@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   gitIsAncestor,
+  PLAN_OUTPUTS,
   type PlanInput,
   parsePullChecks,
   parseReleaseRecords,
@@ -92,6 +93,7 @@ import {
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
+  jqPipedLines,
   jqPrintsOne,
   jqProgramIsHeld,
   MASK_RUN,
@@ -148,10 +150,11 @@ import {
   whatRunsText,
   wordAsRead,
   wordSplits,
+  workflowAttributeFindings,
   workflowSizeFindings,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
-import { ownRepository, readRepoFile, repoFiles, root } from './repo-files.ts'
+import { gitAttributes, ownRepository, readRepoFile, repoFiles, root } from './repo-files.ts'
 import {
   jobConcurrency,
   jobEnvironment,
@@ -272,6 +275,9 @@ const AS_BASH =
   'is written in the shell the guard reads: outside a canonical text standing whole, only what SHELL_TABLE names (blanks that are a space or a tab, its word characters, single and double quotes, its expansions of names bash neither sets nor reads for itself, substitutions, operators, redirections after a command’s word, keywords, tests, case patterns, functions and assignments, its builtins as it holds them, a comment only at a line’s start or after a blank), each stretch closing all it opens'
 const HELD =
   'gives each command its own lines run only the flags and arguments the workflow uses (GLUE_USES), no assignment before it, and no file to read but the diff or to write but its outputs, its summary, the diff and /dev/null, so none runs code, reads a file the guard can’t see or writes one; and calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
+// DPW-10's finding for an expression reading a step id, an output or a job that nothing writes (round 12).
+const BINDING =
+  "reads steps.<id> only from a step of its job (one before it, for a step) and an output only one that step writes, and needs.<job> only from a job it needs and only its result or outputs, since GitHub reads any other as ''"
 // DPW-14's finding for a check called where its refusal wouldn't end the step, in any job.
 const STANDS_ALONE =
   'calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
@@ -1404,9 +1410,20 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
   it('reads the commit a tag names, the peeled one of an annotated tag, from the two exact refs alone', () => {
     expect(tagCommit(`${commit}\trefs/tags/v7.0.1\n`, 'v7.0.1')).toBe(commit)
     expect(tagCommit(`${other}\trefs/tags/v7.0.1\n${commit}\trefs/tags/v7.0.1^{}\n`, 'v7.0.1')).toBe(commit)
-    expect(tagCommit(`${commit}\trefs/tags/x/v7.0.1\n`, 'v7.0.1')).toBeUndefined()
-    expect(tagCommit(`${commit}\trefs/heads/v7.0.1\n`, 'v7.0.1')).toBeUndefined()
     expect(tagCommit('', 'v7.0.1')).toBeUndefined()
+    // What git ls-remote prints beside the tag for the two patterns, since it matches each against a ref's
+    // tail at a /: a branch named refs/tags/v7.0.1 (sorted before the tag) and a tag x/refs/tags/v7.0.1 with
+    // its peeled line (after it). Neither names the tag's commit, alone or beside the tag's own lines
+    // (FETCH-G1-01, round 12).
+    const branch = `${other}\trefs/heads/refs/tags/v7.0.1\n`
+    const nested = `${other}\trefs/tags/x/refs/tags/v7.0.1\n${other}\trefs/tags/x/refs/tags/v7.0.1^{}\n`
+    expect(tagCommit(branch, 'v7.0.1')).toBeUndefined()
+    expect(tagCommit(nested, 'v7.0.1')).toBeUndefined()
+    expect(tagCommit(`${branch}${nested}`, 'v7.0.1')).toBeUndefined()
+    expect(tagCommit(`${branch}${commit}\trefs/tags/v7.0.1\n${nested}`, 'v7.0.1')).toBe(commit)
+    expect(tagCommit(`${branch}${other}\trefs/tags/v7.0.1\n${commit}\trefs/tags/v7.0.1^{}\n${nested}`, 'v7.0.1')).toBe(
+      commit,
+    )
   })
 
   it('finds a pin its tag doesn’t name, a missing tag and an entry in another shape', () => {
@@ -1514,7 +1531,18 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         expect(quietly(only(tag => `${other}\trefs/tags/${tag}\n`)), `${way} at another commit`).toBe(1)
         expect(quietly(only(tag => `${other}\trefs/tags/${tag}\n${other}\trefs/tags/${tag}^{}\n`)), way).toBe(1)
         expect(quietly(only(() => '')), `${way} with no tag`).toBe(1)
-        expect(quietly(only(tag => `${commit}\trefs/tags/x/${tag}\n`)), `${way} under another ref`).toBe(1)
+        // git's tail match prints a branch named refs/tags/<v> and a tag x/refs/tags/<v> beside the tag: at the
+        // pin's commit, alone or beside the tag at another (FETCH-G1-01, round 12).
+        const tails = (tag: string) =>
+          `${commit}\trefs/tags/x/refs/tags/${tag}\n${commit}\trefs/tags/x/refs/tags/${tag}^{}\n`
+        expect(
+          quietly(only(tag => `${commit}\trefs/heads/refs/tags/${tag}\n${tails(tag)}`)),
+          `${way} under another ref`,
+        ).toBe(1)
+        expect(
+          quietly(only(tag => `${commit}\trefs/heads/refs/tags/${tag}\n${other}\trefs/tags/${tag}\n${tails(tag)}`)),
+          `${way} beside refs that end like the tag`,
+        ).toBe(1)
         expect(
           quietly(
             only(() => {
@@ -1583,6 +1611,58 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
       expect(older.status).toBe(1)
       expect(older.stderr).toContain('no pin was read')
     })
+  })
+
+  // FETCH-G1-01 (round 12): git ls-remote matches each pattern against a ref's tail at a /, so beside the tag
+  // it prints a branch named refs/tags/<v> and a tag x/refs/tags/<v>, which can name any commit of the action's
+  // own repository. Read here from a repository that holds both at another commit than the tag's, through the
+  // check's own reader, so the answer is git's: the check names the tag's commit, refuses a pin at the other
+  // and accepts one at the tag's.
+  it('names the tag’s commit beside refs whose names only end like the tag, as git prints them (FETCH-G1-01, round 12)', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-action-pins-'))
+    try {
+      const env = { PATH: process.env.PATH ?? '', HOME: join(folder, 'home') }
+      const git = (args: readonly string[]) =>
+        execFileSync(
+          'git',
+          [
+            ...['-c', 'user.name=hearth-test', '-c', `user.email=${['test', 'example.invalid'].join('@')}`],
+            ...['-c', 'commit.gpgsign=false', '-c', 'tag.gpgSign=false', '-c', 'core.hooksPath=/dev/null', ...args],
+          ],
+          {
+            cwd: join(folder, 'action'),
+            encoding: 'utf8',
+            env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        ).trim()
+      execFileSync('mkdir', ['-p', join(folder, 'action'), env.HOME])
+      git(['init', '-q'])
+      git(['commit', '-q', '--allow-empty', '-m', 'tagged'])
+      git(['tag', '-a', '-m', 'tagged', 'v7.0.1'])
+      const tagged = git(['rev-parse', 'HEAD'])
+      git(['commit', '-q', '--allow-empty', '-m', 'other'])
+      const other = git(['rev-parse', 'HEAD'])
+      git(['update-ref', 'refs/heads/refs/tags/v7.0.1', other])
+      git(['tag', '-a', '-m', 'other', 'x/refs/tags/v7.0.1', other])
+      const answer = readTagRefs(`file://${join(folder, 'action')}`, 'v7.0.1', env)
+      expect(answer.split('\n').map(line => line.replace(/^[0-9a-f]{40}\t/, ''))).toEqual([
+        'refs/heads/refs/tags/v7.0.1',
+        'refs/tags/v7.0.1',
+        'refs/tags/v7.0.1^{}',
+        'refs/tags/x/refs/tags/v7.0.1',
+        'refs/tags/x/refs/tags/v7.0.1^{}',
+        '',
+      ])
+      expect(answer).toContain(`${other}\trefs/tags/x/refs/tags/v7.0.1^{}`)
+      expect(tagCommit(answer, 'v7.0.1')).toBe(tagged)
+      expect(pinProblems({ 'actions/checkout': `${other} # v7.0.1` }, () => answer)).toEqual([
+        "actions/checkout: tag v7.0.1 names another commit than the pin's",
+      ])
+      expect(pinProblems({ 'actions/checkout': `${tagged} # v7.0.1` }, () => answer)).toEqual([])
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
   })
 
   // FETCH-A3-01: git read each action's repository with the configuration of whoever ran the check, so a
@@ -2952,8 +3032,9 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     const sha = 'c'.repeat(40)
     const created = '2026-11-10T00:00:00Z'
     const merged = '2026-11-12T00:00:00Z'
-    const pullOf = (label: string) => ({
+    const pullOf = (label: string, body: string) => ({
       number: 7,
+      body,
       created_at: created,
       closed_at: merged,
       merged_at: merged,
@@ -2974,7 +3055,7 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       'gh() {',
       '  local answer page',
       '  case "$2" in',
-      '    "repos/$REPO/commits/$SHA/pulls") answer=$ANSWER_PULLS ;;',
+      '    "repos/$REPO/commits/$SHA/pulls") answer=$(<"$RUNNER_TEMP/pulls.json") ;;',
       `    "repos/$REPO/git/commits/${head}") answer='{"tree": {"sha": "${'d'.repeat(40)}"}}' ;;`,
       '    "repos/$REPO/pulls?state=all&head=$WANTED&sort=created&direction=asc&per_page=100&page="[1-9]*)',
       `      page=\${2##*&page=}`,
@@ -3007,12 +3088,19 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     }
     const step = (
       pages: ReadonlyArray<readonly Listed[]>,
-      { label = 'example:feature', wanted = 'example%3Afeature', started = '2026-11-11T00:00:00Z' } = {},
+      {
+        label = 'example:feature',
+        wanted = 'example%3Afeature',
+        started = '2026-11-11T00:00:00Z',
+        body = 'Bumps a version.',
+      } = {},
     ) => {
       const temp = mkdtempSync(join(tmpdir(), 'hearth-pull-checks-'))
       try {
-        // The pages go in a file: ten full ones are longer than one environment variable may be.
+        // The pages and the pull request go in files: ten full pages, or a long body, are longer than one
+        // environment variable may be.
         writeFileSync(join(temp, 'pages.json'), JSON.stringify(pages))
+        writeFileSync(join(temp, 'pulls.json'), JSON.stringify([pullOf(label, body)]))
         const result = spawnSync('bash', ['-c', `${gh}\n${PULL_CHECKS}`], {
           encoding: 'utf8',
           env: {
@@ -3023,7 +3111,6 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
             MODE: 'deploy',
             TARGET: 'prod',
             WANTED: wanted,
-            ANSWER_PULLS: JSON.stringify([pullOf(label)]),
             ANSWER_RUNS: JSON.stringify(runOf(started)),
             ANSWER_JOBS: JSON.stringify(jobs),
           },
@@ -3054,6 +3141,11 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
       migrations: 'success',
     }
     expect(step([[self()]])).toEqual({ checks: deployed, pages: [1] })
+    // A body its author (or anyone who can push to its head, after the merge) made long, in multi-byte or escaped
+    // characters, writes the same: the step keeps only the fields it reads, since Linux refuses one argument over
+    // 128 KiB, and the pull request is one of jq's (COMMANDS-G1-01, round 12).
+    expect(written([[self()]], { body: '\u754c'.repeat(70_000) })).toEqual(deployed)
+    expect(written([[self()]], { body: '"\\\n'.repeat(70_000) })).toEqual(deployed)
     // Renovate's reuse: earlier pull requests from the same branch name, merged or closed before this one opened,
     // each at another commit, leave it unshared, in any order, up to the second before it opened.
     const earlier = [
@@ -6126,13 +6218,20 @@ describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-
       at('DPW-10', 'nonprod (Push the image)', SETS_INPUT),
     )
     const commit = `          COMMIT: \${{ steps.release.outputs.commit }}\n          DIGEST: \${{ steps.release.outputs.digest }}\n`
-    for (const to of ['needs.gate.outputs.previous_nonprod_commit', 'steps.release.outputs.comit']) {
+    // An output no step writes is read as '', which the binding rule finds too (round 12).
+    for (const [to, bound] of [
+      ['needs.gate.outputs.previous_nonprod_commit', true],
+      ['steps.release.outputs.comit', false],
+    ] as const) {
       expect(
         credentialed(
           plant(commit, commit.replace('steps.release.outputs.commit', to), '      - name: Push the image\n'),
         ),
         to,
-      ).toEqual([at('DPW-10', 'nonprod (Push the image)', ENV)])
+      ).toEqual([
+        at('DPW-10', 'nonprod (Push the image)', ENV),
+        ...(bound ? [] : [at('DPW-10', 'nonprod (Push the image)', BINDING)]),
+      ])
     }
     // The release step that names the commit is pinned whole too.
     expect(
@@ -6146,12 +6245,14 @@ describe('Round 4, attack 1: the ways past the allowlist (DPW-07 to DPW-10, DPW-
   // TARGET from prod-gate's outputs (which hold none) or another commit's SHA can't skip its checks.
   it('pins every env: value (FLOW-A1-01, FLOW-A1-02)', () => {
     const target = `          TARGET: \${{ needs.gate.outputs.target }}\n          RECORD_ID: \${{ needs.prod-gate`
+    // prod-gate outputs neither, which the binding rule finds too (round 12).
     expect(
       credentialed(plant(target, target.replace('needs.gate.outputs.target', 'needs.prod-gate.outputs.target'))),
-    ).toEqual([at('DPW-10', 'prod (The fast re-check)', ENV)])
+    ).toEqual([at('DPW-10', 'prod (The fast re-check)', ENV), at('DPW-10', 'prod (The fast re-check)', BINDING)])
     const mode = `          MODE: \${{ needs.gate.outputs.mode }}\n          TARGET: \${{ needs.gate.outputs.target }}\n          RECORD_ID`
     expect(credentialed(plant(mode, mode.replace('needs.gate.outputs.mode', 'needs.prod-gate.outputs.mode')))).toEqual([
       at('DPW-10', 'prod (The fast re-check)', ENV),
+      at('DPW-10', 'prod (The fast re-check)', BINDING),
     ])
     expect(
       credentialed(
@@ -8209,14 +8310,15 @@ describe('DPW-06 (C11-D45): restore=down and its read-back against planted AWS a
 })
 
 // ASSET_CHECK itself (DPW-14), run with bash and jq on copies of the workload's own assembly,
-// synthesised in process by infra's helper (CI's check runs the tests before synth:ci, and cdk.out isn't
-// committed): the real layout passes, and each planted breakage is refused with one line naming its rule.
+// synthesised in process by infra's helper with the CLI's path and asset metadata, as cdk synth writes it
+// (CI's check runs the tests before synth:ci, and cdk.out isn't committed): the real layout passes, and each
+// planted breakage is refused with one line naming its rule.
 describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   const RELEASE = `${'f'.repeat(40)}:sha256:${'0'.repeat(64)}`
   let source = ''
   const made: string[] = []
   beforeAll(() => {
-    source = synthWorkload().synthesised.outdir
+    source = synthWorkload({ cliMetadata: true }).synthesised.outdir
   }, 120_000)
   afterAll(() => {
     for (const folder of made) rmSync(folder, { recursive: true, force: true })
@@ -8368,7 +8470,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   ] as const)(
     'passes %s',
     (_, run, nested) => {
-      const built = synthWorkload({ run }).synthesised.outdir
+      const built = synthWorkload({ run, cliMetadata: true }).synthesised.outdir
       made.push(built)
       expect(
         readdirSync(built)
@@ -8673,6 +8775,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         resource({
           Type: 'AWS::SSM::Parameter',
           Properties: { Name: '/hearth/nonprod/valkey/endpoint', Type: 'String', Value: 'x' },
+          Metadata: { 'aws:cdk:path': 'nonprod/Services/Extra' },
         }),
       ),
     ).toBe('passed')
@@ -8893,6 +8996,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         added(prod, {
           Type: 'AWS::Logs::LogGroup',
           Properties: { LogGroupName: '/hearth/prod/extra', RetentionInDays: 30 },
+          Metadata: { 'aws:cdk:path': 'prod/Services/ApiTaskLogsRead' },
         }),
       ),
     ).toBe('passed')
@@ -9450,12 +9554,16 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         }),
       ),
     ).toBe(CUSTOM)
-    // Neither, the custom resource and its function both gone, passes.
+    // Neither, the custom resource, its function and the function's role all gone, passes.
     expect(
       check(
         inTemplate('Platform', json => {
+          const role = (resources(json)[FN]?.Properties?.Role as { 'Fn::GetAtt'?: string[] } | undefined)?.[
+            'Fn::GetAtt'
+          ]?.[0]
           delete resources(json)[CR]
           delete resources(json)[FN]
+          if (role !== undefined) delete resources(json)[role]
         }),
       ),
     ).toBe('passed')
@@ -10870,6 +10978,215 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   )
   it('passes a second inline policy of another name (round 11)', () => {
     expect(check(secondPolicy('hearth-task-extra'))).toBe('passed')
+  }, 30_000)
+
+  // Round 12: the diff names each resource by its construct path (aws:cdk:path, or an artifact's logical id
+  // entry for one that carries none), in its resource lines and its IAM and security group tables, never by its
+  // logical id or name, and prints an added role as one line without its name. A release could label the api
+  // task role as the migrate task role's (or swap the two roles' logical ids and paths, which in a restore up or
+  // prod's first deploy prints byte for byte the diff of an honest release), so the prod approver read a grant on
+  // the api's role as one on migrate's; and a path holding line breaks printed lines of its choosing. Every
+  // resource's path is now under its stack, of plain construct ids, unique, its logical id's but for CDK's hash,
+  // and a role, group, task definition or service carries the path its name, or what uses it, gives it.
+  const LABEL = refused(
+    "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it",
+  )
+  const LOGICAL_ID = refused(
+    "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by",
+  )
+  type Labelled = Planted & { Metadata?: Record<string, unknown> }
+  const restore = (dir: string) => join(dir, 'assembly-restore')
+  // Edits a stage's template of one part and re-keys it.
+  const inPart =
+    (stage: (dir: string) => string, part: string, change: (resources: Record<string, Labelled>) => void) =>
+    (dir: string) => {
+      edit(named(stage(dir), part, '.template.json'), json => change(json.Resources as Record<string, Labelled>))
+      rekey(stage(dir), part)
+    }
+  // A logical id by its construct ids: the id itself, or with CDK's 8-hex hash.
+  const idOfPrefix = (resources: Record<string, Labelled>, prefix: string) => {
+    const id = Object.keys(resources).find(key => key === prefix || new RegExp(`^${prefix}[0-9A-F]{8}$`).test(key))
+    if (id === undefined) throw new Error(`no ${prefix} in the template`)
+    return id
+  }
+  const labelOf = (resource: Labelled | undefined) => {
+    if (resource?.Metadata === undefined) throw new Error('no metadata')
+    return resource.Metadata
+  }
+  // The grant a release would hide: connecting to the database as the migration login.
+  const asMigrate = {
+    PolicyName: 'hearth-db',
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Sid: 'ConnectAsMigrate',
+          Effect: 'Allow',
+          Action: 'rds-db:connect',
+          Resource: {
+            'Fn::Join': ['', ['arn:aws:rds-db:ap-southeast-1:', { Ref: 'AWS::AccountId' }, ':dbuser:*/hearth_migrate']],
+          },
+        },
+      ],
+    },
+  }
+  const withGrant = (resource: Labelled | undefined) => {
+    if (resource === undefined) throw new Error('no role')
+    resource.Properties.Policies = [...((resource.Properties.Policies as unknown[] | undefined) ?? []), asMigrate]
+  }
+  // Renames logical ids throughout a template: each key, and every string equal to one (a Ref, a GetAtt's
+  // first item, a DependsOn), so the template reads as one the synth wrote under the new ids.
+  const renamed = (resources: Record<string, Labelled>, names: ReadonlyMap<string, string>) => {
+    const walk = (value: unknown): unknown =>
+      typeof value === 'string'
+        ? (names.get(value) ?? value)
+        : Array.isArray(value)
+          ? value.map(walk)
+          : typeof value === 'object' && value !== null
+            ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, walk(inner)]))
+            : value
+    const entries = Object.entries(resources).map(([key, value]) => [names.get(key) ?? key, walk(value)] as const)
+    for (const key of Object.keys(resources)) delete resources[key]
+    for (const [key, value] of entries) resources[key] = value as Labelled
+  }
+  // Swaps two resources' logical ids and paths (each keeps its own properties), as a release's
+  // renameLogicalId() and path metadata would.
+  const swapped = (resources: Record<string, Labelled>, first: string, second: string) => {
+    const a = idOfPrefix(resources, first)
+    const b = idOfPrefix(resources, second)
+    const pathA = labelOf(resources[a])['aws:cdk:path']
+    const pathB = labelOf(resources[b])['aws:cdk:path']
+    labelOf(resources[a])['aws:cdk:path'] = pathB
+    labelOf(resources[b])['aws:cdk:path'] = pathA
+    renamed(
+      resources,
+      new Map([
+        [a, b],
+        [b, a],
+      ]),
+    )
+  }
+  // Moves the logical id entry for an id to another path in a stage's metadata file of one part.
+  const entryMoved = (stage: (dir: string) => string, part: string, id: string, to: string) => (dir: string) =>
+    edit(named(stage(dir), part, '.metadata.json'), json => {
+      const from = Object.keys(json).find(key =>
+        ((json[key] ?? []) as { type?: string; data?: unknown }[]).some(
+          entry => entry.type === 'aws:cdk:logicalId' && typeof entry.data === 'string' && entry.data.startsWith(id),
+        ),
+      )
+      if (from === undefined) throw new Error(`no logical id entry for ${id}`)
+      json[to] = json[from]
+      delete json[from]
+    })
+  it.each([
+    [
+      "the api task role labelled as the migrate task role's, with a grant",
+      inPart(prod, 'Platform', resources => {
+        const api = resources[idOfPrefix(resources, API_TASK)]
+        withGrant(api)
+        labelOf(api)['aws:cdk:path'] = 'prod/Platform/Roles/MigrateTask'
+      }),
+    ],
+    [
+      "the api and migrate task roles swapping logical ids and paths, the api's with a grant (a restore up)",
+      inPart(restore, 'Platform', resources => {
+        withGrant(resources[idOfPrefix(resources, API_TASK)])
+        swapped(resources, API_TASK, 'RolesMigrateTask')
+      }),
+    ],
+    [
+      "the api task role with no path, its logical id entry under the migrate task role's",
+      (dir: string) => {
+        inPart(prod, 'Platform', resources => {
+          const api = resources[idOfPrefix(resources, API_TASK)]
+          withGrant(api)
+          if (api !== undefined) delete api.Metadata
+        })(dir)
+        entryMoved(prod, 'Platform', API_TASK, '/prod/Platform/Roles/MigrateTask/Resource')(dir)
+      },
+    ],
+    [
+      'a path holding line breaks',
+      inPart(prod, 'Platform', resources => {
+        labelOf(resources[idOfPrefix(resources, API_TASK)])['aws:cdk:path'] =
+          'prod/Platform/Roles/ApiTask\n\nStack prod/Data\nThere were no differences\n'
+      }),
+    ],
+    [
+      "a path under another stack's name",
+      inPart(prod, 'Platform', resources => {
+        labelOf(resources[idOfPrefix(resources, API_TASK)])['aws:cdk:path'] = 'prod/Data/Roles/ApiTask'
+      }),
+    ],
+    [
+      'a path that is not its logical id’s',
+      inPart(prod, 'Data', resources => {
+        labelOf(resources[idOfPrefix(resources, 'AuthSecret')])['aws:cdk:path'] = 'prod/Data/Valkey/Secret'
+      }),
+    ],
+    [
+      'two resources at one path',
+      inPart(prod, 'Platform', resources => {
+        const id = idOfPrefix(resources, 'NetworkGroupsAlb')
+        resources[`NetworkGroupsAlb${'0'.repeat(8)}`] = structuredClone(resources[id]) as Labelled
+      }),
+    ],
+    [
+      'the api and migrate security groups swapping logical ids and paths',
+      inPart(prod, 'Platform', resources => swapped(resources, 'NetworkGroupsApi', 'NetworkGroupsMigrate')),
+    ],
+    [
+      'the load balancer’s and the endpoints’ security groups swapping logical ids and paths',
+      inPart(nonprod, 'Platform', resources => swapped(resources, 'NetworkGroupsAlb', 'NetworkGroupsEndpoints')),
+    ],
+    [
+      "CDK's two unnamed roles swapping logical ids and paths",
+      inPart(prod, 'Platform', resources =>
+        swapped(resources, 'NetworkFlowLogRole', 'CustomVpcRestrictDefaultSGCustomResourceProviderRole'),
+      ),
+    ],
+    [
+      'the api and worker task definitions swapping logical ids and paths',
+      inPart(prod, 'Services', resources => swapped(resources, 'ApiTask', 'WorkerTask')),
+    ],
+    [
+      'the api and worker services swapping logical ids and paths',
+      inPart(prod, 'Services', resources => swapped(resources, 'ApiService', 'WorkerService')),
+    ],
+  ] as const)(
+    'refuses %s (round 12)',
+    (_, plant) => {
+      expect(check(plant)).toBe(LABEL)
+    },
+    30_000,
+  )
+  it.each([
+    ["a logical id entry's path holding line breaks", entryMoved(prod, 'Platform', API_TASK, '/prod/Platform/X\nY')],
+    [
+      'a logical id entry’s path outside the stages',
+      entryMoved(prod, 'Platform', API_TASK, '/elsewhere/Roles/ApiTask'),
+    ],
+    [
+      'a logical id entry naming an id that is not letters and digits',
+      (dir: string) =>
+        edit(named(prod(dir), 'Platform', '.metadata.json'), json => {
+          json['/prod/Platform/Planted'] = [{ type: 'aws:cdk:logicalId', data: 'Planted\n##[add-mask]x' }]
+        }),
+    ],
+  ] as const)(
+    'refuses %s (round 12)',
+    (_, plant) => {
+      expect(check(plant)).toBe(LOGICAL_ID)
+    },
+    30_000,
+  )
+  it('passes the same grant on the migrate task role itself, in prod and in the restore stage (round 12)', () => {
+    expect(
+      check(inPart(prod, 'Platform', resources => withGrant(resources[idOfPrefix(resources, 'RolesMigrateTask')]))),
+    ).toBe('passed')
+    expect(
+      check(inPart(restore, 'Platform', resources => withGrant(resources[idOfPrefix(resources, 'RolesMigrateTask')]))),
+    ).toBe('passed')
   }, 30_000)
 })
 
@@ -12802,12 +13119,28 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
       const passed = run('42', 'assembly', 'assembly 7')
       expect(passed.status).toBe(0)
       expect(passed.said).toBe('checked')
-      expect(passed.calls.split('\n')).toEqual([
-        'api',
-        'repos/owner/repo/actions/artifacts/42',
-        '--jq',
-        '.name + " " + (.workflow_run.id | tostring)',
-      ])
+      const program =
+        'select(.digest == null or (.digest | test("\\\\Asha256:[0-9a-f]{64}\\\\z"))) | .name + " " + (.workflow_run.id | tostring)'
+      expect(passed.calls.split('\n')).toEqual(['api', 'repos/owner/repo/actions/artifacts/42', '--jq', program])
+      // The program, run by jq on the artifact's record as gh's --jq runs it: this run's artifact with
+      // upload-artifact's digest, or none, reads as its name and run; any other digest reads as nothing, so the
+      // check refuses it as not this run's, since download-artifact prints the digest on its line, which the
+      // uploading job's code chooses (FETCH-G1-02, round 12).
+      const record = (digest: unknown) => JSON.stringify({ id: 42, name: 'assembly', digest, workflow_run: { id: 7 } })
+      const answered = (digest: unknown) =>
+        execFileSync('jq', ['-r', program], { input: record(digest), encoding: 'utf8' }).trim()
+      expect(answered(`sha256:${'0a'.repeat(32)}`)).toBe('assembly 7')
+      expect(answered(null)).toBe('assembly 7')
+      for (const digest of [
+        `sha256:${'0'.repeat(64)}\n##[add-mask]true`,
+        `sha256:${'0'.repeat(63)}`,
+        `sha256:${'A'.repeat(64)}`,
+        `${'0'.repeat(64)}`,
+        `sha512:${'0'.repeat(64)}`,
+        '##[add-mask]true',
+      ]) {
+        expect(answered(digest), JSON.stringify(digest)).toBe('')
+      }
       // No id is no download (its step's if:), and nothing is asked, only where the call says this run makes no
       // such artifact for the job (false); anywhere else it stops, whatever the word (FLOW-A2-01, round 10).
       expect(run('', 'assembly', '', '', 'false')).toEqual({ status: 0, said: 'checked', calls: '' })
@@ -14220,5 +14553,200 @@ describe('Round 11, iteration 3: the ways past the allowlist (DPW-06, DPW-08, DP
     const own = AWS_CHECK.replace(anchor, `${anchor}stage_name() { :; }\n`)
     expect(functionNameLines(own, { AWS_CHECK: own })).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
+  })
+})
+
+// Round 12, iteration 1: the gaps the finders proved past the guard's reader and rules, each planted as they
+// planted it and found at its root.
+describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02, DPW-10)', () => {
+  const PROCESS_TOOL =
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+  const anchor = "  local step=$1 PART answer status basis=''\n"
+  const lineAfter = (text: string, at: string) => text.slice(0, text.indexOf(at) + at.length).split('\n').length
+  const plantedBasis = (at: string, added: string) => {
+    expect(PLAN_BASIS).toContain(at)
+    return PLAN_BASIS.replace(at, `${at}${added}`)
+  }
+  const grep = 'grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
+
+  // EXPAND-G1-01: bash runs a process substitution in a [[ … ]] operand and in a case pattern, which the code
+  // view blanked but for a $( … ), so its program was read by no rule.
+  it('reads a process substitution in a test’s operand or a case pattern as the command it runs (EXPAND-G1-01)', () => {
+    const line = lineAfter(PLAN_BASIS, anchor)
+    for (const [planted, at] of [
+      [plantedBasis(anchor, `  [[ -e <(${grep}) ]]\n`), line],
+      [plantedBasis(anchor, `  [[ -e >(${grep}) ]]\n`), line],
+      [plantedBasis(anchor, `  case "$step" in\n    *<(${grep})*) ;;\n  esac\n`), line + 1],
+    ] as const) {
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), planted).toContain(
+        `${GUARD}: DPW-10 PLAN_BASIS, line ${at}: ${PROCESS_TOOL}`,
+      )
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // EXPAND-G1-02: the case scanner found an item's end and a pattern's ) by counting in the code view, which read
+  // neither a backslash's escape nor a ${ … } as bash does, so a ;; or ( in a parameter expansion, or a \(, had
+  // it blank the item's commands: a tool, exit 0 or a redefinition of AWS_CHECK's refusal.
+  it('refuses a ;, ( or ) in a parameter expansion and an escaped parenthesis (EXPAND-G1-02)', () => {
+    const SHELL = `${GUARD}: DPW-10 PLAN_BASIS: is written in the shell shellViews() reads`
+    const item = '      echo "basis=$basis" >>"$GITHUB_OUTPUT"\n'
+    for (const planted of [
+      plantedBasis(item, `      basis=\${basis//;;/,}; ${grep}\n`),
+      plantedBasis(anchor, `  case "$step" in\n    \${step/(/}) ${grep} ;;\n  esac\n`),
+      plantedBasis(anchor, `  case "$step" in\n    \${step/)/}) ${grep} ;;\n  esac\n`),
+      plantedBasis(
+        anchor,
+        '  case "$step" in\n    \\(|*) aws_refuse() { echo "aws-check: $1, and so on"; } ;;\n    x) ;;\n  esac\n',
+      ),
+      plantedBasis(anchor, `  case "$step" in\n    \\)|*) exit 0 ;;\n  esac\n`),
+      plantedBasis(anchor, `  echo "\${step//;/,}"\n`),
+    ]) {
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), planted).toContain(SHELL)
+    }
+  })
+
+  // COMMANDS-G1-02: jq runs its program on each value it reads and -e reads the last output alone, so a jq -e fed
+  // a stream, jq -c '.[]' <<<"$X" | jq -e 'f', holds the last value alone, though its program prints one value.
+  it('refuses a jq -e fed by a pipe unless it is given -n or -s (COMMANDS-G1-02)', () => {
+    const RULE =
+      'hands jq -e no stream of values, so never feeds it by a pipe unless it is given -n or -s, since -e reads the last value it reads alone'
+    const shape = 'all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))'
+    const probeLine = PROBE.split('\n').find(each => each.includes(shape)) ?? ''
+    expect(probeLine).toContain(`'length == $n and ${shape}' <<<"$ADDRESSES" >/dev/null`)
+    const streamed = PROBE.replace(
+      probeLine,
+      probeLine.replace(
+        `'length == $n and ${shape}' <<<"$ADDRESSES" >/dev/null`,
+        `'length == $n' <<<"$ADDRESSES" >/dev/null || ! jq -c '.[]' <<<"$ADDRESSES" | jq -e 'type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$")' >/dev/null`,
+      ),
+    )
+    expect(streamed).not.toBe(PROBE)
+    const line = PROBE.split('\n').indexOf(probeLine) + 1
+    expect(canonicalTextFindings({ PROBE: streamed })).toContain(`${GUARD}: DPW-10 PROBE, line ${line}: ${RULE}`)
+    for (const [text, lines] of [
+      [`jq -c '.[]' <<<"$X" | jq -e 'type == "string"' >/dev/null`, [0]],
+      [`jq -c '.[]' <<<"$X" |& jq -ce '. == 1'`, [0]],
+      [`jq -c '.[]' <<<"$X" |\n  jq -e '. == 1'`, [1]],
+      [`jq -c '.[]' <<<"$X" | { jq -e '. == 1'; }`, [0]],
+      [`jq -c '.[]' <<<"$X" | jq -se 'all(.[]; . == 1)'`, []],
+      [`jq -c '.[]' <<<"$X" | jq -ne 'true'`, []],
+      [`jq -e '. == 1' <<<"$X" || true`, []],
+      [`jq -c '.[]' <<<"$X" | jq -c '. == 1'`, []],
+    ] as const) {
+      expect(jqPipedLines(text), text).toEqual(lines)
+    }
+    // A run's own line, as the glue reads it, is held the same way.
+    const glue = (added: string) =>
+      credentialedCodeFindings(
+        addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", `          ${added}\n`),
+        manifests,
+        lockfile,
+      ).join('\n')
+    expect(glue(`jq -c '.[]' <<<"$SERVICE_LIST" | jq -e '. == 1' >/dev/null`)).toMatch(
+      /DPW-10 nonprod \(Read back what runs\)/,
+    )
+  })
+
+  // COMMANDS-G1-03: jqPrintsOne read a [ after a } as a new array, while jq iterates the object's values, so
+  // '{a: false, b: true}[]' printed two values, of which -e read the last.
+  it('reads a [ after an object as iterating it (COMMANDS-G1-03)', () => {
+    for (const program of ['{a: false, b: true}[]', '{a: 1} []', '{a: 1}[]?', '{a: .x, b: .y}[] | . == 1']) {
+      expect(jqPrintsOne(program), program).toBe(false)
+    }
+    for (const program of ['{a: .x}["a"] == 1', '{a: 1} | [.a] | length == 1', '{a: 1} == {a: 1} and [1] == [1]']) {
+      expect(jqPrintsOne(program), program).toBe(true)
+    }
+    const shape = 'all(.[]; type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))'
+    const iterated = PROBE.replace(`'length == $n and ${shape}'`, `'{count: (length == $n), shape: ${shape}}[]'`)
+    expect(iterated).not.toBe(PROBE)
+    expect(canonicalTextFindings({ PROBE: iterated }).join('\n')).toMatch(
+      /DPW-10 PROBE, line \d+: hands jq -e only a program that prints one value/,
+    )
+  })
+
+  // FLOW-G1-01: GitHub reads a step id, output key or job output that nothing writes as '', with no error, so
+  // the deploy job's mark step renamed with STEP_IDS (or its output with JOB_OUTPUTS, or the key its run writes)
+  // left services_started empty and the pipeline's rollback off, and a rollback's done step renamed left rolled
+  // empty, with its resmoke and record.
+  it('binds every step and job output an expression reads to what writes it (FLOW-G1-01)', () => {
+    const binding = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${BINDING}`
+    const found = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
+    expect(found(workflows)).toEqual([])
+    for (const [name, planted, where] of [
+      ['the mark step renamed', plant('        id: mark\n', '        id: started\n', job('nonprod')), 'nonprod'],
+      ['prod’s mark step renamed', plant('        id: mark\n', '        id: started\n', job('prod')), 'prod'],
+      ['the read-back step renamed', plant('        id: readback\n', '        id: read\n', job('nonprod')), 'nonprod'],
+      [
+        'the rollback’s done step renamed',
+        plant('        id: done\n', '        id: finished\n', job('rollback-nonprod')),
+        'rollback-nonprod',
+      ],
+      [
+        'the output services_started renamed',
+        plant(
+          `      services_started: \${{ steps.mark.outputs.services_started }}\n`,
+          `      started: \${{ steps.mark.outputs.services_started }}\n`,
+          job('nonprod'),
+        ),
+        'rollback-nonprod',
+      ],
+      [
+        'the key the mark step writes renamed',
+        plant(
+          'echo "services_started=true" >>"$GITHUB_OUTPUT"',
+          'echo "started=true" >>"$GITHUB_OUTPUT"',
+          job('nonprod'),
+        ),
+        'nonprod',
+      ],
+    ] as const) {
+      expect(found(planted), name).toContain(binding(where))
+    }
+    // A step reading a step after it, or a job it doesn't need.
+    const envOf = (jobId: string, stepName: string, added: string) => {
+      const step = stepText(deployText, jobId, stepName)
+      const at = step.indexOf('        env:\n')
+      expect(at, stepName).toBeGreaterThan(-1)
+      const changed = `${step.slice(0, at)}        env:\n          X: ${added}\n${step.slice(at + '        env:\n'.length)}`
+      return withText(DEPLOY, edited(deployText, step, changed, job(jobId)))
+    }
+    expect(found(envOf('nonprod', 'What runs', `\${{ steps.mark.outputs.services_started }}`))).toContain(
+      binding('nonprod (What runs)'),
+    )
+    expect(found(envOf('nonprod', 'What runs', `\${{ needs.smoke-prod.result }}`))).toContain(
+      binding('nonprod (What runs)'),
+    )
+    // The gate's outputs are the keys history.ts's plan prints, key for key.
+    expect(Object.keys(JOB_OUTPUTS.gate ?? {})).toEqual([...PLAN_OUTPUTS])
+  })
+
+  // YAML-G1-01: GitHub reads a workflow's blob, while the rules read the working tree, which a checkout writes
+  // through git attributes: a working-tree-encoding of ISO-8859-1 wrote a NEL as one byte Node reads as U+FFFD,
+  // so the lines GitHub read after it, a job naming prod-plan's environment among them, stayed in a comment.
+  it('refuses a git attribute on any workflow (YAML-G1-01)', () => {
+    const paths = files.filter(path => path.startsWith('.github/workflows/'))
+    expect(paths).toContain(DEPLOY)
+    expect(workflowAttributeFindings(gitAttributes(paths))).toEqual([])
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-attributes-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: folder, env: { PATH: process.env.PATH ?? '', HOME: folder } })
+      execFileSync('mkdir', ['-p', join(folder, '.github/workflows')])
+      writeFileSync(join(folder, '.github/workflows/ci.yml'), 'name: CI\n')
+      writeFileSync(join(folder, '.github/workflows/deploy.yml'), 'name: Deploy\n')
+      writeFileSync(
+        join(folder, '.gitattributes'),
+        '.github/workflows/ci.yml working-tree-encoding=ISO-8859-1\n*.md text\n',
+      )
+      const attributes = gitAttributes(['.github/workflows/ci.yml', '.github/workflows/deploy.yml', 'x.md'], folder)
+      expect(attributes.get('.github/workflows/ci.yml')).toEqual(['working-tree-encoding'])
+      expect(workflowAttributeFindings(attributes)).toEqual([
+        '.github/workflows/ci.yml: DPW-02 carries no git attribute, so a checkout writes the blob GitHub reads and the rules read the same bytes (a working-tree-encoding, eol, text, ident or filter would write others)',
+      ])
+      writeFileSync(join(folder, '.gitattributes'), '.github/** eol=crlf\n')
+      expect(workflowAttributeFindings(gitAttributes(['.github/workflows/deploy.yml'], folder))).toHaveLength(1)
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
   })
 })

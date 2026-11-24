@@ -14,7 +14,7 @@ import {
   type WorkloadRun,
   type WorkloadStage,
 } from '../workload/stage.ts'
-import { type Synthesised, synthesise, testApp } from './synth.ts'
+import { CLI_METADATA, type Synthesised, synthesise, testApp } from './synth.ts'
 
 export interface WorkloadSynth {
   synthesised: Synthesised
@@ -27,12 +27,15 @@ export interface WorkloadSynth {
 export interface WorkloadSynthOptions {
   run?: Partial<WorkloadRun>
   profiles?: WorkloadOptions['profiles']
+  // The CLI's path and asset metadata (CLI_METADATA), as cdk synth writes them, which the pipeline's asset
+  // check reads.
+  cliMetadata?: boolean
 }
 
 let committed: WorkloadSynth | undefined
 
 function build(options: WorkloadSynthOptions): WorkloadSynth {
-  const app = testApp()
+  const app = testApp(options.cliMetadata === true ? { ...CLI_METADATA } : {})
   const run: WorkloadRun = { release: fakeRelease(), restoreActive: false, drill: false, ...options.run }
   const stages = addWorkload(app, run, options.profiles === undefined ? {} : { profiles: options.profiles })
   const synthesised = synthesise(app)

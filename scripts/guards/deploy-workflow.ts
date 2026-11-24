@@ -40,9 +40,10 @@
 // build's image archive) hides a line of the log or the approver's diff or drops a job output, and no line of
 // any run or canonical text but STOP_COMMANDS's two names the token that would resume them; before any download,
 // each such job holds every artifact id it downloads, another job's output, to one number naming this run's
-// artifact under the name its upload gives it (ARTIFACT_NAMES), since download-artifact prints that name in an
-// action's step, which no stop-commands reaches, so no job's code names an artifact ##[add-mask] or the like and
-// drops services_started with it, and holds an empty id to the gate's word that this run makes no such artifact
+// artifact under the name its upload gives it, with a digest of upload-artifact's shape or none (ARTIFACT_NAMES),
+// since download-artifact prints that name and the digest the upload recorded (which the uploading job's code
+// chooses) in an action's step, which no stop-commands reaches, so no job's code names an artifact, or records a
+// digest, ##[add-mask] or the like and drops services_started with it, and holds an empty id to the gate's word that this run makes no such artifact
 // for the job (DUE_ENVS), so no job's code skips a download, and the checks and the diff that read it, by
 // leaving its id empty; prod-plan
 // diffs what every approval in prod deploys, against the stage as it read it first (PLAN_BASIS: each stack's status
@@ -91,7 +92,13 @@
 // network perimeter, a tag's key, and each stack's outputs, which the one-offs, the release checks and the
 // read-back read) to the synth's shape, since the stage's own code that writes them is rendered only for a real
 // release and the diff prints an added resource as one line (a container's environment, command and health check
-// stay the release's own, as its image is).
+// stay the release's own, as its image is). And it holds the label the diff names each resource by, its
+// construct path (or an artifact's logical id entry), never its logical id or name, in its resource lines and its
+// IAM and security group tables: every path is under its stack, of plain construct ids (no line break), unique,
+// its logical id's but for CDK's hash, and a role, security group, task definition or service carries the path
+// its name, or what names it, gives it, so no release shows a grant on the api task role as one on the migrate
+// task role's, or swaps two roles' ids and paths so the diff of a restore up or prod's first deploy reads byte
+// for byte as an honest release's (round 12).
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -132,7 +139,11 @@
 // action step's with: is the guard's, whole (STEP_WITHS: no checkout but the three synths' names a ref or a
 // path, one to a job, each its own commit into its own folder, and no job checks out two commits, so no
 // runner that synthesises or reads an assembly runs a second commit's code), every step's id is the guard's
-// (STEP_IDS), so no step of its own answers for a pinned step's outputs, and so are
+// (STEP_IDS), so no step of its own answers for a pinned step's outputs, and every steps.<id> and needs.<job>
+// an expression reads is bound to what writes it (bindingFindings(): a step of the job, before a step that reads
+// it, writing the key, and a job the reader needs, its result or one of its outputs), since GitHub reads any other
+// as '' with no error, so a step's id, a job's output or a run's key renamed with the table that pins it can't
+// leave services_started or rolled empty and the pipeline's rollback off (round 12), and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
@@ -173,7 +184,11 @@
 // line, never a mapping, whose deployment: false would have GitHub record no deployment for the job; and every
 // workflow is at most 500,000 bytes (workflowSizeFindings()), since GitHub starts no run of a workflow file over
 // 500 KB: deploy.yml is over it as committed, so no run of it starts until the owner's change to its structure
-// (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. A
+// (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. GitHub reads a workflow's blob as
+// git holds it, and the rules read the working tree, so no workflow carries a git attribute
+// (workflowAttributeFindings(): a working-tree-encoding wrote a NEL, which GitHub breaks a line at, as a byte the
+// rules read as U+FFFD, hiding every line after it in a comment; eol, text, ident and filter rewrite it too), and
+// the rules read the bytes GitHub reads (round 12). A
 // canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
 // paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
 // line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
@@ -240,18 +255,26 @@
 // (jqPrintsOne()), since -e takes jq's status from the last value alone: a check over each entry written X[] | f,
 // jq's usual idiom, reads in a diff as all(X[]; f) but holds the last entry alone, so outside what all, any,
 // first, map or an array it builds collects, a program iterates nothing, writes no comma between values and names
-// only JQ_ONE_NAMES and its own definitions that hold to the same; DPW-14's cases also plant each per-entry
-// breakage in an entry that isn't its list's last, and run ASSET_CHECK over the real builds with a jq that notes
-// any -e call printing other than one value.
+// only JQ_ONE_NAMES and its own definitions that hold to the same (a [ after an object's } iterates it, so
+// {a: X, b: Y}[] prints two); DPW-14's cases also plant each per-entry breakage in an entry that isn't its
+// list's last, and run ASSET_CHECK over the real builds with a jq that notes any -e call printing other than one
+// value. jq also runs its program once for each value it reads, so a jq -e fed a stream holds its last value
+// alone whatever its program prints: no jq -e is fed by a pipe unless it is given -n or -s (JQ_PIPED_RULE,
+// jq -c '.[]' <<<"$X" | jq -e 'f' among them; round 12). A here-string or a file holding several JSON texts is
+// read the same way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or
+// an earlier jq, a variable built of several (by += or from jq -c '.[]') being the owner's read's to catch, and
+// their files are an assembly's, which the CLI parses as one JSON text each.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
-// command substitutions, a test's operands and a case's patterns) and reads through what comes before a
+// command substitutions, a test's operands and a case's patterns, outside the command and process substitutions
+// in them, which bash runs there too: round 12) and reads through what comes before a
 // command (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids
 // as a command is found where bash would run it and not where it is a jq path, a message or a URL, and a
 // group's { where a command starts is read as the keywords are, so the group's first command is read as the
 // command it is (true || { tar …; } hid its tar as the tail of a command named {), and an unquoted ${ … } closes
 // at the first } bash closes it at, a bare { inside it opening nothing (${mode:-{})} closed a brace late and
-// read a command after it as quoted text); the
+// read a command after it as quoted text), and a ${ … } holding a ;, ( or ), or an unquoted \( or \), is no
+// shape it reads, since its case scanner counts those to find an item's end and a pattern's ) (round 12); the
 // words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
@@ -441,7 +464,8 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
 # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
 # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-# them); a container image asset, or a
+# them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+# letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
 # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
 # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
 # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -547,7 +571,15 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
 # value as the file it names. What a container is handed beside
 # these (its environment, command, health check and user) is the release's own, as the image is, held to
-# its keys alone. Then it requires every Services template's Release output to be the release this job
+# its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+# resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+# groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+# digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+# Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+# and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+# function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+# family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+# another's label. Then it requires every Services template's Release output to be the release this job
 # deploys, and every container image in the Tasks and Services templates to be the server image at its
 # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
 # rule, never a path or value from the assembly.
@@ -600,12 +632,16 @@ check_assembly() {
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
     jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+    jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+      asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
       jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a metadata file is not a JSON object of entry lists'
       jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+      jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
     done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -892,6 +928,17 @@ check_release_in() {
         ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
         all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
         asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+        {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+        [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+        all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+        all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+        all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+        all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+        all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+        all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+        all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
@@ -1264,16 +1311,23 @@ one_off_end migrate "$MIGRATE_LINES" "$RUN"`
 
 // The artifacts' names (DPW-10 pins it, and DPW-14 holds each call alone; the ninth review's first attack):
 // before any download in a credentialed job, each artifact id another job's output carries is held to one number
-// naming an artifact of this run under the name its upload gives it, so download-artifact, whose own log no
-// stop-commands reaches, prints that name alone.
+// naming an artifact of this run under the name its upload gives it, and a digest of the shape upload-artifact
+// records (or none), so download-artifact, whose own log no stop-commands reaches, prints that name, the id, a
+// size and that digest alone.
 export const ARTIFACT_NAMES = sh`# The artifacts' names (C11-D61): download-artifact prints each artifact it fetches, by its name, on
 # a line of its own in an action's step, which no stop-commands reaches, and the runner reads a
 # ##[name] anywhere in such a line as a workflow command (add-mask among them, job-wide: it drops
 # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
 # The id each download takes is another job's output, which that job's code can choose, and so the
 # artifact's name, so before any download each id is held to one number naming an artifact of this
-# run under the name its upload gives it; the download then prints that name alone. The id, never a
-# name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+# run under the name its upload gives it. The download's line also prints the id, the size and the
+# digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+# finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+# lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+# artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+# fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+# never a name, is what binds the download to the artifact its job uploaded, which no later job can
+# replace.
 # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
 # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
 # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -1289,7 +1343,7 @@ artifact_named() {
     echo 'artifacts: an artifact id is not one number'
     exit 1
   fi
-  found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+  found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
   if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
     echo "artifacts: artifact $1 is not this run's $2"
     exit 1
@@ -1353,10 +1407,12 @@ export const PULL_CHECKS = sh`set -euo pipefail
 # own required checks read a commit's checks by its sha too, and a re-run, inside that window, of a
 # closed pull request's earlier run at the same commit (which needs the branch pushed back to that
 # commit) can't be told apart.
-# history.ts plan decides; no merged pull request writes pull: null.
+# history.ts plan decides; no merged pull request writes pull: null. PULL keeps only the fields the
+# step reads, never the body its author writes (or anyone who can push to its head, after the merge),
+# since PULL is one argument to jq and Linux refuses one over 128 KiB.
 if [ "$\{MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
 PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
-PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
+PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] | {number, created_at, merged_at, merge_commit_sha, base: {ref: .base.ref}, head: {sha: .head.sha, ref: .head.ref, label: .head.label, repo: {id: .head.repo.id}}} else null end' <<<"$PULLS")
 if [ "$PULL" = null ]; then
   jq -n '{pull: null, base: "", mergeCommit: "", headTree: "", shared: false, check: "", migrations: ""}' >"$RUNNER_TEMP/checks.json"
   exit 0
@@ -2944,7 +3000,10 @@ function readViews(run: string): ShellViews {
   // inside being a literal that opens nothing, and only a nested ${ needing a } of its own; its end (past the
   // brace, or the run's end with none) and its body. Counting a bare { as well closed ${x:-{} a brace after
   // bash, which then read a $( … ) around it as still open and a command after it as quoted text. A body
-  // holding a nested ${ or a substitution is odd (BRACE_ODD), so it is refused whatever its braces.
+  // holding a nested ${ or a substitution is odd (BRACE_ODD), so it is refused whatever its braces, and so is
+  // one holding a ;, ( or ) (round 12): the case scanner counts those in the code view to find an item's end
+  // and a pattern's ), so ${basis//;;/,} in an item, or ${step/(/} in a pattern, had it blank the item's
+  // commands, which bash runs.
   const braceEnd = (i: number) => {
     let depth = 1
     for (let at = i + 2; at < run.length; at++) {
@@ -2957,7 +3016,7 @@ function readViews(run: string): ShellViews {
     }
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
-  const BRACE_ODD = /['"`~]|\$[({]|@[A-Za-z]/
+  const BRACE_ODD = /['"`~;()]|\$[({]|@[A-Za-z]/
   // Whether the ( at an offset (a $(('s inner one) closes with a ) straight before another ), as an arithmetic
   // expansion's does: bash reads $(( … )) as arithmetic only then, and otherwise as $( … ) holding a subshell.
   const arithmeticCloses = (from: number) => {
@@ -3136,14 +3195,16 @@ function readViews(run: string): ShellViews {
   return { text, code, quotedLines, nestedCase, odd }
 }
 
-// Blanks every character of a span but what a $( … ) inside it runs, newlines kept.
+// Blanks every character of a span but what a $( … ), <( … ) or >( … ) inside it runs, newlines kept: bash
+// runs a process substitution in a [[ … ]] operand and in a case pattern as it runs a command substitution
+// there (round 12), so neither hides its command from the rules.
 function keepSubstitutions(span: string): string {
   let out = ''
   let depth = 0
   for (let i = 0; i < span.length; i++) {
     const c = span[i] ?? ''
-    if (depth === 0 && c === '$' && span[i + 1] === '(') {
-      out += '$('
+    if (depth === 0 && (c === '$' || c === '<' || c === '>') && span[i + 1] === '(') {
+      out += `${c}(`
       depth = 1
       i++
     } else if (depth > 0) {
@@ -3542,7 +3603,9 @@ function canonicalLines(run: string): ReadonlySet<number> {
 // ${1:offset}), an assignment to name[…], a compound assignment naming a subscript (a=([i]=1)), and what
 // unplainLines() names (a name handed to read, unset or wait -p, a test of another shape, bash's own
 // evaluating names). The tests pin each canonical text's lines that hold one.
-const ESCAPED_BREAK = /\\(?:[\s#]|$)/m
+// A backslash before a blank, a #, a line's end, or (round 12) a ( or ), which the case scanner, counting
+// parentheses in the code view, would read as a pattern's own, so \(|*) had it blank the item's commands.
+const ESCAPED_BREAK = /\\(?:[\s#()]|$)/m
 // A backslash at a line's end anywhere in a text as written, quoted or not: inside double quotes bash removes
 // it with the line break and joins the two lines into one word, so a $ and a backslash ending one line and
 // (cmd) or {NAME} starting the next run cmd or expand NAME, as outside quotes and in a here-document, while
@@ -3778,7 +3841,7 @@ export function evaluatedLines(run: string): number[] {
     .flatMap((line, n) => (EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n) ? [n] : []))
 }
 // Whether a canonical text is written in the shell shellViews() and shellCommands() read, so the rules read its
-// commands as bash runs them: no unquoted backslash before a blank, a # or a line's end, no case inside a
+// commands as bash runs them: no unquoted backslash before a blank, a #, a ( or ), or a line's end, no case inside a
 // substitution, no command whose word is a substitution's output, none of what shellViews() names odd, no
 // backtick substitution, no here-document, no local or export of a name it builds, and, outside a canonical
 // text standing whole in it, nothing EVALUATED names (a canonical text's own are held by
@@ -4312,7 +4375,9 @@ export function jqPrintsOne(program: string): boolean {
       if (c === '[') {
         const previous = lastCharacter(at)
         const keyword = wordBefore(at)
-        const indexes = /[\w.\])"?]/.test(previous) && !(keyword !== undefined && JQ_TERM_KEYWORDS.has(keyword))
+        // A [ after a term indexes it: a name, a field, a ], ), } or string's end, or ?. A } closes an object, which
+        // {a: X, b: Y}[] iterates (two values; round 12), never a new term.
+        const indexes = /[\w.\])}"?]/.test(previous) && !(keyword !== undefined && JQ_TERM_KEYWORDS.has(keyword))
         at++
         if (indexes && /^\s*\]/.test(program.slice(at)) && !collecting) scope.bad = true
         read(']', collecting || !indexes, false)
@@ -4504,27 +4569,56 @@ export function canonicalToolLines(text: string): number[] {
 const JQ_STATUS_RULE =
   'hands jq -e only a program that prints one value, since -e reads the last alone: outside all, any, first, map and an array it builds, no .[], .., comma, ?// or name but JQ_ONE_NAMES and its own definitions that hold to the same'
 export function jqStatusLines(text: string): number[] {
+  return lineNumbers(jqCalls(text).filter(call => call.status && !jqPrintsOne(call.program)))
+}
+// jq runs its program once for each value it reads and -e takes its status from the last output alone, so a jq -e
+// fed a stream of values reads the last value alone, whatever its program prints for each: printf 'false\ntrue\n'
+// | jq -e . exits 0, and jq -c '.[]' <<<"$X" | jq -e 'f', which reads as every entry holding f, holds the last
+// alone (round 12). So no jq -e a canonical text writes is fed by a pipe, unless it is given -n (it reads no
+// input) or -s (it reads every input as one array). A here-string or a file holding several JSON texts is read
+// the same way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an
+// earlier jq, and their files are an assembly's, which the CLI parses as one JSON text each.
+const JQ_PIPED_RULE =
+  'hands jq -e no stream of values, so never feeds it by a pipe unless it is given -n or -s, since -e reads the last value it reads alone'
+export function jqPipedLines(text: string): number[] {
+  return lineNumbers(jqCalls(text).filter(call => call.status && call.piped && !call.oneInput))
+}
+const lineNumbers = (calls: ReadonlyArray<{ line: number }>) =>
+  [...new Set(calls.map(call => call.line))].sort((a, b) => a - b)
+// Whether the code before a command ends with a pipe that feeds it: a | or |& (never || or >|), then only blanks,
+// a group's { or (, a ! and the keywords a command may follow.
+const PIPED = /(?:^|[^|>])\|&?(?:\s|[{(!]|\b(?:then|do|else|elif|if|while|until|time)\b)*$/
+// Each jq a text calls, as the code view reads it: its line, whether it is given -e, and -n or -s, whether a pipe
+// feeds it, and its program (a single-quoted one unquoted).
+function jqCalls(
+  text: string,
+): Array<{ line: number; status: boolean; oneInput: boolean; piped: boolean; program: string }> {
   const views = shellViews(text)
-  const lines = new Set<number>()
+  const calls: Array<{ line: number; status: boolean; oneInput: boolean; piped: boolean; program: string }> = []
   let offset = 0
   for (const [n, line] of views.code.split('\n').entries()) {
     for (const match of line.matchAll(/(?<![\w$/.{-])jq(?![\w-])/g)) {
-      const words = withoutRedirections(commandWords(views.text, offset + match.index + match[0].length))
+      const at = offset + match.index
+      const words = withoutRedirections(commandWords(views.text, at + match[0].length))
       let i = 0
       let status = false
+      let oneInput = false
       for (; i < words.length; i++) {
         const word = words[i] ?? ''
-        if (JQ_FLAG.test(word)) status ||= word.includes('e')
-        else if (word === '--arg' || word === '--argjson') i += 2
+        if (JQ_FLAG.test(word)) {
+          status ||= word.includes('e')
+          oneInput ||= /[ns]/.test(word)
+        } else if (word === '--arg' || word === '--argjson') i += 2
         else break
       }
       const program = words[i] ?? ''
       const body = /^'[^']*'$/.test(program) ? program.slice(1, -1) : program
-      if (status && !jqPrintsOne(body)) lines.add(n)
+      const piped = PIPED.test(views.code.slice(Math.max(0, at - 200), at))
+      calls.push({ line: n, status, oneInput, piped, program: body })
     }
     offset += line.length + 1
   }
-  return [...lines].sort((a, b) => a - b)
+  return calls
 }
 
 // The lines of a canonical text that set one of FILE_NAMES on a line FILE_NAME_LINES doesn't hold for that text,
@@ -5060,6 +5154,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of jqStatusLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_STATUS_RULE}`)
+    }
+    for (const line of jqPipedLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_PIPED_RULE}`)
     }
     for (const line of fileNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
@@ -6319,6 +6416,24 @@ export function workflowSizeFindings(workflows: Texts): Finding[] {
         path,
         'DPW-02',
         `is at most ${WORKFLOW_BYTES} bytes, since GitHub starts no run of a workflow file over 500 KB`,
+      ),
+    )
+}
+// DPW-02, what the rules read (round 12): GitHub reads a workflow's blob as git holds it, while every rule here
+// reads the working tree, which a checkout writes through the path's git attributes: a working-tree-encoding
+// re-encodes it (a NEL, which GitHub's YAML reader breaks a line at and the character rule refuses, written as
+// one byte Node reads as U+FFFD, so the lines GitHub read after it stayed inside a comment for every rule: a job
+// naming prod-plan's environment among them), and eol, text, ident and filter rewrite it. So no workflow carries
+// a git attribute (git check-attr --all, which reads .gitattributes, $GIT_DIR/info/attributes and
+// core.attributesFile as a checkout does), and the rules read the bytes GitHub reads.
+export function workflowAttributeFindings(attributes: ReadonlyMap<string, readonly string[]>): Finding[] {
+  return [...attributes]
+    .filter(([path, set]) => /^\.github\/workflows\//.test(path) && set.length > 0)
+    .map(([path]) =>
+      at(
+        path,
+        'DPW-02',
+        'carries no git attribute, so a checkout writes the blob GitHub reads and the rules read the same bytes (a working-tree-encoding, eol, text, ident or filter would write others)',
       ),
     )
 }
@@ -8390,8 +8505,9 @@ const programOf = (word: ShellWord | undefined): string | undefined =>
         : undefined
 // jq given its flags, then one program (single-quoted, or . alone) and no file to read; no word of which
 // expands to several ("${NAME[@]}" as an --arg's value hands jq each element as a word, a program among them;
-// the ninth review's second attack).
-function jqIsHeld(args: readonly ShellWord[]): boolean {
+// the ninth review's second attack); and, given -e, a program that prints one value, fed by no pipe unless it is
+// also given -n (JQ_PIPED_RULE, round 12).
+function jqIsHeld(args: readonly ShellWord[], piped = false): boolean {
   if (args.some(manyWords)) return false
   const given: string[] = []
   let i = 0
@@ -8406,8 +8522,10 @@ function jqIsHeld(args: readonly ShellWord[]): boolean {
   }
   const program = programOf(args[i])
   if (program === undefined || i !== args.length - 1) return false
-  const status = args.slice(0, i).some(arg => JQ_FLAGS.includes(arg.raw) && arg.raw.includes('e'))
-  return jqProgramIsHeld(program, given) && (!status || jqPrintsOne(program))
+  const flags = args.slice(0, i).filter(arg => JQ_FLAGS.includes(arg.raw))
+  const status = flags.some(arg => arg.raw.includes('e'))
+  const noInput = flags.some(arg => arg.raw.includes('n'))
+  return jqProgramIsHeld(program, given) && (!status || (jqPrintsOne(program) && (!piped || noInput)))
 }
 // gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
 // migration record read with a held program.
@@ -8658,7 +8776,7 @@ const wrapped = (command: GlueCommand) => {
   return false
 }
 const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
-  jq: ({ args }) => jqIsHeld(args),
+  jq: ({ args, previous }) => jqIsHeld(args, previous !== undefined),
   gh: ({ args }) => ghIsHeld(args),
   // The step's own files: the pushed digest and prod-plan's diff.
   cat: ({ args }) => argText(args) === '"$RUNNER_TEMP/pushed"' || argText(args) === '"$DIFF"',
@@ -9709,6 +9827,69 @@ const PREAMBLE_CDK_EXPORT = 'export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_V
 const CDK_ENV =
   "names no variable whose name starts with CDK, which the CDK CLI reads as the option the rest of its name spells (CDK_BUILD or CDKBUILD as --build, CDK_PLUGIN or CDKPLUGIN as --plugin), but the preamble's export of its telemetry and version check"
 
+// GitHub reads steps.<id>.outputs.<key> naming no step of its job (or none before the step reading it) or a key
+// that step never writes, and needs.<job>.<property> naming a job the reader doesn't need or an output that job
+// doesn't hand on, as an empty string, with no error (its contexts reference). So a step's id, a job's output or
+// a run's key renamed with the table that pins it (STEP_IDS, JOB_OUTPUTS, PINNED_RUNS) left every expression that
+// read the old name reading '': the deploy jobs' services_started, and with it the pipeline's rollback, the
+// rollback jobs' rolled, with their resmoke and record, and the read-back (round 12). So in deploy.yml every
+// steps.<id> a job's outputs: reads names a step of that job, and one a step's if:, env: or with: reads a step
+// before it, and for an output one that writes the key (a run holding <key>= itself, the gate's plan and
+// prod-gate's call printing their job's outputs, as history.ts does and its tests hold, and upload-artifact its
+// artifact-id); no other key of a job reads a step; and every needs.<job> names a job in its needs: and that job's
+// result or one of its outputs:.
+const ACTION_OUTPUTS: Readonly<Record<string, readonly string[]>> = { 'actions/upload-artifact': ['artifact-id'] }
+const PRINTED_OUTPUTS: Readonly<Record<string, Readonly<Record<string, () => readonly string[]>>>> = {
+  gate: { plan: () => Object.keys(JOB_OUTPUTS.gate ?? {}) },
+  'prod-gate': { check: () => ['current_prod_id'] },
+}
+const BINDING =
+  "reads steps.<id> only from a step of its job (one before it, for a step) and an output only one that step writes, and needs.<job> only from a job it needs and only its result or outputs, since GitHub reads any other as ''"
+const STEP_READ = /\bsteps\.([\w-]+)(?:\.([\w-]+)(?:\.([\w-]+))?)?/g
+const NEEDS_READ = /\bneeds\.([\w-]+)(?:\.([\w-]+)(?:\.([\w-]+))?)?/g
+const outputKeys = (job: WorkflowJob) => {
+  const value = blockValue(job.keys.get('outputs') ?? [])
+  return isMap(value) ? [...value.keys()] : []
+}
+function bindingFindings(jobs: ReadonlyMap<string, Job>, add: (where: string, rule: string) => void): void {
+  const outputsOf = new Map([...jobs.values()].map(({ id, job }) => [id, outputKeys(job)]))
+  const writes = (jobId: string, step: WorkflowStep, key: string) => {
+    const action = step.uses?.split('@')[0]
+    if (action !== undefined) return ACTION_OUTPUTS[action]?.includes(key) ?? false
+    const printed = PRINTED_OUTPUTS[jobId]?.[step.id ?? '']
+    if (printed !== undefined) return printed().includes(key)
+    return (step.run ?? '').includes(`${key}=`)
+  }
+  for (const { id, job, steps } of jobs.values()) {
+    const needs = jobNeeds(job)
+    const needsHeld = (text: string) =>
+      [...text.matchAll(NEEDS_READ)].every(
+        ([, need = '', property, key]) =>
+          needs.includes(need) &&
+          ((property === 'result' && key === undefined) ||
+            (property === 'outputs' && key !== undefined && (outputsOf.get(need) ?? []).includes(key))),
+      )
+    const stepsHeld = (text: string, before: readonly WorkflowStep[]) =>
+      [...text.matchAll(STEP_READ)].every(([, stepId = '', property, key]) => {
+        const step = before.find(each => each.id === stepId)
+        if (step === undefined) return false
+        if (property === 'outcome' || property === 'conclusion') return key === undefined
+        return property === 'outputs' && key !== undefined && writes(id, step, key)
+      })
+    const uncommented = (lines: readonly string[] | undefined) =>
+      (lines ?? []).filter(line => !/^\s*#/.test(line)).join('\n')
+    for (const key of job.keys.keys()) {
+      if (key === 'steps') continue
+      const text = uncommented(job.keys.get(key))
+      if (!needsHeld(text) || !stepsHeld(text, key === 'outputs' ? steps : [])) add(id, BINDING)
+    }
+    steps.forEach((step, index) => {
+      const read = [step.if ?? '', ...step.env.values(), ...step.with.values()].join('\n')
+      if (!needsHeld(read) || !stepsHeld(read, steps.slice(0, index))) add(`${id} (${label(step, index)})`, BINDING)
+    })
+  }
+}
+
 function shapeOfJobsFindings(text: string, add: (where: string, rule: string) => void): void {
   const top = yamlLines(text).flatMap(line => /^([\w-]+):/.exec(line.text)?.[1] ?? [])
   if (!onceEach(top, TOP_KEYS) || !TOP_KEYS.every(key => top.includes(key))) {
@@ -9939,6 +10120,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
   shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
   const jobs = jobsOf(workflows.get(DEPLOY) ?? '')
+  bindingFindings(jobs, add)
   // Every run of a credentialed job is one PINNED_RUNS pins whole, under its own if:, so none has a line
   // of its own: those it pins under DPW-10 are held here, the rest by the rule each names.
   for (const place of unpinnedRuns(jobs, 'DPW-10')) add(place, PINNED_CREDENTIALED)

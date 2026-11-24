@@ -15,7 +15,8 @@
 # only after its reviewer approves, with the diff before (prod-plan) and main's own CI and the
 # records re-checked (prod-gate, then the prod job's fast re-check). A smoke that fails, or a deploy
 # job that fails once its Services deploy began, starts the pipeline's own rollback to the previous
-# release (the newest record when the gate read them; prod's again behind the reviewer), which deploys
+# release (the newest record when the gate read them, or for a drill-smoke the one that ran before the
+# current commit first did; prod's again behind the reviewer), which deploys
 # nothing unless this run's release still runs, its deploy replaced that release or a later one, and
 # no later commit has pushed an image; its own smoke then decides. Every job after
 # the gate refuses a bot's run or re-run, since a re-run of one job skips the gate (C11-D57). Every
@@ -147,10 +148,12 @@ jobs:
           # own required checks read a commit's checks by its sha too, and a re-run, inside that window, of a
           # closed pull request's earlier run at the same commit (which needs the branch pushed back to that
           # commit) can't be told apart.
-          # history.ts plan decides; no merged pull request writes pull: null.
+          # history.ts plan decides; no merged pull request writes pull: null. PULL keeps only the fields the
+          # step reads, never the body its author writes (or anyone who can push to its head, after the merge),
+          # since PULL is one argument to jq and Linux refuses one over 128 KiB.
           if [ "${MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
           PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
-          PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
+          PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] | {number, created_at, merged_at, merge_commit_sha, base: {ref: .base.ref}, head: {sha: .head.sha, ref: .head.ref, label: .head.label, repo: {id: .head.repo.id}}} else null end' <<<"$PULLS")
           if [ "$PULL" = null ]; then
             jq -n '{pull: null, base: "", mergeCommit: "", headTree: "", shared: false, check: "", migrations: ""}' >"$RUNNER_TEMP/checks.json"
             exit 0
@@ -428,7 +431,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -534,7 +538,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -587,12 +599,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -879,6 +895,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -971,7 +998,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -1077,7 +1105,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -1130,12 +1166,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -1422,6 +1462,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -1515,7 +1566,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -1621,7 +1673,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -1674,12 +1734,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -1966,6 +2030,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -2079,8 +2154,14 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. The id, never a
-          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # run under the name its upload gives it. The download's line also prints the id, the size and the
+          # digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+          # finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+          # lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+          # artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+          # fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+          # never a name, is what binds the download to the artifact its job uploaded, which no later job can
+          # replace.
           # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
           # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
           # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -2096,7 +2177,7 @@ jobs:
               echo 'artifacts: an artifact id is not one number'
               exit 1
             fi
-            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
             if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
               echo "artifacts: artifact $1 is not this run's $2"
               exit 1
@@ -2179,7 +2260,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -2285,7 +2367,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -2338,12 +2428,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -2630,6 +2724,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -3653,8 +3758,14 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. The id, never a
-          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # run under the name its upload gives it. The download's line also prints the id, the size and the
+          # digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+          # finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+          # lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+          # artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+          # fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+          # never a name, is what binds the download to the artifact its job uploaded, which no later job can
+          # replace.
           # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
           # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
           # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -3670,7 +3781,7 @@ jobs:
               echo 'artifacts: an artifact id is not one number'
               exit 1
             fi
-            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
             if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
               echo "artifacts: artifact $1 is not this run's $2"
               exit 1
@@ -3704,7 +3815,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -3810,7 +3922,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -3863,12 +3983,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -4155,6 +4279,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -4924,8 +5059,14 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. The id, never a
-          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # run under the name its upload gives it. The download's line also prints the id, the size and the
+          # digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+          # finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+          # lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+          # artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+          # fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+          # never a name, is what binds the download to the artifact its job uploaded, which no later job can
+          # replace.
           # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
           # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
           # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -4941,7 +5082,7 @@ jobs:
               echo 'artifacts: an artifact id is not one number'
               exit 1
             fi
-            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
             if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
               echo "artifacts: artifact $1 is not this run's $2"
               exit 1
@@ -4982,7 +5123,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -5088,7 +5230,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -5141,12 +5291,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -5433,6 +5587,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -5472,7 +5637,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -5578,7 +5744,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -5631,12 +5805,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -5923,6 +6101,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -6395,8 +6584,14 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. The id, never a
-          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # run under the name its upload gives it. The download's line also prints the id, the size and the
+          # digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+          # finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+          # lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+          # artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+          # fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+          # never a name, is what binds the download to the artifact its job uploaded, which no later job can
+          # replace.
           # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
           # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
           # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -6412,7 +6607,7 @@ jobs:
               echo 'artifacts: an artifact id is not one number'
               exit 1
             fi
-            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
             if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
               echo "artifacts: artifact $1 is not this run's $2"
               exit 1
@@ -6495,7 +6690,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -6601,7 +6797,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -6654,12 +6858,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -6946,6 +7154,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
@@ -8076,8 +8295,14 @@ jobs:
           # services_started, and with it the pipeline's rollback, and hides words of the approver's diff).
           # The id each download takes is another job's output, which that job's code can choose, and so the
           # artifact's name, so before any download each id is held to one number naming an artifact of this
-          # run under the name its upload gives it; the download then prints that name alone. The id, never a
-          # name, is what binds the download to the artifact its job uploaded, which no later job can replace.
+          # run under the name its upload gives it. The download's line also prints the id, the size and the
+          # digest the upload recorded, which the uploading job's code chooses as it chooses the name (its
+          # finalize call sends the digest it computed), so the artifact's digest is held to sha256 and 64
+          # lower-case hex digits, as upload-artifact writes it, or none; a planted one reads as not this run's
+          # artifact. The line then holds the name, numbers and that digest alone (and download-artifact
+          # fails its step when the digest isn't the bytes' it fetched, before any later step runs). The id,
+          # never a name, is what binds the download to the artifact its job uploaded, which no later job can
+          # replace.
           # An empty id is no download (its step's if:), and so no check or diff of what it would hold, and
           # the code of the job that makes the artifact can leave it empty (its upload replaced on disk), so
           # an empty id passes only where the call's third word is false, which its step's env sets from the
@@ -8093,7 +8318,7 @@ jobs:
               echo 'artifacts: an artifact id is not one number'
               exit 1
             fi
-            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq '.name + " " + (.workflow_run.id | tostring)')
+            found=$(gh api "repos/$REPO/actions/artifacts/$1" --jq 'select(.digest == null or (.digest | test("\\Asha256:[0-9a-f]{64}\\z"))) | .name + " " + (.workflow_run.id | tostring)')
             if [ "$found" != "$2 $GITHUB_RUN_ID" ]; then
               echo "artifacts: artifact $1 is not this run's $2"
               exit 1
@@ -8127,7 +8352,8 @@ jobs:
           # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
           # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
           # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
-          # them); a container image asset, or a
+          # them); a logical id entry whose path isn't a stage's stack and plain construct ids, or whose id isn't
+          # letters and digits (the diff labels by it what carries no path of its own); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -8233,7 +8459,15 @@ jobs:
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
           # value as the file it names. What a container is handed beside
           # these (its environment, command, health check and user) is the release's own, as the image is, held to
-          # its keys alone. Then it requires every Services template's Release output to be the release this job
+          # its keys alone. It holds each resource's construct path (aws:cdk:path), by which the diff names it in its
+          # resource lines and its IAM and security group tables (each grant's principal and resource, each rule's
+          # groups), never by its name, to the synth's: under its own stage and stack, of plain construct ids (letters,
+          # digits and :, so no line break), unique in its template, and its logical id's (its ids less Default and
+          # Resource, letters and digits alone) but for CDK's 8-hex hash; and a role, security group, task definition
+          # and service to the path what it is gives it: a role's name (CDK's two unnamed roles, the flow log's or the
+          # function's that takes it), the parameter, load balancer or endpoints that name a group, a task definition's
+          # family and a service's name, so no release shows a grant to one role, or a rule on one group, under
+          # another's label. Then it requires every Services template's Release output to be the release this job
           # deploys, and every container image in the Tasks and Services templates to be the server image at its
           # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
           # rule, never a path or value from the assembly.
@@ -8286,12 +8520,16 @@ jobs:
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
               jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+              jq -e '[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/manifest.json" >/dev/null 2>&1 ||
+                asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
                 jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
+                jq -e '[to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))] | all(.[]; (.key | test("\\A/((non)?prod|restore)/(Platform|Data|Tasks|Services)(/[A-Za-z0-9:.-]+)+\\z")) and all(.value[] | select(.type == "aws:cdk:logicalId"); .data | type == "string" and test("\\A[A-Za-z0-9]{1,255}\\z")))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by"
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -8578,6 +8816,17 @@ jobs:
                   ($o | type == "object" and keys == (if $at.part == "Services" then ["Release"] elif $at.part == "Tasks" then ["Cluster", "HasDatabase", "IsolatedSubnets", "MigrateSecurityGroup", "MigrateTaskDefinition", "ProbeSecurityGroup", "ProbeTaskDefinition"] else [] end) and all(.[]; type == "object" and (.Description | type == "string"))) and
                   all($o | to_entries[]; .key as $key | .value.Value | if $key == "Release" then type == "string" and test("\\A[0-9a-f]{40}:sha256:[0-9a-f]{64}\\z") elif $key == "Cluster" then . == "hearth-" + $s elif $key == "HasDatabase" then IN("true", "false") elif $key == "IsolatedSubnets" then type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and .[0] == "," and (.[1] | param("/hearth/" + $s + "/network/isolated-subnets"))) elif $key == "MigrateSecurityGroup" then param("/hearth/" + $s + "/security-group/migrate") elif $key == "ProbeSecurityGroup" then param("/hearth/" + $s + "/security-group/probe") elif $key == "MigrateTaskDefinition" then family("migrate") elif $key == "ProbeTaskDefinition" then family("probe") else false end)' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a stack's outputs aren't the workload's: an output the workload synth never writes for its stack, or a value of another shape, which the one-offs, the release checks and the read-back would read"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
+                  {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
+                  [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+                  all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
+                  all($paths[]; . as $path | ($paths | map(select(. == $path)) | length) == 1) and
+                  all($r | to_entries[]; .key as $id | ("/" + (.value.Metadata["aws:cdk:path"] | gsub("\\A" + $base; "")) + "/" | gsub("/(Default|Resource)(?=/)"; "") | gsub("[^A-Za-z0-9]"; "")) as $l | $l != "" and ($id == $l or ($id | test("\\A" + $l + "[0-9A-F]{8}\\z")))) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::IAM::Role"); .key as $id | {"Fn::GetAtt": [$id, "Arn"]} as $att | (if .value.Properties | has("RoleName") then [.value.Properties.RoleName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)-(?<t>task|exec)\\z") | "Roles/" + $cap[.k] + $cap[.t]] else [($r[] | select(.Type == "AWS::EC2::FlowLog" and .Properties.DeliverLogsPermissionArn == $att) | "Network/FlowLogRole"), ($r[] | select(.Type == "AWS::Lambda::Function" and .Properties.Role == $att) | "Custom::VpcRestrictDefaultSGCustomResourceProvider/Role")] end) as $labels | ($labels | length) > 0 and all($labels[]; . == $labels[0]) and .value.Metadata["aws:cdk:path"] == $base + "/" + $labels[0]) and
+                  all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
+                  all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
+                  all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique, its logical id's but for CDK's hash, and for a role, security group, task definition or service the one its name, or what names it, gives it"
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))

@@ -9,7 +9,9 @@
 // one) to be exactly the pinned commit. A commit that exists only in a fork resolves under the action's name
 // on GitHub but is named by no tag of the action's repository, and an older release's commit isn't its newer
 // version's tag's, so neither passes. Only the two exact refs are read (ls-remote matches a pattern against
-// the tail of a ref's name, so refs/tags/x/v1.0.0 would match too). Reading is tried three times, since the
+// the tail of a ref's name at a /, so it also prints a branch named refs/tags/v1.0.0, as
+// refs/heads/refs/tags/v1.0.0, and a tag x/refs/tags/v1.0.0, either at any commit of the action's own
+// repository). Reading is tried three times, since the
 // network can blip; a pin that differs fails at once. It prints one line per action and exits 1 on any
 // problem.
 //

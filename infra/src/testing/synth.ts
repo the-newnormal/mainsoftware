@@ -16,6 +16,15 @@ export function cdkContext(): Record<string, unknown> {
   return context as Record<string, unknown>
 }
 
+// The context the CLI adds to cdk.json's when cdk.json leaves its pathMetadata and assetMetadata settings
+// be (aws-cdk's contextFromSettings()): each resource's construct path (aws:cdk:path), by which the diff
+// names it and which the pipeline's asset check holds, and the VPC handler's asset path and property. They
+// deploy nothing, and bin/workload.ts under plain Node writes neither, so a test asks for them by name.
+export const CLI_METADATA: Readonly<Record<string, unknown>> = {
+  'aws:cdk:enable-path-metadata': true,
+  'aws:cdk:enable-asset-metadata': true,
+}
+
 // An App as the CLI would make it, plus any context a test adds (a drill's, restoreActive), writing
 // to its own temporary folder. Version reporting is off, as cdk.json's versionReporting sets it.
 export function testApp(context: Record<string, unknown> = {}): cdk.App {
