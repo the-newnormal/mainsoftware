@@ -36,7 +36,10 @@
 // drops services_started with it, and holds an empty id to the gate's word that this run makes no such artifact
 // for the job (DUE_ENVS), so no job's code skips a download, and the checks and the diff that read it, by
 // leaving its id empty; prod-plan
-// diffs what every approval in prod deploys, every deploy passing --no-previous-parameters so each template parameter
+// diffs what every approval in prod deploys, against the stage as it read it first (PLAN_BASIS: each stack's status
+// and last change, none still moving), which prod reads again before anything moves and goes on only while it
+// reads the same, so no rollback or deploy another run made since, recorded or not, deploys under that approval,
+// every deploy passing --no-previous-parameters so each template parameter
 // deploys from the Default that diff shows (an SSM-typed parameter's names a parameter-store entry whose value no diff
 // shows, so ASSET_CHECK holds every one to the workload's own entries and refuses Conditions, Mappings and a brace a
 // dynamic reference could be joined from; an Fn::ImportValue or Fn::GetStackOutput reads another stack's output, another
@@ -52,7 +55,10 @@
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
 // IAM table reads under no principal, and an added resource's properties, which it never prints), holds every role
 // to the keys the workload writes and the account's own boundary, so none attaches a managed policy by its ARN, which
-// the diff lists by that ARN alone and never prints the statements of, holds the one
+// the diff lists by that ARN alone and never prints the statements of, and to inline policies of distinct names, since
+// IAM keeps one document to a name while the diff shows both, holds every metadata entry of the assembly to the
+// types the synth writes and the CLI's three annotations, so no stack tags (which an older CLI hands CloudFormation
+// for every resource of the stack, in no template or diff) and no legacy asset reach the CLI, holds the one
 // custom resource the workload writes, CDK's default security group handler, whose answer its handler decides at
 // deploy time, to a Platform stack, its own function's zip in the staging bucket, that function's properties CDK's
 // own and no others (no layer, environment, network or role elsewhere, so no other account's code runs before the
@@ -135,11 +141,17 @@
 // archive it would unpack itself, writing a member through a link another made (over the CLI, say).
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
-// reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads. A
+// reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads, and names
+// another repository's action (owner/repo@ref), never one of this repository's (./, .\ or $/), whose action.yml
+// no rule reads and no owner's read covers, or a docker:// image (a remote action's own steps are read by no rule
+// either, behind the owner's read of its uses: line); no workflow line ends in a blank, which workflow.ts reads
+// as gone from a block scalar's line of blanks while YAML keeps it; and an environment: is a scalar on its own
+// line, never a mapping, whose deployment: false would have GitHub record no deployment for the job. A
 // canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
 // paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
 // line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
-// joins a $ to the next line's (, { or ((, which the code view writes as quoted text), to evaluating
+// joins a $ to the next line's (, { or ((, which the code view writes as quoted text, and an unquoted $ that ends a
+// brace expansion's alternative, since bash makes {$,}NAME into $NAME before it expands it), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -170,7 +182,8 @@
 // line (each word of jq's that reaches outside it, env and $ENV among them, read wherever jq would, so -env.X, jq's
 // negation of env.X, is one) and, for jq, only data the seven words JQ_FILE_WORDS writes, whose names (dir, file,
 // template and those they're built from) only ASSET_CHECK's own lines set and its loops' own done lines feed
-// (fileNameLines()); printf only a single-quoted format and a plain -v name, never one built from an expansion; aws
+// (fileNameLines()); printf only a single-quoted format whose one conversion is %s (never %n, which sets the
+// variable an argument names) and a plain -v name, never one built from an expansion; aws
 // only the calls and options the workflow uses (never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile or
 // --debug), one value to each option but a list's, so no expansion in a second word hands aws an option, and a value
 // that expands only as one of the words the texts write there (AWS_TEXT_VALUE_WORDS, each from a name a text
@@ -186,8 +199,9 @@
 // text can't widen what it is held to. What a variable a held line names holds is the text's own, set from AWS's
 // answers, the job's env or a literal in every text the guard writes, which a change to the text shows; each name
 // an aws value expands, and each it is read from, is set only on its text's own lines (AWS_NAME_LINES, the
-// guard's literals) and read only in its own loop (awsNameLines()), so a change that sets one from another
-// source, a stack's outputs among them, changes the guard's list as well as the text; a change that drops a
+// guard's literals) and read only in its own loop (awsNameLines()), and a function's argument reaches one only
+// from that function's own calls, each as the guard writes it (AWS_ARGUMENT_CALLS), so a change that sets one from
+// another source, a stack's outputs among them, changes the guard's list as well as the text; a change that drops a
 // value's shape check is the owner's read's to catch.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
@@ -380,8 +394,11 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # nested assembly, the files its manifests name and not file names, and refused for: missing context
 # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
 # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-# underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-# (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+# underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+# workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+# no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+# which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+# them); a container image asset, or a
 # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
 # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
 # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -430,7 +447,9 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
 # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
 # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-# boundary attached as a policy would grant everything it bounds); any symbolic link.
+# boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+# one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+# could stand where the diff shows a Deny); any symbolic link.
 # The release check then holds the one custom resource the workload writes, CDK's
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -528,19 +547,19 @@ check_assembly() {
         asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
       jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-      jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-        asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+      jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+        asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
     jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-    jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-      asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+    jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+      asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
       jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a metadata file is not a JSON object of entry lists'
-      jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-        asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+      jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+        asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
     done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -1521,6 +1540,68 @@ if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
   if [ "$DOWN_STATUS" = 0 ]; then echo "down=$DOWN_READ" >>"$GITHUB_OUTPUT"; fi
 fi`
 
+// What prod-plan diffed (PLAN_BASIS; DPW-08, TECH-SPEC T24 item 20; round 11). An approval in prod was tied to
+// prod-plan's diff only by the attempt and by prod's newest record, which prod-gate reads after prod-plan, so
+// another run's rollback (or deploy, or a change outside the pipeline) that moved prod's stacks after prod-plan
+// diffed them, recorded before prod-gate read or not yet recorded, had prod deploy over a state no line of the
+// approved diff showed: a rolled-back release's Tasks and Services changes went in again unseen. prod-plan now
+// reads each of its stage's four stacks before it diffs, its status and the time of its last change, refusing
+// one still moving, and outputs that read; prod reads the same once it holds its credentials, before it checks,
+// pushes or deploys anything, and goes on only while it reads exactly what prod-plan read. A restore taken down
+// holds its own read (RESTORE_DOWN's PLANNED), so it reads none here.
+export const PLAN_BASIS = sh`# What prod-plan diffed (PLAN_BASIS; DPW-08): each of the stage's four stacks as CloudFormation answers for
+# it, its status and the time of its last change (its last update, or its creation for one never updated), or
+# missing. prod-plan reads it before its diff and outputs it (plan), refusing a stack still moving (every
+# status in progress but REVIEW_IN_PROGRESS, which a create that never ran leaves), whose template its diff
+# would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
+# (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
+# diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
+# never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+plan_basis() {
+  local step=$1 PART answer status basis=''
+  if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
+    return 0
+  fi
+  for PART in Platform Data Tasks Services; do
+    if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
+      case "$answer" in
+        *'does not exist'*)
+          basis="$basis$PART:missing,"
+          continue
+          ;;
+        *)
+          echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1
+          ;;
+      esac
+    fi
+    if ! status=$(jq -er 'select(type == "array" and length == 2 and (.[0] | type == "string" and test("\\A[A-Z_]+\\z")) and (.[1] | type == "string" and test("\\A[0-9][0-9:.TZ+-]*\\z"))) | "\(.[0])@\(.[1])"' <<<"$answer"); then
+      echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+      exit 1
+    fi
+    case "$status" in
+      REVIEW_IN_PROGRESS@*) ;;
+      *_IN_PROGRESS@*)
+        echo "plan-basis: Hearth-$STAGE-$PART is $\{status%%@*}: wait for it to settle, then re-run prod-plan" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        exit 1
+        ;;
+    esac
+    basis="$basis$PART:$status,"
+  done
+  case "$step" in
+    plan)
+      echo "basis=$basis" >>"$GITHUB_OUTPUT"
+      ;;
+    check)
+      if [ "$basis" != "$BASIS" ]; then
+        echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+        exit 1
+      fi
+      echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+      ;;
+  esac
+}`
+
 // The image check (C11-D50, C11-D79, DPW-13): check_image_archive and unpack_image, defined here and called by
 // nonprod's and prod's step that checks and unpacks the downloaded archive, before the credentials action,
 // and check_image_archive by the build on the archive buildx wrote. The archive is written by a job that runs
@@ -1894,17 +1975,20 @@ echo "read-back: Hearth-$STAGE-Services runs $DEPLOYED" | mask | tee -a "$GITHUB
 // text five times longer, so it is cut at 200 KB, under a step summary's 1 MiB.
 export const DIFF_CUT = 204800
 export const DIFF_RUN = sh`${PREAMBLE}
+${PLAN_BASIS}
 # The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
 # read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
 # for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
 # down the stacks it deploys (RESTORE_DOWN_DIFF); into the log, and into the summary cut at 200 KB, both
 # through the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
 # summary it is an indented code block, each line four spaces in and each carriage return a line break, so
-# no line of a release's own text ends the block or opens HTML that hides what follows.
+# no line of a release's own text ends the block or opens HTML that hides what follows. What it diffs against is
+# read first (PLAN_BASIS) and is the job's basis output, which prod holds the stage to.
 ASSEMBLY="$RUNNER_TEMP/assembly"
 DIFF="$RUNNER_TEMP/diff.txt"
 STATUS=0
 ${CDK_FOLDER}
+plan_basis plan
 if [ "$MODE" = rollback ]; then
   {
     ${CDK_DIFF_ROLLBACK}
@@ -2221,8 +2305,12 @@ const checksBefore = (id: string, recheck?: string): Pinned => ({
   "The CLI is the registry's": { run: CLI_CHECK, rule: 'DPW-10' },
   'Mask the account id': { run: MASK_RUN, rule: 'DPW-10' },
 })
+// What runs' run in a deploy job: AWS_CHECK and its call, and in prod PLAN_BASIS before it, whose check comes
+// first, so nothing is checked, pushed or deployed once the stage has changed since prod-plan diffed it.
+export const whatRunsText = (id: string): string =>
+  [PREAMBLE, AWS_CHECK, ...(id === 'prod' ? [PLAN_BASIS] : []), AWS_CHECK_CALLS[id] ?? ''].join('\n')
 const whatRuns = (id: string): Pinned => ({
-  'What runs': { run: [PREAMBLE, AWS_CHECK, AWS_CHECK_CALLS[id] ?? ''].join('\n'), rule: 'DPW-10' },
+  'What runs': { run: whatRunsText(id), rule: 'DPW-10' },
 })
 const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonprod' | 'rollback-prod'): Pinned => {
   const ifOf = (line: string) => CLI_STEP_IF[id]?.[line]
@@ -2857,6 +2945,14 @@ function readViews(run: string): ShellViews {
       keep(c)
       i++
       boundary = false
+    } else if (c === '$' && (next === ',' || next === '}')) {
+      // A $ that ends a brace expansion's alternative: bash expands {$,}NAME to $NAME and NAME before it
+      // expands parameters, so the $ then expands the name after the brace, which no rule here reads as an
+      // expansion (round 11). No text writes one, and nothing else ends an alternative.
+      odd.add('brace')
+      keep(c)
+      i++
+      boundary = false
     } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
       // A substitution ($( … ), $(( … )), <( … ) or >( … )): its frame, whose closing ) goes on as its word.
       keep(c + next)
@@ -3256,6 +3352,7 @@ export const CANONICAL_BY_NAME = (): Readonly<Record<string, string>> => ({
   SMOKE_ATTEMPT,
   RESTORE_DOWN,
   RESTORE_DOWN_DIFF,
+  PLAN_BASIS,
 })
 const CANONICAL_TEXTS = (): readonly string[] => Object.values(CANONICAL_BY_NAME())
 // Each canonical text standing whole in a run, from a line's start to a line's end, with its first line, but
@@ -3971,8 +4068,11 @@ function ghHeld(words: readonly string[]): boolean {
 // to its name (-vNAME, -v"a[…]"), quoted ("-v") or escaped, never a format an expansion gives, each of which
 // bash reads as -v and a name whose subscript it evaluates (the seventh review's second attack), and never a
 // name built from an expansion ("${kind^^}_TD"), which sets a name no rule that reads assignments sees, one
-// the text later evaluates or PATH among them (the seventh review's third attack).
-const PRINTF_FORMAT = /^'[^'-][^']*'$/
+// the text later evaluates or PATH among them (the seventh review's third attack). The format's one conversion
+// is %s (and %% a percent sign), as every canonical text writes it: bash's printf sets the variable an argument
+// names for each %n, a plain name it reads as no assignment, PATH or a held name among them, and the other
+// conversions read numbers, quote or expand escapes, which no text asks of it (round 11).
+const PRINTF_FORMAT = /^'(?!-)(?:[^'%]|%[s%])*'$/
 function printfHeld(words: readonly string[]): boolean {
   if (words[0] === '-v' && !PLAIN_NAME.test(words[1] ?? '')) return false
   const format = words[0] === '-v' ? words[2] : words[0]
@@ -4137,9 +4237,18 @@ function heldNameLines(
 // AWS_CHECK read td from the Services stack's outputs, which a release writes, and a file:// output had aws-cli
 // load the runner's environment and send it to ECS). A text that sets one anywhere else, or feeds its loop from
 // anything else, is refused, whatever its shape check; a new setter joins this list in the same change, which the
-// owner reads as a rule's change.
+// owner reads as a rule's change. Round 11 added the names AWS_CHECK's drift lookup builds "imageDigest=…" from
+// (digests and image), the one-off's placement PROBE hands one_off_end (RUN) and the releases ecr_has is handed
+// (RELEASE and PREVIOUS, the job's env, which no text sets), and holds a function's argument as a root only where
+// the function's own calls, as written, hand it (AWS_ARGUMENT_CALLS), since a digest from a stack's outputs set
+// digests, or handed ecr_has, and reached aws as a shorthand file load (imageTag@=file://…).
 const AWS_NAMES = [
   'td',
+  'image',
+  'digests',
+  'RUN',
+  'RELEASE',
+  'PREVIOUS',
   'out',
   'CLUSTER',
   'outputs',
@@ -4176,6 +4285,11 @@ const AWS_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
   ],
   [sh`*ClusterNotFoundException*) out='{"services": [], "counts": []}' ;;`, 'AWS_CHECK'],
   [sh`while IFS= read -r td; do`, 'AWS_CHECK'],
+  [
+    sh`image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)`,
+    'AWS_CHECK',
+  ],
+  [sh`digests+=("$\{image##*@}")`, 'AWS_CHECK'],
   [sh`local outputs kind definition`, 'TASKS_OUTPUTS'],
   [
     sh`outputs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Tasks" --query 'Stacks[0].Outputs' --output json)`,
@@ -4195,14 +4309,67 @@ const AWS_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
   [sh`mapfile -t TASK_ARNS < <(jq -r '.[]' <<<"$ARNS")`, 'PROBE'],
   [OVERRIDES_JQ, 'PROBE'],
   [NET_JQ.probe, 'PROBE'],
+  [RUN_TASK_PROBE, 'PROBE'],
 ]
 const AWS_NAME_LOOPS = (): ReadonlyArray<readonly [string, string, string]> => [
   [sh`while IFS= read -r td; do`, sh`done < <(jq -r '.services[]' <<<"$out")`, 'AWS_CHECK'],
 ]
+// The functions an aws value reads an argument of (ecr_has's "imageDigest=$2", and one_off_end's third, the
+// placement it reads the task it waits on from), each called in a canonical text only on the lines written here
+// (a credentialed run's own lines call one only as CANONICAL_CALLS writes it), and the lines whose aws value
+// expands a positional parameter, each in its own text, so no other function hands aws an argument and no call
+// hands one a value from elsewhere (round 11).
+const AWS_ARGUMENT_CALLS = (): ReadonlyArray<readonly [string, string, string]> => [
+  [
+    'ecr_has',
+    sh`rollback | drill | restore) ecr_has "$\{RELEASE%%:*}" "$\{RELEASE#*:}" || aws_refuse "ECR holds no image of the release under its commit's tag" ;;`,
+    'AWS_CHECK',
+  ],
+  [
+    'ecr_has',
+    sh`auto) ecr_has "$\{PREVIOUS%%:*}" "$\{PREVIOUS#*:}" || aws_refuse "ECR holds no image of the previous release under its commit's tag" ;;`,
+    'AWS_CHECK',
+  ],
+  ['one_off_end', sh`one_off_end probe "$PROBE_LINES" "$RUN"`, 'PROBE'],
+]
+const AWS_ARGUMENT_LINES = (): ReadonlyArray<readonly [string, string]> => [
+  [
+    sh`tags=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$2" --query 'imageDetails[0].imageTags' --output json) || return 1`,
+    'AWS_CHECK',
+  ],
+]
 const AWS_NAME_RULE =
-  "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
-export const awsNameLines = (text: string, name: string): number[] =>
-  heldNameLines(text, name, AWS_NAMES, AWS_NAME_ASSIGNMENT, AWS_NAME_LINES(), AWS_NAME_LOOPS())
+  "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, which only that function's own calls, as written, hand it, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
+export function awsNameLines(text: string, name: string): number[] {
+  const lines = new Set(heldNameLines(text, name, AWS_NAMES, AWS_NAME_ASSIGNMENT, AWS_NAME_LINES(), AWS_NAME_LOOPS()))
+  const raw = text.split('\n')
+  const lineOf = (n: number) => raw[n]?.trim() ?? ''
+  const calls = AWS_ARGUMENT_CALLS()
+  const called = new Set(calls.map(([fn]) => fn))
+  // Each line's calls of one, less its definitions on that line (shellCommands() reads f() { as a call of f).
+  const counts = new Map<string, { fn: string; line: number; calls: number }>()
+  const at = (fn: string, line: number) => {
+    const key = `${fn} ${line}`
+    const entry = counts.get(key) ?? { fn, line, calls: 0 }
+    counts.set(key, entry)
+    return entry
+  }
+  for (const command of shellCommands(text)) if (called.has(command.word)) at(command.word, command.line).calls++
+  for (const definition of functionDefinitions(text)) {
+    if (called.has(definition.name)) at(definition.name, definition.line).calls--
+  }
+  for (const { fn, line, calls: made } of counts.values()) {
+    const written = calls.some(([each, held, by]) => each === fn && by === name && held === lineOf(line))
+    if (made > 0 && !written) lines.add(line)
+  }
+  // A word an aws value may hold that expands a positional parameter stands only on its held line.
+  const positional = AWS_TEXT_VALUE_WORDS.filter(word => /\$\{?[0-9@*#]/.test(word))
+  const held = new Set(AWS_ARGUMENT_LINES().flatMap(([line, by]) => (by === name ? [line] : [])))
+  raw.forEach((line, n) => {
+    if (positional.some(word => line.includes(word)) && !held.has(lineOf(n))) lines.add(n)
+  })
+  return [...lines].sort((a, b) => a - b)
+}
 
 // The lines of a canonical text on which read is handed no -r or runs without IFS= or IFS=$'\t' before it, or
 // mapfile or readarray is handed no -t (the tenth review's first attack, where a read with no -r in ASSET_CHECK's
@@ -4453,7 +4620,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of canonicalToolLines(text)) {
       found.push(
-        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
       )
     }
     for (const line of fileNameLines(text, name)) {
@@ -5830,8 +5997,27 @@ export function permissionFindings(workflows: Texts): Finding[] {
       })
     }
   }
+  // In every workflow (round 11): a step's action is another repository's, owner/repo[/path]@ref, never one of
+  // this repository's (./, .\ or $/, whose action.yml no rule here reads and no owner's read covers, so its own
+  // checkout could keep the job's token for every later step) or a docker:// image; and no line ends in a blank,
+  // which workflow.ts reads as gone from a block scalar's line of blanks while YAML keeps it.
+  for (const [path, text] of workflows) {
+    for (const job of workflowJobs(text)) {
+      parsedSteps(job).forEach((step, index) => {
+        if (step.uses !== undefined && !REMOTE_ACTION.test(step.uses)) {
+          found.push(at(path, 'DPW-02', `${job.id} (${label(step, index)}): ${REMOTE_ACTION_RULE}`))
+        }
+      })
+    }
+    if (text.split('\n').some(line => /[ \t]$/.test(line))) found.push(at(path, 'DPW-02', 'ends no line in a blank'))
+  }
   return found
 }
+// A step's action as GitHub reads one of another repository (owner/repo, a path in it, then @ and a ref), so never
+// a path in this repository (./, .\ or $/, read from the job's checkout or this commit) or a docker:// image.
+const REMOTE_ACTION = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+(?:\/[^@\s]+)?@[^@\s]+$/
+const REMOTE_ACTION_RULE =
+  "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image"
 // The keys of an ordinary step, every one GitHub reads beside the step kinds (parallel, background, wait,
 // wait-all, cancel), which workflow.ts doesn't read.
 const ORDINARY_STEP_KEYS = [
@@ -6141,7 +6327,7 @@ function concurrencyBlocks(text: string): string[] {
 export const AWS_CHECK_CALLS: Readonly<Record<string, string>> = {
   nonprod: 'case "$MODE" in\n  drill-break | drill-smoke) aws_check drill ;;\n  *) aws_check "$MODE" ;;\nesac',
   'rollback-nonprod': 'aws_check auto',
-  prod: 'if [ "$TARGET" = restore ]; then\n  aws_check restore\nelse\n  aws_check "$MODE"\nfi',
+  prod: 'plan_basis check\nif [ "$TARGET" = restore ]; then\n  aws_check restore\nelse\n  aws_check "$MODE"\nfi',
   'rollback-prod': 'aws_check auto',
 }
 const RELEASE_OUTPUT = expr('steps.release.outputs.release')
@@ -6161,6 +6347,7 @@ const AWS_CHECK_ENV: Readonly<Record<string, Readonly<Record<string, string>>>> 
     TARGET: expr('needs.gate.outputs.target'),
     RESTORE: expr('needs.gate.outputs.restore'),
     FIRST: expr('needs.gate.outputs.first_prod'),
+    BASIS: expr('needs.prod-plan.outputs.basis'),
   },
   'rollback-prod': {
     RELEASE: RELEASE_OUTPUT,
@@ -6390,7 +6577,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
     }
     // AWS_CHECK, right after the credentials, before anything moves.
     const check = steps[credentials + 1]
-    const wantCheck = [PREAMBLE, AWS_CHECK, AWS_CHECK_CALLS[id] ?? ''].join('\n')
+    const wantCheck = whatRunsText(id)
     const moved = steps
       .slice(0, credentials + 2)
       .some(step => step.run !== undefined && /skopeo copy|"\$CDK" deploy/.test(step.run))
@@ -6935,17 +7122,22 @@ export function prodPathFindings(workflows: Texts): Finding[] {
   // A restore taken down is approved against the stacks its diff showed: prod-plan outputs what its Diff step
   // read of each restore stack (down, RESTORE_DOWN_DIFF's), and prod's down step (pinned whole, PLANNED its
   // env) refuses before any deploy unless it reads the same, so no stack another restore created or recreated
-  // since is deployed from a template no diff showed (the eighth review's first attack).
+  // since is deployed from a template no diff showed (the eighth review's first attack). Every other prod
+  // approval is bound the same way (PLAN_BASIS, round 11): prod-plan outputs what its Diff step read of the
+  // stage's four stacks before it diffed (basis), and prod's What runs (pinned whole, BASIS its env) refuses
+  // before it checks, pushes or deploys anything unless it reads the same, so no rollback or deploy that moved
+  // the stage after prod-plan diffed it, recorded or not, is deployed over unseen.
   const planOutputs = blockValue(plan?.job.keys.get('outputs') ?? [])
   if (
     !isMap(planOutputs) ||
-    planOutputs.size !== 2 ||
+    planOutputs.size !== 3 ||
     planOutputs.get('attempt') !== expr('github.run_attempt') ||
-    planOutputs.get('down') !== stepOutput('diff', 'down')
+    planOutputs.get('down') !== stepOutput('diff', 'down') ||
+    planOutputs.get('basis') !== stepOutput('diff', 'basis')
   ) {
     add(
       'prod-plan',
-      "outputs its attempt, which prod's fast re-check holds to its own, and its diff's read of the restore stage, which prod's down holds the stage to, and nothing else",
+      "outputs its attempt, which prod's fast re-check holds to its own, its diff's read of the restore stage, which prod's down holds the stage to, and its read of the stage it diffed, which prod's What runs holds the stage to, and nothing else",
     )
   }
   const takeDown = jobs.get('prod')?.steps.find(step => step.name === 'Take the restore stage down')
@@ -6989,7 +7181,7 @@ export function prodPathFindings(workflows: Texts): Finding[] {
   // design): PINNED_RUNS', AWS_CHECK's step and history.ts prod-gate's.
   const outputRuns = new Set([
     ...Object.values(PINNED_RUNS()).flatMap(pinned => Object.values(pinned).map(each => each.run)),
-    ...Object.values(AWS_CHECK_CALLS).map(call => [PREAMBLE, AWS_CHECK, call].join('\n')),
+    ...Object.keys(AWS_CHECK_CALLS).map(whatRunsText),
     PROD_GATE_CALL,
   ])
   for (const { id, steps } of jobs.values()) {
@@ -7927,6 +8119,7 @@ const CANONICAL_CALLS: ReadonlyMap<string, readonly string[]> = new Map([
   ['artifact_named', [...new Set(Object.values(ARTIFACT_CALLS).flat())]],
   ['one_off_end', ['one_off_end migrate "$MIGRATE_LINES" "$RUN"']],
   ['aws_check', ['aws_check drill', 'aws_check "$MODE"', 'aws_check auto', 'aws_check restore']],
+  ['plan_basis', ['plan_basis plan', 'plan_basis check']],
   ['check_image_archive', ['check_image_archive "$RUNNER_TEMP/image/image.tar"']],
   ['unpack_image', [`unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`]],
   ['check_assembly', ['check_assembly "$RUNNER_TEMP/assembly"', 'check_assembly "$RUNNER_TEMP/assembly-previous"']],
@@ -8162,6 +8355,7 @@ const DEFINING_TEXTS = [
   TASKS_OUTPUTS,
   ONE_OFF,
   NEWEST_RELEASE,
+  PLAN_BASIS,
 ] as const
 const SETTERS = ['read', 'mapfile', 'readarray', 'for', 'select', 'getopts']
 const isSetter = (command: ShellCommand) =>
@@ -8177,6 +8371,7 @@ const SETTER_LINES: ReadonlySet<string> = new Set([
     NEWEST_RELEASE,
     RESTORE_DOWN,
     RESTORE_DOWN_DIFF,
+    PLAN_BASIS,
   ].flatMap(text => {
     const lines = text.split('\n')
     return shellCommands(text)
@@ -8252,6 +8447,7 @@ const ENV_KEYS = [
   'ACTOR',
   'ASSEMBLY_ID',
   'ATTEMPT',
+  'BASIS',
   'BUILD',
   'BUILD_DIGEST',
   'COMMIT',
@@ -8614,7 +8810,11 @@ export const JOB_OUTPUTS: Readonly<Record<string, Readonly<Record<string, string
   'synth-previous-prod': { assembly: stepOutput('previous-prod', 'artifact-id') },
   nonprod: deployOutputs,
   'rollback-nonprod': rollbackOutputs,
-  'prod-plan': { attempt: expr('github.run_attempt'), down: stepOutput('diff', 'down') },
+  'prod-plan': {
+    attempt: expr('github.run_attempt'),
+    down: stepOutput('diff', 'down'),
+    basis: stepOutput('diff', 'basis'),
+  },
   'prod-gate': { current_prod_id: stepOutput('check', 'current_prod_id') },
   prod: deployOutputs,
   'rollback-prod': rollbackOutputs,
@@ -9132,7 +9332,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       if (read.functions.length > 0 || !definitionsAreCanonical(run)) {
         add(
           where,
-          'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does',
+          'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE or PLAN_BASIS) does, as it does',
         )
       }
       if (commands.some(command => isSetter(command) && !SETTER_LINES.has(raw(command)))) {

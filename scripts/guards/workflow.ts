@@ -11,8 +11,9 @@
 // YAML reads as structure (starting with -, ? or : and a blank), a flow item YAML reads otherwise than
 // split at its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other
 // indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
-// lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, and drops its
-// last line break, so literalProblems() names each block scalar folded (>) or given an indentation
+// lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, but a line of blanks
+// alone, which it reads as empty while YAML keeps its blanks past the block's indent (so the deploy-workflow
+// guard refuses a line ending in a blank in every workflow), and drops its last line break, so literalProblems() names each block scalar folded (>) or given an indentation
 // indicator, which YAML reads otherwise, indicatorProblems() each given an indentation indicator alone,
 // and blockScalarProblems() each on a key but run:, whose value GitHub reads with that line
 // break. commentLines() names the YAML comment lines, never a line starting with # inside a block
@@ -230,19 +231,17 @@ export function jobScalar(job: WorkflowJob, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-// The environment a job names: the literal name of a scalar environment: or of its name:, or
-// { expression: true } for anything holding ${{, or { unreadable: true } for any other shape (a flow
-// mapping, a mapping with no literal name).
+// The environment a job names: the literal name of a scalar environment: written on its own line, or
+// { expression: true } for anything holding ${{, or { unreadable: true } for any other shape: a flow mapping,
+// and a block mapping whatever its name:, since its deployment: false has GitHub record no deployment for the
+// job (the deploy history the pipeline's review reads) and its url: adds a link no rule reads.
 export function jobEnvironment(job: WorkflowJob): string | { expression: true } | { unreadable: true } | undefined {
   const lines = job.keys.get('environment')
   if (lines === undefined) return undefined
   if (lines.some(line => !/^\s*#/.test(line) && line.includes('${{'))) return { expression: true }
+  if (lines.filter(line => !isBlankOrComment(line)).length !== 1) return { unreadable: true }
   const value = blockValue(lines)
   if (typeof value === 'string') return value === '' || /^[{[&*]/.test(value) ? { unreadable: true } : value
-  if (value instanceof Map) {
-    const name = value.get('name')
-    return typeof name === 'string' && name !== '' ? name : { unreadable: true }
-  }
   return { unreadable: true }
 }
 

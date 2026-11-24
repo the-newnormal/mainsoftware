@@ -228,6 +228,14 @@ jobs:
         env:
           BASE: origin/${{ github.base_ref }}
         run: scripts/check-migration-order.sh "$BASE"
+      # The CDK CLI's pin never goes below its base branch's (C0.11 PR 4, TECH-SPEC T24 items 20 and 22): each
+      # deploy job runs its own commit's CLI over assemblies older releases' libraries wrote, and a CLI refuses a
+      # schema newer than it reads, so a lowered pin would break a rollback to such a release. It reads the
+      # base's infra/package.json, which needs the whole history this job fetches.
+      - if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE: origin/${{ github.base_ref }}
+        run: node scripts/check-cli-pin.ts "$BASE"
       # Builds a scratch database from every file in db/migrations/ with the migrator production
       # uses, in one transaction, from a session that can only act as hearth_owner, then checks it
       # against CLAUDE.md's Database rules (org_id, RLS, views, grants, functions, ownership, and

@@ -97,6 +97,7 @@ import {
   outsideEvaluations,
   ownLinesSetAnInput,
   PINNED_RUNS,
+  PLAN_BASIS,
   PLAN_CALL,
   PREAMBLE,
   PROBE,
@@ -133,6 +134,7 @@ import {
   timeoutAndGroupFindings,
   triggerFindings,
   unheldRecordLines,
+  whatRunsText,
   wordAsRead,
   wordSplits,
 } from './deploy-workflow.ts'
@@ -415,9 +417,10 @@ describe('DPW: the guard reads the deploy workflow', () => {
     const [a, b, c, d] = workflowJobs(planted)
     if (a === undefined || b === undefined || c === undefined || d === undefined) throw new Error('four jobs')
     expect([jobNeeds(a), jobNeeds(b), jobNeeds(c), jobNeeds(d)]).toEqual([['gate'], ['gate', 'build'], ['gate'], []])
+    // (b's block mapping is unreadable whatever its name, round 11: its deployment: false or url: is no rule's.)
     expect([jobEnvironment(a), jobEnvironment(b), jobEnvironment(c), jobEnvironment(d)]).toEqual([
       'nonprod',
-      'prod',
+      { unreadable: true },
       { expression: true },
       { unreadable: true },
     ])
@@ -963,7 +966,11 @@ describe('DPW-02 (C11-D55): permissions', () => {
     expect(
       permissionFindings(plant(checkout, `      - { uses: actions/checkout@v5 }\n${checkout}`, '', secrets)),
     ).toEqual([shape(secrets)])
-    expect(permissionFindings(plant(checkout, '      - uses: &co actions/checkout@v5\n', '', CI))).toEqual([shape(CI)])
+    // (The anchor is read as part of the action's name, which is no owner/repo@ref either.)
+    expect(permissionFindings(plant(checkout, '      - uses: &co actions/checkout@v5\n', '', CI))).toEqual([
+      shape(CI),
+      `${CI}: DPW-02 audit (step 1): uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image`,
+    ])
     expect(permissionFindings(plant('name: ci\n', 'name: !!str ci\n', '', CI))).toEqual([shape(CI)])
     const check = '  check:\n    needs: [secrets, audit, action-pins]\n'
     expect(
@@ -1044,14 +1051,16 @@ describe('DPW-02 (C11-D55): permissions', () => {
       expect(permissionFindings(plant(from, to, after)), to).toContain(`${DEPLOY}: DPW-02 ${IF}`)
     }
     // Blanks after the expression, or after its comment, are no part of a plain scalar, so GitHub reads the
-    // expression alone, as the guard does, and nothing is refused (the eighth review's GUARDS-03: two
-    // trailing spaces were refused as a string GitHub reads as always true, which it isn't).
+    // expression alone, as the guard does, and the if: rule refuses nothing (the eighth review's GUARDS-03: two
+    // trailing spaces were refused as a string GitHub reads as always true, which it isn't). Since round 11 a
+    // line ending in a blank is refused in every workflow, for what workflow.ts reads of a block scalar's line
+    // of blanks, so that rule alone names these.
     for (const [from, to, after] of [
       [`    if: ${prodIf}\n`, `    if: ${prodIf}  \n`, job('prod')],
       [download, `        if: \${{ needs.synth.outputs.assembly != '' }} \n`, job('nonprod')],
       [download, `        if: \${{ needs.synth.outputs.assembly != '' }}  # the download's  \n`, job('nonprod')],
     ] as const) {
-      expect(permissionFindings(plant(from, to, after)), to).toEqual([])
+      expect(permissionFindings(plant(from, to, after)), to).toEqual([`${DEPLOY}: DPW-02 ends no line in a blank`])
     }
   })
 
@@ -2327,13 +2336,19 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
         mode: 0o755,
       })
       writeFileSync(join(temp, 'summary.md'), '')
+      // (An aws for PLAN_BASIS's read of the stage before the diff, round 11, answering that no stack exists.)
+      execFileSync('mkdir', ['-p', join(temp, 'bin')])
+      writeFileSync(join(temp, 'bin', 'aws'), "#!/bin/sh\necho 'Stack with id x does not exist' >&2\nexit 254\n", {
+        mode: 0o755,
+      })
       const result = spawnSync('bash', ['-c', DIFF_RUN], {
         encoding: 'utf8',
         env: {
-          PATH: process.env.PATH ?? '',
+          PATH: `${join(temp, 'bin')}:${process.env.PATH ?? ''}`,
           HOME: temp,
           RUNNER_TEMP: temp,
           GITHUB_STEP_SUMMARY: join(temp, 'summary.md'),
+          GITHUB_OUTPUT: join(temp, 'output'),
           STAGE: 'prod',
           MODE: 'deploy',
           RESTORE: 'none',
@@ -2591,8 +2606,22 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
   // the approval to prod-plan's attempt and to the record prod-gate read, in every mode.
   it('finds a prod approval not held to prod-plan’s diff of this attempt', () => {
     const PLAN =
-      "outputs its attempt, which prod's fast re-check holds to its own, and its diff's read of the restore stage, which prod's down holds the stage to, and nothing else"
+      "outputs its attempt, which prod's fast re-check holds to its own, its diff's read of the restore stage, which prod's down holds the stage to, and its read of the stage it diffed, which prod's What runs holds the stage to, and nothing else"
     const attempt = `      attempt: \${{ github.run_attempt }}\n`
+    // Round 11: the stage prod-plan diffed (basis, PLAN_BASIS's read) is an output of the Diff step alone, and
+    // prod's What runs reads it as BASIS (pinned with its env, DPW-06).
+    const basis = `      basis: \${{ steps.diff.outputs.basis }}\n`
+    expect(prodPathFindings(plant(basis, '', job('prod-plan')))).toEqual([at('prod-plan', PLAN)])
+    expect(prodPathFindings(plant(basis, `      basis: \${{ steps.diff.outputs.down }}\n`, job('prod-plan')))).toEqual([
+      at('prod-plan', PLAN),
+    ])
+    const BASIS_ENV = `          BASIS: \${{ needs.prod-plan.outputs.basis }}\n`
+    expect(deployStepFindings(plant(BASIS_ENV, '', job('prod'))).join('\n')).toMatch(/DPW-06 prod/)
+    expect(
+      deployStepFindings(
+        plant(BASIS_ENV, `          BASIS: \${{ needs.prod-gate.outputs.current_prod_id }}\n`, job('prod')),
+      ).join('\n'),
+    ).toMatch(/DPW-06 prod/)
     const down = `      down: \${{ steps.diff.outputs.down }}\n`
     expect(prodPathFindings(plant(`    outputs:\n${attempt}${down}`, '', job('prod-plan')))).toEqual([
       at('prod-plan', PLAN),
@@ -3718,7 +3747,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
   const REFUSED = 'passes none of the CLI’s refused flags or subcommands'
   const DEFINES =
-    'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF or NEWEST_RELEASE) does, as it does'
+    'defines a function only where a canonical text (the preamble, IMAGE_CHECK, ASSET_CHECK, ARTIFACT_NAMES, AWS_CHECK, TASKS_OUTPUTS, ONE_OFF, NEWEST_RELEASE or PLAN_BASIS) does, as it does'
   const SETS =
     "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
@@ -7679,7 +7708,9 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   const refused = (rule: string) => `asset-check: ${rule}`
   const RUNS = refused('a file asset runs a command, is packaged otherwise than file or zip, or names no relative path')
   const PLAIN = refused('a manifest names a file that is not a plain name in its own folder')
-  const LEGACY = refused('an artifact carries a legacy asset entry, which the CLI would build or upload')
+  const LEGACY = refused(
+    'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another',
+  )
   const TEMPLATE = refused(
     "a stack's name isn't Hearth- and its stage's id, or the template CloudFormation is handed isn't its own templateFile",
   )
@@ -8597,6 +8628,42 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     )
   }, 30_000)
 
+  // Round 11: the metadata types are an allowlist, the synth's own and the CLI's three annotations, which it
+  // only prints or refuses on. aws-cdk 2.1100.0, an official CLI infra's pin could name, read stack tags from an
+  // artifact's metadata and handed them to CloudFormation for every resource of the stack, in no template or
+  // diff; the pinned CLI no longer reads them, so the refusal can't rest on which CLI runs.
+  it('refuses stack tags and any other metadata type the synth never writes, inline or in a metadata file (round 11)', () => {
+    const TAGS = { type: 'aws:cdk:stack-tags', data: [{ key: 'hearth-role', value: 'migrate' }] }
+    const added = (entry: Record<string, unknown>) => (json: Record<string, unknown>) => {
+      const key = '/nonprod/Services'
+      json[key] = [...((json[key] as unknown[] | undefined) ?? []), entry]
+    }
+    expect(check(dir => edit(named(nonprod(dir), 'Services', '.metadata.json'), added(TAGS)))).toBe(LEGACY)
+    expect(
+      check(dir =>
+        edit(join(prod(dir), 'manifest.json'), json => {
+          for (const artifact of Object.values(artifacts(json)))
+            if (
+              artifact.type === 'aws:cloudformation:stack' &&
+              String(artifact.properties?.stackName).endsWith('-Services')
+            )
+              artifact.metadata = { ...((artifact.metadata as object | undefined) ?? {}), '/prod/Services': [TAGS] }
+        }),
+      ),
+    ).toBe(LEGACY)
+    for (const type of ['aws:cdk:do-not-refactor', 'aws:cdk:asset ', 'AWS:CDK:LOGICALID'])
+      expect(
+        check(dir => edit(named(nonprod(dir), 'Data', '.metadata.json'), added({ type, data: true }))),
+        type,
+      ).toBe(LEGACY)
+    // The CLI's annotations pass: it prints a warning or note, and refuses to deploy a stack with an error.
+    for (const type of ['aws:cdk:info', 'aws:cdk:warning', 'aws:cdk:error'])
+      expect(
+        check(dir => edit(named(nonprod(dir), 'Data', '.metadata.json'), added({ type, data: 'a note' }))),
+        type,
+      ).toBe('passed')
+  }, 30_000)
+
   it('refuses an assembly built for another release', () => {
     const other = `${'e'.repeat(40)}:sha256:${'0'.repeat(64)}`
     expect(
@@ -8937,7 +9004,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // role now holds only the keys the workload writes and the account's own boundary as the synth spells it.
   it('holds every role to the keys the workload writes and the account’s own boundary (INPUTS-A4-01, round 9)', () => {
     const ROLES = refused(
-      "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own",
+      "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both",
     )
     type Resource = { Type?: string; Properties?: Record<string, unknown> }
     const resources = (json: Record<string, unknown>) => (json.Resources ?? {}) as Record<string, Resource>
@@ -9070,7 +9137,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape",
   )
   const OWN_ROLE = refused(
-    "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own",
+    "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both",
   )
   const HANDLER = refused(
     "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
@@ -9954,6 +10021,47 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     },
     30_000,
   )
+
+  // Round 11: IAM keeps one inline document to a policy name (CloudFormation writes each with PutRolePolicy,
+  // which adds or replaces), so a second hearth-task policy holding a grant could stand where the perimeter
+  // was, while the check read the perimeter among the role's statements and the diff's IAM table shows both.
+  // Every role's inline policy names are strings and distinct, compared without case, in every stage.
+  const grant = (name: string) => ({
+    PolicyName: name,
+    PolicyDocument: {
+      Version: '2012-10-17',
+      Statement: [{ Sid: 'Grant', Effect: 'Allow', Action: 's3:GetObject', Resource: '*' }],
+    },
+  })
+  const secondPolicy = (name: unknown, stage: (dir: string) => string = nonprod) =>
+    changed(
+      'AWS::IAM::Role',
+      resource => {
+        const policies = (resource.Properties.Policies as unknown[] | undefined) ?? [grant('hearth-other')]
+        resource.Properties.Policies = [...policies, { ...grant('x'), PolicyName: name }]
+      },
+      API_TASK,
+      stage,
+    )
+  it.each([
+    ['a second hearth-task policy on the api task role', secondPolicy('hearth-task')],
+    [
+      'a second hearth-task policy on the api task role, in the restore stage',
+      secondPolicy('hearth-task', dir => join(dir, 'assembly-restore')),
+    ],
+    ["two policies of one name on prod's api task role", secondPolicy('hearth-other', prod)],
+    ['a second policy whose name differs only in case', secondPolicy('Hearth-Task')],
+    ['a policy name that is not a string', secondPolicy({ 'Fn::Join': ['', ['hearth-', 'task']] })],
+  ] as const)(
+    'refuses %s (round 11)',
+    (_, plant) => {
+      expect(check(plant)).toBe(OWN_ROLE)
+    },
+    30_000,
+  )
+  it('passes a second inline policy of another name (round 11)', () => {
+    expect(check(secondPolicy('hearth-task-extra'))).toBe('passed')
+  }, 30_000)
 })
 
 // The deny rules (C11-D77; T24 item 21; review RULES-01). Claude Code reads a `:*` as a prefix wildcard only
@@ -10058,7 +10166,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const tools = (name: string, line: number) =>
-    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
+    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
 
   // FETCH-A2-01: a held tool's line is held with its environment. An export before CLI_FETCH's tar (or
   // IMAGE_CHECK's) handed tar options from TAR_OPTIONS, a checkpoint action among them, on a line the guard
@@ -10134,6 +10242,22 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     expect(canonicalTextFindings({ X: 'x=$(jq -r .n f.json)\necho hi {a[$x]}>/dev/null' }).join('\n')).toMatch(
       /DPW-10 X, line 2: evaluates/,
     )
+    // Round 11: %n sets the variable its argument names (PATH, or a held name such as STAGE), and the other
+    // conversions are none a text writes; a format of %s, %% and plain text alone passes.
+    for (const text of [
+      'x=1\nprintf \'aws-check: checking %s%n\\n\' "$x" PATH',
+      "x=1\nprintf '%n' STAGE",
+      "x=1\nprintf '%5n' TMOUT",
+      'x=1\nprintf \'%d\\n\' "$x"',
+      'x=1\nprintf \'%b\' "$x"',
+      'x=1\nprintf -v y \'%q\' "$x"',
+      'x=1\nprintf \'% s\' "$x"',
+    ]) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(tools('X', 2))
+    }
+    for (const text of ['x=1\nprintf \'%s\\n\' "$x"', 'x=1\nprintf \'100%% %s\' "$x"', "x=1\nprintf 'go=false\\n'"]) {
+      expect(canonicalTextFindings({ X: text }).join('\n'), text).not.toMatch(/line 2: hands jq/)
+    }
     // TASKS_OUTPUTS planted as the attackers planted it: a revision kept by printf -v joined to its name.
     const anchor = `    definition=$(output "\${kind^}TaskDefinition")\n`
     expect(TASKS_OUTPUTS).toContain(anchor)
@@ -10263,6 +10387,84 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     ])
   })
 
+  // Round 11: an action of this repository (./ after a checkout, or $/, which needs none) runs the steps of an
+  // action.yml outside .github/workflows/, which no rule reads and the owner's read doesn't cover, so its own
+  // checkout could keep the job's token; a docker:// image is no action's commit either. Every workflow's steps
+  // name another repository's action by owner/repo@ref.
+  it('refuses an action of this repository or a docker:// image, in every workflow (round 11)', () => {
+    const REMOTE =
+      "uses another repository's action, owner/repo@ref, never one of this repository's (./, .\\ or $/), whose action.yml no rule reads, or a docker:// image"
+    const added = '.github/workflows/lint.yml'
+    const lint = (uses: string) =>
+      [
+        'name: Lint',
+        'on:',
+        '  push:',
+        'permissions:',
+        '  contents: read',
+        'jobs:',
+        '  lint:',
+        '    runs-on: ubuntu-24.04',
+        '    steps:',
+        `      - uses: ${uses}`,
+        '',
+      ].join('\n')
+    for (const uses of [
+      './.github/actions/setup',
+      '$/.github/actions/setup',
+      '.\\.github\\actions\\setup',
+      'docker://alpine:3.20',
+      `docker://alpine@sha256:${'0'.repeat(64)}`,
+      'actions/checkout',
+      'actions@v5',
+    ]) {
+      expect(permissionFindings(new Map([...workflows, [added, lint(uses)]])), uses).toEqual([
+        `${added}: DPW-02 lint (step 1): ${REMOTE}`,
+      ])
+    }
+    for (const uses of ['actions/checkout@v5', 'actions/cache/restore@v4', `actions/checkout@${'a'.repeat(40)}`]) {
+      expect(permissionFindings(new Map([...workflows, [added, lint(uses)]])), uses).toEqual([])
+    }
+    const audit = '      - uses: actions/checkout@v5\n'
+    expect(readRepoFile(CI)).toContain(audit)
+    expect(permissionFindings(plant(audit, '      - uses: ./.github/actions/setup\n', '  audit:\n', CI))).toContain(
+      `${CI}: DPW-02 audit (step 1): ${REMOTE}`,
+    )
+  })
+
+  // Round 11: workflow.ts read an environment: block mapping by its name alone, so prod's written with
+  // deployment: false passed DPW-02 and DPW-03 while GitHub recorded no deployment for the job, the history the
+  // quarterly review and break-glass-review.md match each deploy session against. Each environment is a
+  // scalar on its own line. A line ending in a blank, which workflow.ts read as gone from a block scalar's line
+  // of blanks while YAML keeps it, is refused in every workflow.
+  it('refuses an environment written as a mapping, and a line ending in a blank, in every workflow (round 11)', () => {
+    const one = '    environment: prod\n'
+    for (const mapping of [
+      '    environment:\n      name: prod\n      deployment: false\n',
+      '    environment:\n      name: prod\n',
+      '    environment:\n      name: prod\n      url: https://example.org\n',
+    ]) {
+      const planted = plant(one, mapping, job('prod'))
+      expect(permissionFindings(planted), mapping).toContain(
+        `${DEPLOY}: DPW-02 prod: names its environment by a literal name`,
+      )
+      expect(credentialJobFindings(planted), mapping).toContain(`${DEPLOY}: DPW-03 prod: names the environment prod`)
+    }
+    for (const [path, text] of workflows) {
+      expect(
+        text.split('\n').filter(line => /[ \t]$/.test(line)),
+        path,
+      ).toEqual([])
+      const lines = text.split('\n')
+      const run = lines.findIndex(line => /^\s+run: \|/.test(line))
+      if (run < 0) continue
+      lines.splice(run + 1, 0, `${' '.repeat(16)}`)
+      expect(permissionFindings(new Map([...workflows, [path, lines.join('\n')]])), path).toContain(
+        `${path}: DPW-02 ends no line in a blank`,
+      )
+    }
+  })
+
   // INPUTS-A2-01: a release's own code can tell its rebuild as prod's previous release (the CLI hands the app
   // its output folder) from its own deploy and write a resource only into the rebuild, which prod's rollback
   // job deploys behind an approval no diff showed it to. prod-plan now diffs that very assembly, checked as
@@ -10337,7 +10539,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
 
 describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () => {
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
@@ -10527,7 +10729,7 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
 describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10, DPW-13)', () => {
   const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const EXPANDS =
     "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
@@ -10572,6 +10774,30 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     expect(wordSplits('~-')).toBe(true)
     expect(wordSplits('"~-"')).toBe(false)
     expect(wordSplits("'~'")).toBe(false)
+  })
+
+  // Round 11: brace expansion runs before parameter expansion, so {$,}NAME is $NAME and NAME, and the first then
+  // expands a name no rule read as an expansion: printf's arguments, which printfHeld() leaves alone, printed
+  // the OIDC request token that way. A $ that ends an alternative is odd to readsAsBash(), and a quoted or
+  // escaped one, which bash leaves as it is, and a regex's $ before a blank stay as they were.
+  it('reads a $ that ends a brace alternative as the expansion bash makes of it (round 11)', () => {
+    const token = ['ACTIONS', 'ID', 'TOKEN', 'REQUEST', 'TOKEN'].join('_')
+    for (const text of [
+      `printf '"%s"\\n' {$,}${token} | jq -r 'split("") | join(" ")'`,
+      `echo {$,}{${token}}`,
+      `echo {x,$}${token}`,
+      `echo a{b,{$,}}${token}`,
+    ]) {
+      expect(canonicalTextFindings({ X: text }), text).toContain(SHELL('X'))
+      expect(shellViews(text).odd.has('brace'), text).toBe(true)
+    }
+    for (const text of [
+      `echo "{$,}${token}" '{$,}' {\\$,}x`,
+      'x=$1\nif [[ "$x" =~ ^[0-9]{1,3}$ ]]; then echo ok; fi',
+      'f() {\n  echo "$1"\n}',
+    ]) {
+      expect(shellViews(text).odd.has('brace'), text).toBe(false)
+    }
   })
 
   // EXPAND-A4-02: a value after an option's value. awsTextHeld() let any number of values follow an option, so
@@ -10937,18 +11163,28 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
       expect(failing.status).toBe(3)
       expect(failing.diffed).toEqual([['restore/Services']])
       expect(failing.summary).toContain('The diff failed (exit 3), so this plan fails')
-      // Every other diff reads no stack's status: a restore up diffs every restore stack, a prod rollback its
-      // Tasks and Services, a prod deploy every prod stack, each in one call.
+      // Every other diff reads no stack's status but PLAN_BASIS's read of the stage before it (round 11), which
+      // is its basis output: a restore up diffs every restore stack, a prod rollback its Tasks and Services, a
+      // prod deploy every prod stack, each in one call. (A taken-down restore reads none: down's own read holds.)
+      expect(settled.aws).not.toContain('LastUpdatedTime')
       for (const [env, want] of [
         [{ RESTORE: 'up' }, [['restore/*']]],
         [{ STAGE: 'prod', MODE: 'rollback', RESTORE: 'none' }, [['prod/Tasks', 'prod/Services']]],
         [{ STAGE: 'prod', MODE: 'deploy', RESTORE: 'none' }, [['prod/*']]],
       ] as const) {
         const other = diff({}, env)
+        const stage = 'STAGE' in env ? env.STAGE : 'restore'
         expect(other.status, JSON.stringify(env)).toBe(0)
         expect(other.diffed, JSON.stringify(env)).toEqual(want)
-        expect(other.aws, JSON.stringify(env)).toBe('')
-        expect(other.output, JSON.stringify(env)).toBe('')
+        expect(other.aws.trim().split('\n'), JSON.stringify(env)).toEqual(
+          ['Platform', 'Data', 'Tasks', 'Services'].map(
+            part =>
+              `cloudformation describe-stacks --stack-name Hearth-${stage}-${part} --query Stacks[0].[StackStatus, LastUpdatedTime || CreationTime] --output json`,
+          ),
+        )
+        expect(other.output, JSON.stringify(env)).toBe(
+          'basis=Platform:missing,Data:missing,Tasks:missing,Services:missing,\n',
+        )
       }
     } finally {
       rmSync(scratch, { recursive: true, force: true })
@@ -11098,6 +11334,7 @@ describe('Round 8, attack 1: the ways past the allowlist (DPW-06, DPW-08, DPW-10
     expect(JOB_OUTPUTS['prod-plan']).toEqual({
       attempt: `\${{ github.run_attempt }}`,
       down: `\${{ steps.diff.outputs.down }}`,
+      basis: `\${{ steps.diff.outputs.basis }}`,
     })
     expect(prodPathFindings(workflows)).toEqual([])
   })
@@ -11110,7 +11347,7 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, and a deploy with --require-approval never --ci --exclusively --no-previous-parameters'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const FILE_NAMES =
     "sets a name jq's data words build a path from (dir, file, template, stackfiles, queue, name, root) only on ASSET_CHECK's own lines, and reads one only in a loop fed by its own done line, so jq reads no file a line doesn't show"
   const STOP =
@@ -11313,7 +11550,7 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
   const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const ENV =
@@ -11459,7 +11696,7 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
 describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () => {
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
@@ -11583,7 +11820,7 @@ describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () =
 
 describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14)', () => {
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const STEPS =
@@ -12176,7 +12413,7 @@ describe('Round 10, attack 1: the ways past the allowlist (DPW-10)', () => {
   const READER =
     "hands read -r, after IFS= or IFS=$'\\t', and mapfile and readarray -t, so no backslash in what it reads escapes a character or joins two lines into one, no line is trimmed and no element keeps its line break"
   const AWS_NAMES =
-    "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
+    "sets a name an aws value starts with, or one it is read from, only on its text's own lines, from an aws call by the stage's names, a literal, the job's env or a function's argument, which only that function's own calls, as written, hand it, and reads one only in a loop fed by its own done line, so no value from elsewhere (a stack's outputs, say) reaches aws, where a file:// would load a file"
   const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
   const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
 
@@ -12272,6 +12509,51 @@ describe('Round 10, attack 1: the ways past the allowlist (DPW-10)', () => {
     }
     for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(awsNameLines(text, name), name).toEqual([])
     expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // Round 11: the drift lookup's "imageDigest=${digests[0]}" and ecr_has's "imageDigest=$2" expanded names no rule
+  // held to their lines: digests set from the Services stack's outputs, or that output handed ecr_has, reached aws
+  // as imageTag@=file://…, which aws-cli loads. digests, image, RUN, RELEASE and PREVIOUS are now held names, a
+  // function an aws value reads an argument of is called only on its written lines, and a positional aws value
+  // stands only on its own.
+  it("hands aws a function's argument only from that function's own calls (round 11)", () => {
+    const running = `      running=$(printf '%s\\n' "$\{digests[@]}" | sort -u)`
+    const stacked = `      stacked=$(get aws cloudformation describe-stacks --stack-name "Hearth-$stage-Services" --query 'Stacks[0].Outputs[?OutputKey!=\`Release\`].OutputValue' --output json)`
+    const call = 'one_off_end probe "$PROBE_LINES" "$RUN"'
+    const runTask = RUN_TASK_PROBE
+    const texts = CANONICAL_BY_NAME()
+    expect(AWS_CHECK.split('\n')).toContain(running)
+    expect((texts.PROBE ?? '').split('\n')).toContain(call)
+    expect((texts.PROBE ?? '').split('\n')).toContain(runTask)
+    for (const [name, anchor, added] of [
+      ['AWS_CHECK', running, `      digests=("$(jq -r '.[0]' <<<"$stacked")")`],
+      ['AWS_CHECK', running, `      digests[0]=$(jq -r '.[0]' <<<"$stacked")`],
+      ['AWS_CHECK', running, `      image=$(jq -r '.[0]' <<<"$stacked")`],
+      ['AWS_CHECK', running, `      ecr_has "$\{release%%:*}" "$(jq -r '.[0]' <<<"$stacked")" || true`],
+      ['AWS_CHECK', running, `      RELEASE=$(jq -r '.[0]' <<<"$stacked")`],
+      [
+        'AWS_CHECK',
+        running,
+        `      tags=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$2" --query 'imageDetails[0].imageTags' --output json) || true`,
+      ],
+      ['PROBE', call, 'one_off_end probe "$PROBE_LINES" "$OVERRIDES"'],
+      ['PROBE', runTask, `RUN=$(jq -c . <<<"$OVERRIDES")`],
+    ] as const) {
+      const before = texts[name] ?? ''
+      const text = before.replace(
+        anchor,
+        name === 'AWS_CHECK' ? `${anchor}\n${stacked}\n${added}` : `${anchor}\n${added}`,
+      )
+      expect(awsNameLines(text, name), added).toContain(lineOf(text, added) - 1)
+      expect(canonicalTextFindings({ [name]: text }), added).toContain(canonical(name, lineOf(text, added), AWS_NAMES))
+    }
+    // A function of its own that hands aws its argument, and the line ecr_has calls written elsewhere.
+    const own = AWS_CHECK.replace(
+      running,
+      `${running}\n      lookup() { get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$2" --query 'imageDetails[0].imageTags' --output json; }`,
+    )
+    expect(awsNameLines(own, 'AWS_CHECK')).toContain(lineOf(own, running))
+    expect(awsNameLines(AWS_CHECK, 'TASKS_OUTPUTS').length).toBeGreaterThan(0)
   })
 })
 
@@ -12517,4 +12799,151 @@ describe('Round 10, attack 2: the ways past the allowlist (DPW-10, DPW-14)', () 
     }
     expect(credentialed(workflows)).toEqual([])
   }, 30_000)
+})
+
+// PLAN_BASIS (DPW-08; T24 item 20; round 11): a prod approval was tied to prod-plan's diff by the attempt and by
+// prod's newest record alone, so a rollback that moved prod after prod-plan diffed it, recorded before prod-gate
+// read or not yet recorded, had prod deploy its release over a state the approved diff never showed. prod-plan
+// now reads each stack of its stage before it diffs (refusing one still moving) and outputs that read; prod's
+// What runs reads the same first and refuses unless it is equal. Run with bash against a stand-in aws answering
+// describe-stacks from the case's statuses and times.
+describe('DPW-08: prod deploys only the stage prod-plan diffed (PLAN_BASIS, round 11)', () => {
+  const STUB = `aws() {
+  printf '%s\\n' "$*" >>"$AWS_LOG"
+  local part=''
+  case "$*" in
+    'cloudformation describe-stacks --stack-name Hearth-'*) part=$4; part=\${part##*-} ;;
+    *) echo 'unexpected call' >&2; return 254 ;;
+  esac
+  local name="STACK_$part"
+  case "\${!name:-}" in
+    none) echo "An error occurred (ValidationError): Stack with id $4 does not exist" >&2; return 254 ;;
+    broken) echo 'An error occurred (Throttling): Rate exceeded' >&2; return 254 ;;
+    *) printf '%s\\n' "\${!name:-}" ;;
+  esac
+}`
+  const T1 = '2026-11-20T10:00:00.123000+00:00'
+  const T2 = '2026-11-24T09:30:00.456000+00:00'
+  const settled: Record<string, string> = {
+    STACK_Platform: JSON.stringify(['UPDATE_COMPLETE', T1]),
+    STACK_Data: JSON.stringify(['UPDATE_COMPLETE', T1]),
+    STACK_Tasks: JSON.stringify(['UPDATE_COMPLETE', T1]),
+    STACK_Services: JSON.stringify(['UPDATE_COMPLETE', T1]),
+  }
+  const BASIS = `Platform:UPDATE_COMPLETE@${T1},Data:UPDATE_COMPLETE@${T1},Tasks:UPDATE_COMPLETE@${T1},Services:UPDATE_COMPLETE@${T1},`
+  function run(text: string, env: Record<string, string>) {
+    const scratch = mkdtempSync(join(tmpdir(), 'hearth-basis-'))
+    try {
+      const output = join(scratch, 'output')
+      const summary = join(scratch, 'summary')
+      const log = join(scratch, 'aws.log')
+      for (const file of [output, summary, log]) writeFileSync(file, '')
+      const result = spawnSync('bash', ['-c', `${STUB}\n${text}`], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: scratch,
+          RUNNER_TEMP: scratch,
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          AWS_LOG: log,
+          STAGE: 'prod',
+          MODE: 'deploy',
+          RESTORE: '',
+          ...settled,
+          ...env,
+        },
+      })
+      return {
+        status: result.status,
+        said: `${result.stdout}${result.stderr}`,
+        output: readFileSync(output, 'utf8'),
+        calls: readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }
+  const plan = (env: Record<string, string>) => run(`${PREAMBLE}\n${PLAN_BASIS}\nplan_basis plan`, env)
+  const check = (env: Record<string, string>) => run(`${PREAMBLE}\n${PLAN_BASIS}\nplan_basis check`, env)
+
+  it('reads each stack before the diff, refusing one still moving, and outputs what it read', () => {
+    expect(plan({})).toMatchObject({ status: 0, output: `basis=${BASIS}\n` })
+    // A stack never updated answers with its creation time; one missing, or one a create that never ran left, is
+    // read as it stands.
+    const first = plan({
+      STACK_Platform: JSON.stringify(['CREATE_COMPLETE', T1]),
+      STACK_Services: 'none',
+      STACK_Tasks: JSON.stringify(['REVIEW_IN_PROGRESS', T1]),
+    })
+    expect(first.status).toBe(0)
+    expect(first.output).toBe(
+      `basis=Platform:CREATE_COMPLETE@${T1},Data:UPDATE_COMPLETE@${T1},Tasks:REVIEW_IN_PROGRESS@${T1},Services:missing,\n`,
+    )
+    for (const moving of ['UPDATE_IN_PROGRESS', 'UPDATE_ROLLBACK_IN_PROGRESS', 'UPDATE_COMPLETE_CLEANUP_IN_PROGRESS']) {
+      const refused = plan({ STACK_Tasks: JSON.stringify([moving, T2]) })
+      expect(refused.status, moving).toBe(1)
+      expect(refused.output, moving).toBe('')
+      expect(refused.said, moving).toContain(`plan-basis: Hearth-prod-Tasks is ${moving}: wait for it to settle`)
+    }
+    // An answer it can't read, or of another shape, refuses too, and writes no output.
+    for (const answer of [
+      'broken',
+      '"UPDATE_COMPLETE"',
+      JSON.stringify(['UPDATE_COMPLETE', 'file:///etc/hostname']),
+      JSON.stringify(['update complete', T1]),
+    ]) {
+      const refused = plan({ STACK_Data: answer })
+      expect(refused.status, answer).toBe(1)
+      expect(refused.output, answer).toBe('')
+    }
+    // A restore taken down reads nothing here: its own read is RESTORE_DOWN_DIFF's.
+    expect(plan({ STAGE: 'restore', RESTORE: 'down' })).toMatchObject({ status: 0, output: '', calls: [] })
+    expect(plan({ STAGE: 'restore', RESTORE: 'up' }).output).toBe(`basis=${BASIS}\n`)
+  })
+
+  it('goes on only while the stage reads as prod-plan read it, recorded or not', () => {
+    expect(check({ BASIS }).status).toBe(0)
+    expect(check({ BASIS, MODE: 'rollback' }).status).toBe(0)
+    // The attack: another run's rollback put X back after prod-plan diffed C1, so Tasks and Services changed.
+    const rolledBack = check({
+      BASIS,
+      STACK_Tasks: JSON.stringify(['UPDATE_COMPLETE', T2]),
+      STACK_Services: JSON.stringify(['UPDATE_COMPLETE', T2]),
+    })
+    expect(rolledBack.status).toBe(1)
+    expect(rolledBack.said).toContain('plan-basis: Hearth-prod changed since prod-plan diffed it')
+    const changes: ReadonlyArray<Record<string, string>> = [
+      { BASIS: '' },
+      { BASIS: BASIS.replace('Platform:', 'Platform:x') },
+      { BASIS, STACK_Data: JSON.stringify(['UPDATE_ROLLBACK_COMPLETE', T1]) },
+      { BASIS, STACK_Services: 'none' },
+      { BASIS, STACK_Services: JSON.stringify(['UPDATE_IN_PROGRESS', T2]) },
+    ]
+    for (const env of changes) {
+      expect(check(env).status, JSON.stringify(env)).toBe(1)
+    }
+    expect(check({ BASIS: '', STAGE: 'restore', RESTORE: 'down' })).toMatchObject({ status: 0, calls: [] })
+  })
+
+  it("is prod's What runs' first check, before anything is checked, pushed or deployed", () => {
+    const text = whatRunsText('prod')
+    expect(text).toContain(`${PLAN_BASIS}\nplan_basis check\nif [ "$TARGET" = restore ]; then`)
+    const refused = run(text, {
+      BASIS,
+      TARGET: 'prod',
+      RELEASE: `${'a'.repeat(40)}:sha256:${'0'.repeat(64)}`,
+      STACK_Tasks: JSON.stringify(['UPDATE_COMPLETE', T2]),
+    })
+    expect(refused.status).toBe(1)
+    expect(refused.output).toBe('')
+    expect(refused.calls).toHaveLength(4)
+    expect(
+      refused.calls.every(call => call.startsWith('cloudformation describe-stacks --stack-name Hearth-prod-')),
+    ).toBe(true)
+    // prod-plan's Diff step reads the stage before either diff.
+    const diff = PINNED_RUNS()['prod-plan']?.Diff?.run ?? ''
+    expect(diff.indexOf('plan_basis plan\n')).toBeGreaterThan(diff.indexOf(PLAN_BASIS))
+    expect(diff.indexOf('plan_basis plan\n')).toBeLessThan(diff.indexOf('if [ "$MODE" = rollback ]; then'))
+  })
 })

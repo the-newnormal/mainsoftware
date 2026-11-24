@@ -392,8 +392,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -442,7 +445,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -540,19 +545,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -925,8 +930,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -975,7 +983,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -1073,19 +1083,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -1459,8 +1469,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -1509,7 +1522,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -1607,19 +1622,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -2110,8 +2125,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -2160,7 +2178,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -2258,19 +2278,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -3585,8 +3605,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -3635,7 +3658,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -3733,19 +3758,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -4722,6 +4747,7 @@ jobs:
     outputs:
       attempt: ${{ github.run_attempt }}
       down: ${{ steps.diff.outputs.down }}
+      basis: ${{ steps.diff.outputs.basis }}
     steps:
       - name: Check out the run's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4832,8 +4858,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -4882,7 +4911,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -4980,19 +5011,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -5312,8 +5343,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -5362,7 +5396,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -5460,19 +5496,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -5857,17 +5893,71 @@ jobs:
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
           export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true
+          # What prod-plan diffed (PLAN_BASIS; DPW-08): each of the stage's four stacks as CloudFormation answers for
+          # it, its status and the time of its last change (its last update, or its creation for one never updated), or
+          # missing. prod-plan reads it before its diff and outputs it (plan), refusing a stack still moving (every
+          # status in progress but REVIEW_IN_PROGRESS, which a create that never ran leaves), whose template its diff
+          # would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
+          # (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
+          # diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
+          # never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+          plan_basis() {
+            local step=$1 PART answer status basis=''
+            if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
+              return 0
+            fi
+            for PART in Platform Data Tasks Services; do
+              if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
+                case "$answer" in
+                  *'does not exist'*)
+                    basis="$basis$PART:missing,"
+                    continue
+                    ;;
+                  *)
+                    echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                    exit 1
+                    ;;
+                esac
+              fi
+              if ! status=$(jq -er 'select(type == "array" and length == 2 and (.[0] | type == "string" and test("\\A[A-Z_]+\\z")) and (.[1] | type == "string" and test("\\A[0-9][0-9:.TZ+-]*\\z"))) | "\(.[0])@\(.[1])"' <<<"$answer"); then
+                echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              case "$status" in
+                REVIEW_IN_PROGRESS@*) ;;
+                *_IN_PROGRESS@*)
+                  echo "plan-basis: Hearth-$STAGE-$PART is ${status%%@*}: wait for it to settle, then re-run prod-plan" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                  ;;
+              esac
+              basis="$basis$PART:$status,"
+            done
+            case "$step" in
+              plan)
+                echo "basis=$basis" >>"$GITHUB_OUTPUT"
+                ;;
+              check)
+                if [ "$basis" != "$BASIS" ]; then
+                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                fi
+                echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+          }
           # The diff the approver reads (C11-D51): the assembly against the templates deployed in prod's account,
           # read with the plan role's own credentials (its lookup role is refused), for a deploy every prod stack,
           # for a rollback its Tasks and Services, for a restore up every restore stack (STAGE), and for one taken
           # down the stacks it deploys (RESTORE_DOWN_DIFF); into the log, and into the summary cut at 200 KB, both
           # through the filter. A diff that fails still shows the CLI's message in both, then fails the step. In the
           # summary it is an indented code block, each line four spaces in and each carriage return a line break, so
-          # no line of a release's own text ends the block or opens HTML that hides what follows.
+          # no line of a release's own text ends the block or opens HTML that hides what follows. What it diffs against is
+          # read first (PLAN_BASIS) and is the job's basis output, which prod holds the stage to.
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
           cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          plan_basis plan
           if [ "$MODE" = rollback ]; then
             {
               run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
@@ -6270,8 +6360,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -6320,7 +6413,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -6418,19 +6513,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
@@ -6866,6 +6961,7 @@ jobs:
           TARGET: ${{ needs.gate.outputs.target }}
           RESTORE: ${{ needs.gate.outputs.restore }}
           FIRST: ${{ needs.gate.outputs.first_prod }}
+          BASIS: ${{ needs.prod-plan.outputs.basis }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -7057,6 +7153,59 @@ jobs:
             esac
             echo "aws-check: $mode passed: Hearth-$stage-Services is $status and runs $release" | mask | tee -a "$GITHUB_STEP_SUMMARY"
           }
+          # What prod-plan diffed (PLAN_BASIS; DPW-08): each of the stage's four stacks as CloudFormation answers for
+          # it, its status and the time of its last change (its last update, or its creation for one never updated), or
+          # missing. prod-plan reads it before its diff and outputs it (plan), refusing a stack still moving (every
+          # status in progress but REVIEW_IN_PROGRESS, which a create that never ran leaves), whose template its diff
+          # would read on its way elsewhere; prod reads it again once it holds its credentials, before anything else
+          # (check), and goes on only while it reads exactly what prod-plan read, so no change to the stage since the
+          # diff, another run's rollback or deploy, recorded or not, among them, deploys under an approval of a diff that
+          # never showed it. A restore taken down holds its own read (PLANNED), so it reads none here.
+          plan_basis() {
+            local step=$1 PART answer status basis=''
+            if [ "$MODE" != rollback ] && [ "$RESTORE" = down ]; then
+              return 0
+            fi
+            for PART in Platform Data Tasks Services; do
+              if ! answer=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].[StackStatus, LastUpdatedTime || CreationTime]' --output json 2>&1); then
+                case "$answer" in
+                  *'does not exist'*)
+                    basis="$basis$PART:missing,"
+                    continue
+                    ;;
+                  *)
+                    echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                    exit 1
+                    ;;
+                esac
+              fi
+              if ! status=$(jq -er 'select(type == "array" and length == 2 and (.[0] | type == "string" and test("\\A[A-Z_]+\\z")) and (.[1] | type == "string" and test("\\A[0-9][0-9:.TZ+-]*\\z"))) | "\(.[0])@\(.[1])"' <<<"$answer"); then
+                echo "plan-basis: Hearth-$STAGE-$PART can't be read" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              case "$status" in
+                REVIEW_IN_PROGRESS@*) ;;
+                *_IN_PROGRESS@*)
+                  echo "plan-basis: Hearth-$STAGE-$PART is ${status%%@*}: wait for it to settle, then re-run prod-plan" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                  ;;
+              esac
+              basis="$basis$PART:$status,"
+            done
+            case "$step" in
+              plan)
+                echo "basis=$basis" >>"$GITHUB_OUTPUT"
+                ;;
+              check)
+                if [ "$basis" != "$BASIS" ]; then
+                  echo "plan-basis: Hearth-$STAGE changed since prod-plan diffed it (prod-plan read $BASIS, this job reads $basis), so nothing moves: re-run prod-plan, read its fresh diff and approve again (deploy-and-rollback.md)" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                  exit 1
+                fi
+                echo "plan-basis: Hearth-$STAGE is as prod-plan diffed it" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+          }
+          plan_basis check
           if [ "$TARGET" = restore ]; then
             aws_check restore
           else
@@ -7798,8 +7947,11 @@ jobs:
           # nested assembly, the files its manifests name and not file names, and refused for: missing context
           # (the CLI would look it up with this job's credentials); an artifact type a workload synth never
           # writes; a named file that isn't a plain name in its own folder (letters, digits, dots, dashes and
-          # underscores, no ..); a legacy asset entry in any artifact's metadata, inline or in its metadata file
-          # (the CLI would build or upload it whatever the asset manifests say); a container image asset, or a
+          # underscores, no ..); a metadata entry, inline or in an artifact's metadata file, of a type but those the
+          # workload synth writes and the CLI's three annotations, which it only prints or, an error, refuses on (so
+          # no legacy asset, which the CLI would build or upload whatever the asset manifests say, and no stack tags,
+          # which an older CLI hands CloudFormation for every resource of the stack, as no template or diff shows
+          # them); a container image asset, or a
           # file asset that runs a command, is packaged otherwise than file or zip, or whose path leaves the
           # tree; a file asset with other than one destination, or whose destination isn't the staging bucket,
           # its region and its file-publishing role spelled as the synth writes them (the CLI resolves a
@@ -7848,7 +8000,9 @@ jobs:
           # stack could import; or a role with a key but its trust policy, its inline policies, its name and its
           # boundary, or a boundary but the account's own as the synth spells it, so no role attaches a managed
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
-          # boundary attached as a policy would grant everything it bounds); any symbolic link.
+          # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
+          # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
+          # could stand where the diff shows a Deny); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -7946,19 +8100,19 @@ jobs:
                   asset_refuse "a template takes a value at deploy time that the diff doesn't show: a parameter but an SSM-typed one naming one of the workload's own entries, or a brace a string could join into a dynamic reference"
                 jq -e '(to_entries | all(.[]; .key as $section | [.value | .. | objects | keys[] | select(ascii_downcase | startswith("fn::"))] | all(.[]; IN(if $section == "Rules" then ("Fn::Contains", "Fn::Not") elif $section == "Resources" or $section == "Outputs" then ("Fn::GetAtt", "Fn::GetAZs", "Fn::Join", "Fn::Select", "Fn::Sub") else empty end)))) and (.Outputs // {} | type == "object" and all(.[]; type == "object" and (keys - ["Description", "Value"] | length == 0)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a template calls an intrinsic function a workload synth never writes, another stack's output among them, which CloudFormation reads when the stack deploys and the diff never shows, or exports an output"
-                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]})' "$dir/$file" >/dev/null 2>&1 ||
-                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, or a boundary but the account's own"
+                jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
+                  asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
               jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/manifest.json" >/dev/null ||
-                asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+                asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; . != "aws:cdk:asset")' "$dir/$file" >/dev/null ||
-                  asset_refuse 'an artifact carries a legacy asset entry, which the CLI would build or upload'
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                  asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
