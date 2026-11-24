@@ -99,11 +99,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: The release, migration and restore records
         env:
@@ -132,7 +133,8 @@ jobs:
           # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
           # head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head: the
           # newest such run from the pull request's own head repository and branch (so another fork's pull
-          # request at the same commit is never read; its path read without any @<ref> GitHub adds) whose
+          # request at the same commit is never read; its path read without any @<ref> GitHub adds, which is
+          # exact since no workflow's own name holds an @, DPW-04's folder rule) whose
           # latest attempt started (run_started_at) at or after the pull request's created_at and at or before
           # its merged_at, so a run re-run after the merge isn't counted and, with no other, its checks read as
           # missing; read from the run and its jobs, never from a check run, which any token with checks: write
@@ -201,12 +203,14 @@ jobs:
             exit 1
           fi
       - name: The environments are live as written
+        working-directory: repo
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: scripts/protect-environments.sh check "$REPO"
       - name: Plan
         id: plan
+        working-directory: repo
         env:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
@@ -490,9 +494,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -528,11 +535,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -660,8 +669,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -877,9 +886,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -889,12 +898,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1070,9 +1079,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -1108,11 +1120,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -1240,8 +1254,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -1457,9 +1471,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1469,12 +1483,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1651,9 +1665,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -1689,11 +1706,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -1821,8 +1840,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -2038,9 +2057,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -2050,12 +2069,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -2358,9 +2377,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -2396,11 +2418,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -2528,8 +2552,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -2745,9 +2769,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -2757,12 +2781,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -3699,13 +3723,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: Smoke
+        working-directory: repo
         env:
           READBACK: ${{ needs.nonprod.outputs.readback }}
           ATTEMPT: ${{ needs.nonprod.outputs.attempt }}
@@ -3926,9 +3952,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -3964,11 +3993,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -4096,8 +4127,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -4313,9 +4344,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -4325,12 +4356,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -4945,13 +4976,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: Smoke
+        working-directory: repo
         env:
           READBACK: ${{ needs.rollback-nonprod.outputs.readback }}
           ATTEMPT: ${{ needs.rollback-nonprod.outputs.attempt }}
@@ -5247,9 +5280,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -5285,11 +5321,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -5417,8 +5455,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -5634,9 +5672,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -5646,12 +5684,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -5774,9 +5812,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -5812,11 +5853,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -5944,8 +5987,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -6161,9 +6204,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -6173,12 +6216,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -6508,11 +6551,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: Prod's release records
         env:
@@ -6531,7 +6575,8 @@ jobs:
         run: |
           set -euo pipefail
           # main's own CI on this commit (C11-D52): ci.yml's push run on main (its path read without any @<ref>
-          # GitHub adds), the newest, read from the run and its jobs (never a check run, which any token with
+          # GitHub adds, which is exact since no workflow's own name holds an @, DPW-04's folder rule), the
+          # newest, read from the run and its jobs (never a check run, which any token with
           # checks: write can make), until check and migrations both succeed; any other conclusion fails at
           # once, and 30 minutes ends the wait.
           DEADLINE=$((SECONDS + 30 * 60))
@@ -6561,6 +6606,7 @@ jobs:
           echo "prod-gate: main's check and migrations passed on this commit" >>"$GITHUB_STEP_SUMMARY"
       - name: The prod gate
         id: check
+        working-directory: repo
         env:
           MODE: ${{ needs.gate.outputs.mode }}
           TARGET: ${{ needs.gate.outputs.target }}
@@ -6840,9 +6886,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -6878,11 +6927,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -7010,8 +7061,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -7227,9 +7278,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -7239,12 +7290,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -8285,13 +8336,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: Smoke
+        working-directory: repo
         env:
           READBACK: ${{ needs.prod.outputs.readback }}
           ATTEMPT: ${{ needs.prod.outputs.attempt }}
@@ -8515,9 +8568,12 @@ jobs:
           # is that function's Arn (never a function elsewhere, another account's among them), the function's
           # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
           # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-          # its template, with no layer, environment, network or other key, so no other account's code runs before
-          # the handler), and no string in its template names it, so no grant, output or other value reads its
+          # and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+          # unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+          # role's label is the code's and no other role's, which on a first create the diff would print only as
+          # grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+          # or other key, so no other account's code runs before the handler), and no string in its template names
+          # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
           # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -8553,11 +8609,13 @@ jobs:
           # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
           # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
           # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-          # parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-          # log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-          # value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-          # in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-          # every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+          # parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+          # logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+          # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+          # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+          # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+          # perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+          # makes it.
           # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
           # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
           # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -8685,8 +8743,8 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
                 # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -8902,9 +8960,9 @@ jobs:
                   all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
                   all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+                  all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -8914,12 +8972,12 @@ jobs:
                   all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
                   all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
                   all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+                  all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
                   all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
                   all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
                   all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
                   all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+                  asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -9534,13 +9592,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          path: repo
           persist-credentials: false
       - name: Node, from .nvmrc
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - name: Smoke
+        working-directory: repo
         env:
           READBACK: ${{ needs.rollback-prod.outputs.readback }}
           ATTEMPT: ${{ needs.rollback-prod.outputs.attempt }}

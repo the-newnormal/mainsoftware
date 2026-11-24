@@ -43,7 +43,11 @@ jobs:
   # install and none of the repository's code before it, since a test, an install script or a build in check
   # could otherwise leave a git configuration (a url.<base>.insteadOf that sends the read to a fork), a file
   # or a variable behind on the runner, or write over the check; the script also reads git with no
-  # configuration but its defaults. The checkout and setup-node before it run first, so the check can't prove
+  # configuration but its defaults. The checkout goes into repo/, below the workspace setup-node runs node,
+  # npm and yarn in (Yarn 1 runs the program a .yarnrc's yarn-path names from the folder it runs in or any
+  # above it), and the step first writes every file again as its blob (attributes read as none, the index's
+  # stat data cleared), since a checkout writes each file through .gitattributes, so node runs the blobs the
+  # owner read. The checkout and setup-node before it run first, so the check can't prove
   # them: each is held to its commit in action-pins.ts's PINS_JOB_ACTIONS, apart from deploy.yml's pins, and a
   # person proves a change to them by hand. This workflow sets no env: or defaults: at its top, which would
   # reach this job's steps too. What holds this job, the workflow's top and check's own keys is the owner's
@@ -59,12 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: repo
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
-      - run: node scripts/check-action-pins.ts
+      - working-directory: repo
+        run: |
+          printf '* -text -eol -ident -filter -working-tree-encoding\n' >.git/info/attributes
+          git read-tree HEAD
+          git checkout-index --all --force
+          node scripts/check-action-pins.ts
   # The CDK CLI's pin never goes below its base branch's (C0.11 PR 4, TECH-SPEC T24 items 20, 22 and 31):
   # each deploy job runs its own commit's CLI over assemblies older releases' libraries wrote, and a CLI
   # refuses a schema newer than it reads, so a lowered pin would break a rollback to such a release. The
@@ -73,7 +83,8 @@ jobs:
   # package manager before it: in migrations it ran after npm ci and the migration order check, which could
   # rewrite the manifest, a remote-tracking ref or the PATH's node or git, and setup-node's npm cache, which
   # asks npm for its folder (reading the pull request's .npmrc) and restores into it. Its checkout and
-  # setup-node are the pins job's, held to PINS_JOB_ACTIONS. On a push the step is skipped and the job
+  # setup-node are the pins job's, held to PINS_JOB_ACTIONS, the checkout in repo/ and the step first
+  # writing every file again as its blob, as there. On a push the step is skipped and the job
   # succeeds, since check fails on a skipped need. What holds this job is the owner's read of this file;
   # DPW-04 is a second layer, as for action-pins.
   cli-pin:
@@ -82,16 +93,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: repo
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          node-version-file: repo/.nvmrc
           package-manager-cache: false
       - if: ${{ github.event_name == 'pull_request' }}
+        working-directory: repo
         env:
           BASE: origin/${{ github.base_ref }}
-        run: node scripts/check-cli-pin.ts "$BASE"
+        run: |
+          printf '* -text -eol -ident -filter -working-tree-encoding\n' >.git/info/attributes
+          git read-tree HEAD
+          git checkout-index --all --force
+          node scripts/check-cli-pin.ts "$BASE"
   # Every npm workspace from the root (apps/*, packages/*, infra and demo/): what `npm run check`
   # runs locally (typecheck, lint, test), as separate steps so a failure names its step, then a
   # listing of the Rule 1-9 access suite (rules.test.ts, verbose), the build, the local database

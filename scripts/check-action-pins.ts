@@ -26,14 +26,20 @@
 // repository configuration file, none given in the environment, no other git folder, helper or askpass. A
 // url.<base>.insteadOf a test wrote to $HOME/.gitconfig, say, would otherwise send the read to a fork whose
 // tag names the fork's commit. CI runs this in a job of its own, before any repository code (ci.yml's
-// action-pins, which DPW-04 holds), so nothing earlier on its runner can change the check itself either.
+// action-pins, which DPW-04 holds), so nothing earlier on its runner can change the check itself either: its
+// checkout is a folder below the workspace where setup-node runs node, npm and yarn, since Yarn 1 runs the
+// program a .yarnrc's yarn-path names from the folder it runs in or any above it (a pull request's .yarnrc
+// put a git first on the PATH that answered ls-remote with a fork's commit: round 12's fourth iteration).
 // That job's checkout and setup-node run before this, each at its commit in PINS_JOB_ACTIONS, which this
 // reads too: that catches a mistake there, though never a fork's commit, which would already have run, so a
 // person proves a change to them by hand (action-pins.ts says how). Node runs this file, and it reads
 // deploy.yml and the tables, as the checkout writes them through .gitattributes, while the owner reads their
 // blobs: an ident attribute on this file turned a comparison the blob made into one that never held (round
 // 12's third iteration). So before reading any tag it refuses a checkout whose files aren't HEAD's blobs, byte
-// for byte (checkout-blobs.ts). What this check decides holds a pin
+// for byte (checkout-blobs.ts). That can't hold this file, or a module imported before it runs, since an
+// attribute that rewrites this file can rewrite the call too, so the job's step, read from the workflow's blob,
+// first writes every file again as its blob (BLOB_RESET, in the deploy-workflow guard), and the drift check is
+// the layer inside it (round 12's fourth iteration). What this check decides holds a pin
 // only as long as this file does, and CI runs it from the pull request's own head, so it is on the
 // owner's-read list (C11-D74); DPW-04's tests run its decision (run) and its address (actionUrl) on planted
 // answers.

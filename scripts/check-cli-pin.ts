@@ -17,8 +17,14 @@
 // checked out a lower pin than its blob held, so the blob passed here while every deploy job fetched the lower
 // CLI (round 12's third iteration). So it first refuses a checkout whose files aren't HEAD's blobs byte for
 // byte (checkout-blobs.ts), which its job, running nothing of the repository's before it, writes through the
-// attributes main's checkout will; then it reads HEAD's committed manifest, which that checkout holds. It runs
-// in a job of its own with nothing of the repository's before it (round 12): in the migrations job it ran
+// attributes main's checkout will; then it reads HEAD's committed manifest, which that checkout holds. That
+// drift check can't hold this file, or a module imported before it runs, which an attribute could rewrite with
+// the call, so the job's step first writes every file again as its blob (BLOB_RESET, in the deploy-workflow
+// guard) before node runs this (round 12's fourth iteration). It runs in a job of its own with nothing of the
+// repository's before it (round 12): its checkout is a folder below the workspace where setup-node runs node,
+// npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path names from the folder it runs in or any
+// above it (a pull request's .yarnrc moved origin/main to HEAD, and a lowered pin passed: round 12's fourth
+// iteration); and in the migrations job it ran
 // after npm ci and the migration order check, both off the owner's-read list, either of which could write the
 // working tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or
 // put another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm

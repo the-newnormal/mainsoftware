@@ -17,7 +17,9 @@ export const ACTION_PINS: Readonly<Record<string, string>> = {
 }
 
 // The two actions ci.yml's jobs action-pins and cli-pin run before their checks (DPW-04): checkout, which
-// brings the repository in, and setup-node. They run before the pins check can read anything, so it can't prove
+// brings the repository in, into a folder below the workspace, and setup-node, which runs node, npm and yarn
+// with --version in the workspace, above the checkout, where no .yarnrc's yarn-path (a program Yarn 1 runs) is
+// read. They run before the pins check can read anything, so it can't prove
 // them: one at a commit pushed only to a fork would own the workspace, the check and the git it calls. So
 // they are held here, apart from ACTION_PINS (moving a pin there moves neither of these), and a person who
 // reads a change to them proves it against the action's own repository before it merges, from a folder

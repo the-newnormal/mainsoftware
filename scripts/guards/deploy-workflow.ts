@@ -30,7 +30,13 @@
 // HEAD's blobs byte for byte (scripts/checkout-blobs.ts), since a checkout writes each file through
 // .gitattributes while the owner reads the blob: an ident attribute on infra/package.json checked out a lower
 // CLI than its blob pinned, which CLI_FETCH read on main, and one on check-action-pins.ts made a comparison its
-// blob held into one that never did (round 12's third iteration).
+// blob held into one that never did (round 12's third iteration). Each job checks out into a folder below the
+// workspace where setup-node runs node, npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path names
+// from the folder it runs in or any above it, and writes every file again as its blob before node runs
+// (BLOB_RESET), since the drift check can't hold its own file; no Yarn file stands in the tree (YARN_FILE); and
+// every deploy.yml job but the build's checks out below its setup-node too (DPW-11), the gate, prod-gate and the
+// smokes into REPO_FOLDER (round 12's fourth iteration: a .yarnrc decided both checks, the plan, prod-gate's
+// verdict and every smoke).
 // GitHub ties no run to the pull request that started it, so the gate reads the merged pull request's own
 // ci.yml run as the newest at its head, from its head repository and branch, whose latest attempt started
 // while it was open, and refuses a head another pull request from that branch shared (open at any moment
@@ -86,7 +92,11 @@
 // (the handler's code itself is the release's own, as the image is: ASSET_CHECK holds a zip asset's key to 64 hex
 // digits and .zip, never to the zip's bytes, which it doesn't read, and the CLI uploads nothing to a key already
 // in the bucket, so the first release to upload a key decides what every later one naming it runs; what that
-// code can do is its role's grant, which the diff's IAM table shows), refuses a file asset whose id, which
+// code can do is its role's grant, which the diff's IAM table shows, so the function runs as its own unnamed role,
+// trusted by Lambda alone, as a flow log delivers as its own, trusted by VPC flow logs alone, and a named role is
+// trusted by ECS tasks alone: round 12's fourth iteration, where the handler run as the api's execution role
+// printed, on a first create, as an honest release's function line beside that role's own grants), refuses a
+// file asset whose id, which
 // the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits, and holds
 // every resource to the property paths and forms the workload synth writes for its type (one jq object literal
 // in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
@@ -140,7 +150,9 @@
 // only as prod-plan's diff summary's, every aws word as aws reads it, an expansion in an aws value only as one of the words the workflow writes there,
 // whole, a canonical text's function or a record job's own only as the workflow calls it, standing alone,
 // outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step, as
-// every job's call of a check does, the synths' too), no line of its
+// every job's call of a check does, the synths' too, and each deploy of the CLI and smoke.ts does, but the
+// drill's if: round 12's fourth iteration, where a group's } || STATUS=$? went on past a failed deploy or
+// smoke), no line of its
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
 // RUN, ACCOUNT_ID, or a name an aws value reads or the read-back builds one from but by the commands
 // AWS_VALUE_LINES writes, each from AWS's answer to a call by the stage's names, never a stack's outputs, and
@@ -154,8 +166,9 @@
 // GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
 // written as a block mapping and never as one expression GitHub would read as the whole mapping, every
-// action step's with: is the guard's, whole (STEP_WITHS: no checkout but the three synths' names a ref or a
-// path, one to a job, each its own commit into its own folder, and no job checks out two commits, so no
+// action step's with: is the guard's, whole (STEP_WITHS: no checkout but the three synths' names a ref, one to a
+// job, each its own commit into its own folder, the gate's, prod-gate's and the smokes' check out into
+// REPO_FOLDER and every other's into the workspace, and no job checks out two commits, so no
 // runner that synthesises or reads an assembly runs a second commit's code), every step's id is the guard's
 // (STEP_IDS), so no step of its own answers for a pinned step's outputs, and every steps.<id> and needs.<job>
 // an expression reads is bound to what writes it (bindingFindings(): a step of the job, before a step that reads
@@ -170,7 +183,11 @@
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
-// of its own, or hands it another input, and in a record's writer no line but the guard's own literals
+// of its own, or hands it another input (a record job's COMMIT:DIGEST and SERVICES, and their previous
+// release's, being its smokes' RELEASE and read-back's job as the workflow writes them, and a rollback's REPLACED
+// its deploy job's replaced output, each compared as written: round 12's fourth iteration, where github.sha and
+// the gate's current release, each equal to what it replaced on a push, read otherwise in a dispatched
+// rollback), and in a record's writer no line but the guard's own literals
 // (RECORD_JOB_LINES, migrationRecordLines()) sets a name, runs jq or calls gh, so no line the pins admit
 // rewrites what a record says; and so is every other run of every job, the five that hold the
 // deploy role and build's and the synths' (each release on a runner of its own) included, so no run of
@@ -205,7 +222,9 @@
 // as gone from a block scalar's line of blanks while YAML keeps it; an environment: is a scalar on its own
 // line, never a mapping, whose deployment: false would have GitHub record no deployment for the job; and every
 // workflow is at most 500,000 bytes (workflowSizeFindings()), since GitHub starts no run of a workflow file over
-// 500 KB: deploy.yml is over it as committed, so no run of it starts until the owner's change to its structure
+// 500 KB, and no workflow's name holds an @, so the path before a run path's first @ names its file exactly, as
+// the gate's and prod-gate's reads of ci.yml's runs take it (round 12's fourth iteration: a ci.yml@x.yml read as
+// ci.yml): deploy.yml is over 500 KB as committed, so no run of it starts until the owner's change to its structure
 // (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. GitHub reads a workflow's blob as
 // git holds it, and the owner reads every file's, while the rules, CI and the deploy jobs read the checkout, so no
 // tracked file carries a git attribute, as the working tree's or the index's .gitattributes gives it
@@ -223,14 +242,20 @@
 // follows on its line, any unquoted (( but $((, and a $(( whose inner ( doesn't close with )), or any <(( or >((,
 // which bash reads as a substitution holding a subshell whose command no rule here would read, and an & that runs
 // the list before it in the background, where a refusal's exit 1 ends a subshell alone and set -e never sees it:
-// round 12's third iteration), to evaluating
+// round 12's third iteration; and a then, do, else or elif straight after ]], ) or }, a for NAME do and a
+// function whose body isn't a { … } group, each where bash starts a command the reader reads none: round 12's
+// fourth iteration), to ending a step or a function only by a literal status and opening no subshell where a
+// command starts (verdictLines(): a refusal's bare exit after echo … | mask, and ( … ) || echo around PROBE's
+// call, each ended the step with 0: round 12's fourth iteration), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
 // a for loop sets it, given numbers alone (never REPLY, MAPFILE, _ or a loop's words), and a number wherever every
 // other canonical text and pinned run sets it and set by no env:, since the texts run joined in one shell and bash's
 // variables are the shell's, not a text's (an assignment's value read to its word's end, so $((0))$y is none), a
-// setter builtin's words read to its command's end past its redirections (>&, <&, &> and >| among them), a
+// setter builtin's words read to its command's end past its redirections (>&, <&, &> and >| among them), read's
+// line read to its end and a for loop with no in list setting its name from the positional parameters (round
+// 12's fourth iteration: for version; do evaluated each argument of a helper), a
 // [[ test read to its real ]] wherever a ${…}, $(…) or parenthesis holds one, a [ or test with a word bash could
 // split, glob or expand a tilde in, that expands to several ("$@", "${a[@]}"), holds a backslash outside quotes or
 // is an operator in quotes ('-v'), whose ] isn't its command's last word and only ], or that stands where no shape
@@ -323,7 +348,9 @@
 // redirection's target before a command's word is a word of joined parts, as bash reads it, so <<<"$step"'' or
 // >&2'' hides no command after it (round 12's second iteration); a ! or { starts a command only where a command
 // starts, in the chain after a boundary as the keywords do, and a function definition's head before its body's {,
-// so echo x ! [[ hands echo two words and hides nothing (round 12's third iteration); the words no credentialed
+// so echo x ! [[ hands echo two words and hides nothing (round 12's third iteration); the | of >| is a
+// redirection's, never a boundary, so a [[ as its target is no test (round 12's fourth iteration); the words no
+// credentialed
 // job may name at all
 // (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
@@ -573,9 +600,12 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # is that function's Arn (never a function elsewhere, another account's among them), the function's
 # code is a zip in the staging bucket (never inline: the zip's bytes are the release's own, as the image
 # is, read by no check, so what the code can do is its role's grant, which the diff's IAM table shows)
-# and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by a role of
-# its template, with no layer, environment, network or other key, so no other account's code runs before
-# the handler), and no string in its template names it, so no grant, output or other value reads its
+# and its properties CDK's own and no others (CDK's entry point on a Node.js runtime, run by its own
+# unnamed role of its template, trusted by Lambda alone, so the grant the diff's IAM table shows under that
+# role's label is the code's and no other role's, which on a first create the diff would print only as
+# grants beside that role's own, with no line tying the function to it; with no layer, environment, network
+# or other key, so no other account's code runs before the handler), and no string in its template names
+# it, so no grant, output or other value reads its
 # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
 # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
 # every key and nested key of its properties, with each intrinsic function within them by its name, to its
@@ -611,11 +641,13 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # listener serves the template's certificates with a fixed response, a rule forwards to the template's target
 # groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
 # template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-# parameter names), and flow logs the template's log group by its own role; and SSM parameters, the secret,
-# log groups, roles, the cache and tags are its stage's, each parameter holding the template's own resource's
-# value (or a host name for Valkey's endpoint), each role trusted by ECS tasks, VPC flow logs or Lambda alone,
-# in the account, and each task role, but in prod until the same change, bound by its network perimeter:
-# every call but rds-db:connect denied from outside the template's network unless an AWS service makes it.
+# parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
+# logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+# parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
+# trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
+# role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
+# perimeter: every call but rds-db:connect denied from outside the template's network unless an AWS service
+# makes it.
 # Each stack's outputs are the synth's alone, each of its shape (Services' release; Tasks' cluster, whether a
 # database is there, isolated subnets and the one-offs' security groups and task definitions; no other
 # stack's), since the one-offs, the release checks and the read-back read them, and aws-cli loads a file://
@@ -743,8 +775,8 @@ check_release_in() {
   root=$(cd "$1" && pwd -P)
   while IFS= read -r dir; do
     while IFS=$'\t' read -r stack template; do
-      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role" and ($r[.[0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "lambda.amazonaws.com"))))) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
       # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
       # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
       # path reads one way (and the key of a container's secret values, whose name DPW-07 refuses standing alone
@@ -960,9 +992,9 @@ check_release_in() {
         all(of("AWS::EC2::SubnetRouteTableAssociation"); (.SubnetId | ref("AWS::EC2::Subnet")) and (.RouteTableId | ref("AWS::EC2::RouteTable")) and (((.SubnetId.Ref | IN($isolated[])) and (.RouteTableId.Ref | IN($routed[]))) | not)) and
         all(of("AWS::EC2::VPCGatewayAttachment"); .InternetGatewayId | ref("AWS::EC2::InternetGateway")) and
         all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
-        all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn")) and (.ResourceId | ref("AWS::EC2::VPC"))) and
+        all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
         all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape"
+        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -972,12 +1004,12 @@ check_release_in() {
         all(of("AWS::SSM::Parameter"); (.Name | type == "string" and startswith("/hearth/" + $s + "/")) and ((.Name | ltrimstr("/hearth/" + $s + "/")) as $n | .Value | if $n == "auth-secret/arn" then ref("AWS::SecretsManager::Secret") elif $n == "network/isolated-subnets" then type == "object" and keys == ["Fn::Join"] and .["Fn::Join"][0] == "," and (.["Fn::Join"][1] | type == "array" and all(.[]; ref("AWS::EC2::Subnet"))) elif $n | test("\\Asecurity-group/(api|realtime|worker|migrate|probe|valkey|bastion)\\z") then att("AWS::EC2::SecurityGroup"; "GroupId") elif $n | test("\\Atarget-group/(api|realtime)\\z") then ref("AWS::ElasticLoadBalancingV2::TargetGroup") elif $n == "valkey/endpoint" then att("AWS::ElastiCache::ReplicationGroup"; "PrimaryEndPoint.Address") or (type == "string" and test("\\A[a-z0-9.-]+\\z")) else false end)) and
         all(of("AWS::SecretsManager::Secret"); .Name == "hearth/" + $s + "/auth-secret") and
         all(of("AWS::Logs::LogGroup"); .LogGroupName | type == "string" and test("\\A/hearth/" + $s + "/[a-z-]+\\z")) and
-        all(of("AWS::IAM::Role"); ((has("RoleName") | not) or (.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
+        all(of("AWS::IAM::Role"); ((has("RoleName") | not) or ((.RoleName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)-(task|exec)\\z")) and all(.AssumeRolePolicyDocument.Statement[]?; .Principal.Service == "ecs-tasks.amazonaws.com"))) and (.AssumeRolePolicyDocument.Statement | type == "array" and all(.[]; .Effect == "Allow" and .Action == "sts:AssumeRole" and (.Principal.Service | IN("ecs-tasks.amazonaws.com", "vpc-flow-logs.amazonaws.com", "lambda.amazonaws.com")) and ((.Condition.StringEquals // {}) | (has("aws:SourceAccount") | not) or .["aws:SourceAccount"] == {"Ref": "AWS::AccountId"})))) and
         all(of("AWS::IAM::Role") | select(.RoleName | type == "string" and endswith("-task")); $s == "prod" or any(.Policies[]?.PolicyDocument.Statement[]?; type == "object" and keys == ["Condition", "Effect", "NotAction", "Resource", "Sid"] and .Sid == "NetworkPerimeter" and .Effect == "Deny" and .NotAction == "rds-db:connect" and .Resource == "*" and (.Condition | type == "object" and keys == ["BoolIfExists", "StringNotEqualsIfExists"] and .BoolIfExists == {"aws:ViaAWSService": "false"} and (.StringNotEqualsIfExists | type == "object" and keys == ["aws:SourceVpc"] and (.["aws:SourceVpc"] | ref("AWS::EC2::VPC")))))) and
         all(of("AWS::ElastiCache::ReplicationGroup"); .ReplicationGroupId == "hearth-" + $s and (.CacheParameterGroupName | ref("AWS::ElastiCache::ParameterGroup")) and (.CacheSubnetGroupName | ref("AWS::ElastiCache::SubnetGroup")) and all(.SecurityGroupIds // [] | .[]; param("/hearth/" + $s + "/security-group/valkey"))) and
         all(of("AWS::ElastiCache::SubnetGroup"); .SubnetIds | param("/hearth/" + $s + "/network/isolated-subnets")) and
         all($r[] | select(.Type != "AWS::ECS::TaskDefinition") | .Properties.Tags // [] | .[]; .Key | IN("Name", "aws-cdk:subnet-name", "aws-cdk:subnet-type"))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust or a task role's network perimeter of another shape"
+        asset_refuse "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | $at.s as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1454,7 +1486,8 @@ export const PULL_CHECKS = sh`set -euo pipefail
 # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
 # head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head: the
 # newest such run from the pull request's own head repository and branch (so another fork's pull
-# request at the same commit is never read; its path read without any @<ref> GitHub adds) whose
+# request at the same commit is never read; its path read without any @<ref> GitHub adds, which is
+# exact since no workflow's own name holds an @, DPW-04's folder rule) whose
 # latest attempt started (run_started_at) at or after the pull request's created_at and at or before
 # its merged_at, so a run re-run after the merge isn't counted and, with no other, its checks read as
 # missing; read from the run and its jobs, never from a check run, which any token with checks: write
@@ -1509,7 +1542,8 @@ jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" --argjson
 // and migrations jobs, until both succeed.
 export const MAIN_CI = sh`set -euo pipefail
 # main's own CI on this commit (C11-D52): ci.yml's push run on main (its path read without any @<ref>
-# GitHub adds), the newest, read from the run and its jobs (never a check run, which any token with
+# GitHub adds, which is exact since no workflow's own name holds an @, DPW-04's folder rule), the
+# newest, read from the run and its jobs (never a check run, which any token with
 # checks: write can make), until check and migrations both succeed; any other conclusion fails at
 # once, and 30 minutes ends the wait.
 DEADLINE=$((SECONDS + 30 * 60))
@@ -2579,6 +2613,14 @@ const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonpr
       }
   }
 }
+// The folder the gate, prod-gate and the four smokes check the run's commit out into, and the folder each of
+// their steps that reads the checkout runs in (round 12's fourth iteration): setup-node runs node, npm and yarn
+// with --version in its job's workspace, and Yarn 1 runs the program a .yarnrc's yarn-path names, from the
+// folder it runs in or any above it, before it reads its arguments. Checked out at the workspace's root, a
+// .yarnrc and its program (neither on the owner's-read list) would put another node first on the PATH for
+// every later step, and decide the plan, prod-gate's verdict and every smoke. In a folder of its own, the
+// checkout is below where setup-node runs, which then reads nothing of the repository's.
+export const REPO_FOLDER = 'repo'
 // The build's runs and the synth's, each synth step's in its own checkout's folder (its working-directory,
 // pinned with it), under DPW-13.
 const buildRuns = (): Pinned => ({
@@ -2619,8 +2661,8 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
     'The release, migration and restore records': { run: GATE_RECORDS, rule: 'DPW-09' },
     'The pull request that made this commit, and its checks': { run: PULL_CHECKS, rule: 'DPW-08' },
     "main's ruleset is live": { run: RULESET_CHECK, rule: 'DPW-09' },
-    'The environments are live as written': { run: ENVIRONMENTS_CHECK, rule: 'DPW-09' },
-    Plan: { run: PLAN_STEP, rule: 'DPW-09' },
+    'The environments are live as written': { run: ENVIRONMENTS_CHECK, rule: 'DPW-09', cwd: REPO_FOLDER },
+    Plan: { run: PLAN_STEP, rule: 'DPW-09', cwd: REPO_FOLDER },
   },
   build: buildRuns(),
   synth: synthRuns(),
@@ -2633,7 +2675,7 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
       rule: 'DPW-08',
       if: expr("needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'"),
     },
-    'The prod gate': { run: PROD_GATE_CALL, rule: 'DPW-08' },
+    'The prod gate': { run: PROD_GATE_CALL, rule: 'DPW-08', cwd: REPO_FOLDER },
   },
   nonprod: { ...deployRuns('nonprod'), ...credentialedRuns('nonprod') },
   prod: { ...deployRuns('prod'), ...credentialedRuns('prod') },
@@ -2645,10 +2687,10 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   },
   'rollback-nonprod': { ...rollbackRuns(), ...credentialedRuns('rollback-nonprod') },
   'rollback-prod': { ...rollbackRuns(), ...credentialedRuns('rollback-prod') },
-  'smoke-nonprod': { Smoke: { run: smokeRun('smoke-nonprod'), rule: 'DPW-08' } },
-  'smoke-prod': { Smoke: { run: smokeRun('smoke-prod'), rule: 'DPW-08' } },
-  'resmoke-nonprod': { Smoke: { run: smokeRun('resmoke-nonprod'), rule: 'DPW-08' } },
-  'resmoke-prod': { Smoke: { run: smokeRun('resmoke-prod'), rule: 'DPW-08' } },
+  'smoke-nonprod': { Smoke: { run: smokeRun('smoke-nonprod'), rule: 'DPW-08', cwd: REPO_FOLDER } },
+  'smoke-prod': { Smoke: { run: smokeRun('smoke-prod'), rule: 'DPW-08', cwd: REPO_FOLDER } },
+  'resmoke-nonprod': { Smoke: { run: smokeRun('resmoke-nonprod'), rule: 'DPW-08', cwd: REPO_FOLDER } },
+  'resmoke-prod': { Smoke: { run: smokeRun('resmoke-prod'), rule: 'DPW-08', cwd: REPO_FOLDER } },
   'record-nonprod': { 'Write the record': { run: recordRun('nonprod'), rule: 'DPW-13' } },
   'record-prod': { 'Write the record': { run: recordRun('prod'), rule: 'DPW-13' } },
 })
@@ -3311,7 +3353,7 @@ const REST_END = new RegExp(String.raw`${COMMAND_END}|\)|[$<>]\(|$`)
 // blanking hide the commands after it, so each is read only in the chain after a boundary, as the keywords are,
 // and a function definition's head (name () or function name, with or without its ()) stands in that chain
 // before its body's {.
-const COMMAND_BOUNDARY = String.raw`^|[;|]|(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(`
+const COMMAND_BOUNDARY = String.raw`^|;|(?<!>)\||(?<![<>])&(?!>)|\$\((?!\()|[<>]\(|(?<![=$<>\w(])\(`
 const COMMAND_CHAIN = String.raw`(?:\s*(?:\b(?:then|do|else|elif|if|while|until)|\{|!)(?=\s))*`
 const FUNCTION_HEAD = String.raw`\s*(?:function\s+[^\s;&|()<>'"$=\x60\\]+(?:\s*\(\s*\))?|[^\s;&|()<>'"$=\x60\\]+\s*\(\s*\))(?=\s*\{)`
 const COMMAND_START = `(?:${COMMAND_BOUNDARY})${COMMAND_CHAIN}(?:${FUNCTION_HEAD}${COMMAND_CHAIN})?`
@@ -3929,10 +3971,12 @@ export function evaluatedLines(run: string): number[] {
 // commands as bash runs them: no unquoted backslash before a blank, a #, a ( or ), or a line's end, no case inside a
 // substitution, no command whose word is a substitution's output, none of what shellViews() names odd, no
 // backtick substitution, no here-document, no local or export of a name it builds, no & that runs what comes
-// before it in the background (BACKGROUND), and, outside a canonical text standing whole in it, nothing EVALUATED
-// names (a canonical text's own are held by outsideEvaluations()).
+// before it in the background (BACKGROUND), no command started where COMMAND_START reads none (UNREAD_START,
+// FOR_NAME_DO, a function whose body isn't a { … } group), and, outside a canonical text standing whole in it,
+// nothing EVALUATED names (a canonical text's own are held by outsideEvaluations()).
 export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
   if (views.nestedCase || views.odd.size > 0 || BACKGROUND.test(views.code)) return false
+  if (UNREAD_START.test(views.code) || FOR_NAME_DO.test(views.code) || bodyNotGroup(views.code)) return false
   if (ESCAPED_BREAK.test(views.code) || LINE_JOIN.test(run) || SUBSTITUTED_WORD.test(views.code)) return false
   if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
@@ -3948,6 +3992,20 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
     .every((line, n) => !(EVALUATED.some(pattern => pattern.test(line)) || unplain.has(n)) || canonical.has(n))
 }
 
+// Where bash starts a command that the reader's COMMAND_START doesn't read as one (round 12's fourth iteration):
+// a then, do, else or elif straight after a compound command's ]], ) or }, with no ; between (if [[ … ]] then
+// CMD); a for loop with no in list and no ; before its do (for NAME do CMD); and a function whose body is a
+// compound command other than { … } (name() while CMD; …, name() if CMD; …, name() case … in P) CMD ;; esac). No
+// canonical text writes any of them, and the commands they start read as none, so no rule held them. Reading them
+// as command starts would make ) a boundary, which every $( … ) holds; so the text is refused instead.
+const UNREAD_START = /(?:\]\]|[)}])[ \t]+(?:then|do|else|elif)(?![\w-])/
+const FOR_NAME_DO = /(?<![\w-])for[ \t]+[A-Za-z_]\w*[ \t]+do(?![\w-])/
+function bodyNotGroup(code: string): boolean {
+  for (const match of code.matchAll(DEFINITION)) {
+    if (!/^(?:\s*\(\s*\))?\s*\{/.test(code.slice(match.index + match[0].length))) return true
+  }
+  return false
+}
 // An & that is a control operator, which runs the list before it in a subshell of its own in the background (round
 // 12's third iteration): set -e never sees its status and no text may wait for it, so an exit 1 in a refusal, a
 // group, a subshell or an if … fi followed by & ended that subshell alone and the step went on as if it had
@@ -4008,10 +4066,33 @@ type Assignment = { at: number; value: string }
 const ASSIGNMENTS = keptByText((text: string): ((name: string) => Assignment[]) => {
   const code = shellViews(text).code
   const found = new Map<string, Assignment[]>()
+  // Every name a builtin sets by a word it is handed, as the command reader reads it (builtinNames), at its
+  // line's start, as an outside value: read's, mapfile's, getopts', select's, printf -v's, and a for loop's
+  // with no in list, which bash's for NAME; do and for NAME do set from the positional parameters, a
+  // function's arguments (round 12's fourth iteration: a helper's for version; do [ "$(( version ))" -le 8 ]
+  // evaluated each argument, a value from the assembly, while the regexes below read only for NAME in, and a |
+  // in a substitution before read's name stopped both the reader's command and the setters' regex, which now
+  // reads to the line's end). local's names and a for loop over an in list are read below, by their values.
+  const starts: number[] = []
+  let offset = 0
+  for (const line of code.split('\n')) {
+    starts.push(offset)
+    offset += line.length + 1
+  }
+  const byBuiltin = shellCommands(text).flatMap(command =>
+    command.word === 'local' || (command.word === 'for' && words(command.tail)[1] === 'in')
+      ? []
+      : builtinNames(command).map(name => ({ name, at: starts[command.line] ?? 0 })),
+  )
   return (name: string) => {
     const kept = found.get(name)
     if (kept !== undefined) return kept
-    const all: Assignment[] = []
+    const all: Assignment[] = byBuiltin.filter(each => each.name === name).map(({ at }) => ({ at, value: '$' }))
+    for (const match of code.matchAll(
+      new RegExp(String.raw`(?<![\w-])for\s+${name}(?!\s+in(?![\w-]))(?=[\s;])`, 'g'),
+    )) {
+      all.push({ at: match.index, value: '$' })
+    }
     for (const match of code.matchAll(new RegExp(String.raw`(?<![\w$-])${name}(?:\[[^\]\n]*\])?\+?=`, 'g'))) {
       all.push({ at: match.index, value: valueAt(text, match.index + match[0].length) })
     }
@@ -4021,7 +4102,7 @@ const ASSIGNMENTS = keptByText((text: string): ((name: string) => Assignment[]) 
       const listed = match[1] ?? ''
       all.push({ at: match.index, value: /^[\d\s+-]+$/.test(listed) ? '' : /^[\w\s-]+$/.test(listed) ? WORDS : '$' })
     }
-    const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^;\n|]*(?<![\w$])${name}(?!\w)`
+    const setters = String.raw`(?<![\w-])(?:read|mapfile|readarray|getopts|select)\s[^\n]*(?<![\w$])${name}(?!\w)`
     for (const match of code.matchAll(new RegExp(setters, 'g'))) all.push({ at: match.index, value: '$' })
     const printf = String.raw`(?<![\w-])printf\s+-v\s+"?${name}(?![\w])`
     for (const match of code.matchAll(new RegExp(printf, 'g'))) all.push({ at: match.index, value: '$' })
@@ -5302,6 +5383,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of readerLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${READER_RULE}`)
     }
+    for (const line of verdictLines(text)) found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${VERDICT_RULE}`)
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
@@ -5309,6 +5391,30 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
   }
   return found
+}
+
+// How a canonical text ends a step or a function (round 12's fourth iteration): exit and return only with a
+// literal status, and a bare return only straight after ||, where it returns the failing command's status; and no
+// subshell opened where a command starts. A refusal written echo "…" | mask, then a bare exit, ended its step with
+// mask's status, 0, and PROBE's last call wrapped in ( … ) || echo "…" turned the probe's exit 1 into a step that
+// passed: the glue's table holds exit to one argument and each check's call to stand alone, while a canonical
+// text's own exits and subshells were held by nothing. No committed text writes either.
+const VERDICT_RULE =
+  'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s) and opens no subshell where a command starts, so no refusal ends its step with status 0 or a subshell alone'
+const SUBSHELL = /(?:^|[;&|!{]|(?<![\w-])(?:then|do|else|elif|if|while|until))[ \t]*\((?!\()/gm
+export function verdictLines(text: string): number[] {
+  const code = commandCode(shellViews(text).code)
+  const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
+  const lines = new Set<number>()
+  for (const match of code.matchAll(/(?<![\w$-])(exit|return)(?![\w-])/g)) {
+    const after = code.slice(match.index + match[0].length)
+    const numbered = /^[ \t]+[0-9]+(?=[ \t]*(?:[;)}&|\n]|$))/.test(after)
+    const passed =
+      match[1] === 'return' && /\|\|[ \t]*$/.test(code.slice(0, match.index)) && /^[ \t]*(?:[;)}\n]|$)/.test(after)
+    if (!numbered && !passed) lines.add(lineOf(match.index))
+  }
+  for (const match of code.matchAll(SUBSHELL)) lines.add(lineOf(match.index))
+  return [...lines].sort((a, b) => a - b)
 }
 
 // --- Reading a run's own lines through a table (DPW-07, DPW-10, DPW-13) ------------------------------------
@@ -6849,11 +6955,12 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
         at(
           DEPLOY,
           'DPW-04',
-          '.github/workflows holds workflows alone (<name>.yml or <name>.yaml): no actions lockfile or other file beside them',
+          '.github/workflows holds workflows alone (<name>.yml or <name>.yaml, with no @ in the name): no actions lockfile or other file beside them',
         ),
       )
     }
     if (SHADOW_FILE.test(path)) found.add(at(SCRIPTS, 'DPW-04', SHADOW_RULE))
+    if (YARN_FILE.test(path)) found.add(at(path, 'DPW-04', YARN_RULE))
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
   if (!cliPinJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CLI_PIN_JOB_RULE))
@@ -6874,7 +6981,12 @@ const NVMRC_RULE =
 // The job that proves the pins: a step before it in its job (a test that wrote url.<fork>.insteadOf to
 // $HOME/.gitconfig, say, or wrote the check over, or a GITHUB_PATH that put another git first) would decide
 // what it reads. A job runs on a runner of its own, so this one, whose only steps are GitHub's checkout and
-// setup-node and the check, runs it before any of the repository's code. Those two actions run first, so
+// setup-node and the check, runs it before any of the repository's code: the checkout goes into REPO_FOLDER,
+// below the workspace where setup-node runs node, npm and yarn with --version, since Yarn 1 runs the program a
+// .yarnrc's yarn-path names from the folder it runs in or any above it (a pull request's .yarnrc put a git
+// first on the PATH that answered ls-remote with a fork's commit: round 12's fourth iteration), and the
+// check's step runs BLOB_RESET first, so node runs the blobs the owner read whatever .gitattributes says,
+// which the script's own drift check can't hold for itself. Those two actions run first, so
 // the check can't prove them: an action at a commit pushed only to a fork, there, would own the workspace,
 // the check itself and the git it calls. So each is held to its commit in PINS_JOB_ACTIONS
 // (action-pins.ts), apart from ACTION_PINS, so moving a pin there moves neither, and a change to them is one
@@ -6898,11 +7010,23 @@ const NVMRC_RULE =
 // is the owner's read of it (CLAUDE.md's list); the test script, vitest.config.ts and the scripts check runs
 // first are off that list.
 export const PINS_JOB = 'action-pins'
-export const PINS_RUN = 'node scripts/check-action-pins.ts'
+// The working tree reset to its blobs before node runs (round 12's fourth iteration): the checkout writes each
+// file through .gitattributes (an ident on check-action-pins.ts itself turned the drift check its main() calls
+// into a comment, so the blob the owner read refused and the checkout passed), and this run is read from the
+// workflow's blob, which no checkout writes. info/attributes is git's highest-precedence attribute source, so
+// every path is read with no conversion; read-tree clears the index's stat data, without which checkout-index
+// skips a file whose size and time match it, and checkout-index then writes every file as its blob.
+export const BLOB_RESET = `printf '* -text -eol -ident -filter -working-tree-encoding\\n' >.git/info/attributes
+git read-tree HEAD
+git checkout-index --all --force`
+export const PINS_CHECK = 'node scripts/check-action-pins.ts'
+export const PINS_RUN = `${BLOB_RESET}\n${PINS_CHECK}`
 const NEEDS_FAILED = expr(
   "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
 )
-const PINS_JOB_RULE = `runs ${PINS_RUN} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
+const PINS_JOB_RULE = `runs ${PINS_CHECK} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
+// setup-node's inputs in both jobs: Node from the checkout's folder's .nvmrc, with no cache.
+const PINS_NODE_WITH = { 'node-version-file': `${REPO_FOLDER}/.nvmrc`, 'package-manager-cache': 'false' }
 // A step that runs the action at its commit in PINS_JOB_ACTIONS, its version comment on its line.
 function atJobPin(step: WorkflowStep | undefined, action: string): boolean {
   const pin = PINS_JOB_ACTIONS[action] ?? ''
@@ -6932,12 +7056,13 @@ function pinsJobHolds(ci: string): boolean {
     steps.length === 3 &&
     only(checkout, ['name', 'uses', 'with']) &&
     atJobPin(checkout, 'actions/checkout') &&
-    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false' }) &&
+    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false', path: REPO_FOLDER }) &&
     only(node, ['name', 'uses', 'with']) &&
     atJobPin(node, 'actions/setup-node') &&
-    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }) &&
-    only(run, ['name', 'run']) &&
-    run?.run === PINS_RUN &&
+    sameMap(node?.with ?? new Map(), PINS_NODE_WITH) &&
+    only(run, ['name', 'working-directory', 'run']) &&
+    run?.keys.get('working-directory') === REPO_FOLDER &&
+    run.run === PINS_RUN &&
     onceEach(check.keyNames, ['needs', 'if', 'runs-on', 'timeout-minutes', 'steps']) &&
     jobScalar(check, 'runs-on') === 'ubuntu-24.04' &&
     jobNeeds(check).includes(PINS_JOB) &&
@@ -6955,12 +7080,15 @@ function pinsJobHolds(ci: string): boolean {
 // request's own .npmrc and restores into it. So it runs as the pins check does, in a job of its own whose
 // steps are only the pins job's checkout (with the whole history, which the base's manifest needs) and
 // setup-node with no cache, held to PINS_JOB_ACTIONS, and the check, on a pull request, against the base's
-// remote-tracking name; check needs it, and on a push the step is skipped and the job succeeds, since check
+// remote-tracking name, in REPO_FOLDER after BLOB_RESET as the pins job's (a pull request's .yarnrc moved
+// origin/main to HEAD, and a lowered pin passed: round 12's fourth iteration); check needs it, and on a push
+// the step is skipped and the job succeeds, since check
 // fails on a skipped need. The script reads HEAD's committed manifest too. This is a second layer, as
 // pinsJobHolds is: the owner's read of ci.yml holds it.
 export const CLI_PIN_JOB = 'cli-pin'
-export const CLI_PIN_RUN = 'node scripts/check-cli-pin.ts "$BASE"'
-const CLI_PIN_JOB_RULE = `runs ${CLI_PIN_RUN} in a job of its own, ${CLI_PIN_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials and setup-node with Node from .nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it`
+export const CLI_PIN_CHECK = 'node scripts/check-cli-pin.ts "$BASE"'
+export const CLI_PIN_RUN = `${BLOB_RESET}\n${CLI_PIN_CHECK}`
+const CLI_PIN_JOB_RULE = `runs ${CLI_PIN_CHECK} in a job of its own, ${CLI_PIN_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it`
 function cliPinJobHolds(ci: string): boolean {
   const jobs = workflowJobs(ci)
   const own = jobs.filter(job => job.id === CLI_PIN_JOB)
@@ -6977,12 +7105,13 @@ function cliPinJobHolds(ci: string): boolean {
     steps.length === 3 &&
     only(checkout, ['name', 'uses', 'with']) &&
     atJobPin(checkout, 'actions/checkout') &&
-    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false', 'fetch-depth': '0' }) &&
+    sameMap(checkout?.with ?? new Map(), { 'persist-credentials': 'false', 'fetch-depth': '0', path: REPO_FOLDER }) &&
     only(node, ['name', 'uses', 'with']) &&
     atJobPin(node, 'actions/setup-node') &&
-    sameMap(node?.with ?? new Map(), { 'node-version-file': '.nvmrc', 'package-manager-cache': 'false' }) &&
-    only(run, ['name', 'if', 'env', 'run']) &&
+    sameMap(node?.with ?? new Map(), PINS_NODE_WITH) &&
+    only(run, ['name', 'if', 'working-directory', 'env', 'run']) &&
     run?.if === expr("github.event_name == 'pull_request'") &&
+    run.keys.get('working-directory') === REPO_FOLDER &&
     sameMap(run.env, { BASE: `origin/${expr('github.base_ref')}` }) &&
     run.run === CLI_PIN_RUN &&
     jobNeeds(check).includes(CLI_PIN_JOB)
@@ -7012,8 +7141,12 @@ function requiredJobsNamed(ci: string): boolean {
     })
   )
 }
-// A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows.
-export const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/
+// A workflow file as GitHub runs it and the guard reads it: one level under .github/workflows, with no @ in its
+// name (round 12's fourth iteration): GitHub may give a run's path a ref after an @, so the gate's PULL_CHECKS
+// and prod-gate's MAIN_CI read ci.yml's runs as the path before the first @, and a workflow named ci.yml@x.yml,
+// whose jobs check and migrations always passed, read as ci.yml, its run newer than ci.yml's own. With no @ in
+// any workflow's name, the path before the first @ names its file exactly.
+export const WORKFLOW_FILE = /^\.github\/workflows\/[^/@]+\.ya?ml$/
 // The folder the guard's own modules live in (this file, action-pins.ts, workflow.ts, the tests) and the pins
 // check beside them, and a file there that a module resolver could load in place of a .ts one: JavaScript,
 // another TypeScript flavour, or a name with no extension. Vitest resolves an import that names a module
@@ -7024,6 +7157,15 @@ export const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/
 // .ts file, which the test holds, the pins check reads deploy.yml's uses: itself, and scripts/ holds none
 // of these, so no such file stands beside any guard's module either.
 const SCRIPTS = 'scripts'
+// A Yarn file anywhere in the tree (round 12's fourth iteration): setup-node runs yarn --version in its job's
+// workspace, and Yarn 1, which GitHub's image ships, reads .yarnrc (or .yarnrc.yml) from the folder it runs in
+// and every one above it, and runs the program its yarn-path names (a file under .yarn/, as yarn policies
+// set-version writes it) before it reads an argument. The repository uses npm alone, so no Yarn file belongs in
+// it. Every job that runs only owner's-read code checks out into a folder below setup-node's (DPW-04's job
+// holds, DPW-11), which is the control; this is a second layer, since neither file is on the owner's-read list.
+const YARN_FILE = /(?:^|\/)(?:\.yarnrc(?:\.ya?ml)?$|\.yarn\/)/
+const YARN_RULE =
+  'is a Yarn file (.yarnrc, .yarnrc.yml or under .yarn/): the repository uses npm alone, and Yarn 1, which setup-node runs in its job’s workspace, runs the program a .yarnrc’s yarn-path names'
 const SHADOW_FILE = /^scripts\/(?:[^/]+\/)*(?:[^/.]+|[^/]+\.(?:[cm]?js|jsx|[cm]ts|tsx))$/
 const SHADOW_RULE =
   'holds no JavaScript, no other TypeScript flavour (.js, .mjs, .cjs, .jsx, .mts, .cts, .tsx) and no file without an extension, any of which Vitest would load in place of a guard module named without its .ts'
@@ -7228,6 +7370,37 @@ const CLI_STEP_IF: Readonly<Record<string, Readonly<Record<string, string>>>> = 
 const STATUS_FUNCTION = /\b(?:always|success|failure|cancelled)\s*\(/i
 const GOES_ON =
   "lets no failure pass: no continue-on-error, and no step's if: calls always(), success(), failure() or cancelled()"
+// The commands whose status is the step's verdict, each standing alone (round 12's fourth iteration): a deploy
+// of the CLI and smoke.ts. Wrapped as the diff runs wrap the CLI (STATUS=0, a { … } group, } || STATUS=$?, a
+// summary line) but with no exit "$STATUS" after, or as { … } || echo, a failed deploy went on to migrate and
+// Services over stacks that hadn't moved, and a failed smoke started no rollback and recorded the release:
+// bash lifts set -e from what stands left of an || or &&, in an if's condition and after a !, and the CLI line
+// and smoke.ts's line, each held whole, stayed whole inside the group. So each stands alone as standsAlone()
+// holds a check's call: outside any substitution, pipeline, negation, and-or list (a group's or a subshell's
+// included) or condition. Two forms are the workflow's own: the drill's if, whose CDK_DEPLOY_DRILL line is
+// the deploy that must fail and whose body refuses when it doesn't, and prod-plan's diffs (DIFF_RUNS), each
+// in { … } >"$DIFF" || STATUS=$? and ended by exit "$STATUS", which no deploy is.
+const VERDICT_ALONE =
+  'runs each deploy of the CLI and smoke.ts standing alone, outside any substitution, pipeline, negation, and-or list (a group’s or subshell’s included) or condition but the drill’s if, so its failure ends the step'
+const isVerdict = (command: GlueCommand) =>
+  (command.name === 'run' && command.args[0]?.raw === '"$CDK"' && command.args[1]?.raw === 'deploy') ||
+  (command.name === 'node' && command.args[0]?.raw === 'infra/scripts/deploy/smoke.ts')
+function verdictsStandAlone(run: string): boolean {
+  // A run the table can't read whole (a subshell, which it names no entry for) is refused by the table's own
+  // rule in every job (DPW-07, DPW-10, DPW-13), since the reader stops where it refuses.
+  const read = readShell(run)
+  const lines = run.split('\n')
+  return read.commands.every(
+    command =>
+      !isVerdict(command) ||
+      standsAlone(command, read.commands) ||
+      (run === DRILL_RUN &&
+        lines[command.line]?.trim() === CDK_DEPLOY_DRILL &&
+        read.commands.some(
+          each => each.name === 'if' && each.line === command.line && standsAlone(each, read.commands),
+        )),
+  )
+}
 
 const FORBIDDEN_RUN_FLAGS =
   /(?<![\w-])(?:--cli-input-json|--cli-input-yaml|--generate-cli-skeleton|--enable-execute-command|--tags)(?![\w-])/
@@ -7346,6 +7519,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
     ) {
       add(id, GOES_ON)
     }
+    if (steps.some(step => step.run !== undefined && !verdictsStandAlone(step.run))) add(id, VERDICT_ALONE)
     const credentials = credentialsAt(steps)
     // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped: but
     // the downloads, a download's asset check, which runs exactly when its download does (prod-plan's of the
@@ -8015,6 +8189,14 @@ export function prodPathFindings(workflows: Texts): Finding[] {
     if (!isMap(deployOutputs) || deployOutputs.get('replaced') !== expr('steps.aws.outputs.replaced')) {
       add(deploy, `outputs replaced from its AWS_CHECK step, for ${rollback}'s auto check`)
     }
+    // The rollback's auto check reads that output as REPLACED, compared here as written, never through
+    // AWS_CHECK_ENV, which moves with the workflow (round 12's fourth iteration): REPLACED read from the gate's
+    // current_<env>, the newest record, which for a deploy is the previous release itself, made the check's
+    // second test always pass, so a rollback a person made after the gate read the records was followed by
+    // a move forward to the release they had rolled back from.
+    if (job?.steps.find(step => step.id === 'aws')?.env.get('REPLACED') !== expr(`needs.${deploy}.outputs.replaced`)) {
+      add(rollback, `judges what ${deploy} replaced by REPLACED, its deploy job's replaced output as written`)
+    }
     if (
       job === undefined ||
       !jobNeeds(job.job).includes('build') ||
@@ -8147,6 +8329,17 @@ const PLAN_ENV: Readonly<Record<string, string>> = {
 // The jobs that synthesise an assembly, each one commit's on a runner of its own (C11-D51): the release's,
 // and each environment's previous release's, for its automatic rollback.
 const SYNTH_JOBS: readonly string[] = ['synth', 'synth-previous-nonprod', 'synth-previous-prod']
+// The jobs whose checkout is a folder of its own, so a step of theirs may name it as its working-directory:
+// the synths' and the jobs that check the run's commit out into REPO_FOLDER.
+const FOLDER_JOBS: readonly string[] = [
+  ...SYNTH_JOBS,
+  'gate',
+  'prod-gate',
+  'smoke-nonprod',
+  'resmoke-nonprod',
+  'smoke-prod',
+  'resmoke-prod',
+]
 // The jobs whose if: no drill may pass (C11-D59): drills are non-prod's alone.
 const NO_DRILL = ['prod-plan', 'prod-gate', 'prod', 'rollback-prod', 'record-prod'] as const
 // The jobs each job runs only once they succeeded, with what else its if: is then told (DPW-09): an if:
@@ -9280,8 +9473,9 @@ function definitionsAreCanonical(run: string): boolean {
 // service, default, strategy, reusable workflow, self-hosted runner, artifact from another run or
 // variable that chooses what runs (BASH_ENV, PATH, NODE_OPTIONS) comes in unseen; every env:, every action
 // step's with: and every job's outputs: is the guard's, whole, each a block mapping, and every step's id too
-// (STEP_ENVS, STEP_WITHS, JOB_OUTPUTS, STEP_IDS below), so no checkout but synth's names a ref or a path and
-// synth's each check out their own commit into their own folder; every job's if: and needs: and every action
+// (STEP_ENVS, STEP_WITHS, JOB_OUTPUTS, STEP_IDS below), so no checkout but synth's names a ref, synth's each
+// check out their own commit into their own folder, and the gate's, prod-gate's and the smokes' check out into
+// REPO_FOLDER; every job's if: and needs: and every action
 // step's if: are the guard's, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no decision GitHub makes about
 // running a job or an action is read only in part; and every job's steps are the guard's, in every job (JOB_STEPS), none of whose runs names a file
 // command that hands a later step something (GITHUB_ENV, GITHUB_PATH, GITHUB_STATE).
@@ -9550,12 +9744,14 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
 // Each action step's with:, by its job and its name, whole (DPW-10): which commit each checkout checks out
 // and into which folder, which .nvmrc sets Node, which artifact each download fetches into which folder,
 // what each upload sends and the credentials action's inputs. So no checkout of the gate, build, a deploy,
-// rollback or smoke job, prod-plan or prod-gate names a ref or a path (each checks out the run's commit,
-// which the gate holds to main, into the workspace), and the three synths' check out exactly the release,
-// nonprod's and prod's previous release, each into its own folder, one to a job, so no runner that makes an
-// assembly runs a second commit's code: a ref added, dropped or pointed at another output (an input, a
-// branch, a commit) or two folders swapped would have the gate plan by, or a synth build, another commit's
-// code, under labels and checks that read only the env: (the pins read the folder by name).
+// rollback or smoke job, prod-plan or prod-gate names a ref (each checks out the run's commit, which the gate
+// holds to main: the build's, a deploy's, a rollback's and prod-plan's into the workspace, the gate's,
+// prod-gate's and the smokes' into REPO_FOLDER, below where their setup-node runs), and the three synths'
+// check out exactly the release, nonprod's and prod's previous release, each into its own folder, one to a
+// job, so no runner that makes an assembly runs a second commit's code: a ref added, dropped or pointed at
+// another output (an input, a branch, a commit) or two folders swapped would have the gate plan by, or a
+// synth build, another commit's code, under labels and checks that read only the env: (the pins read the
+// folder by name).
 const TEMP = `${expr('runner.temp')}/`
 const CHECKOUT_FULL = { 'fetch-depth': '0', 'persist-credentials': 'false' }
 const CHECKOUT_SHALLOW = { 'persist-credentials': 'false' }
@@ -9585,9 +9781,12 @@ const rollbackWiths = (stage: Stage) => ({
   'Download the previous assembly': downloadOf(`needs.synth-previous-${stage}.outputs.assembly`, 'assembly-previous'),
   'AWS credentials': credentialsWith('AWS_DEPLOY_ROLE'),
 })
-const SMOKE_WITHS = { [CHECKOUT_NAME]: CHECKOUT_FULL, [NODE_NAME]: NODE_WITH }
+const SMOKE_WITHS = {
+  [CHECKOUT_NAME]: { ...CHECKOUT_FULL, path: REPO_FOLDER },
+  [NODE_NAME]: { ...NODE_WITH, 'node-version-file': `${REPO_FOLDER}/.nvmrc` },
+}
 export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
-  gate: { [CHECKOUT_NAME]: CHECKOUT_FULL, [NODE_NAME]: NODE_WITH },
+  gate: SMOKE_WITHS,
   build: {
     [CHECKOUT_NAME]: CHECKOUT_SHALLOW,
     [NODE_NAME]: NODE_WITH,
@@ -9635,7 +9834,7 @@ export const STEP_WITHS: Readonly<Record<string, Readonly<Record<string, Readonl
   'resmoke-prod': SMOKE_WITHS,
 }
 const WITH =
-  'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref or a path but the three synths’, one to a job, each its own commit into its own folder, and no download, upload, Node or credentials input is another'
+  'gives its action exactly the inputs STEP_WITHS names, each its value: no checkout names a ref but the three synths’, one to a job, each its own commit into its own folder, the gate’s, prod-gate’s and the smokes’ check out into repo, and no download, upload, Node or credentials input is another'
 const stepOutput = (step: string, name: string) => expr(`steps.${step}.outputs.${name}`)
 const deployOutputs = {
   digest: expr('steps.push.outputs.digest || steps.release.outputs.digest'),
@@ -10155,10 +10354,10 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       if (FILE_COMMANDS.test(step.run ?? '')) add(where, FILES)
-      if (!onceEach(step.keyNames, SYNTH_JOBS.includes(id) ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
+      if (!onceEach(step.keyNames, FOLDER_JOBS.includes(id) ? [...STEP_KEYS, 'working-directory'] : STEP_KEYS)) {
         add(
           where,
-          'holds only name, id, if, uses, with, env and run (and working-directory in the synths), each once: no shell or continue-on-error',
+          'holds only name, id, if, uses, with, env and run (and working-directory in the synths, the gate, prod-gate and the smokes), each once: no shell or continue-on-error',
         )
       }
       const action = step.uses?.split('@')[0]
@@ -10546,6 +10745,9 @@ export function checkoutFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   for (const [path, text] of workflows) {
     for (const job of workflowJobs(text)) {
+      if (path === DEPLOY && job.id !== 'build' && !nodeBelowCheckout(parsedSteps(job))) {
+        found.push(at(path, 'DPW-11', `${job.id}: ${NODE_BELOW_CHECKOUT}`))
+      }
       parsedSteps(job).forEach((step, index) => {
         if (
           actionRepository(step.uses ?? '') === 'actions/checkout' &&
@@ -10559,6 +10761,33 @@ export function checkoutFindings(workflows: Texts): Finding[] {
     }
   }
   return found
+}
+
+// DPW-11 (round 12's fourth iteration): setup-node runs node, npm and yarn with --version in its job's workspace
+// (its working folder, which the runner sets to github.workspace), and Yarn 1, which GitHub's image ships, reads
+// a .yarnrc from the folder it runs in and every folder above it and runs the program its yarn-path names before
+// it reads an argument. So in deploy.yml every job with a setup-node step but the build's, which runs the
+// repository's code by design, checks out once, into a folder of its own that setup-node comes after and reads
+// .nvmrc from, and every working-directory of the job is that folder: the workspace setup-node runs in then
+// holds none of the repository's files, and nothing a .yarnrc names runs before the job's own code. This holds
+// the shape, whatever folder the pins name; ci.yml's action-pins and cli-pin are held the same way by DPW-04.
+const NODE_BELOW_CHECKOUT =
+  'checks out once, into a folder of its own (path:), before setup-node, which reads that folder’s .nvmrc, and runs every step that names a working-directory there, so setup-node’s node, npm and yarn run in a workspace that holds none of the repository’s files (a .yarnrc’s yarn-path would run its program there)'
+function nodeBelowCheckout(steps: readonly WorkflowStep[]): boolean {
+  const node = steps.findIndex(step => actionRepository(step.uses ?? '') === 'actions/setup-node')
+  if (node < 0) return true
+  const checkouts = steps.flatMap((step, index) =>
+    actionRepository(step.uses ?? '') === 'actions/checkout' ? [index] : [],
+  )
+  const folder = steps[checkouts[0] ?? -1]?.with.get('path') ?? ''
+  return (
+    checkouts.length === 1 &&
+    (checkouts[0] ?? node) < node &&
+    /^[a-z][a-z0-9-]*$/.test(folder) &&
+    steps.filter(step => actionRepository(step.uses ?? '') === 'actions/setup-node').length === 1 &&
+    steps[node]?.with.get('node-version-file') === `${folder}/.nvmrc` &&
+    steps.every(step => !step.keys.has('working-directory') || step.keys.get('working-directory') === folder)
+  )
 }
 
 // The words DPW-12 refuses (C11-D63, C11-D64): the Owner bootstrap script's input and the script, a secret's
@@ -10648,6 +10877,40 @@ const NAMES_DEPLOYMENTS = /\/deployments(?![\w-])/
 // gh api, in one step with no action, so no checkout and no repository code runs where records can be
 // written; local with no flag (no -n or -i, either of which evaluates a value it is later given).
 const RECORD_JOBS = ['record-nonprod', 'record-prod']
+// What a record job writes is what its smokes judged (round 12's fourth iteration), read from the workflow's own
+// env: maps, never through STEP_ENVS, which moves with them: its COMMIT:DIGEST is its smoke's RELEASE expression
+// for expression, its SERVICES the services output of the job whose read-back its smoke's READBACK reads, and
+// its PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way. COMMIT read from
+// github.sha, the run's commit, which the gate's commit equals on every push and dispatched deploy, wrote a
+// dispatched rollback's record under main's head with the target's image, so the next deploy's expansion check
+// asked about main's head and passed a floor the release that runs hadn't reached, and the pipeline's rollback
+// would go back to main's head's code with that image.
+const JUDGED =
+  "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way"
+function recordsWhatWasJudged(jobs: ReadonlyMap<string, Job>, id: string): boolean {
+  const stage = id.replace(/^record-/, '')
+  const envOf = (job: string, step: string) => jobs.get(job)?.steps.find(each => each.name === step)?.env
+  const record = envOf(id, 'Write the record')
+  const servicesOf = (readback: string | undefined) =>
+    expr(
+      `needs.${/^\$\{\{ needs\.([\w-]+)\.outputs\.readback \}\}$/.exec(readback ?? '')?.[1] ?? '\0'}.outputs.services`,
+    )
+  const judged = (smoke: string, commit: string, digest: string, services: string) => {
+    const env = envOf(smoke, 'Smoke')
+    return (
+      env !== undefined &&
+      record !== undefined &&
+      record.get(commit) !== undefined &&
+      record.get(digest) !== undefined &&
+      `${record.get(commit)}:${record.get(digest)}` === env.get('RELEASE') &&
+      record.get(services) === servicesOf(env.get('READBACK'))
+    )
+  }
+  return (
+    judged(`smoke-${stage}`, 'COMMIT', 'DIGEST', 'SERVICES') &&
+    judged(`resmoke-${stage}`, 'PREVIOUS_COMMIT', 'PREVIOUS_DIGEST', 'ROLLBACK_SERVICES')
+  )
+}
 const RECORD_WORDS = [
   '[',
   '[[',
@@ -10829,6 +11092,7 @@ export function releaseFindings(workflows: Texts): Finding[] {
     const refused = refusedAt(where, read)
     if (refused !== undefined) add(refused, AS_BASH)
     if (read.commands.some(command => !glueIsHeld(command, recordCalls(id), read.commands))) add(where, HELD)
+    if (!recordsWhatWasJudged(jobs, id)) add(where, JUDGED)
     const jobEnv = blockValue(jobs.get(id)?.job.keys.get('env') ?? [])
     const envNames = [...(isMap(jobEnv) ? jobEnv.keys() : []), ...(steps[0]?.env.keys() ?? [])]
     if (setsAnInput(run, read, envNames)) {
