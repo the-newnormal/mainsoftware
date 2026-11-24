@@ -147,8 +147,10 @@
 // file by its folder, so a synth's own asset check holds only against deploy.yml's text: each credentialed
 // job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
 // uploads is data the same way: nonprod and prod each list it and unpack it themselves, before the
-// credentials action (IMAGE_CHECK), and skopeo copies only from the folder they checked, never from an
-// archive it would unpack itself, writing a member through a link another made (over the CLI, say).
+// credentials action (IMAGE_CHECK), handing GNU tar the archive on its standard input, where it refuses a
+// compressed one rather than run the decompressor its first bytes name, and skopeo copies only from the
+// folder they checked, never from an archive it would unpack itself, writing a member through a link another
+// made (over the CLI, say).
 // Every other workflow's jobs call only a workflow of this repository at the same commit, which every rule
 // reads, and hand it no secret, and every step of every workflow is an ordinary one, of the keys workflow.ts
 // reads, never a step group or a background, wait or cancel step, whose steps or kind no rule reads, and names
@@ -225,13 +227,22 @@
 // from that function's own calls, each as the guard writes it (AWS_ARGUMENT_CALLS), so a change that sets one from
 // another source, a stack's outputs among them, changes the guard's list as well as the text; a change that drops a
 // value's shape check is the owner's read's to catch.
+// A jq handed -e, in a canonical text or a run's own line, is given a program that prints one value
+// (jqPrintsOne()), since -e takes jq's status from the last value alone: a check over each entry written X[] | f,
+// jq's usual idiom, reads in a diff as all(X[]; f) but holds the last entry alone, so outside what all, any,
+// first, map or an array it builds collects, a program iterates nothing, writes no comma between values and names
+// only JQ_ONE_NAMES and its own definitions that hold to the same; DPW-14's cases also plant each per-entry
+// breakage in an entry that isn't its list's last, and run ASSET_CHECK over the real builds with a jq that notes
+// any -e call printing other than one value.
 // Beside that, the regex reader shellViews() and shellCommands() still reads every run as a second layer
 // that only ever adds a command: it sets aside what bash reads as data (comments, quoted text outside its
 // command substitutions, a test's operands and a case's patterns) and reads through what comes before a
 // command (an assignment, a redirection, a wrapper such as exec, command or env), so a word a rule forbids
 // as a command is found where bash would run it and not where it is a jq path, a message or a URL, and a
 // group's { where a command starts is read as the keywords are, so the group's first command is read as the
-// command it is (true || { tar …; } hid its tar as the tail of a command named {); the
+// command it is (true || { tar …; } hid its tar as the tail of a command named {), and an unquoted ${ … } closes
+// at the first } bash closes it at, a bare { inside it opening nothing (${mode:-{})} closed a brace late and
+// read a command after it as quoted text); the
 // words no credentialed job may name at all (an interpreter's, say) are found anywhere outside a comment.
 // An if: is read by evaluateIf(), which asks whether any value it doesn't know could let a bot, a drill or
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
@@ -804,7 +815,7 @@ check_release_in() {
         def rendered: if type == "string" then . elif type == "number" or type == "boolean" then tostring elif type == "object" and keys == ["Ref"] then (if .Ref == "AWS::AccountId" then "<account>" elif .Ref == "AWS::Partition" then "aws" else "<ref>" end) elif type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and (.[0] | type == "string") and (.[1] | type == "array")) then .["Fn::Join"][0] as $d | [.["Fn::Join"][1][] | rendered] | join($d) elif type == "object" and keys == ["Fn::Sub"] and (.["Fn::Sub"] | type == "string") then .["Fn::Sub"] | gsub("\\$\\{AWS::AccountId\\}"; "<account>") | gsub("\\$\\{AWS::Partition\\}"; "aws") | gsub("\\$\\{[^}]*\\}"; "<ref>") else "<ref>" end;
         def renderings: if type == "object" and (keys == ["Ref"] or keys == ["Fn::Join"] or keys == ["Fn::Sub"]) then rendered elif type == "object" or type == "array" then .[] | renderings else rendered end;
         (.Parameters // {} | all(.[]; .Default | type == "string" and (IN("/cdk-bootstrap/hearthapp/version", "/hearth/organisation/id") or startswith("/hearth/" + $s + "/")))) and
-        all(.Resources // {} | .[] | .Properties | renderings | ascii_downcase; (. == (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":")) or (test("(?<![a-z0-9])arn:(?!aws:[a-z0-9-]+:(ap-southeast-1)?:<account>:)") | not)) and (gsub("[0-9a-f]{64}"; "") | test("[0-9]{12}") | not) and all(scan("hearth[-/]((non)?prod|restore)(?![a-z0-9])"); .[0] == $s))' "$dir/$template" >/dev/null 2>&1 ||
+        all(.Resources // {} | .[] | .Properties | renderings | ascii_downcase; (. == (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":")) or (test("(?<![a-z0-9])arn:(?!aws:([a-z0-9-]+:ap-southeast-1|iam:):<account>:)") | not)) and (gsub("[0-9a-f]{64}"; "") | test("[0-9]{12}") | not) and all(scan("hearth[-/]((non)?prod|restore)(?![a-z0-9])"); .[0] == $s))' "$dir/$template" >/dev/null 2>&1 ||
         asset_refuse "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
@@ -831,7 +842,7 @@ check_release_in() {
         def resources: .Condition | type == "object" and keys == ["StringEquals"] and (.StringEquals | type == "object" and keys == ["aws:PrincipalOrgID", "aws:ResourceOrgID"] and all(.[]; org));
         ([of("AWS::SSM::Parameter") | select(.Name == "/hearth/" + $s + "/network/isolated-subnets") | .Value | objects | .["Fn::Join"] | arrays | .[1] | arrays | .[] | objects | .Ref]) as $isolated |
         ([of("AWS::EC2::Route") | .RouteTableId | objects | .Ref]) as $routed |
-        all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; .CidrIp == "255.255.255.255/32")) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
+        all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; . == {"CidrIp": "255.255.255.255/32", "Description": "Disallow all traffic", "FromPort": 252, "IpProtocol": "icmp", "ToPort": 86})) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
         all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
         all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
         all(of("AWS::EC2::VPCEndpoint"); .ServiceName as $service | ($service | type == "string" and test("\\Acom\\.amazonaws\\.ap-southeast-1\\.(ecr\\.api|ecr\\.dkr|logs|secretsmanager|ssmmessages|s3)\\z")) and (.VpcId | ref("AWS::EC2::VPC")) and all(.SubnetIds // [] | .[]; ref("AWS::EC2::Subnet")) and all(.RouteTableIds // [] | .[]; ref("AWS::EC2::RouteTable")) and all(.SecurityGroupIds // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and (.PolicyDocument | type == "object" and keys == ["Statement", "Version"] and .Version == "2012-10-17") and (($service | ltrimstr("com.amazonaws.ap-southeast-1.")) as $name | .PolicyDocument.Statement as $all | if $name == "s3" then .VpcEndpointType == "Gateway" and ($all | type == "array" and length == 2 and .[0] == {"Sid": "EcrImageLayers", "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "s3:GetObject", "Resource": (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":"))} and (.[1] | allow("OrgResources"; ["s3:GetObject", "s3:ListBucket", "s3:PutObject"]) and resources)) else .VpcEndpointType == "Interface" and ($name | split(".")[0] + ":*") as $actions | ({"ecr.api": ["ecr:GetAuthorizationToken"], "ssmmessages": ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]}[$name] // []) as $owned | ($all | type == "array" and ((length == (if $owned == [] then 1 else 2 end) and (.[0] | allow("OrgPrincipalsToOrgResources"; $actions) and resources) and ($owned == [] or (.[1] | allow("OrgPrincipalsToAwsResources"; $owned) and principals))) or ($s == "prod" and length == 1 and (.[0] | allow("OrgPrincipals"; $actions) and principals)))) end)) and
@@ -1291,23 +1302,28 @@ export const PULL_CHECKS = sh`set -euo pipefail
 # newest such run from the pull request's own head repository and branch, so another fork's pull
 # request at the same commit is never read; its path read without any @<ref> GitHub adds, and read
 # from the run and its jobs, never from a check run, which any token with checks: write can make).
+# GitHub ties no run to the pull request that triggered it, so a run of another pull request from the
+# same head branch, into another base, would read as the merged one's: shared is true unless the pull
+# requests ever opened from that head are the merged one alone, and history.ts refuses a shared head.
 # history.ts plan decides; no merged pull request writes pull: null.
 if [ "$\{MODE:-deploy}" != deploy ] || [ "$TARGET" = restore ]; then exit 0; fi
 PULLS=$(gh api "repos/$REPO/commits/$SHA/pulls")
 PULL=$(jq -c --arg sha "$SHA" '[.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha == $sha)] | if length == 1 then .[0] else null end' <<<"$PULLS")
 if [ "$PULL" = null ]; then
-  jq -n '{pull: null, base: "", mergeCommit: "", headTree: "", check: "", migrations: ""}' >"$RUNNER_TEMP/checks.json"
+  jq -n '{pull: null, base: "", mergeCommit: "", headTree: "", shared: false, check: "", migrations: ""}' >"$RUNNER_TEMP/checks.json"
   exit 0
 fi
 HEAD=$(jq -er '.head.sha | select(test("^[0-9a-f]{40}$"))' <<<"$PULL")
 TREE=$(gh api "repos/$REPO/git/commits/$HEAD" --jq .tree.sha)
+LABEL=$(jq -er '.head.label | select(type == "string" and test("\\A[A-Za-z0-9-]+:[^[:cntrl:]]+\\z")) | @uri' <<<"$PULL")
+OPENED=$(gh api "repos/$REPO/pulls?state=all&head=$LABEL&per_page=100" --jq '[.[] | .number]')
 RUNS=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD&event=pull_request&per_page=100")
 RUN_ID=$(jq -r --arg head "$HEAD" --argjson pull "$PULL" '[.workflow_runs[] | select((.path | sub("@.*$"; "")) == ".github/workflows/ci.yml" and .head_sha == $head and ($pull.head.repo.id | type == "number") and .head_repository.id == $pull.head.repo.id and .head_branch == $pull.head.ref)] | max_by(.id) | .id // ""' <<<"$RUNS")
 JOBS='{"jobs": []}'
 if [ -n "$RUN_ID" ]; then JOBS=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100"); fi
-jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" '
+jq -n --argjson pull "$PULL" --arg tree "$TREE" --argjson jobs "$JOBS" --argjson opened "$OPENED" '
   def conclusion($name): [$jobs.jobs[] | select(.name == $name)] | if length == 1 then (.[0].conclusion // "pending") else "missing" end;
-  {pull: $pull.number, base: $pull.base.ref, mergeCommit: $pull.merge_commit_sha, headTree: $tree, check: conclusion("check"), migrations: conclusion("migrations")}' >"$RUNNER_TEMP/checks.json"`
+  {pull: $pull.number, base: $pull.base.ref, mergeCommit: $pull.merge_commit_sha, headTree: $tree, shared: ($opened != [$pull.number]), check: conclusion("check"), migrations: conclusion("migrations")}' >"$RUNNER_TEMP/checks.json"`
 
 // prod-gate's wait for main's own CI (C11-D52, DPW-08): ci.yml's push run on main for this commit, its check
 // and migrations jobs, until both succeed.
@@ -1649,11 +1665,14 @@ export const IMAGE_CHECK = sh`# The image's archive (IMAGE_CHECK; C11-D50, C11-D
 # them: no symbolic or hard link, device, fifo, absolute, escaped or other name. unpack_image then has the
 # same tar unpack it into a folder it makes, and refuses unless that folder holds only those folders and
 # files, which skopeo reads as an OCI layout. Each count is compared whole, so a tool that fails refuses.
+# Both hand tar the archive on its standard input, never by name: given a file, GNU tar runs whatever
+# decompressor the archive's first bytes name (gzip, bzip2, xz, zstd) over the build's bytes, with the
+# step's environment; reading standard input it refuses a compressed archive and runs nothing.
 # The build runs check_image_archive on the archive buildx wrote, so a change in buildx's export fails
 # there first; the deploy job's own check, of the file it downloaded, is the one its push rests on.
 check_image_archive() {
   local listing
-  listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||
+  listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file - <"$1") ||
     { echo "image-check: the image's archive can't be read"; exit 1; }
   [ "$(grep -Ec '^(-[-rwxsStT]{9} [0-9]+/[0-9]+ +[0-9]+ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d[-rwxsStT]{9} [0-9]+/[0-9]+ +0 [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} blobs/(sha256/)?)$' <<<"$listing")" = "$(wc -l <<<"$listing")" ] ||
     { echo "image-check: the image's archive holds a member buildx's OCI export never writes"; exit 1; }
@@ -1661,7 +1680,7 @@ check_image_archive() {
 unpack_image() {
   local entries
   mkdir "$2"
-  tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions
+  tar --extract --file - --directory "$2" --no-same-owner --no-same-permissions <"$1"
   entries=$(find "$2" -mindepth 1 -printf '%y %P\n')
   [ "$(grep -Ec '^(f (oci-layout|index\.json|blobs/sha256/[0-9a-f]{64})|d blobs(/sha256)?)$' <<<"$entries")" = "$(wc -l <<<"$entries")" ] ||
     { echo "image-check: the unpacked image holds a link or a file buildx's OCI export never writes"; exit 1; }
@@ -2857,15 +2876,20 @@ function readViews(run: string): ShellViews {
       if (c === '\n') quotedLines.add(++line)
     }
   }
-  // A ${ … } from i: up to its matching brace (each { inside opens one more), a backslash escaping the
-  // character after it; its end (past the brace, or the run's end with none) and its body.
+  // A ${ … } from i: up to its closing brace, as bash closes one: at the first } no backslash escapes, a bare {
+  // inside being a literal that opens nothing, and only a nested ${ needing a } of its own; its end (past the
+  // brace, or the run's end with none) and its body. Counting a bare { as well closed ${x:-{} a brace after
+  // bash, which then read a $( … ) around it as still open and a command after it as quoted text. A body
+  // holding a nested ${ or a substitution is odd (BRACE_ODD), so it is refused whatever its braces.
   const braceEnd = (i: number) => {
-    let depth = 0
-    for (let at = i + 1; at < run.length; at++) {
+    let depth = 1
+    for (let at = i + 2; at < run.length; at++) {
       const c = run[at]
       if (c === '\\') at++
-      else if (c === '{') depth++
-      else if (c === '}' && --depth === 0) return { end: at + 1, body: run.slice(i + 2, at), closed: true }
+      else if (c === '$' && run[at + 1] === '{') {
+        depth++
+        at++
+      } else if (c === '}' && --depth === 0) return { end: at + 1, body: run.slice(i + 2, at), closed: true }
     }
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
@@ -4118,6 +4142,180 @@ function jqHeld(words: readonly string[]): boolean {
   if (!programHeld(words[i])) return false
   return words.slice(i + 1).every(jqFileHeld)
 }
+// jq's -e sets its status from the last value the program prints alone (jq's manual, under --exit-status), so a
+// check over every entry written X[] | f, jq's usual way to check each, passes whenever X's last entry passes,
+// though it reads in a diff as all(X[]; f), which prints one value. So a program a canonical text or a run's
+// own line hands jq with -e prints one value (jqPrintsOne): outside the arguments of all, any, first and map and
+// an array it builds ([ … ]), each of which collects what it holds into one value, it iterates nothing (.[] or
+// ..), writes no comma but between an object's entries, and no ?//; it names only JQ_ONE_NAMES, each of which
+// prints at most one value for each it is given, and its own definitions whose bodies hold to the same (one
+// that iterates, as ASSET_CHECK's of() does, only where its values are collected), capture with one argument
+// alone (with flags, "g" prints a value a match), and writes no comment. A program it can't read is refused.
+const JQ_ONE_NAMES: ReadonlySet<string> = new Set([
+  'and',
+  'or',
+  'not',
+  'if',
+  'then',
+  'elif',
+  'else',
+  'end',
+  'as',
+  'true',
+  'false',
+  'null',
+  'all',
+  'any',
+  'first',
+  'map',
+  'type',
+  'length',
+  'keys',
+  'has',
+  'select',
+  'test',
+  'capture',
+  'sort',
+  'to_entries',
+  'tostring',
+  'join',
+  'gsub',
+  'ascii_downcase',
+  'contains',
+  'endswith',
+  'index',
+])
+const JQ_COLLECTS: ReadonlySet<string> = new Set(['all', 'any', 'first', 'map'])
+// The keywords after which a [ starts an array (if … then [ … ]) rather than indexing what comes before it.
+const JQ_TERM_KEYWORDS: ReadonlySet<string> = new Set(['if', 'then', 'elif', 'else', 'and', 'or', 'as'])
+export function jqPrintsOne(program: string): boolean {
+  type Scope = { names: string[]; bad: boolean }
+  type Definition = { names: string[]; bad: boolean; params: string[] }
+  const definitions = new Map<string, Definition[]>()
+  let scope: Scope = { names: [], bad: false }
+  let at = 0
+  // A program that doesn't read as jq's (a bracket or string left open or closed by the wrong one, a comment,
+  // a definition's head) is refused whole.
+  let broken = false
+  // The identifier that ends just before end (blanks aside), and whether it is a bare word (not a field, a
+  // variable or a format).
+  const wordBefore = (end: number) => {
+    const match = /([A-Za-z_]\w*)\s*$/.exec(program.slice(0, end))
+    if (match === null) return undefined
+    const before = program[end - match[0].length - 1] ?? ''
+    return /[\w.$@]/.test(before) ? undefined : match[1]
+  }
+  const lastCharacter = (end: number) => /(\S)\s*$/.exec(program.slice(0, end))?.[1] ?? ''
+  // Reads up to close (or to the end, for the program itself); counts the ; at its own depth.
+  const read = (close: string, collecting: boolean, object: boolean): number => {
+    let semicolons = 0
+    while (at < program.length) {
+      const c = program[at] ?? ''
+      if (c === close) {
+        at++
+        return semicolons
+      }
+      if (c === ')' || c === ']' || c === '}' || c === '#') {
+        broken = true
+        at++
+        continue
+      }
+      if (c === ';') {
+        semicolons++
+        at++
+        continue
+      }
+      if (c === '"') {
+        at++
+        readString(collecting)
+        continue
+      }
+      if (c === '(') {
+        const name = wordBefore(at)
+        at++
+        const collects = name !== undefined && JQ_COLLECTS.has(name) && !definitions.has(name)
+        const counted = read(')', collecting || collects, false)
+        if (name === 'capture' && counted > 0) scope.bad = true
+        continue
+      }
+      if (c === '[') {
+        const previous = lastCharacter(at)
+        const keyword = wordBefore(at)
+        const indexes = /[\w.\])"?]/.test(previous) && !(keyword !== undefined && JQ_TERM_KEYWORDS.has(keyword))
+        at++
+        if (indexes && /^\s*\]/.test(program.slice(at)) && !collecting) scope.bad = true
+        read(']', collecting || !indexes, false)
+        continue
+      }
+      if (c === '{') {
+        at++
+        read('}', collecting, true)
+        continue
+      }
+      if (c === ',' && !collecting && !object) scope.bad = true
+      if (program.startsWith('..', at) && !collecting) scope.bad = true
+      if (program.startsWith('?//', at) && !collecting) scope.bad = true
+      const word = /^[A-Za-z_]\w*/.exec(program.slice(at))?.[0]
+      if (word === undefined) {
+        at++
+        continue
+      }
+      const before = program[at - 1] ?? ''
+      at += word.length
+      if (/[\w.$@]/.test(before) || (object && /^\s*:/.test(program.slice(at)))) continue
+      if (word === 'def') {
+        const head = /^\s+([A-Za-z_]\w*)\s*(?:\(([^()]*)\))?\s*:/.exec(program.slice(at))
+        if (head === null) {
+          broken = true
+          continue
+        }
+        at += head[0].length
+        const outer = scope
+        scope = { names: [], bad: false }
+        read(';', false, false)
+        const params = (head[2] ?? '').split(';').map(each => each.trim())
+        const list = definitions.get(head[1] ?? '') ?? []
+        list.push({ ...scope, params: params.filter(each => PLAIN_NAME.test(each)) })
+        definitions.set(head[1] ?? '', list)
+        if (params.some(each => each !== '' && !PLAIN_NAME.test(each) && !/^\$[A-Za-z_]\w*$/.test(each))) {
+          broken = true
+        }
+        scope = outer
+        continue
+      }
+      if (!collecting) scope.names.push(word)
+    }
+    if (close !== '') broken = true
+    return semicolons
+  }
+  const readString = (collecting: boolean) => {
+    while (at < program.length) {
+      const c = program[at]
+      if (c === '\\' && program[at + 1] === '(') {
+        at += 2
+        read(')', collecting, false)
+        continue
+      }
+      at += c === '\\' ? 2 : 1
+      if (c === '"') return
+    }
+    broken = true
+  }
+  read('', false, false)
+  // A name prints one value if it is one of JQ_ONE_NAMES no definition of the program's own replaces, or a
+  // definition every one of whose bodies does, by the same reading (its own name and its filter parameters
+  // within it); a definition that reaches itself through another is read as printing many.
+  const one = (name: string, seen: ReadonlySet<string>): boolean => {
+    const own = definitions.get(name)
+    if (own === undefined) return JQ_ONE_NAMES.has(name)
+    if (seen.has(name)) return false
+    const within = new Set([...seen, name])
+    return own.every(
+      each => !each.bad && each.names.every(used => used === name || each.params.includes(used) || one(used, within)),
+    )
+  }
+  return !broken && !scope.bad && scope.names.every(name => one(name, new Set()))
+}
 function ghHeld(words: readonly string[]): boolean {
   if (words.some(word => wordSplits(word) || expandsToMany(word))) return false
   const [api, path, ...rest] = words
@@ -4227,6 +4425,34 @@ export function canonicalToolLines(text: string): number[] {
     if (lineHeld(command.word) && !isHeld(command.line)) lines.add(command.line)
   }
   for (const n of fileReadLines(views)) if (!isHeld(n)) lines.add(n)
+  return [...lines].sort((a, b) => a - b)
+}
+
+// The lines of a canonical text that hand jq -e (alone or among its other flags) a program that may print other
+// than one value (jqPrintsOne), whose last value alone would decide the check (DPW-10).
+const JQ_STATUS_RULE =
+  'hands jq -e only a program that prints one value, since -e reads the last alone: outside all, any, first, map and an array it builds, no .[], .., comma, ?// or name but JQ_ONE_NAMES and its own definitions that hold to the same'
+export function jqStatusLines(text: string): number[] {
+  const views = shellViews(text)
+  const lines = new Set<number>()
+  let offset = 0
+  for (const [n, line] of views.code.split('\n').entries()) {
+    for (const match of line.matchAll(/(?<![\w$/.{-])jq(?![\w-])/g)) {
+      const words = withoutRedirections(commandWords(views.text, offset + match.index + match[0].length))
+      let i = 0
+      let status = false
+      for (; i < words.length; i++) {
+        const word = words[i] ?? ''
+        if (JQ_FLAG.test(word)) status ||= word.includes('e')
+        else if (word === '--arg' || word === '--argjson') i += 2
+        else break
+      }
+      const program = words[i] ?? ''
+      const body = /^'[^']*'$/.test(program) ? program.slice(1, -1) : program
+      if (status && !jqPrintsOne(body)) lines.add(n)
+    }
+    offset += line.length + 1
+  }
   return [...lines].sort((a, b) => a - b)
 }
 
@@ -4742,6 +4968,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
       )
+    }
+    for (const line of jqStatusLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_STATUS_RULE}`)
     }
     for (const line of fileNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
@@ -7855,12 +8084,13 @@ export const FETCH_TOOLS: Readonly<Record<string, string>> = {
   tar: 'tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-owner',
 }
 // The tools IMAGE_CHECK runs, each only on its own lines of that text and only in a run that is
-// IMAGE_UNPACK_RUN whole: tar lists the archive and then unpacks it into the folder mkdir makes, and find
-// lists what it unpacked. None writes anywhere but that folder, before the credentials action.
+// IMAGE_UNPACK_RUN whole: tar lists the archive and then unpacks it into the folder mkdir makes, reading it
+// from its standard input each time (the redirection a read these lines hold), so it runs no decompressor,
+// and find lists what it unpacked. None writes anywhere but that folder, before the credentials action.
 export const IMAGE_TOOLS: Readonly<Record<string, readonly string[]>> = {
   tar: [
-    'listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file "$1") ||',
-    'tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions',
+    'listing=$(tar --list --verbose --numeric-owner --quoting-style=escape --file - <"$1") ||',
+    'tar --extract --file - --directory "$2" --no-same-owner --no-same-permissions <"$1"',
   ],
   mkdir: ['mkdir "$2"'],
   find: [String.raw`entries=$(find "$2" -mindepth 1 -printf '%y %P\n')`],
@@ -8087,7 +8317,8 @@ function jqIsHeld(args: readonly ShellWord[]): boolean {
   }
   const program = programOf(args[i])
   if (program === undefined || i !== args.length - 1) return false
-  return jqProgramIsHeld(program, given)
+  const status = args.slice(0, i).some(arg => JQ_FLAGS.includes(arg.raw) && arg.raw.includes('e'))
+  return jqProgramIsHeld(program, given) && (!status || jqPrintsOne(program))
 }
 // gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
 // migration record read with a held program.

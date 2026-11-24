@@ -146,6 +146,7 @@ const GOOD_CHECKS = (): PullChecks => ({
   base: 'main',
   mergeCommit: at(6),
   headTree: git(['rev-parse', `${at(6)}^{tree}`]),
+  shared: false,
   check: 'success',
   migrations: 'success',
 })
@@ -1036,6 +1037,10 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     expect(await refusalOf(planInput({ checks: { ...checks, headTree: git(['rev-parse', `${at(5)}^{tree}`]) } }))).toBe(
       'pr-tree-differs',
     )
+    // Another pull request opened from the same head branch: GitHub ties no ci.yml run to the pull request
+    // that started it, so its run at the same head can't be told from the merged one's, whichever passed.
+    expect(await refusalOf(planInput({ checks: { ...checks, shared: true } }))).toBe('pr-head-shared')
+    expect(await refusalOf(planInput({ checks: { ...checks, shared: true, check: 'failure' } }))).toBe('pr-head-shared')
     expect(await refusalOf(planInput({ checks: { ...checks, check: 'failure' } }))).toBe('pr-checks-failed')
     expect(await refusalOf(planInput({ checks: { ...checks, migrations: 'skipped' } }))).toBe('pr-checks-failed')
     // A rollback, a drill and a restore read no pull request.
@@ -1273,6 +1278,7 @@ describe('C11-D58, T24 item 22: the floors read through git at the run’s commi
       base: 'main',
       mergeCommit: fat(4),
       headTree: fgit(['rev-parse', `${fat(4)}^{tree}`]),
+      shared: false,
       check: 'success',
       migrations: 'success',
     },
@@ -1947,6 +1953,15 @@ describe('C11-D58, C11-D61: the command line', () => {
     expect(await plan({ ...PUSH, checks: otherTree })).toEqual(refused('pr-tree-differs'))
     // The checks file's pull is the merged pull request's number, or null when none produced the commit:
     // any other value is bad input, never read as a pull request that was found.
+    // A checks file without shared, or with one that isn't a boolean, is bad input too.
+    for (const [i, shared] of [undefined, 'false', 0, null].entries()) {
+      const badShared = writeJson(join(scratch, `plan-checks-shared-${i}.json`), { ...GOOD_CHECKS(), shared })
+      expect(await plan({ ...PUSH, checks: badShared }), JSON.stringify(shared)).toEqual({
+        code: 2,
+        out: ['history: --checks is not the pull request checks'],
+        err: [],
+      })
+    }
     for (const [i, pull] of [0, -1, 7.5, '7', true].entries()) {
       const badPull = writeJson(join(scratch, `plan-checks-pull-${i}.json`), { ...GOOD_CHECKS(), pull })
       expect(await plan({ ...PUSH, checks: badPull }), JSON.stringify(pull)).toEqual({

@@ -16,7 +16,13 @@ import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, sym
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { gitIsAncestor, type PlanInput, parseReleaseRecords, plan } from '../../infra/scripts/deploy/history.ts'
+import {
+  gitIsAncestor,
+  type PlanInput,
+  parsePullChecks,
+  parseReleaseRecords,
+  plan,
+} from '../../infra/scripts/deploy/history.ts'
 import { PROFILES } from '../../infra/src/config/profiles.ts'
 import { synthWorkload } from '../../infra/src/testing/workload.ts'
 import {
@@ -86,6 +92,7 @@ import {
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
+  jqPrintsOne,
   jqProgramIsHeld,
   MASK_RUN,
   MIGRATE_LINES,
@@ -2892,6 +2899,99 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     // A merged pull request whose head repository is gone matches no run, so its checks read as missing.
     expect(choose({ ...own, head: { ...own.head, repo: null } }, [...runs, run(109, null, 'feature')])).toBe('')
   })
+
+  // GitHub ties no ci.yml run to the pull request that started it (a run's pull_requests lists only open ones
+  // that match its head), so a later pull request from the same head branch into another base has a run at the
+  // same head, repository and branch, which the gate took as the merged one's: a failed run passed and a green
+  // one was refused. The step, run whole with bash and jq against a stand-in gh, writes shared unless the pull
+  // requests ever opened from that head are the merged one alone, and history.ts refuses a shared head.
+  it('writes shared unless the merged pull request is the only one ever opened from its head branch', () => {
+    const head = 'a'.repeat(40)
+    const sha = 'c'.repeat(40)
+    const pullOf = (label: string) => ({
+      number: 7,
+      merged_at: '2026-11-01T00:00:00Z',
+      merge_commit_sha: sha,
+      base: { ref: 'main' },
+      head: { sha: head, ref: 'feature', label, repo: { id: 11 } },
+    })
+    const gh = [
+      'gh() {',
+      '  local answer',
+      '  case "$2" in',
+      '    "repos/$REPO/commits/$SHA/pulls") answer=$ANSWER_PULLS ;;',
+      `    "repos/$REPO/git/commits/${head}") answer='{"tree": {"sha": "${'d'.repeat(40)}"}}' ;;`,
+      '    "repos/$REPO/pulls?state=all&head=$WANTED&per_page=100") answer=$ANSWER_OPENED ;;',
+      `    "repos/$REPO/actions/runs?head_sha=${head}&event=pull_request&per_page=100") answer=$ANSWER_RUNS ;;`,
+      '    "repos/$REPO/actions/runs/900/jobs?per_page=100") answer=$ANSWER_JOBS ;;',
+      '    *) echo "no answer for $2" >&2; return 1 ;;',
+      '  esac',
+      `  if [ "\${3:-}" = --jq ]; then jq -r "$4" <<<"$answer"; else printf '%s\\n' "$answer"; fi`,
+      '}',
+    ].join('\n')
+    const runs = {
+      workflow_runs: [
+        {
+          id: 900,
+          path: '.github/workflows/ci.yml',
+          head_sha: head,
+          head_branch: 'feature',
+          head_repository: { id: 11 },
+        },
+      ],
+    }
+    const jobs = {
+      jobs: [
+        { name: 'check', conclusion: 'success' },
+        { name: 'migrations', conclusion: 'success' },
+      ],
+    }
+    const written = (opened: readonly number[], label = 'example:feature', wanted = 'example%3Afeature') => {
+      const temp = mkdtempSync(join(tmpdir(), 'hearth-pull-checks-'))
+      try {
+        const result = spawnSync('bash', ['-c', `${gh}\n${PULL_CHECKS}`], {
+          encoding: 'utf8',
+          env: {
+            PATH: process.env.PATH ?? '',
+            RUNNER_TEMP: temp,
+            REPO: 'example/hearth',
+            SHA: sha,
+            MODE: 'deploy',
+            TARGET: 'prod',
+            WANTED: wanted,
+            ANSWER_PULLS: JSON.stringify([pullOf(label)]),
+            ANSWER_OPENED: JSON.stringify(opened.map(number => ({ number, head: { label } }))),
+            ANSWER_RUNS: JSON.stringify(runs),
+            ANSWER_JOBS: JSON.stringify(jobs),
+          },
+        })
+        const path = join(temp, 'checks.json')
+        return result.status === 0 && existsSync(path)
+          ? parsePullChecks(JSON.parse(readFileSync(path, 'utf8')))
+          : `exit ${result.status}`
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    }
+    expect(written([7])).toEqual({
+      pull: 7,
+      base: 'main',
+      mergeCommit: sha,
+      headTree: 'd'.repeat(40),
+      shared: false,
+      check: 'success',
+      migrations: 'success',
+    })
+    for (const opened of [[9, 7], [7, 9], [], [9], [7, 7]]) {
+      expect(written(opened), JSON.stringify(opened)).toMatchObject({ shared: true, check: 'success' })
+    }
+    // The label is read whole and asked for encoded, a branch name's own & and / among it.
+    expect(written([7], 'example:a/b&c', 'example%3Aa%2Fb%26c')).toMatchObject({ shared: false })
+    // A label that isn't an owner and a branch fails the step, as an unreadable head does.
+    for (const label of ['feature', 'example:', 'exa mple:feature', 'example:a\nb']) {
+      expect(written([7], label), label).toMatch(/^exit [1-9]\d*$/)
+    }
+  })
 })
 
 describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test and the environments', () => {
@@ -3384,6 +3484,7 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         base: 'main',
         mergeCommit: m[2] ?? '',
         headTree: git(['rev-parse', `${m[2]}^{tree}`]),
+        shared: false,
         check: 'success',
         migrations: 'success',
       },
@@ -4693,6 +4794,117 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(canonicalTextFindings(planted).join('\n')).toMatch(/DPW-10 IMAGE_CHECK, line \d+: hands jq and gh only/)
   })
 
+  // jq -e takes its status from the program's last value alone, so a check over every entry written X[] | f
+  // (jq's usual way to check each, reading in a diff as all(X[]; f)) passes whenever X's last entry passes; with
+  // ASSET_CHECK's file-asset rule written so, an executable on Platform's zip, the first of its two file assets,
+  // passed, and the CLI would run it with the deploy role's credentials.
+  it('hands jq -e only a program that prints one value', () => {
+    for (const program of [
+      'all(.[]; . > 0)',
+      '(.files // {}) | all(.[]; .source | type == "object")',
+      '[.[] | select(.a)] | length == 0',
+      '.a | select(test("x"))',
+      'first(.[] | select(.k == 1)) | .v',
+      '{a: 1, "b": [2, 3]} == .',
+      '.x as [$a, $b] | $a == $b',
+      'def g: .[0]; g == 1',
+      'def of($t): .[] | select(.T == $t); all(of("x"); . != null)',
+      'def leaf: if type == "object" then length == 0 else true end; leaf',
+      '"\\(.a)-\\(.b)" | test("-")',
+      '.["k"] | type == "string"',
+      '$r[.].T == "x" and $r[.x] != null',
+      'if .a then [.b[]] else [] end | length == 0',
+      'any(.[]?; test("^sha-"))',
+      'map(.x) | sort == ["a", "b"]',
+      'capture("(?<s>x)").s == "x"',
+      '.',
+      'type == "object" and keys == ["Ref"]',
+    ]) {
+      expect(jqPrintsOne(program), program).toBe(true)
+    }
+    for (const program of [
+      '.[] | . > 0',
+      '(.files // {})[] | .source | type == "object"',
+      '.a[]? | . == 1',
+      '$r[] | .T == "x"',
+      '.. | numbers',
+      '.a, .b',
+      '.[1, 2] == 1',
+      '(.[] | . > 0) and true',
+      '(.[] | . > 0) as $x | $x',
+      'select(.[] == 1) | true',
+      'def of: .[]; of | . > 0',
+      'def length: .[]; length > 0',
+      'def all(f): f; all(.[] | . > 0)',
+      'def a: b; def b: a; a',
+      'capture("x"; "g") | .a',
+      'range(3) | . > 0',
+      'recurse | . == 1',
+      'limit(2; .[]) | . > 0',
+      'reduce .[] as $x (0; . + $x) > 0',
+      '"\\(.[])" | test("x")',
+      '{a: .[]} | .a > 0',
+      'if .[] then true else false end',
+      '# a comment\ntrue',
+      '.a // .b[]',
+      '. as [$a] ?// $a | $a',
+      '.[] | first',
+      '(.a',
+      '"unclosed',
+      'def f: .a',
+      'env | length > 0',
+      'to_entries[] | .value == 1',
+    ]) {
+      expect(jqPrintsOne(program), program).toBe(false)
+    }
+    // ASSET_CHECK's file-asset rule and AWS_CHECK's count, each rewritten so, are refused by DPW-10 on their line.
+    const rule = `jq -e '(.files // {}) | all(.[]; (.source | type == "object")`
+    const start = ASSET_CHECK.indexOf(rule)
+    const end = ASSET_CHECK.indexOf(`' "$dir/$file"`, start)
+    expect(start).toBeGreaterThan(-1)
+    const body = ASSET_CHECK.slice(start + rule.length - '(.source | type == "object")'.length, end - 1)
+    const rewritten = `${ASSET_CHECK.slice(0, start)}jq -e '(.files // {})[] | ${body}${ASSET_CHECK.slice(end)}`
+    const line = rewritten.slice(0, start).split('\n').length
+    expect(canonicalTextFindings({ ASSET_CHECK: rewritten })).toContain(
+      `${GUARD}: DPW-10 ASSET_CHECK, line ${line}: hands jq -e only a program that prints one value, since -e reads the last alone: outside all, any, first, map and an array it builds, no .[], .., comma, ?// or name but JQ_ONE_NAMES and its own definitions that hold to the same`,
+    )
+    const counts = AWS_CHECK.replace(`jq -e 'all(.counts[]; . == 1)'`, `jq -e '.counts[] | . == 1'`)
+    expect(counts).not.toBe(AWS_CHECK)
+    expect(canonicalTextFindings({ AWS_CHECK: counts }).join('\n')).toMatch(
+      /DPW-10 AWS_CHECK, line \d+: hands jq -e only a program that prints one value/,
+    )
+    // -e among other flags, and -r alone (whose value a test then reads), as written.
+    expect(canonicalTextFindings({ X: `x=$(jq -se '.[] | . > 0' "$dir/$file")` }).join('\n')).toMatch(
+      /DPW-10 X, line 1: hands jq -e only/,
+    )
+    expect(canonicalTextFindings({ X: `x=$(jq -r '.[]' "$dir/$file")` }).join('\n')).not.toMatch(/hands jq -e only/)
+    // A run's own line, as the glue reads it, is held the same way.
+    expect(
+      credentialedCodeFindings(
+        addedBefore(
+          'nonprod',
+          'Read back what runs',
+          "          SERVICE_LIST='[]'\n",
+          `          jq -e '.[] | . == 1' <<<"$SERVICE_LIST" >/dev/null\n`,
+        ),
+        manifests,
+        lockfile,
+      ).join('\n'),
+    ).toMatch(/DPW-10 nonprod \(Read back what runs\)/)
+    expect(
+      credentialedCodeFindings(
+        addedBefore(
+          'nonprod',
+          'Read back what runs',
+          "          SERVICE_LIST='[]'\n",
+          `          jq -e 'all(.[]; . == 1)' <<<"$SERVICE_LIST" >/dev/null\n`,
+        ),
+        manifests,
+        lockfile,
+      ).join('\n'),
+    ).not.toMatch(/DPW-10 nonprod \(Read back what runs\)/)
+  })
+
   it('holds the repository', () => {
     expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
     // The globs are folders or a folder's children, which the pattern reads exactly.
@@ -5073,6 +5285,39 @@ describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives'
     expect(checked(archive(layout()), `mkdir "$RUNNER_TEMP/image-layout"\n${IMAGE_UNPACK_RUN}\n`).status).not.toBe(0)
   })
 
+  // GNU tar, handed an archive by name, runs the decompressor its first bytes name (gzip, bzip2, xz) over the
+  // build's bytes with the step's environment, and the listing of buildx's own members then passes. The check
+  // hands tar the archive on its standard input, where tar refuses a compressed one and runs nothing: a
+  // stand-in for each decompressor first on PATH notes any run.
+  it('refuses a compressed archive of buildx’s own members and runs no decompressor', () => {
+    const plain = archive(layout())
+    const stand = mkdtempSync(join(scratch, 'stand-'))
+    const ran = join(stand, 'ran')
+    for (const tool of ['gzip', 'bzip2', 'xz', 'zstd', 'lzip', 'lzop', 'compress']) {
+      writeFileSync(join(stand, tool), `#!/bin/sh\necho ${tool} >>'${ran}'\nexit 1\n`, { mode: 0o755 })
+    }
+    for (const [name, compress] of [
+      ['gzip', ['gzip']],
+      ['bzip2', ['bzip2']],
+      ['xz', ['xz']],
+      ['lzma', ['xz', '--format=lzma']],
+    ] as const) {
+      const path = join(scratch, `image-${name}.tar`)
+      writeFileSync(path, execFileSync(compress[0], [...compress.slice(1), '-c', plain]))
+      const temp = mkdtempSync(join(scratch, 'runner-'))
+      execFileSync('mkdir', [join(temp, 'image')])
+      cpSync(path, join(temp, 'image', 'image.tar'))
+      const result = spawnSync('bash', ['-c', `${IMAGE_UNPACK_RUN}\n`], {
+        encoding: 'utf8',
+        env: { PATH: `${stand}:${process.env.PATH ?? ''}`, HOME: temp, RUNNER_TEMP: temp },
+      })
+      expect(result.status, name).toBe(1)
+      expect(spoken(result.stdout).at(-1), name).toBe("image-check: the image's archive can't be read")
+      expect(existsSync(ran), name).toBe(false)
+      expect(existsSync(join(temp, 'image-layout')), name).toBe(false)
+    }
+  })
+
   it('refuses an unpacked folder that holds a link even with no listing first', () => {
     const named = layout()
     rmSync(join(named, 'index.json'))
@@ -5377,7 +5622,7 @@ describe('DPW-13 (C11-D44, C11-D50, C11-D51, C11-D61, C11-D79; T24 item 10): wha
         `${DEPLOY}: DPW-06 nonprod: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:`,
       ],
     )
-    const tar = '          tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions\n'
+    const tar = '          tar --extract --file - --directory "$2" --no-same-owner --no-same-permissions <"$1"\n'
     const found = credentialedCodeFindings(
       addedBefore('nonprod', 'Read back what runs', "          SERVICE_LIST='[]'\n", tar),
       manifests,
@@ -7728,7 +7973,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     data: { packaging: 'container-image', path: 'asset.x', id: 'x', sourceHash: 'x' },
   }
 
-  function check(plant: (dir: string) => void, release = RELEASE, from = source): string {
+  function check(plant: (dir: string) => void, release = RELEASE, from = source, path = process.env.PATH): string {
     const dir = mkdtempSync(join(tmpdir(), 'hearth-dpw14-'))
     made.push(dir)
     cpSync(from, dir, { recursive: true })
@@ -7736,10 +7981,42 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const result = spawnSync(
       'bash',
       ['-c', `set -euo pipefail\n${ASSET_CHECK}\ncheck_assembly "$1"\ncheck_release_in "$1" "$2"`, '_', dir, release],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: { ...process.env, PATH: path } },
     )
     const said = `${result.stdout}${result.stderr}`.trim()
     return result.status === 0 ? `passed${said === '' ? '' : `: ${said}`}` : said
+  }
+  // ASSET_CHECK over a build, with a jq first on PATH that runs the real one with -c added and notes every
+  // call handed -e whose program printed other than one value, since jq -e reads the last value alone: the
+  // check's outcome, then each such call. DPW-10 (jqPrintsOne) holds the texts' programs; this holds the
+  // committed rules over the real builds, as jq reads them.
+  function counted(from = source): string {
+    const bin = mkdtempSync(join(tmpdir(), 'hearth-dpw14-jq-'))
+    made.push(bin)
+    const real = execFileSync('bash', ['-c', 'command -v jq'], { encoding: 'utf8' }).trim()
+    const many = join(bin, 'many')
+    writeFileSync(many, '')
+    writeFileSync(
+      join(bin, 'jq'),
+      [
+        '#!/usr/bin/env bash',
+        `case "$1" in -*e*) ;; *) exec '${real}' "$@" ;; esac`,
+        `out=$('${real}' -c "$@")`,
+        'status=$?',
+        `if [ "$status" -le 1 ] && [ "$(printf '%s' "$out" | grep -c '')" != 1 ]; then printf '%.200s\\n' "$*" >>'${many}'; fi`,
+        `printf '%s\\n' "$out"`,
+        'exit "$status"',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const said = check(() => {}, RELEASE, from, `${bin}:${process.env.PATH ?? ''}`)
+    return [
+      said,
+      ...readFileSync(many, 'utf8')
+        .split('\n')
+        .filter(line => line !== ''),
+    ].join('\n')
   }
   const refused = (rule: string) => `asset-check: ${rule}`
   const RUNS = refused('a file asset runs a command, is packaged otherwise than file or zip, or names no relative path')
@@ -7795,6 +8072,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     )
     expect(readdirSync(source).some(name => name.startsWith('asset.'))).toBe(true)
     expect(check(() => {})).toBe('passed')
+    expect(counted()).toBe('passed')
   }, 30_000)
 
   // The synth checks two builds beside the committed one: a restore up's (restoreActive, the restore stage's
@@ -7820,6 +8098,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
           .sort(),
       ).toEqual(nested)
       expect(check(() => {}, RELEASE, built)).toBe('passed')
+      expect(counted(built)).toBe('passed')
     },
     120_000,
   )
@@ -7931,6 +8210,28 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         ),
       ),
     ).toBe(refused('an asset path leaves the assembly'))
+    // jq -e reads its program's last value alone, so each rule over every entry is planted in an entry that
+    // isn't its list's last: Platform's first file asset (its zip, before its template) alone.
+    const first = (change: (source: Record<string, unknown>) => void) => (dir: string) =>
+      edit(named(nonprod(dir), 'Platform', '.assets.json'), json => {
+        const all = files(json)
+        expect(all.length).toBeGreaterThan(1)
+        if (all[0] !== undefined) change(all[0].source)
+      })
+    for (const change of [
+      (source: Record<string, unknown>) => {
+        source.executable = ['bash', '-c', 'true']
+        delete source.path
+      },
+      (source: Record<string, unknown>) => {
+        source.packaging = 'container-image'
+      },
+      (source: Record<string, unknown>) => {
+        source.path = '/etc/hostname'
+      },
+    ]) {
+      expect(check(first(change)), String(change)).toBe(RUNS)
+    }
     // No asset manifest at all: with the stacks they upload gone too, and with the stacks left, whose templates
     // then nothing uploads.
     const without =
@@ -8629,6 +8930,15 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         ),
       ),
     ).toBe(refused('an artifact type is not one a workload synth writes'))
+    // Before the manifest's other artifacts too, since jq -e reads its program's last value alone.
+    expect(
+      check(
+        inManifest(
+          d => d,
+          json => (json.artifacts = { p: { type: 'cdk:plugin' }, ...artifacts(json) }),
+        ),
+      ),
+    ).toBe(refused('an artifact type is not one a workload synth writes'))
     expect(check(dir => symlinkSync('/etc/hostname', join(prod(dir), 'link')))).toBe(
       refused('the assembly holds a symbolic link'),
     )
@@ -8675,6 +8985,20 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       json[key] = [...((json[key] as unknown[] | undefined) ?? []), entry]
     }
     expect(check(dir => edit(named(nonprod(dir), 'Services', '.metadata.json'), added(TAGS)))).toBe(LEGACY)
+    // Before the list's own entries and before the file's other lists, since jq -e reads its program's last
+    // value alone.
+    expect(
+      check(dir =>
+        edit(named(nonprod(dir), 'Services', '.metadata.json'), json => {
+          const key = '/nonprod/Services'
+          const own = (json[key] as unknown[] | undefined) ?? []
+          expect(own.length).toBeGreaterThan(0)
+          const rest = Object.fromEntries(Object.entries(json).filter(([each]) => each !== key))
+          for (const each of Object.keys(json)) delete json[each]
+          Object.assign(json, { [key]: [TAGS, ...own] }, rest)
+        }),
+      ),
+    ).toBe(LEGACY)
     expect(
       check(dir =>
         edit(join(prod(dir), 'manifest.json'), json => {
@@ -9632,6 +9956,26 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ),
       NAMES,
     ],
+    // An ARN of the account's own with no region is IAM's alone: another global service's (CloudFront's) is
+    // outside the namespace the check reads as the stage's.
+    [
+      "a role's grant on a global service's resource in the account",
+      changed(
+        'AWS::IAM::Role',
+        resource => {
+          const policies = resource.Properties.Policies as Array<{ PolicyDocument: { Statement: unknown[] } }>
+          policies[0]?.PolicyDocument.Statement.push({
+            Effect: 'Allow',
+            Action: 'cloudfront:GetDistribution',
+            Resource: {
+              'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':cloudfront::', { Ref: 'AWS::AccountId' }, ':x/*']],
+            },
+          })
+        },
+        'RolesApiTask',
+      ),
+      NAMES,
+    ],
     // Parameters: what a stack stores for the next, and what it reads.
     [
       "another account's secret stored as the stage's auth secret",
@@ -10001,6 +10345,21 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ),
       NETWORK,
     ],
+    // The inline egress is CDK's disallow-all rule itself (ICMP type 252, code 86, to the limited broadcast
+    // address), never another protocol or port to that address.
+    [
+      'a group whose inline egress opens every protocol to the broadcast address',
+      changed(
+        'AWS::EC2::SecurityGroup',
+        resource => {
+          resource.Properties.SecurityGroupEgress = [
+            { CidrIp: '255.255.255.255/32', Description: 'Disallow all traffic', IpProtocol: '-1' },
+          ]
+        },
+        'NetworkGroupsApi',
+      ),
+      NETWORK,
+    ],
     // (An empty list is a leaf no synth writes, so the key hold refuses it first.)
     [
       'a group with an empty inline egress',
@@ -10333,7 +10692,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     expect(canonicalTextFindings({ CLI_FETCH: fetch })).toContain(
       commands('CLI_FETCH', fetch.split('\n').indexOf(exported) + 1),
     )
-    const extract = '  tar --extract --file "$1" --directory "$2" --no-same-owner --no-same-permissions'
+    const extract = '  tar --extract --file - --directory "$2" --no-same-owner --no-same-permissions <"$1"'
     const image = IMAGE_CHECK.replace(`\n${extract}`, `\n  ${exported}\n${extract}`)
     expect(image).not.toBe(IMAGE_CHECK)
     expect(canonicalTextFindings({ IMAGE_CHECK: image })).toContain(
@@ -10951,6 +11310,27 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     ]) {
       expect(shellViews(text).odd.has('brace'), text).toBe(false)
     }
+  })
+
+  // bash ends an unquoted ${ … } at its first } no backslash escapes, a bare { inside being a literal: the reader
+  // counted that { too and closed ${mode:-{} a brace later, so in "$(echo ${mode:-{})}" it took the ) that
+  // closes the substitution as part of the expansion, read the substitution as still open and a command after it
+  // as quoted text. It now closes where bash does, so the command is read and refused.
+  it(`closes an unquoted \${ … } at the first } bash closes it at, a bare { inside it opening nothing`, () => {
+    const planted = `f() {\n  local mode=x seen\n  seen="$(echo \${mode:-{})}" ;uname -s; : "x)"\n}`
+    expect(shellCommands(planted).map(command => command.word)).toEqual(['f', 'local', 'echo', 'uname', ':', '}'])
+    expect(canonicalTextFindings({ X: planted }).join('\n')).toMatch(
+      /DPW-10 X, line 3: runs only the commands CANONICAL_COMMANDS names/,
+    )
+    // A bare { as a default closes at the first }, as a plain expansion does; a nested ${ is still odd.
+    for (const text of [`echo \${x:-{}; uname`, `echo \${x}; uname`]) {
+      expect(shellViews(text).odd.size, text).toBe(0)
+      expect(
+        shellCommands(text).map(command => command.word),
+        text,
+      ).toEqual(['echo', 'uname'])
+    }
+    expect(shellViews(`echo \${x:-\${y}}; uname`).odd.has('brace')).toBe(true)
   })
 
   // EXPAND-A4-02: a value after an option's value. awsTextHeld() let any number of values follow an option, so

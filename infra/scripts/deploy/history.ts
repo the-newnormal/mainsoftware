@@ -262,6 +262,8 @@ export const REFUSALS = {
   'domains-placeholder': "DOMAINS still holds a placeholder: a real release waits for the owner's names (C11-Q08)",
   'pr-not-found': 'no merged pull request to main produced this commit',
   'pr-tree-differs': "the commit's tree differs from its pull request's head",
+  'pr-head-shared':
+    "another pull request was opened from the merged one's head branch, and GitHub ties no ci.yml run to the pull request that started it, so the merged one's own checks can't be told: deploy the next pull request, from a branch that carried no other",
   'pr-checks-failed': "the pull request's check and migrations jobs did not both succeed",
   'off-main': "a commit the run would use is not on main at the run's commit",
   'no-release': 'the environment has no release record',
@@ -415,29 +417,33 @@ export function chooseFromEcs(
 
 // What the gate saves of the pull request that produced a pushed commit (deploy.yml's gate writes it
 // from `gh api`): the merged pull request with base main whose merge commit is the run's (pull null
-// when there is none), its head's tree, and the conclusions of its ci.yml run's `check` and
+// when there is none), its head's tree, whether any other pull request was ever opened from its head
+// branch (shared: GitHub ties no run to the pull request that started it, so another's run at the same
+// head would read as the merged one's), and the conclusions of its ci.yml run's `check` and
 // `migrations` jobs.
 export interface PullChecks {
   pull: number | null
   base: string
   mergeCommit: string
   headTree: string
+  shared: boolean
   check: string
   migrations: string
 }
 
 export function parsePullChecks(json: unknown): PullChecks {
-  if (!isRecord(json) || !hasKeys(json, ['pull', 'base', 'mergeCommit', 'headTree', 'check', 'migrations'])) {
+  if (!isRecord(json) || !hasKeys(json, ['pull', 'base', 'mergeCommit', 'headTree', 'shared', 'check', 'migrations'])) {
     throw new HistoryInputError('--checks is not the pull request checks')
   }
-  const { pull, base, mergeCommit, headTree, check, migrations } = json
+  const { pull, base, mergeCommit, headTree, shared, check, migrations } = json
   if (pull !== null && (typeof pull !== 'number' || !Number.isSafeInteger(pull) || pull < 1)) {
     throw new HistoryInputError('--checks is not the pull request checks')
   }
+  if (typeof shared !== 'boolean') throw new HistoryInputError('--checks is not the pull request checks')
   for (const value of [base, mergeCommit, headTree, check, migrations]) {
     if (typeof value !== 'string') throw new HistoryInputError('--checks is not the pull request checks')
   }
-  return { pull, base, mergeCommit, headTree, check, migrations } as PullChecks
+  return { pull, base, mergeCommit, headTree, shared, check, migrations } as PullChecks
 }
 
 export interface PlanInput {
@@ -576,6 +582,7 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
     }
     const tree = input.treeOf(sha)
     if (tree === undefined || tree !== checks.headTree) return no('pr-tree-differs')
+    if (checks.shared) return no('pr-head-shared')
     if (checks.check !== 'success' || checks.migrations !== 'success') return no('pr-checks-failed')
     for (const env of RECORD_ENVIRONMENTS) {
       const running = currents[env]
