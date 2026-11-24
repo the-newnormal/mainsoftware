@@ -594,7 +594,7 @@ async function cli(argv: readonly string[], transport: Transport): Promise<{ cod
 }
 
 describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prints', () => {
-  it('SMK-T08: parseReadBack keeps a good read-back and refuses an ARN, an address, a 12-digit run, a key more or fewer at every level and schema 2', () => {
+  it('SMK-T08: parseReadBack keeps a good read-back and refuses an ARN, an address, a 12-digit run, a key more or fewer at every level, schema 2 and a value of another shape', () => {
     expect(parseReadBack(readBack())).toEqual(readBack())
     const refused = (value: unknown) => {
       try {
@@ -636,6 +636,35 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     expect(refused(changed(v => Object.assign(v, { schema: 2 })))).toBe('schema')
     expect(refused(changed(v => Object.assign(v, { probe: 'maybe' })))).toBe('probe')
     expect(refused(changed(v => Object.assign(service(v, 'api').tasks[0] ?? {}, { digest: 'latest' })))).toBe('tasks')
+    // Each value of its shape, at the level that holds it: a status word in lower case, an AZ outside the
+    // region, a health path with an upper-case letter, a count below zero or with a fraction, a role no
+    // service or target group has, stickiness as a string, another environment and a bare commit for the
+    // release.
+    const shapes: Array<[string, (v: ReadBack) => void, string]> = [
+      [
+        'a lower-case status',
+        v => Object.assign(service(v, 'api').deployments[0] ?? {}, { status: 'primary' }),
+        'deployments',
+      ],
+      ['an AZ outside the region', v => Object.assign(service(v, 'api').tasks[0] ?? {}, { az: 'us-east-1a' }), 'tasks'],
+      [
+        'an upper-case health path',
+        v => Object.assign(v.targetGroups[0] ?? {}, { healthPath: '/Health' }),
+        'target-groups',
+      ],
+      ['a count below zero', v => Object.assign(service(v, 'api'), { desired: -1 }), 'services'],
+      ['a count with a fraction', v => Object.assign(service(v, 'api'), { desired: 1.5 }), 'services'],
+      ['a service of another role', v => Object.assign(service(v, 'api'), { role: 'scheduler' }), 'services'],
+      [
+        'a target group of the worker',
+        v => Object.assign(v.targetGroups[0] ?? {}, { role: 'worker' }),
+        'target-groups',
+      ],
+      ['stickiness as a string', v => Object.assign(v.targetGroups[0] ?? {}, { stickiness: 'false' }), 'target-groups'],
+      ['another environment', v => Object.assign(v, { env: 'staging' }), 'env'],
+      ['a bare commit for the release', v => Object.assign(v, { release: 'a'.repeat(40) }), 'release'],
+    ]
+    for (const [name, edit, field] of shapes) expect(refused(changed(edit)), name).toBe(field)
     // The release's commit and the digests may hold any run of digits.
     const digits = `${'1'.repeat(40)}:sha256:${'2'.repeat(64)}`
     expect(refused(changed(v => Object.assign(v, { release: digits })))).toBe('kept')
@@ -901,7 +930,7 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     expect(bad.out).not.toContain(address)
   })
 
-  it('SMK-T08: bad arguments exit 2 with one line', async () => {
+  it('SMK-T08: bad arguments, and a --profile-at whose profiles.ts the smoke can’t use, exit 2 with one line', async () => {
     const none = fakeTransport({ tls: 'no-answer', http: () => 'no-answer' }).transport
     const readback = writeReadBack(readBack())
     const base = ['--env', 'nonprod', '--release', RELEASE, '--readback', readback, '--profile-at', before]
@@ -919,29 +948,70 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
       [[...base, '--restore', 'up'], 'smoke: --restore is up or down, with --env restore alone\n'],
       [[...base, '--colour', 'red'], 'smoke: --colour is not an option\n'],
       [[...base, '--env', 'prod'], 'smoke: --env is given twice\n'],
+      [[...base, '--invert'], 'smoke: --invert needs a value\n'],
       [
         [...base.slice(0, 6), '--profile-at', 'e'.repeat(40)],
         'smoke: --profile-at names no commit with infra/src/config/profiles.ts in this clone\n',
       ],
     ]
     for (const [argv, out] of cases) expect(await cli(argv, none), out).toEqual({ code: 2, out })
-    // A release whose profile names an smsProvider the smoke doesn't know: refused as bad input before
-    // anything is asked, never judged as if it were unset or twilio.
+    // A release whose profiles.ts the smoke can't use: its profile names an smsProvider the smoke doesn't
+    // know, it has no profile for --env, it names no host for it (originHost answering nothing, or appHost
+    // while originHost answers), or an export is of another kind (PROFILES a list, appHost a string).
+    // Each is refused as bad input before anything is asked: never judged as if smsProvider were unset or
+    // twilio, and never a smoke that exits 0 having asked and judged nothing.
     const source = readFileSync(PROFILES_SOURCE, 'utf8')
-    let unknown = ''
+    const edited = (text: string, pattern: RegExp, replacement: string) => {
+      if (!pattern.test(text)) throw new Error(`profiles.ts no longer matches ${pattern}`)
+      return text.replace(pattern, replacement)
+    }
+    const hostFunction = (name: string) =>
+      new RegExp(
+        `(\\nexport function ${name}\\(environment: EnvironmentName\\): string \\| undefined \\{\\n)[\\s\\S]*?\\n\\}\\n`,
+      )
+    const unusable: Array<[string, string]> = [
+      [edited(source, NONPROD_SMS, "$1'sns',"), "smoke: --profile-at's smsProvider is not one the smoke knows\n"],
+      [
+        edited(source, /\n {2}nonprod: \{\n(?: {4}.*\n)*? {2}\},/, ''),
+        "smoke: --profile-at's profiles.ts has no profile for --env\n",
+      ],
+      [
+        edited(source, hostFunction('originHost'), '$1  return undefined\n}\n'),
+        "smoke: --profile-at's profiles.ts names no host for --env\n",
+      ],
+      [
+        edited(
+          edited(source, hostFunction('appHost'), '$1  return undefined\n}\n'),
+          hostFunction('originHost'),
+          "$1  return 'origin.nonprod.example.invalid'\n}\n",
+        ),
+        "smoke: --profile-at's profiles.ts names no host for --env\n",
+      ],
+      [
+        `${edited(source, /\nexport const PROFILES: /, '\nconst PROFILES_OBJECT: ')}\nexport const PROFILES = [PROFILES_OBJECT]\n`,
+        "smoke: --profile-at's profiles.ts is not one the smoke can read\n",
+      ],
+      [
+        edited(source, hostFunction('appHost'), "\nexport const appHost = 'nonprod.example.invalid'\n"),
+        "smoke: --profile-at's profiles.ts is not one the smoke can read\n",
+      ],
+    ]
+    const commits: string[] = []
     try {
-      writeFileSync(join(repo, 'infra/src/config/profiles.ts'), source.replace(NONPROD_SMS, "$1'sns',"))
-      git(['commit', '-q', '-am', 'unknown smsProvider'])
-      unknown = git(['rev-parse', 'HEAD'])
+      for (const [text] of unusable) {
+        writeFileSync(join(repo, 'infra/src/config/profiles.ts'), text)
+        git(['commit', '-q', '-am', 'unusable profiles.ts'])
+        commits.push(git(['rev-parse', 'HEAD']))
+      }
     } finally {
       git(['reset', '-q', '--hard', prodTwilio])
     }
-    const answers = fakeTransport({ tls: TLS_GOOD, http: goodAnswer })
-    expect(await cli([...base.slice(0, 6), '--profile-at', unknown, '--repo', repo], answers.transport)).toEqual({
-      code: 2,
-      out: "smoke: --profile-at's smsProvider is not one the smoke knows\n",
-    })
-    expect(answers.hosts).toEqual([])
+    for (const [i, [, out]] of unusable.entries()) {
+      const answers = fakeTransport({ tls: TLS_GOOD, http: goodAnswer })
+      const argv = [...base.slice(0, 6), '--profile-at', commits[i] ?? '', '--repo', repo]
+      expect(await cli(argv, answers.transport), out).toEqual({ code: 2, out })
+      expect(answers.hosts, out).toEqual([])
+    }
   })
 })
 

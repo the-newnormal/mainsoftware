@@ -35,6 +35,16 @@
 # and oidc.json), so a test can run the comparison on fixtures and a repo admin can check answers
 # saved before.
 #
+# The subject template's answer also carries use_immutable_subject, which falls back to the organisation's
+# setting, and sub_claim_prefix: between them they decide whether a token's subject names the repository as
+# owner/name or as owner@id/name@id, and so whether any deploy role's trust matches it. check compares
+# neither, since which form the trusts name is proved only by the first nonprod run and is recorded after it
+# in TECH-SPEC T24 item 11. So while the trusts name the owner/name form, an opt-in to the immutable form (an
+# organisation owner's for the whole organisation, or one made for the repository by anyone who can change
+# its subject template) still prints `protect-environments: oidc ok`, and every credentialed job then stops
+# at its AWS credentials step. It fails closed, and docs/runbooks/aws-account-set-up.md step E.2's correction
+# path puts it right; comparing the two fields waits on that record.
+#
 # apply is a repo admin's, run as the separate operating-system user that holds their gh login (never
 # the user Claude Code runs as: docs/runbooks/aws-account-set-up.md step E.4), never by a coding agent
 # or CI: it, like every command but check, refuses while any of the markers the Owner bootstrap script

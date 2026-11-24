@@ -56,7 +56,13 @@
 //   with git show-ref --verify, after git fetch origin +refs/heads/main:refs/remotes/origin/main): a tag of
 //   any short name, which anyone who can push a branch can push and a plain git pull brings, wins its lookup
 //   (git only warns that it is ambiguous), so a forged record's commit would read as on main, and a fetch or
-//   pull given `origin main` takes such a tag over the branch. Code is read as GFM renders it: fenced blocks
+//   pull given `origin main` takes such a tag over the branch. git ls-remote reads no name exactly: it matches each
+//   pattern against the end of every ref's name at a /, so refs/heads/main also prints a tag named refs/heads/main
+//   (refs/tags/refs/heads/main), and HEAD one named HEAD, beside main's own line, --heads only narrowing that to
+//   branches; so an ls-remote given a pattern that could match refs/heads/main or HEAD (a glob included), or whose
+//   output a pipe hands to a command any of whose words names main or HEAD (a grep or an awk that picks main's line),
+//   is found too, and a runbook reads main's head by the fetch and git show-ref --verify (ls-remote's output kept in
+//   a file or a variable and read later isn't followed). Code is read as GFM renders it: fenced blocks
 //   (backticks or tildes after any indent, list or quote marker, closed only by a run of the same character at
 //   least as long), indented blocks (four columns past the list item or quote a line sits in, or opened by a list
 //   marker's fifth blank, unless it continues a paragraph) and inline spans; a line of HTML that shows code (<pre>,
@@ -1689,6 +1695,57 @@ function printsHashes(command: ShellCommand): boolean {
   return words[0] === 'show-ref' && words.some(word => /^--hash(?:=\d+)?$/.test(word))
 }
 
+// What git ls-remote prints for main whatever name it is given: it matches each pattern p against the end of
+// every ref's name at a /, as the glob */p over /<ref> (in which * matches a / too), so refs/heads/main also
+// prints a tag or branch named refs/heads/main (refs/tags/refs/heads/main), and HEAD, origin's HEAD and so
+// main, one named HEAD (refs/tags/HEAD), --heads only narrowing that to branches. Anyone who can push a tag can
+// push such a ref at an old commit, and ls-remote prints it beside main's own line. So a git ls-remote any of
+// whose patterns (its words past the repository that aren't options) could match refs/heads/main or HEAD, or
+// whose output a pipe hands to a command any of whose words names main or HEAD (a grep or an awk that picks its
+// line), reads main by a short name; only the fetch and git show-ref --verify read it exactly. A [ … ] in a
+// pattern is read as any one character, so the reading only matches more.
+const LS_REMOTE_MAIN = ['/refs/heads/main', '/HEAD']
+const NAMES_MAIN_OR_HEAD = /(?:^|[^A-Za-z0-9_-])(?:main|HEAD)(?![A-Za-z0-9_-])/
+const lsRemoteMatchesMain = (pattern: string) => {
+  const glob = `*/${pattern}`.replace(/\[[!^]?\]?[^\]]*\]|\[.*$|\\[\s\S]?|[*?]|[^*?[\\]+/g, token =>
+    token.startsWith('[')
+      ? token.endsWith(']')
+        ? '.'
+        : '.*'
+      : token === '*'
+        ? '.*'
+        : token === '?'
+          ? '.'
+          : escapeRegExp(token.startsWith('\\') ? token.slice(1) : token),
+  )
+  return LS_REMOTE_MAIN.some(name => new RegExp(`^${glob}$`, 's').test(name))
+}
+function readsMainRemotely(
+  command: ShellCommand,
+  valuesOf: (command: ShellCommand, k: number, splits: boolean) => string[] | undefined,
+): boolean {
+  if (!runsGit(command)) return false
+  const { words } = command
+  const args = gitArguments(command)
+  const unopted = args.filter(k => !(words[k] ?? '').startsWith('-'))
+  const dashed = /(?:^|\/)git-ls-remote$/.test(words[words.findIndex(isGit)] ?? '')
+  const sub = unopted[0]
+  if (!dashed && (sub === undefined || valuesOf(command, sub, true)?.includes('ls-remote') !== true)) return false
+  // The patterns: past the subcommand, gitArguments having left out the repository, or, for git-ls-remote run
+  // directly, which names no subcommand, past the repository.
+  const patterns = unopted.slice(1)
+  if (patterns.some(k => valuesOf(command, k, true)?.some(lsRemoteMatchesMain) === true)) return true
+  for (let next = command.pipeTo; next !== undefined; next = next.pipeTo) {
+    const receiver = next
+    const named = receiver.words.some((_, k) => {
+      const values = valuesOf(receiver, k, false)
+      return values === undefined || values.some(value => NAMES_MAIN_OR_HEAD.test(value))
+    })
+    if (named) return true
+  }
+  return false
+}
+
 // The code a text holds, each piece with the line it starts on, as GFM renders it: its fenced blocks (a run of
 // three or more backticks or tildes, after any indent, list markers or quote markers, closed by a run of the
 // same character at least as long with nothing after it, within three columns of the fence's own list item,
@@ -1936,8 +1993,9 @@ function variablesOf(units: readonly Unit[]): Variables {
 // value any piece gives it. In code that runs git (a word that is git, a value that is, or a command named by an
 // expansion that may be), git's own words are expanded and read; the values a variable, a for loop's list or
 // set takes there, and every word of a command substituted into git's words or into such a value, are read as
-// written; and a command whose output a pipe hands to git is found, unless git reads it as a credential
-// helper's input or it prints hashes. Last, each line of HTML that shows code.
+// written; a command whose output a pipe hands to git is found, unless git reads it as a credential helper's
+// input or it prints hashes; and so is a git ls-remote that may print a ref named like main (readsMainRemotely).
+// Last, each line of HTML that shows code.
 function shortMainAt(text: string): number[] {
   const { pieces, prose } = codeOf(text)
   const units = unitsOf(pieces)
@@ -1977,9 +2035,12 @@ function shortMainAt(text: string): number[] {
     if (!gitRuns || found === undefined) continue
     for (const at of shell.computed) found.add(lineOf(at))
     for (const command of shell.commands) {
-      const { at, words, parts, spans } = command
-      const inWord = (k: number) =>
-        shell.computed.some(position => position >= (spans[k]?.[0] ?? 0) && position < (spans[k]?.[1] ?? 0))
+      const { at, words, parts } = command
+      const inWordOf = (of: ShellCommand, k: number) =>
+        shell.computed.some(position => position >= (of.spans[k]?.[0] ?? 0) && position < (of.spans[k]?.[1] ?? 0))
+      const inWord = (k: number) => inWordOf(command, k)
+      const valuesOf = (of: ShellCommand, k: number, splits: boolean) =>
+        inWordOf(of, k) ? undefined : expand(of.parts[k] ?? [], splits, variables, new Set())
       const read = [...(feedsGit(command) ? words : []), ...variableValues(words)]
       const receiver = receivingGit(command)
       const fed =
@@ -1992,7 +2053,8 @@ function shortMainAt(text: string): number[] {
           const values = inWord(k) ? undefined : expand(parts[k] ?? [], true, variables, new Set())
           return values === undefined || values.some(namesShortMain)
         })
-      if (computes(words) || fed || expanded || read.some(namesShortMain)) found.add(lineOf(at))
+      const remotely = readsMainRemotely(command, valuesOf)
+      if (computes(words) || fed || expanded || remotely || read.some(namesShortMain)) found.add(lineOf(at))
     }
   }
   const html = prose.split('\n').flatMap((line, index) => (HTML_CODE.test(line) ? [index + 1] : []))
@@ -2050,7 +2112,7 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
       '   ```sh',
       '   git -C main log refs/remotes/origin/main..HEAD; git -c init.defaultBranch=main log -- infra/main.ts',
       '   ```',
-      '`git ls-remote origin refs/heads/main`, `git log origin/main-next maintenance`, `main=1 git log`',
+      '`git ls-remote origin`, `git log origin/main-next maintenance`, `main=1 git log`',
       '`git --work-tree=main --git-dir=main/.git --namespace main log refs/remotes/origin/main`',
       'A `git pull` on branch main, and `ref=origin/main` with no git in its span.',
     ].join('\n')
@@ -2093,7 +2155,7 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
   it('passes a repository named first, plain variables, HEAD and @{u}, and output that never reaches git, on planted text', () => {
     const text = [
       'With `c="<commit>"` set: `git fetch origin`, `git fetch --prune origin +refs/heads/main:refs/remotes/origin/main`, `git pull origin`',
-      '`git ls-remote origin refs/heads/main`, `git push origin refs/heads/topic`',
+      '`git ls-remote origin`, `git ls-remote origin refs/tags/v1.2.3`, `git push origin refs/heads/topic`',
       `\`git rev-parse HEAD\`, \`git log "\${c}"\`, \`git cat-file -e <commit>^{commit}\`, \`git log -1 @{u}\``,
       '`git log refs/remotes/origin/HEAD`, `git log "$c"; echo origin/main`',
       `\`printf '%s\\n' "$c" | grep -qxE '[0-9a-f]{40}' && git log "$c"\``,
@@ -2313,6 +2375,64 @@ describe('RB-09 (C0.11 PR 4 review 4 SCRIPTS-01, review 5 GUARDS-02): every git 
     expect(Object.fromEntries(Object.entries(passes).map(([name, text]) => [name, shortMainAt(text)]))).toEqual(
       Object.fromEntries(Object.keys(passes).map(name => [name, []])),
     )
+  })
+
+  // git ls-remote matches each pattern against the end of every ref's name, so refs/heads/main also prints a tag
+  // named refs/heads/main, and HEAD one named HEAD, beside main's own line: an ls-remote given a pattern that
+  // could match either, in any form, or whose output a pipe hands to a command that picks main's line, is found;
+  // one that lists every ref, or tags alone, and the fetch with git show-ref --verify, pass.
+  it('finds a git ls-remote that may print a ref named like main beside main’s own line, on planted text', () => {
+    const sh = (...lines: string[]) => ['```sh', ...lines, '```'].join('\n')
+    const found = {
+      fullRef: '`git ls-remote origin refs/heads/main`',
+      headsOnly: '`git ls-remote --heads origin refs/heads/main`',
+      partialRef: '`git ls-remote origin heads/main`',
+      head: '`git ls-remote origin HEAD`',
+      symref: '`git ls-remote --symref origin HEAD`',
+      glob: "`git ls-remote origin 'refs/heads/ma*'`",
+      everyRef: "`git ls-remote origin '*'`",
+      characterClass: "`git ls-remote origin 'refs/heads/[m]ain'`",
+      escaped: "`git ls-remote origin 'refs/heads/\\main'`",
+      otherRepository: '`git ls-remote ../hearth.git refs/heads/main`',
+      variable: sh('ref=refs/heads/main', 'git ls-remote origin "$ref"'),
+      substituted: sh('m=$(git ls-remote origin refs/heads/main | cut -f1)'),
+      dashed: '`git-ls-remote origin refs/heads/main`',
+      computedSubcommand: sh('s=ls-remote', 'git "$s" origin refs/heads/main'),
+      grep: '`git ls-remote origin | grep refs/heads/main`',
+      awk: `\`git ls-remote origin | awk '$2 == "refs/heads/main" {print $1}'\``,
+      laterInPipe: '`git ls-remote origin | sort -k2 | grep -w main | cut -f1`',
+      grepVariable: sh('ref=refs/heads/main', 'git ls-remote origin | grep "$ref"'),
+    }
+    expect(Object.fromEntries(Object.entries(found).map(([name, text]) => [name, shortMainAt(text)]))).toEqual({
+      fullRef: [1],
+      headsOnly: [1],
+      partialRef: [1],
+      head: [1],
+      symref: [1],
+      glob: [1],
+      everyRef: [1],
+      characterClass: [1],
+      escaped: [1],
+      otherRepository: [1],
+      variable: [3],
+      substituted: [2],
+      dashed: [1],
+      computedSubcommand: [3],
+      grep: [1],
+      awk: [1],
+      laterInPipe: [1],
+      grepVariable: [3],
+    })
+    const passes = [
+      '`git ls-remote`, `git ls-remote origin`, `git ls-remote origin | cut -f1`',
+      "`git ls-remote --tags origin 'v*'`, `git ls-remote origin refs/tags/v1.2.3 | cut -f1`",
+      '`git ls-remote origin refs/heads/maintenance`, `git ls-remote origin refs/heads/topic | head -n 1`',
+      '```sh',
+      'git fetch origin +refs/heads/main:refs/remotes/origin/main',
+      'git show-ref --verify --hash refs/remotes/origin/main',
+      '```',
+    ].join('\n')
+    expect(shortMainAt(passes)).toEqual([])
   })
 
   it('no runbook names main by a short name in a git command', () => {

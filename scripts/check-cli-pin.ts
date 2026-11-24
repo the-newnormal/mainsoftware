@@ -23,7 +23,9 @@
 // refs/remotes/origin/<branch>), never by its short name, as floors-check.ts reads main: the job's fetch-depth: 0
 // fetches every tag too, and git's lookup of a short name takes refs/tags/origin/main before
 // refs/remotes/origin/main, only warning, so a tag of that name, which anyone who can push a branch can push,
-// would stand in for main or the base with a lower pin.
+// would stand in for main or the base with a lower pin. What this check decides holds the pin only as long as
+// this file does, and CI runs it from the pull request's own head, so it is on the owner's-read list (C11-D74,
+// TECH-SPEC T24 item 31).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { lstatSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'

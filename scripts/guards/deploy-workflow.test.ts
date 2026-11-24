@@ -554,6 +554,8 @@ describe('DPW: the guard reads the deploy workflow', () => {
       AWS_CHECK: [
         `tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=\${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)`,
       ],
+      // The log read's count of the pages it read, a local it gives numbers alone.
+      ONE_OFF: ['pages=$((pages + 1))'],
       // bash's own SECONDS reads as its count, whatever was assigned to it.
       MAIN_CI: ['DEADLINE=$((SECONDS + 30 * 60))'],
     }
@@ -3018,8 +3020,8 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(
       gate(
         plant(
-          "needs.gate.outputs.mode != 'drill-break' }}",
-          "needs.gate.outputs.mode != 'drill-break' || always() }}",
+          "needs.nonprod.result == 'failure') }}",
+          "needs.nonprod.result == 'failure') || always() }}",
           job('record-nonprod'),
         ),
       ),
@@ -3030,8 +3032,8 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(
       gate(
         plant(
-          "needs.gate.outputs.mode != 'drill-break' }}",
-          `needs.gate.outputs.mode != 'drill-break' ${actorOnly}`,
+          "needs.nonprod.result == 'failure') }}",
+          `needs.nonprod.result == 'failure') ${actorOnly}`,
           job('record-nonprod'),
         ),
       ),
@@ -3385,6 +3387,8 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         '# a comment \\\n#;echo ran',
         '# a comment \\\necho ran',
         'echo ran # a comment',
+        // A # after a blank inside ${ … } is no comment, so bash joins the next line here.
+        `echo \${x:- #}\\\n#;echo ran`,
       ]
       for (const [index, sample] of samples.entries()) {
         const file = join(folder, `sample-${index}.sh`)
@@ -3397,6 +3401,19 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         const read = codeLinesAsBash(sample.split('\n')).some(line => line.includes('echo ran'))
         expect({ sample, read }).toEqual({ sample, read: ran })
       }
+      // The one way it reads more than bash runs, on purpose: a code line whose trailing comment ends in a
+      // backslash joins nothing in bash, but the guard reads the next line as code, since telling that comment
+      // from a # bash reads as text (the sample above) needs bash's whole reader. It can refuse a correct
+      // script, never miss a line bash runs.
+      const overRead = 'echo a # a note \\\n#;echo ran'
+      const file = join(folder, 'over-read.sh')
+      writeFileSync(file, `${overRead}\n`)
+      const result = spawnSync('bash', [file], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH ?? '', HOME: folder, LC_ALL: 'C.UTF-8' },
+      })
+      expect(result.stdout.split('\n').includes('ran')).toBe(false)
+      expect(codeLinesAsBash(overRead.split('\n'))).toEqual(['echo a # a note \\', '#;echo ran'])
     } finally {
       rmSync(folder, { recursive: true, force: true })
     }
@@ -4838,6 +4855,12 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       'def all(f): f; all(.[] | . > 0)',
       'def a: b; def b: a; a',
       'capture("x"; "g") | .a',
+      // capture's one argument may be an array of a pattern and its flags, which jq reads as the two-argument
+      // form: with "g", a value a match. So its argument is one plain string literal, never an expression.
+      'capture(["x", "g"]) | .a',
+      '["x", "g"] as $v | capture($v) | .a',
+      'capture(.p) | .a',
+      'capture("\\(.p)") | .a',
       'range(3) | . > 0',
       'recurse | . == 1',
       'limit(2; .[]) | . > 0',
@@ -7630,6 +7653,107 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
 // set: so the drill refuses to start on a stack an earlier rollback left (the eighth review's ROLLBACK-01: a
 // CLI that failed before any change set, over a Services stack left UPDATE_ROLLBACK_COMPLETE, passed as a
 // drill and was read as proof that the circuit breaker and CloudFormation's rollback work).
+// The one-off's end reads its task's log page by page, since GetLogEvents can answer a page partly full or even
+// empty while more follow, and ends where the forward token comes back as sent (its API reference). A stand-in
+// aws answers each page by the token it is handed; the step's summary is what the person on call reads.
+describe('DPW-06 (T24 item 15): the one-off’s log read against planted pages', () => {
+  const STUB = `aws() {
+  case "$1 $2" in
+    'ecs wait') return 0 ;;
+    'ecs describe-tasks') printf '{"exit": %s, "stop": "EssentialContainerExited"}\\n' "$EXIT" ;;
+    'logs get-log-events')
+      local token='' page
+      while [ $# -gt 0 ]; do
+        if [ "$1" = --next-token ]; then token=$2; fi
+        shift
+      done
+      page=$(jq -c --arg token "$token" '.[$token] // empty' <<<"$PAGES")
+      if [ -z "$page" ]; then echo 'unexpected token' >&2; return 99; fi
+      printf '%s\\n' "$page" ;;
+    *) echo "unexpected aws $*" >&2; return 99 ;;
+  esac
+}`
+  // The task as ECS names it (the account built from parts, so no id is written here).
+  const task = `${['arn', 'aws', 'ecs', 'ap-southeast-1', '0'.repeat(12)].join(':')}:task/hearth-nonprod/${'a'.repeat(32)}`
+  type Pages = Record<string, { events: unknown; next: string }>
+  function oneOff(pages: Pages, exit = 0) {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-dpw06-log-'))
+    try {
+      const summary = join(folder, 'summary')
+      writeFileSync(summary, '')
+      const placed = JSON.stringify({ failures: 0, tasks: [task] })
+      const result = spawnSync(
+        'bash',
+        ['-c', `${STUB}\n${PREAMBLE}\n${ONE_OFF}\none_off_end migrate "$MIGRATE_LINES" "$1"`, '_', placed],
+        {
+          encoding: 'utf8',
+          env: {
+            PATH: process.env.PATH ?? '',
+            HOME: folder,
+            RUNNER_TEMP: folder,
+            GITHUB_STEP_SUMMARY: summary,
+            STAGE: 'nonprod',
+            CLUSTER: 'hearth-nonprod',
+            EXIT: String(exit),
+            PAGES: JSON.stringify(pages),
+          },
+        },
+      )
+      return {
+        status: result.status,
+        summary: readFileSync(summary, 'utf8').trim().split('\n'),
+        printed: `${result.stdout}${result.stderr}`,
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  }
+  const UNREAD = "migrate: the log may hold lines the job didn't read"
+
+  it('reads past an empty first page to the stream’s end', () => {
+    const pages: Pages = {
+      '': { events: [], next: 'f/1/s' },
+      'f/1/s': { events: ['migrate: applied 0014_provenance', 'connecting to 10.0.0.1'], next: 'f/2/s' },
+      'f/2/s': { events: [], next: 'f/2/s' },
+    }
+    expect(oneOff(pages, 1)).toMatchObject({
+      status: 1,
+      summary: [
+        'migrate: applied 0014_provenance',
+        'migrate: 1 log lines withheld',
+        'migrate: failed (exit 1, stop code EssentialContainerExited)',
+      ],
+    })
+    expect(
+      oneOff({ '': { events: ['migrate: nothing to apply'], next: 'f/7/s' }, 'f/7/s': { events: [], next: 'f/7/s' } }),
+    ).toMatchObject({ status: 0, summary: ['migrate: nothing to apply', 'migrate: 0 log lines withheld'] })
+  })
+
+  it('stops at five pages, at a token of another shape and at an answer of another shape, saying so', () => {
+    const endless: Pages = { '': { events: ['line'], next: 'f/1/s' } }
+    for (let n = 1; n < 9; n++) endless[`f/${n}/s`] = { events: ['line'], next: `f/${n + 1}/s` }
+    expect(oneOff(endless)).toMatchObject({ status: 0, summary: ['migrate: 5 log lines withheld', UNREAD] })
+    // A token aws-cli would load a file by never reaches it.
+    const scheme: Pages = {
+      '': { events: ['migrate: nothing to apply'], next: 'file:///proc/self/environ' },
+      'file:///proc/self/environ': { events: ['migrate: applied 9999_planted'], next: 'f/1/s' },
+    }
+    expect(oneOff(scheme)).toMatchObject({
+      status: 0,
+      summary: ['migrate: nothing to apply', 'migrate: 0 log lines withheld', UNREAD],
+    })
+    for (const next of ['-x', 'a b', '']) {
+      const pages: Pages = { '': { events: [], next } }
+      if (next !== '') pages[next] = { events: ['migrate: applied 9999_planted'], next }
+      expect(oneOff(pages), next).toMatchObject({ status: 0, summary: ['migrate: 0 log lines withheld', UNREAD] })
+    }
+    // An answer of another shape ends the read, never the job, and no jq error shows its text.
+    const odd = oneOff({ '': { events: 'VALUE-1234567', next: 'f/1/s' } })
+    expect(odd).toMatchObject({ status: 0, summary: ['migrate: 0 log lines withheld', UNREAD] })
+    expect(odd.printed).not.toContain('VALUE')
+  })
+})
+
 describe('DPW-06 (C11-D59): drill-break against planted AWS answers', () => {
   let scratch = ''
   beforeAll(() => {
@@ -8939,6 +9063,25 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
         ),
       ),
     ).toBe(refused('an artifact type is not one a workload synth writes'))
+    // A field of a type a rule doesn't expect makes jq fail on it, and jq's error, which names the file and
+    // starts the value, stays out of the log: the refusal is the one line (each value would show in it).
+    expect(
+      check(
+        inManifest(
+          d => d,
+          json => (json.artifacts = 'VALUE-1234567'),
+        ),
+      ),
+    ).toBe(refused('an artifact type is not one a workload synth writes'))
+    expect(check(inManifest(prod, json => (json.missing = true)))).toBe(
+      refused('a manifest has missing context, which the CLI would look up'),
+    )
+    expect(
+      check(dir => edit(named(nonprod(dir), 'Platform', '.assets.json'), json => (json.files = 'VALUE-1234567'))),
+    ).toBe(RUNS)
+    expect(
+      check(dir => edit(named(nonprod(dir), 'Platform', '.assets.json'), json => (json.dockerImages = true))),
+    ).toBe(refused('an asset manifest holds a container image asset'))
     expect(check(dir => symlinkSync('/etc/hostname', join(prod(dir), 'link')))).toBe(
       refused('the assembly holds a symbolic link'),
     )

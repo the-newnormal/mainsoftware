@@ -214,7 +214,7 @@ async function refusalOf(input: PlanInput) {
 }
 
 describe('C11-D61, T24 item 23: the release record’s payload', () => {
-  it('C11-D61: keeps a good record and one whose commit, digest and migratedCommit hold 12-digit runs, refuses an ARN, a long revision, an extra key, a string payload, another schema, a short migratedCommit and a fourth service, and never reads a per-job deployment', () => {
+  it('C11-D61: keeps a good record and one whose commit, digest and migratedCommit hold 12-digit runs, refuses an ARN, a long revision, an extra key, a string payload, another schema, a short migratedCommit, a fourth service, a short or upper-case commit or digest and a deployment id that isn’t a positive integer, and never reads a per-job deployment', () => {
     const good = deployment(11, 'prod', 'a'.repeat(40), D.a, 3)
     const arn = deployment(12, 'prod', 'a'.repeat(40), D.a, 4)
     ;(arn.payload as { services: Record<string, string> }).services.api = [
@@ -251,6 +251,13 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     // can, and is no account id, so the record is kept (each field's exemption on its own).
     const allDigits = deployment(26, 'prod', '1'.repeat(40), `sha256:${'2'.repeat(64)}`, 16, 'rollback')
     ;(allDigits.payload as Record<string, unknown>).migratedCommit = '3'.repeat(40)
+    // A commit or digest of another shape: upper case, or one hex digit short. A forged newest record
+    // of that shape would otherwise be the current release, a commit git can't place and a digest no
+    // image has.
+    const upperCommit = deployment(27, 'prod', 'A'.repeat(40), D.a, 17)
+    const shortCommit = deployment(28, 'prod', 'a'.repeat(39), D.a, 18)
+    const shortDigest = deployment(29, 'prod', 'a'.repeat(40), `sha256:${'a'.repeat(63)}`, 19)
+    const upperDigest = deployment(30, 'prod', 'a'.repeat(40), `sha256:${'A'.repeat(64)}`, 20)
     const parsed = parseReleaseRecords(
       [
         good,
@@ -269,11 +276,15 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         shortMigrated,
         fourthService,
         allDigits,
+        upperCommit,
+        shortCommit,
+        shortDigest,
+        upperDigest,
       ],
       'prod',
     )
     expect(parsed.records.map(record => record.id)).toEqual([11, 17, 18, 26])
-    expect(parsed.ignored).toEqual([12, 13, 14, 15, 16, 19, 20, 23, 24, 25])
+    expect(parsed.ignored).toEqual([12, 13, 14, 15, 16, 19, 20, 23, 24, 25, 27, 28, 29, 30])
     expect(parsed.records[3]).toMatchObject({
       commit: '1'.repeat(40),
       digest: `sha256:${'2'.repeat(64)}`,
@@ -291,9 +302,14 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     expect(parseReleaseRecords([[good], [nullMigrated]], 'prod').records.map(record => record.id)).toEqual([11, 17])
     expect(() => parseReleaseRecords({ id: 1 }, 'prod')).toThrow()
     expect(() => parseReleaseRecords([{ id: 'x', task: 'hearth-release', environment: 'prod' }], 'prod')).toThrow()
+    // A deployment id that isn't a positive integer is input it can't use, never a record's id that
+    // orders it or names it.
+    for (const id of [0, -1, 1.5]) {
+      expect(() => parseReleaseRecords([{ ...good, id }], 'prod'), String(id)).toThrow(HistoryInputError)
+    }
   })
 
-  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records, ignoring another schema’s and keeping a commit or digest of digits', () => {
+  it('C11-D61: orders records by the api revision, the deployment id breaking a tie, and reads the migration and restore records, ignoring one of another schema, with a key more or with a short commit or digest, and keeping a commit or digest of digits', () => {
     // Run B's record (higher revisions) lands before run A's: read in revision order.
     const parsed = parseReleaseRecords(
       [
@@ -314,6 +330,8 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         { id: 12, task: 'hearth-migrated', environment: 'prod', payload: { schema: 2, commit: at(3) } },
         // A commit of digits alone holds a 12-digit run and is kept, as a release record's is.
         { id: 13, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: '4'.repeat(40) } },
+        // A commit one hex digit short.
+        { id: 14, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(3).slice(0, 39) } },
       ],
       'prod',
     )
@@ -323,7 +341,7 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         { id: 9, commit: at(2) },
         { id: 13, commit: '4'.repeat(40) },
       ],
-      ignored: [10, 12],
+      ignored: [10, 12, 14],
     })
     const restores = parseRestoreRecords([
       {
@@ -351,13 +369,32 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         environment: 'prod',
         payload: { schema: 1, kind: 'down', commit: '5'.repeat(40), digest: `sha256:${'6'.repeat(64)}` },
       },
+      // A key more, a commit one hex digit short, and a digest one hex digit short.
+      {
+        id: 9,
+        task: 'hearth-restore',
+        environment: 'prod',
+        payload: { schema: 1, kind: 'up', commit: at(4), digest: D.d, note: 'x' },
+      },
+      {
+        id: 10,
+        task: 'hearth-restore',
+        environment: 'prod',
+        payload: { schema: 1, kind: 'up', commit: at(4).slice(0, 39), digest: D.d },
+      },
+      {
+        id: 11,
+        task: 'hearth-restore',
+        environment: 'prod',
+        payload: { schema: 1, kind: 'up', commit: at(4), digest: D.d.slice(0, -1) },
+      },
     ])
     expect(restores).toEqual({
       records: [
         { id: 5, kind: 'up', commit: at(4), digest: D.d },
         { id: 8, kind: 'down', commit: '5'.repeat(40), digest: `sha256:${'6'.repeat(64)}` },
       ],
-      ignored: [6, 7],
+      ignored: [6, 7, 9, 10, 11],
     })
   })
 })
@@ -1004,7 +1041,13 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       [dispatch({ release: at(4) }), 'release-unexpected'],
       [dispatch({ mode: 'drill-break', release: at(4) }), 'release-unexpected'],
       [dispatch({ mode: 'rollback' }), 'release-missing'],
+      // A push carries no input: each one given is refused, never read as a dispatch's.
       [planInput({ target: 'nonprod' }), 'bad-input'],
+      [planInput({ mode: 'deploy' }), 'bad-input'],
+      [planInput({ release: at(4) }), 'bad-input'],
+      [planInput({ restore: 'none' }), 'bad-input'],
+      [planInput({ restore: 'up' }), 'bad-input'],
+      [planInput({ triggeringActor: '' }), 'bad-input'],
       [planInput({ actor: 'github-actions[bot]' }), 'bot-actor'],
       [planInput({ triggeringActor: 'renovate[bot]' }), 'bot-actor'],
       [dispatch({}, { triggeringActor: 'github-actions[bot]' }), 'bot-actor'],
@@ -1155,6 +1198,25 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
       ok: false,
       reason: 'bad-input',
     })
+    // A run's commit or a release's commit that isn't 40 lower-case hex is refused in every mode, before
+    // prod's records decide anything: on an empty prod history, where nothing else would refuse it, a
+    // rollback's short or upper-case commit, and a restore, which reads neither commit again.
+    const rollback = { ...base(), mode: 'rollback', commit: at(3), digest: D.c, buildDigest: '', nonprodDigest: '' }
+    const restore = { ...base(), target: 'restore', commit: at(4), digest: D.d, buildDigest: '', nonprodDigest: '' }
+    const malformed = [
+      { ...base(), sha: 'main', commit: 'main', recordId: '', records: [] },
+      { ...rollback, sha: 'x', records: prodRecords() },
+      { ...rollback, commit: at(3).slice(0, 12), records: prodRecords() },
+      { ...rollback, commit: at(3).toUpperCase(), records: prodRecords() },
+      { ...restore, sha: 'x', records: prodRecords() },
+      { ...restore, commit: 'x', records: prodRecords() },
+    ]
+    for (const input of malformed) {
+      expect(await prodGate(input), JSON.stringify([input.mode, input.target, input.sha, input.commit])).toEqual({
+        ok: false,
+        reason: 'bad-input',
+      })
+    }
   })
 
   // Two merges close together (round 11): run B's gate read prod's newest record, then run A's prod deploy
@@ -1663,6 +1725,27 @@ describe('C11-D58, C11-D61: the command line', () => {
       code: 2,
       out: ['history: --colour is not an option'],
     })
+    // A release record whose deployment id is 0 is input it can't use, named and never its value.
+    const zeroId = writeJson(join(scratch, 'zero-id.json'), [{ ...deployment(202, 'prod', at(4), D.d, 2), id: 0 }])
+    expect(await cli(['choose', '--env', 'prod', '--records', zeroId, '--current', `${at(4)}:${D.d}`])).toEqual({
+      code: 2,
+      out: ['history: a deployment has no id'],
+      err: [],
+    })
+    // prod-gate refuses a run's commit and a release's commit that aren't commits, on an empty prod
+    // history too, where no record would refuse them.
+    const emptyProd = join(scratch, 'empty-prod')
+    writeJson(join(emptyProd, 'release-prod.json'), [])
+    const malformedGate = [
+      'prod-gate',
+      ...['--mode', 'deploy', '--target', 'prod', '--sha', 'x', '--commit', 'x', '--digest', ''],
+      ...['--record-id', '', '--build-digest', D.f, '--nonprod-digest', D.f, '--records', emptyProd],
+    ]
+    expect(await cli(malformedGate)).toEqual({
+      code: 1,
+      out: [`history: refused bad-input: ${REFUSALS['bad-input']}`],
+      err: [],
+    })
   })
 
   it('C11-D58: a failure it didn’t expect is one line, `history: failed`, and exit 1, never the error’s message', async () => {
@@ -2085,7 +2168,7 @@ describe('C11-D58, C11-D61: the command line', () => {
     })
   })
 
-  it('C11-D58: choose-ecs refuses a gap in the deployment pages and a deployment whose revision wasn’t saved, never choosing past them', async () => {
+  it('C11-D58: choose-ecs refuses a gap in the deployment pages, a deployment whose revision wasn’t saved and a file that isn’t a page break-glass saves, never choosing past them', async () => {
     // R1, R2, then R3 (current), the same for each role, one deployment a page.
     const entries: ReadonlyArray<readonly [number, string, number]> = [
       [10, D.a, 1],
@@ -2160,6 +2243,105 @@ describe('C11-D58, C11-D61: the command line', () => {
         ),
       ),
     ).toEqual({ code: 2, out: ["history: a api deployment's revision isn't in its pages"], err: [] })
+    // A file that isn't a page break-glass saves, one changed at a time over pages that are whole (each
+    // role's deployments in two pages, R1 and R2 on the first, and one revisions page): bad input, never a
+    // choice from what's left, a refusal that reads as none qualifying, or `history: failed`.
+    const malformed = join(scratch, 'pages-malformed')
+    const rows = (role: string): unknown[][] =>
+      entries.map(([when], i) => [new Date(when * minute).toISOString(), revisionArn(role, i + 1)])
+    const savedRevisions = (role: string): unknown[][] =>
+      entries.map(([, digest, revision], i) => [revisionArn(role, i + 1), taskDefinitionArn(role, revision), digest])
+    const page = (name: string, value: unknown) => writeJson(join(malformed, name), value)
+    const whole = () => {
+      rmSync(malformed, { recursive: true, force: true })
+      for (const role of ['api', 'realtime', 'worker']) {
+        page(`${role}-deployments-1.json`, { next: 'token', deployments: rows(role).slice(0, 2) })
+        page(`${role}-deployments-2.json`, { next: null, deployments: rows(role).slice(2) })
+        page(`${role}-revisions-1.json`, savedRevisions(role))
+      }
+    }
+    const ask = ['choose-ecs', '--pages', malformed, '--current-digest', D.c]
+    whole()
+    expect(await cli(ask)).toEqual({
+      code: 0,
+      out: [`digest ${D.b}`, 'api hearth-prod-api:2', 'realtime hearth-prod-realtime:2', 'worker hearth-prod-worker:2'],
+      err: [],
+    })
+    const [r3 = []] = rows('api').slice(2)
+    const notDeployments = 'history: api-deployments-2.json is not a deployments page'
+    const notRevisions = 'history: api-revisions-1.json is not a revisions page'
+    const cases: Array<[string, () => void, string]> = [
+      [
+        'a finishedAt that is null',
+        () =>
+          page('api-deployments-1.json', {
+            next: 'token',
+            deployments: [[null, revisionArn('api', 1)], ...rows('api').slice(1, 2)],
+          }),
+        'history: a api deployment has no finishedAt',
+      ],
+      [
+        'a role with no deployment pages',
+        () => {
+          for (const n of [1, 2]) rmSync(join(malformed, `worker-deployments-${n}.json`))
+        },
+        "history: --pages lacks worker's deployment pages, numbered from 1",
+      ],
+      [
+        'a page before the last whose next is null',
+        () => page('api-deployments-1.json', { next: null, deployments: rows('api').slice(0, 2) }),
+        "history: api's deployment pages don't end where next is null",
+      ],
+      [
+        'a page with a key more',
+        () => page('api-deployments-2.json', { next: null, deployments: [r3], more: 1 }),
+        notDeployments,
+      ],
+      [
+        'deployments that aren’t a list',
+        () => page('api-deployments-2.json', { next: null, deployments: {} }),
+        notDeployments,
+      ],
+      [
+        'a row of one cell',
+        () => page('api-deployments-2.json', { next: null, deployments: [r3.slice(0, 1)] }),
+        notDeployments,
+      ],
+      [
+        'a row of three cells',
+        () => page('api-deployments-2.json', { next: null, deployments: [[...r3, 'x']] }),
+        notDeployments,
+      ],
+      [
+        'a row whose revision isn’t a string',
+        () => page('api-deployments-2.json', { next: null, deployments: [[r3[0], 3]] }),
+        notDeployments,
+      ],
+      ['a revisions page that isn’t a list', () => page('api-revisions-1.json', {}), notRevisions],
+      [
+        'a revisions row of two cells',
+        () =>
+          page(
+            'api-revisions-1.json',
+            savedRevisions('api').map((row, i) => (i === 0 ? row.slice(0, 2) : row)),
+          ),
+        notRevisions,
+      ],
+      [
+        'a revisions row whose revision isn’t a string',
+        () =>
+          page(
+            'api-revisions-1.json',
+            savedRevisions('api').map((row, i) => (i === 0 ? [1, ...row.slice(1)] : row)),
+          ),
+        notRevisions,
+      ],
+    ]
+    for (const [name, change, refusal] of cases) {
+      whole()
+      change()
+      expect(await cli(ask), name).toEqual({ code: 2, out: [refusal], err: [] })
+    }
   })
 
   it('C11-D61: no output line of any subcommand holds an ARN, a 12-digit run outside a commit or digest, or an IPv4 address', async () => {

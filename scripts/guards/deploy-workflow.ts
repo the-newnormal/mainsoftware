@@ -49,8 +49,9 @@
 // a restore's too (DPW-08), a restore taken down read by PLAN_BASIS too and deploying only the stacks
 // that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
 // same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
-// or turn into HTML that hides the rest; a credentialed run writes no file but its outputs, its summary and /dev/null,
-// and the diff in prod-plan's two diff runs alone; and ASSET_CHECK holds every template to the resource types the
+// or turn into HTML that hides the rest; a credentialed run writes no file by a redirection but its outputs, its
+// summary and /dev/null, and the diff in prod-plan's two diff runs alone (CLI_FETCH's and IMAGE_CHECK's tools write
+// only their own folders, each on its own line: FETCH_TOOLS, IMAGE_TOOLS); and ASSET_CHECK holds every template to the
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
@@ -135,7 +136,7 @@
 // deploy.yml has a line of its own at all, and the table and the text rules are a second layer there (a
 // word bash joins from quoted or expanded parts, or npm's own aliases, would pass a rule
 // that reads the text), behind the owner's read of any change to a pinned run (the last paragraph); outside
-// build and the synths no other step writes an output. The CLI's own lines are held to the words the
+// build and the synths only a pinned run writes an output. The CLI's own lines are held to the words the
 // canonical lines write (CLI_WORDS: its stacks and its flags, each once), never by a list of names to refuse,
 // since its yargs reads every option by a short alias too and options no list named (--build, a shell command
 // it runs with the job's environment, a diff's --security-only), and every variable in its environment whose
@@ -569,13 +570,13 @@ check_assembly() {
     queue=("$\{queue[@]:1}")
     [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
     jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-    jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+    jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'a manifest has missing context, which the CLI would look up'
-    jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+    jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'an artifact type is not one a workload synth writes'
     jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-deploy-role-$\{AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-$\{AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:$\{AWS::Partition}:iam::$\{AWS::AccountId}:role/cdk-hearthapp-lookup-role-$\{AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-    jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+    jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     while IFS= read -r file; do
       jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -587,21 +588,21 @@ check_assembly() {
       jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
     done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-    jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+    jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-    jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+    jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
       jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a metadata file is not a JSON object of entry lists'
-      jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+      jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
     done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
     while IFS= read -r file; do
       [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-      jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-      jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+      jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+      jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
       while IFS= read -r path; do
         case "$(realpath -m -- "$dir/$path")" in
@@ -639,7 +640,7 @@ check_release_in() {
   root=$(cd "$1" && pwd -P)
   while IFS= read -r dir; do
     while IFS=$'\t' read -r stack template; do
-      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+      jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-$\{AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
         asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
       # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
       # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -886,11 +887,11 @@ check_release_in() {
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
-          jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+          jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
             asset_refuse "a Services template's Release is not this job's release"
           ;;&
         Hearth-*-Tasks | Hearth-*-Services)
-          jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+          jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
             asset_refuse 'a container image is not the server image at this release'
           ;;
       esac
@@ -1133,7 +1134,7 @@ export const ONE_OFF = sh`# A one-off's end (C11-D52; TECH-SPEC T24 items 11 and
 MIGRATE_LINES='${MIGRATE_LINES}'
 PROBE_LINES='${PROBE_LINES}'
 one_off_end() {
-  local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+  local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
   if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
     echo "$kind: ECS didn't place exactly one task" | mask
     exit 1
@@ -1150,12 +1151,32 @@ one_off_end() {
     run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
   fi
   ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-  if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --query 'events[].message' --output json); then
-    shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-    withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-  fi
+  # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+  # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+  # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+  # a read that stops short of the end says so.
+  while [ "$pages" -lt 5 ]; do
+    if [ -z "$cursor" ]; then
+      page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+    else
+      page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+    fi
+    pages=$((pages + 1))
+    joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+    log=$joined
+    next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+    [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+    if [ "$next" = "$cursor" ]; then
+      whole=1
+      break
+    fi
+    cursor=$next
+  done
+  shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+  withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
   if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
   echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+  if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
   if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
     echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
     exit 1
@@ -1926,9 +1947,9 @@ export const READ_BACK = sh`# The read-back (C11-D54, C11-D61): what runs, for t
 # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
 # deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
 # each target group's target states, deregistration delay, stickiness and health path, and the load
-# balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
-# outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
-# Services stack now says it runs.
+# balancer's idle timeout. A service that doesn't exist (a restore stage never brought up) is left out;
+# one a restore taken down keeps at desired 0 is read back as it stands. Its outputs: the read-back, each
+# service's PRIMARY definition as family:revision, and the release the Services stack now says it runs.
 SERVICE_LIST='[]'
 FAMILIES='{}'
 for ROLE in api realtime worker; do
@@ -2500,12 +2521,15 @@ fi`
 // The script's first line, which the kernel reads and bash skips as a comment: DPW-09 holds it whole.
 export const PROTECT_ENVIRONMENTS_SHEBANG = '#!/usr/bin/env bash'
 
-// A script's lines as bash runs them, comments and blank lines dropped as bash drops them and nothing else:
-// a comment is a # after spaces and tabs alone (bash reads any other blank, a no-break space, a carriage
-// return or a vertical tab, as part of a word, so a line JavaScript's trim() would call a comment runs
-// whatever follows a ; on it), and a line after a code line that ends in a backslash is joined to it
-// (bash reads `x=\` then `#;cmd` as `x=#;cmd`), so it is code whatever it starts with. A comment's own
-// trailing backslash joins nothing.
+// A script's lines as bash runs them, comments and blank lines dropped as bash drops them: a comment line is
+// a # after spaces and tabs alone (bash reads any other blank, a no-break space, a carriage return or a
+// vertical tab, as part of a word, so a line JavaScript's trim() would call a comment runs whatever follows
+// a ; on it), and a line after a code line that ends in a backslash is joined to it (bash reads `x=\` then
+// `#;cmd` as `x=#;cmd`), so it is code whatever it starts with. A comment line's trailing backslash joins
+// nothing. A code line whose trailing comment ends in a backslash is read as joining the next line too, though
+// bash joins nothing there: that only adds a line to what the checks read, so it can refuse a correct script
+// but never miss a line bash runs. withoutComment() can't tell that comment apart, since it reads a # after a
+// blank inside ${ … } as one, where bash reads text and joins the next line.
 export function codeLinesAsBash(lines: readonly string[]): string[] {
   const code: string[] = []
   let joined = false
@@ -4149,8 +4173,9 @@ function jqHeld(words: readonly string[]): boolean {
 // an array it builds ([ … ]), each of which collects what it holds into one value, it iterates nothing (.[] or
 // ..), writes no comma but between an object's entries, and no ?//; it names only JQ_ONE_NAMES, each of which
 // prints at most one value for each it is given, and its own definitions whose bodies hold to the same (one
-// that iterates, as ASSET_CHECK's of() does, only where its values are collected), capture with one argument
-// alone (with flags, "g" prints a value a match), and writes no comment. A program it can't read is refused.
+// that iterates, as ASSET_CHECK's of() does, only where its values are collected), capture with one plain string
+// literal for its argument alone (with flags, given as a second argument or in an array with the pattern, "g"
+// prints a value a match), and writes no comment. A program it can't read is refused.
 const JQ_ONE_NAMES: ReadonlySet<string> = new Set([
   'and',
   'or',
@@ -4186,6 +4211,8 @@ const JQ_ONE_NAMES: ReadonlySet<string> = new Set([
   'index',
 ])
 const JQ_COLLECTS: ReadonlySet<string> = new Set(['all', 'any', 'first', 'map'])
+// One jq string literal with no interpolation (\( … )), blanks around it aside.
+const JQ_PLAIN_STRING = /^\s*"(?:[^"\\]|\\[^(])*"\s*$/
 // The keywords after which a [ starts an array (if … then [ … ]) rather than indexing what comes before it.
 const JQ_TERM_KEYWORDS: ReadonlySet<string> = new Set(['if', 'then', 'elif', 'else', 'and', 'or', 'as'])
 export function jqPrintsOne(program: string): boolean {
@@ -4233,9 +4260,13 @@ export function jqPrintsOne(program: string): boolean {
       if (c === '(') {
         const name = wordBefore(at)
         at++
+        const start = at
         const collects = name !== undefined && JQ_COLLECTS.has(name) && !definitions.has(name)
         const counted = read(')', collecting || collects, false)
-        if (name === 'capture' && counted > 0) scope.bad = true
+        // capture's one argument may also be an array of a pattern and its flags, which jq reads as the
+        // two-argument form, so it is one plain string literal (no interpolation), never an expression.
+        const argument = program.slice(start, at - 1)
+        if (name === 'capture' && (counted > 0 || !JQ_PLAIN_STRING.test(argument))) scope.bad = true
         continue
       }
       if (c === '[') {
@@ -4530,7 +4561,9 @@ function heldNameLines(
 // (digests and image), the one-off's placement PROBE hands one_off_end (RUN) and the releases ecr_has is handed
 // (RELEASE and PREVIOUS, the job's env, which no text sets), and holds a function's argument as a root only where
 // the function's own calls, as written, hand it (AWS_ARGUMENT_CALLS), since a digest from a stack's outputs set
-// digests, or handed ecr_has, and reached aws as a shorthand file load (imageTag@=file://…).
+// digests, or handed ecr_has, and reached aws as a shorthand file load (imageTag@=file://…). The one-off's log
+// read added cursor, the forward token it hands --next-token, read from next and page, its log's own answer,
+// which ONE_OFF holds to a shape with no colon and no leading dash (no scheme, no option) before aws reads it.
 const AWS_NAMES = [
   'td',
   'image',
@@ -4553,6 +4586,9 @@ const AWS_NAMES = [
   'NET_PROBE',
   'NET_MIGRATE',
   'TOKEN',
+  'cursor',
+  'next',
+  'page',
 ]
 const AWS_NAME_ASSIGNMENT = assigns(AWS_NAMES.join('|'))
 const AWS_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
@@ -4589,8 +4625,21 @@ const AWS_NAME_LINES = (): ReadonlyArray<readonly [string, string]> => [
   [sh`definition=$(output "$\{kind^}TaskDefinition")`, 'TASKS_OUTPUTS'],
   [sh`migrate) MIGRATE_TD="$\{definition##*/}" ;;`, 'TASKS_OUTPUTS'],
   [sh`probe) PROBE_TD="$\{definition##*/}" ;;`, 'TASKS_OUTPUTS'],
-  [sh`local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping`, 'ONE_OFF'],
+  [
+    sh`local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping`,
+    'ONE_OFF',
+  ],
   [sh`task=$(jq -r '.tasks[0]' <<<"$placed")`, 'ONE_OFF'],
+  [
+    sh`page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break`,
+    'ONE_OFF',
+  ],
+  [
+    sh`page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/$\{task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break`,
+    'ONE_OFF',
+  ],
+  [sh`next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break`, 'ONE_OFF'],
+  [sh`cursor=$next`, 'ONE_OFF'],
   [
     sh`ARNS=$(get aws ecs list-tasks --cluster "$CLUSTER" --service-name "hearth-$STAGE-$ROLE" --desired-status RUNNING --query 'taskArns' --output json)`,
     'PROBE',
@@ -8455,28 +8504,37 @@ const awsValueTaken = (option: string, count: number, read: string) =>
 // aws in a canonical text (DPW-10; the seventh review's third attack, where an aws line in AWS_CHECK took
 // --endpoint-url and sent the deploy role's signed request elsewhere, since no rule read a canonical text's aws
 // options): one of the calls the workflow makes (AWS_CALLS) but the registry password, which only the push's own
-// line asks for, written plainly; then each option written plainly, from AWS_OPTIONS and the one-offs' and the
-// log's own (--task, --reason, --overrides, --log-group-name, --log-stream-name and the flag --start-from-head),
-// so never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile, --debug, --cli-input-json or another that
-// sends the request elsewhere, reads a file or prints the signed request; and each value after an option, as
-// aws reads it, with no scheme (file://, fileb://, https://) or shorthand file load (key@=), and no word bash
-// splits, globs or expands by a tilde (wordSplits()) and no expansion of more than one word but PROBE's
-// "${TASK_ARNS[@]}" (an array or "$@" would hand aws each of its words, an option among them), and one value
-// after each option but a list's, whose later values start with no expansion (awsValueTaken()), so no value
-// becomes another option as it runs: an expansion that makes the one value after an option into an option
-// leaves that option with none, which argparse refuses. What a value's variable holds is the text's own: AWS's
-// answers and the job's env in every text the guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
-const AWS_TEXT_OPTIONS = [...AWS_OPTIONS, '--task', '--reason', '--overrides', '--log-group-name', '--log-stream-name']
+// line asks for, written plainly; then each option written plainly, from AWS_OPTIONS and the one-offs' and the log's
+// own (--task, --reason, --overrides, --log-group-name, --log-stream-name, --next-token and the flag
+// --start-from-head), so never --endpoint-url, --no-verify-ssl, --ca-bundle, --profile, --debug, --cli-input-json or
+// another that sends the request elsewhere, reads a file or prints the signed request; and each value after an
+// option, as aws reads it, with no scheme (file://, fileb://, https://) or shorthand file load (key@=), and no word
+// bash splits, globs or expands by a tilde (wordSplits()) and no expansion of more than one word but PROBE's
+// "${TASK_ARNS[@]}" (an array or "$@" would hand aws each of its words, an option among them), and one value after
+// each option but a list's, whose later values start with no expansion (awsValueTaken()), so no value becomes
+// another option as it runs: an expansion that makes the one value after an option into an option leaves that option
+// with none, which argparse refuses. What a value's variable holds is the text's own: AWS's answers and the job's
+// env in every text the guard writes (TASK_ARNS from list-tasks' answer, by mapfile).
+const AWS_TEXT_OPTIONS = [
+  ...AWS_OPTIONS,
+  '--task',
+  '--reason',
+  '--overrides',
+  '--log-group-name',
+  '--log-stream-name',
+  '--next-token',
+]
 const AWS_TEXT_FLAGS = ['--start-from-head']
-// The words an aws value in a canonical text may hold an expansion in, each exactly as the texts write it (the
-// ninth review's first attack, where a value written "$group", set from a stack output no text checked, handed
-// aws-cli a file:// to load and send): a name a text builds from the stage, its own loop or a literal call
-// (stage, STAGE, kind, ROLE, PART), the run's own ids, a digest AWS_CHECK checks, and the names a text
-// shape-checks or builds itself before aws reads them (CLUSTER, the definitions, the networks, the token, the
-// overrides, td, task and TASK_ARNS from ECS's answers). A value from an AWS answer reaches aws only after the
-// text holds it to its shape (td to its stage's three service families, since the tenth review's first attack,
-// where AWS_CHECK's loop read td from the Services stack's outputs), so a new one joins this list with that
-// check, in the same change, and each name is set only on its text's own lines (AWS_NAMES, awsNameLines()).
+// The words an aws value in a canonical text may hold an expansion in, each exactly as the texts write it (the ninth
+// review's first attack, where a value written "$group", set from a stack output no text checked, handed aws-cli a
+// file:// to load and send): a name a text builds from the stage, its own loop or a literal call (stage, STAGE,
+// kind, ROLE, PART), the run's own ids, a digest AWS_CHECK checks, and the names a text shape-checks or builds
+// itself before aws reads them (CLUSTER, the definitions, the networks, the token, the overrides, td, task and
+// TASK_ARNS from ECS's answers, and cursor, the log's forward token, from its own read). A value from an AWS answer
+// reaches aws only after the text holds it to its shape (td to its stage's three service families, since the tenth
+// review's first attack, where AWS_CHECK's loop read td from the Services stack's outputs), so a new one joins this
+// list with that check, in the same change, and each name is set only on its text's own lines (AWS_NAMES,
+// awsNameLines()).
 const AWS_TEXT_VALUE_WORDS = [
   '"imageDigest=$2"',
   sh`"imageDigest=$\{digests[0]}"`,
@@ -8500,6 +8558,7 @@ const AWS_TEXT_VALUE_WORDS = [
   '"gha-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
   '"$TOKEN"',
   '"$OVERRIDES"',
+  '"$cursor"',
 ]
 // An expansion bash makes into as many words as it holds: "$@", "$*", "${@…}", "${*…}" and an array's [@] or [*],
 // outside single quotes (a jq program's own text is no expansion).
@@ -9348,6 +9407,7 @@ export const JOB_IFS: Readonly<Record<JobId, string | undefined>> = {
     '!cancelled()',
     "needs.gate.outputs.nonprod == 'true'",
     "needs.gate.outputs.mode != 'drill-break'",
+    "(needs.nonprod.result == 'success' || needs.nonprod.result == 'failure')",
   ),
   'prod-plan': jobIf(
     '!cancelled()',

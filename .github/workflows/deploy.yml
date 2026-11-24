@@ -541,13 +541,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -559,21 +559,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -611,7 +611,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -858,11 +858,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -1084,13 +1084,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -1102,21 +1102,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -1154,7 +1154,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -1401,11 +1401,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -1628,13 +1628,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -1646,21 +1646,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -1698,7 +1698,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -1945,11 +1945,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -2292,13 +2292,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -2310,21 +2310,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -2362,7 +2362,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -2609,11 +2609,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -3059,7 +3059,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -3076,12 +3076,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -3287,7 +3307,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -3304,12 +3324,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -3373,9 +3413,9 @@ jobs:
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
           # deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
           # each target group's target states, deregistration delay, stickiness and health path, and the load
-          # balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
-          # outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
-          # Services stack now says it runs.
+          # balancer's idle timeout. A service that doesn't exist (a restore stage never brought up) is left out;
+          # one a restore taken down keeps at desired 0 is read back as it stands. Its outputs: the read-back, each
+          # service's PRIMARY definition as family:revision, and the release the Services stack now says it runs.
           SERVICE_LIST='[]'
           FAMILIES='{}'
           for ROLE in api realtime worker; do
@@ -3777,13 +3817,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -3795,21 +3835,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -3847,7 +3887,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -4094,11 +4134,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -4449,7 +4489,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -4466,12 +4506,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -4536,9 +4596,9 @@ jobs:
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
           # deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
           # each target group's target states, deregistration delay, stickiness and health path, and the load
-          # balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
-          # outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
-          # Services stack now says it runs.
+          # balancer's idle timeout. A service that doesn't exist (a restore stage never brought up) is left out;
+          # one a restore taken down keeps at desired 0 is read back as it stands. Its outputs: the read-back, each
+          # service's PRIMARY definition as family:revision, and the release the Services stack now says it runs.
           SERVICE_LIST='[]'
           FAMILIES='{}'
           for ROLE in api realtime worker; do
@@ -4691,7 +4751,7 @@ jobs:
   # it needs, as the latest attempt each of them ran in left them.
   record-nonprod:
     needs: [gate, nonprod, smoke-nonprod, rollback-nonprod, resmoke-nonprod]
-    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.nonprod == 'true' && needs.gate.outputs.mode != 'drill-break' }}
+    if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.outputs.nonprod == 'true' && needs.gate.outputs.mode != 'drill-break' && (needs.nonprod.result == 'success' || needs.nonprod.result == 'failure') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     cache-mode: none
@@ -4764,9 +4824,9 @@ jobs:
   # The prod plan (C11-D51, C11-D55): for a prod deploy once non-prod's smoke passed, a prod rollback or a
   # restore, the diff the approver reads before the prod job's approval (a restore's of the restore stage's
   # stacks), and for a deploy with a previous release the diff of the rollback that release's own assembly
-  # would make, which prod's rollback job deploys. Its role reads the prod and restore stacks' templates and
-  # nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own, and for a restore
-  # taken down what it read of each restore stack, which the prod job's down holds the stage to.
+  # would make, which prod's rollback job deploys. Its role reads the prod and restore stacks' templates, status
+  # and resources and nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own,
+  # and for a restore taken down what it read of each restore stack, which the prod job's down holds the stage to.
   prod-plan:
     needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && ((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy')) }}
@@ -5035,13 +5095,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -5053,21 +5113,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -5105,7 +5165,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -5352,11 +5412,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -5525,13 +5585,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -5543,21 +5603,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -5595,7 +5655,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -5842,11 +5902,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -6548,13 +6608,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -6566,21 +6626,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -6618,7 +6678,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -6865,11 +6925,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -7390,7 +7450,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -7407,12 +7467,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -7647,7 +7727,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -7664,12 +7744,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -7733,9 +7833,9 @@ jobs:
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
           # deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
           # each target group's target states, deregistration delay, stickiness and health path, and the load
-          # balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
-          # outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
-          # Services stack now says it runs.
+          # balancer's idle timeout. A service that doesn't exist (a restore stage never brought up) is left out;
+          # one a restore taken down keeps at desired 0 is read back as it stands. Its outputs: the read-back, each
+          # service's PRIMARY definition as family:revision, and the release the Services stack now says it runs.
           SERVICE_LIST='[]'
           FAMILIES='{}'
           for ROLE in api realtime worker; do
@@ -8140,13 +8240,13 @@ jobs:
               queue=("${queue[@]:1}")
               [ -f "$dir/manifest.json" ] || asset_refuse 'a cloud assembly has no manifest.json'
               jq -e 'type == "object"' "$dir/manifest.json" >/dev/null 2>&1 || asset_refuse 'a manifest is not a JSON object'
-              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest has missing context, which the CLI would look up'
-              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; .type | IN("aws:cloudformation:stack", "cdk:asset-manifest", "cdk:cloud-assembly", "cdk:tree", "cdk:feature-flag-report"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact type is not one a workload synth writes'
               jq -e '(.artifacts // {}) | all(.[]; if .type == "aws:cloudformation:stack" then .environment == "aws://unknown-account/ap-southeast-1" and (.properties | type == "object" and keys == ["additionalDependencies", "assumeRoleArn", "bootstrapStackVersionSsmParameter", "cloudFormationExecutionRoleArn", "lookupRole", "requiresBootstrapStackVersion", "stackName", "stackTemplateAssetObjectUrl", "templateFile", "terminationProtection", "validateOnSynth"] and .assumeRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-deploy-role-${AWS::AccountId}-ap-southeast-1" and .cloudFormationExecutionRoleArn == "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-cfn-exec-role-${AWS::AccountId}-ap-southeast-1" and .lookupRole == {arn: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-hearthapp-lookup-role-${AWS::AccountId}-ap-southeast-1", requiresBootstrapStackVersion: 8, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} and .requiresBootstrapStackVersion == 6 and .bootstrapStackVersionSsmParameter == "/cdk-bootstrap/hearthapp/version" and .validateOnSynth == false and .terminationProtection == (.stackName | type == "string" and test("-(Platform|Data)\\z"))) elif .type == "cdk:asset-manifest" then .properties == {file: .properties.file, requiresBootstrapStackVersion: 6, bootstrapStackVersionSsmParameter: "/cdk-bootstrap/hearthapp/version"} else true end)' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "a stack's or an asset manifest's deploy facts aren't the workload synth's: its environment, roles and bootstrap version, termination protection on Platform and Data alone, and no topic, tag, parameter or other property"
-              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
@@ -8158,21 +8258,21 @@ jobs:
                 jq -e '[.Resources // {} | .[] | select(.Type == "AWS::IAM::Role") | .Properties] | all(.[]; type == "object" and (keys - ["AssumeRolePolicyDocument", "PermissionsBoundary", "Policies", "RoleName"] | length == 0) and .PermissionsBoundary == {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, ":policy/hearth-boundary"]]} and (.Policies // [] | type == "array" and ([.[] | .PolicyName] | all(.[]; type == "string") and (map(ascii_downcase) | unique | length) == length)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse "a role holds a key a workload synth never writes, a managed policy attached by its ARN among them, whose grant the diff never prints, a boundary but the account's own, or two inline policies of one name, of which IAM keeps one while the diff shows both"
               done < <(jq -r '(.artifacts // {})[] | select(.type == "aws:cloudformation:stack") | .properties.templateFile' "$dir/manifest.json")
-              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null ||
+              jq -e '(.artifacts // {}) | all(.[]; (.metadata // {}) | type == "object" and all(.[]; type == "array" and all(.[]; type == "object")))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse "an artifact's metadata is not a JSON object of entry lists"
-              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null ||
+              jq -e '[(.artifacts // {})[] | (.metadata // {})[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'a metadata file is missing'
                 jq -e 'type == "object" and all(.[]; type == "array" and all(.[]; type == "object"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a metadata file is not a JSON object of entry lists'
-                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null ||
+                jq -e '[.[][] | .type] | all(.[]; IN("aws:cdk:acknowledged-rules", "aws:cdk:analytics:construct", "aws:cdk:analytics:method", "aws:cdk:creationStack", "aws:cdk:error", "aws:cdk:info", "aws:cdk:is-custom-resource-handler-customResourceProvider", "aws:cdk:logicalId", "aws:cdk:templateFile", "aws:cdk:warning"))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'an artifact carries a metadata entry of a type a workload synth never writes: a legacy asset, which the CLI would build or upload, stack tags, which an older CLI applies to every resource of its stack, or another'
               done < <(jq -r '(.artifacts // {})[] | .additionalMetadataFile // empty' "$dir/manifest.json")
               while IFS= read -r file; do
                 [ -f "$dir/$file" ] || asset_refuse 'an asset manifest is missing'
-                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null || asset_refuse 'an asset manifest holds a container image asset'
-                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null ||
+                jq -e '(.dockerImages // {}) | length == 0' "$dir/$file" >/dev/null 2>&1 || asset_refuse 'an asset manifest holds a container image asset'
+                jq -e '(.files // {}) | all(.[]; (.source | type == "object") and (.source | has("executable") | not) and (.source.packaging | IN("file", "zip")) and (.source.path | type == "string" and (startswith("/") | not) and (test("[[:cntrl:]]") | not)))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a file asset runs a command, is packaged otherwise than file or zip, or names no relative path'
                 while IFS= read -r path; do
                   case "$(realpath -m -- "$dir/$path")" in
@@ -8210,7 +8310,7 @@ jobs:
             root=$(cd "$1" && pwd -P)
             while IFS= read -r dir; do
               while IFS=$'\t' read -r stack template; do
-                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null ||
+                jq -e --arg stack "$stack" '(.Resources // {}) as $r | [$r | to_entries[] | select(.value.Type == "Custom::VpcRestrictDefaultSG") | .key] as $c | [$r | to_entries[] | select(.value.Type == "AWS::Lambda::Function") | .key] as $f | [paths(type == "string") as $p | getpath($p)] as $s | ($c | length) == ($f | length) and ($c | length) <= (if $stack | test("-Platform\\z") then 1 else 0 end) and all($c[]; $r[.].Properties.ServiceToken == {"Fn::GetAtt": [$f[0], "Arn"]}) and all($f[]; $r[.].Properties | type == "object" and keys == ["Code", "Description", "Handler", "MemorySize", "Role", "Runtime", "Timeout"] and .Handler == "__entrypoint__.handler" and (.Runtime | type == "string" and test("\\Anodejs[0-9]{1,3}\\.x\\z")) and (.Description | type == "string") and (.MemorySize | type == "number") and (.Timeout | type == "number") and (.Role | type == "object" and keys == ["Fn::GetAtt"] and (.["Fn::GetAtt"] | type == "array" and length == 2 and .[1] == "Arn" and (.[0] | type == "string") and $r[.[0]].Type == "AWS::IAM::Role")) and (.Code | type == "object" and keys == ["S3Bucket", "S3Key"] and .S3Bucket == {"Fn::Sub": "cdk-hearthapp-assets-${AWS::AccountId}-ap-southeast-1"} and (.S3Key | type == "string" and test("\\A[0-9a-f]{64}\\.zip\\z")))) and all($c[]; . as $id | all($s[]; contains($id) | not))' "$dir/$template" >/dev/null 2>&1 ||
                   asset_refuse "a custom resource isn't CDK's one default security group handler, run by its own function, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer"
                 # Each resource type's properties as the workload synth writes them, as paths: every key and nested key,
                 # [] for a list's item and each intrinsic function by its name, joined by _, which no key may hold, so a
@@ -8457,11 +8557,11 @@ jobs:
                 case "$stack" in
                   Hearth-*-Services)
                     services=$((services + 1))
-                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null ||
+                    jq -e --arg release "$release" '.Outputs.Release.Value == $release' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse "a Services template's Release is not this job's release"
                     ;;&
                   Hearth-*-Tasks | Hearth-*-Services)
-                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null ||
+                    jq -e --arg image "/hearth-server@$digest" '[.Resources[]? | select(.Type == "AWS::ECS::TaskDefinition") | .Properties.ContainerDefinitions[]?.Image] | length > 0 and all(.[]; type == "object" and (.["Fn::Join"] | type == "array") and (.["Fn::Join"][1] | type == "array" and (last | type == "string" and endswith($image))))' "$dir/$template" >/dev/null 2>&1 ||
                       asset_refuse 'a container image is not the server image at this release'
                     ;;
                 esac
@@ -8812,7 +8912,7 @@ jobs:
           MIGRATE_LINES='^migrate: (applied|rolled back|failed) [0-9]{4}_[a-z0-9_]+$|^migrate: nothing to apply$|^migrate: nothing was applied; the batch rolled back$'
           PROBE_LINES='^(api|realtime|worker) [0-9]+ ([0-9]{3}|no-answer) (-|([a-z_]{1,32}|\?)(,([a-z_]{1,32}|\?))*)$|^probe: failed$'
           one_off_end() {
-            local kind=$1 lines=$2 placed=$3 task ended log shown='' withheld=0 stopped=0 stopping
+            local kind=$1 lines=$2 placed=$3 task ended log='[]' page joined cursor='' next='' pages=0 whole=0 shown='' withheld=0 stopped=0 stopping
             if ! jq -e '.failures == 0 and (.tasks | length) == 1' <<<"$placed" >/dev/null; then
               echo "$kind: ECS didn't place exactly one task" | mask
               exit 1
@@ -8829,12 +8929,32 @@ jobs:
               run aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task"
             fi
             ended=$(get aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task" --query 'tasks[0].{exit: containers[0].exitCode, stop: stopCode}' --output json)
-            if log=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query 'events[].message' --output json); then
-              shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
-              withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
-            fi
+            # The task's log from its head, page by page: GetLogEvents can answer a page partly full or even empty
+            # while more follow, so the read goes on with the forward token, held to its shape before aws reads it,
+            # until the token comes back as sent (the stream's end), five pages at most. No step of it fails the job;
+            # a read that stops short of the end says so.
+            while [ "$pages" -lt 5 ]; do
+              if [ -z "$cursor" ]; then
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              else
+                page=$(get aws logs get-log-events --log-group-name "/hearth/$STAGE/$kind" --log-stream-name "$kind/server/${task##*/}" --start-from-head --next-token "$cursor" --query '{events: events[].message, next: nextForwardToken}' --output json) || break
+              fi
+              pages=$((pages + 1))
+              joined=$(jq -c --argjson more "$(jq -c '.events // []' <<<"$page" 2>/dev/null)" '. + $more' <<<"$log" 2>/dev/null) || break
+              log=$joined
+              next=$(jq -r '.next // ""' <<<"$page" 2>/dev/null) || break
+              [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9/+=_-]{0,511}$ ]] || break
+              if [ "$next" = "$cursor" ]; then
+                whole=1
+                break
+              fi
+              cursor=$next
+            done
+            shown=$(jq -r '.[]' <<<"$log" | grep -E "$lines" || true)
+            withheld=$(jq --argjson shown "$(printf '%s' "$shown" | grep -c '^' || true)" 'length - $shown' <<<"$log" || true)
             if [ -n "$shown" ]; then printf '%s\n' "$shown" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             echo "$kind: $withheld log lines withheld" | mask | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$whole" = 0 ]; then echo "$kind: the log may hold lines the job didn't read" | mask | tee -a "$GITHUB_STEP_SUMMARY"; fi
             if [ "$stopped" = 1 ] || ! jq -e '.exit == 0 and .stop == "EssentialContainerExited"' <<<"$ended" >/dev/null; then
               echo "$kind: failed (exit $(jq -r '.exit // "none"' <<<"$ended"), stop code $(jq -r '.stop // "none"' <<<"$ended"))" | mask | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
@@ -8899,9 +9019,9 @@ jobs:
           # states, counts, AZ names, settings and digests, never an ARN or an address: each service's counts,
           # deployments and running tasks (AZ, state, health, image digest); where there is a load balancer,
           # each target group's target states, deregistration delay, stickiness and health path, and the load
-          # balancer's idle timeout. A service that doesn't exist (a restore stage taken down) is left out. Its
-          # outputs: the read-back, each service's PRIMARY definition as family:revision, and the release the
-          # Services stack now says it runs.
+          # balancer's idle timeout. A service that doesn't exist (a restore stage never brought up) is left out;
+          # one a restore taken down keeps at desired 0 is read back as it stands. Its outputs: the read-back, each
+          # service's PRIMARY definition as family:revision, and the release the Services stack now says it runs.
           SERVICE_LIST='[]'
           FAMILIES='{}'
           for ROLE in api realtime worker; do
