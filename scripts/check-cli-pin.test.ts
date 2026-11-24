@@ -84,23 +84,72 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
   })
 
   it('compares a branch with its base as CI runs it', () => {
-    const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'main'], { cwd: dir, encoding: 'utf8' })
+    const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' })
     expect(run(repo('2.1146.1', '2.1146.1')).status).toBe(0)
     expect(run(repo('2.1146.1', '2.1150.0')).status).toBe(0)
     const lowered = run(repo('2.1146.1', '2.1100.0'))
     expect(lowered.status).toBe(1)
     expect(lowered.stderr).toContain('pins aws-cdk 2.1100.0, lower than 2.1146.1')
-    const missing = spawnSync(process.execPath, [SCRIPT, 'no-such-branch'], {
+    const missing = spawnSync(process.execPath, [SCRIPT, 'origin/no-such-branch'], {
       cwd: repo('2.1146.1', '2.1146.1'),
       encoding: 'utf8',
     })
     expect(missing.status).toBe(2)
+    // A base is named origin/<branch> and read by its full remote-tracking ref, so a short name (a local
+    // branch, a tag) is refused before anything is compared.
+    for (const name of ['main', 'refs/tags/x', 'origin/', 'origin/a..b']) {
+      const shortName = spawnSync(process.execPath, [SCRIPT, name], {
+        cwd: repo('2.1146.1', '2.1146.1'),
+        encoding: 'utf8',
+      })
+      expect(shortName.status, name).toBe(2)
+      expect(shortName.stdout, name).not.toContain('OK')
+    }
+  })
+
+  // A tag named origin/main (or origin/<base>) stood in for the branch (round 11): CI's fetch-depth: 0 fetches
+  // every tag, git's lookup of a short name takes refs/tags/ before refs/remotes/, and anyone who can push a
+  // branch can push a tag, so a lowered pin compared with an older commit's manifest and passed.
+  it('reads each base by its full remote-tracking ref, never a tag of its short name', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hearth-cli-pin-'))
+    repos.push(dir)
+    const git = gitIn(dir)
+    git('init', '-q', '-b', 'main')
+    mkdirSync(join(dir, 'infra'))
+    writeFileSync(join(dir, 'infra/package.json'), manifest('2.1100.0'))
+    git('add', '-A')
+    git('commit', '-qm', 'old: CLI 2.1100.0')
+    const old = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim()
+    writeFileSync(join(dir, 'infra/package.json'), manifest('2.1146.1'))
+    git('commit', '-qam', 'CDK group: CLI 2.1146.1')
+    git('update-ref', 'refs/remotes/origin/main', 'main')
+    git('checkout', '-qb', 'stack')
+    git('commit', '-q', '--allow-empty', '-m', 'stacked base')
+    git('update-ref', 'refs/remotes/origin/stack', 'stack')
+    git('checkout', '-qb', 'revert')
+    writeFileSync(join(dir, 'infra/package.json'), manifest('2.1100.0'))
+    git('commit', '-qam', 'revert the CDK group')
+    // The tags as checkout's fetch-depth: 0 fetches them, each at the old commit with the lower pin.
+    git('tag', 'origin/main', old)
+    git('tag', 'origin/stack', old)
+    git('tag', 'refs/remotes/origin/main', old)
+    for (const base of ['origin/main', 'origin/stack']) {
+      const run = spawnSync(process.execPath, [SCRIPT, base], { cwd: dir, encoding: 'utf8' })
+      expect(run.status, base).toBe(1)
+      expect(run.stderr, base).toContain(`pins aws-cdk 2.1100.0, lower than 2.1146.1 on ${base}`)
+      expect(run.stdout, base).not.toContain('OK')
+    }
+    // With the remote-tracking branch gone, the tag of its name doesn't stand in for it.
+    git('update-ref', '-d', 'refs/remotes/origin/stack')
+    expect(spawnSync(process.execPath, [SCRIPT, 'origin/stack'], { cwd: dir, encoding: 'utf8' }).status).toBe(2)
+    git('update-ref', '-d', 'refs/remotes/origin/main')
+    expect(spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' }).status).toBe(2)
   })
   // A link read as no pin (round 11): git show prints a symbolic link's target path, which no JSON parse reads,
   // while the deploy jobs' jq reads the file it names, so a link on main, then a lower pin in the file it named,
   // passed while every deploy job fetched the lower CLI.
   it('refuses a manifest that is a symbolic link, on the base or in the checkout', () => {
-    const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'main'], { cwd: dir, encoding: 'utf8' })
+    const run = (dir: string) => spawnSync(process.execPath, [SCRIPT, 'origin/main'], { cwd: dir, encoding: 'utf8' })
     const head = repo('2.1146.1', '2.1146.1')
     linkManifest(head)
     gitIn(head)('add', '-A')
@@ -121,7 +170,7 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     git('commit', '-qam', 'lower in the linked file')
     const baseLinked = run(base)
     expect(baseLinked.status).toBe(1)
-    expect(baseLinked.stderr).toContain("infra/package.json on main isn't a regular file")
+    expect(baseLinked.stderr).toContain("infra/package.json on origin/main isn't a regular file")
     expect(baseLinked.stdout).not.toContain('OK')
   })
 

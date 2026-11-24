@@ -138,8 +138,11 @@
 // build and the synths no other step writes an output. The CLI's own lines are held to the words the
 // canonical lines write (CLI_WORDS: its stacks and its flags, each once), never by a list of names to refuse,
 // since its yargs reads every option by a short alias too and options no list named (--build, a shell command
-// it runs with the job's environment, a diff's --security-only), and every CDK_ variable in its environment as
-// the option of that name, so no env: and no credentialed run names one but the preamble's two. Build and the synths
+// it runs with the job's environment, a diff's --security-only), and every variable in its environment whose
+// name starts with CDK, underscore or not (CDKBUILD as CDK_BUILD), as the option the rest of its name spells, so
+// no env: and no credentialed run names one but the preamble's two. Which stacks each line names is held to
+// literal sets too (CLI_STACKS), never read from the lines: a deploy never takes every stack, and prod deploys
+// only the stacks prod-plan's diff for its mode names. Build and the synths
 // still run repository code by design (the install, the synth, the image), which could write a later step's
 // file by its folder, so a synth's own asset check holds only against deploy.yml's text: each credentialed
 // job's ASSET_CHECK, pinned in that job, is the check a deploy rests on. The image archive the build
@@ -2859,6 +2862,17 @@ function readViews(run: string): ShellViews {
     return { end: run.length, body: run.slice(i + 2), closed: false }
   }
   const BRACE_ODD = /['"`~]|\$[({]|@[A-Za-z]/
+  // Whether the ( at an offset (a $(('s inner one) closes with a ) straight before another ), as an arithmetic
+  // expansion's does: bash reads $(( … )) as arithmetic only then, and otherwise as $( … ) holding a subshell.
+  const arithmeticCloses = (from: number) => {
+    let depth = 0
+    for (let at = from; at < run.length; at++) {
+      const c = run[at]
+      if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return run[at + 1] === ')'
+    }
+    return false
+  }
   let i = 0
   while (i < run.length) {
     const c = run[i] ?? ''
@@ -2876,6 +2890,7 @@ function readViews(run: string): ShellViews {
         i++
         boundary = false
       } else if (c === '$' && next === '(') {
+        if (run[i + 2] === '(' && !arithmeticCloses(i + 2)) odd.add('arithmetic')
         keep('$(')
         stack.push({ kind: 'paren', depth: 1 })
         i += 2
@@ -2986,6 +3001,10 @@ function readViews(run: string): ShellViews {
       boundary = false
     } else if ((c === '$' || c === '<' || c === '>') && next === '(') {
       // A substitution ($( … ), $(( … )), <( … ) or >( … )): its frame, whose closing ) goes on as its word.
+      // bash reads $(( as arithmetic only when its inner ( closes with )) (round 11): $((set) ) is a command
+      // substitution holding a subshell, whose command the rules here would read as arithmetic's names, and so
+      // are <(( and >((, so each such form is odd. No text writes one.
+      if (run[i + 2] === '(' && (c !== '$' || !arithmeticCloses(i + 2))) odd.add('arithmetic')
       keep(c + next)
       stack.push({ kind: 'paren', depth: 1 })
       i += 2
@@ -4554,6 +4573,59 @@ function bashVariableAssigned(line: string): boolean {
   }
   return false
 }
+// Every name bash 5.2 knows as a builtin or a keyword (compgen -b and compgen -k), which a function of that
+// name would shadow: outside POSIX mode bash looks a function up before a builtin, special builtins included.
+const BASH_BUILTINS_AND_KEYWORDS = new Set(
+  (
+    '. : [ alias bg bind break builtin caller cd command compgen complete compopt continue declare dirs disown echo ' +
+    'enable eval exec exit export false fc fg getopts hash help history jobs kill let local logout mapfile popd ' +
+    'printf pushd pwd read readarray readonly return set shift shopt source suspend test times trap true type ' +
+    'typeset ulimit umask unalias unset wait if then else elif fi case esac for select while until do done in ' +
+    'function time { } ! [[ ]] coproc'
+  ).split(' '),
+)
+// A function a canonical text defines (round 11): a plain lower-case name, never a builtin's or keyword's
+// (exit() { :; } made every later exit 1 in an aws_refuse or asset_refuse carry on, since bash finds a function
+// first), a command's a text or a run's own lines run (CANONICAL_COMMANDS, the glue's GLUE_USES and its own
+// functions), nor one another text defines, so no text redefines what another's calls run; each defined once in
+// the text it comes from (a text that holds another whole, as a fast re-check holds NEWEST_RELEASE, defines that
+// text's functions as it does).
+const FUNCTION_NAME_SHAPE = /^[a-z][a-z0-9_]*$/
+const FUNCTION_NAME_RULE =
+  "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), a command's a text or a run runs, or one another canonical text defines"
+export function functionNameLines(text: string, all: Readonly<Record<string, string>>): number[] {
+  const reserved = new Set<string>([
+    ...BASH_BUILTINS_AND_KEYWORDS,
+    ...CANONICAL_COMMANDS,
+    ...SHELL_TABLE.refused,
+    ...Object.keys(SHELL_TABLE.builtins),
+    ...SHELL_TABLE.keywords,
+    ...SHELL_TABLE.functions,
+    // The glue's commands, but the canonical texts' own functions it calls (mask, run, get).
+    ...Object.keys(GLUE_USES).filter(
+      command =>
+        !Object.values(CANONICAL_BY_NAME()).some(each => functionDefinitions(each).some(d => d.name === command)),
+    ),
+  ])
+  const definitions = functionDefinitions(text)
+  const texts = Object.values(all)
+  const lines = new Set<number>()
+  for (const { name, line } of definitions) {
+    // The texts that define the name, and one of them that each of the others holds whole.
+    const definers = texts.filter(each => functionDefinitions(each).some(definition => definition.name === name))
+    const origin = definers.find(each => definers.every(definer => definer.includes(each)))
+    if (
+      !FUNCTION_NAME_SHAPE.test(name) ||
+      reserved.has(name) ||
+      definitions.filter(definition => definition.name === name).length !== 1 ||
+      origin === undefined ||
+      functionDefinitions(origin).filter(definition => definition.name === name).length !== 1
+    ) {
+      lines.add(line)
+    }
+  }
+  return [...lines].sort((a, b) => a - b)
+}
 // The functions the canonical texts define, which any of them may call.
 const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlySet<string> =>
   new Set(
@@ -4642,8 +4714,12 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
       ...Object.values(STEP_ENVS).flatMap(steps => Object.values(steps).flatMap(env => Object.keys(env))),
     ]),
   }
+  const all = { ...CANONICAL_BY_NAME(), ...texts }
   for (const [name, text] of Object.entries(texts)) {
     if (!readsAsBash(text)) found.push(`${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`)
+    for (const line of functionNameLines(text, all)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FUNCTION_NAME_RULE}`)
+    }
     for (const line of foreignExpansionLines(text, alsoSet)) {
       found.push(`${GUARD}: DPW-07 ${name}, line ${line + 1}: ${CANONICAL_EXPANDS_RULE}`)
     }
@@ -5902,6 +5978,24 @@ function unreadCharacter(text: string): string | undefined {
 // layer behind the owner's read of a changed line (the header's last paragraph). ownRepository is this
 // repository's owner/name, which the tests read from GitHub's GITHUB_REPOSITORY in CI, or else the origin
 // remote, since a step naming this repository's own action by its full name runs a folder no rule reads.
+// DPW-02, the size (round 11): GitHub starts no run of a workflow file over 500 KB ("A workflow file larger
+// than 500 KB will not start runs", its Actions limits), so every workflow is held to 500,000 bytes as
+// written, the stricter reading of 500 KB. deploy.yml is over it as committed, its canonical texts pasted into
+// every run that runs them (ASSET_CHECK into nine), so no push to main and no dispatch starts it until it is
+// brought under the limit, a change to its structure that is the owner's to choose (TECH-SPEC T24 item 20);
+// until then the tests hold every other workflow to the limit and name deploy.yml's as the one finding.
+export const WORKFLOW_BYTES = 500_000
+export function workflowSizeFindings(workflows: Texts): Finding[] {
+  return [...workflows]
+    .filter(([, text]) => Buffer.byteLength(text, 'utf8') > WORKFLOW_BYTES)
+    .map(([path]) =>
+      at(
+        path,
+        'DPW-02',
+        `is at most ${WORKFLOW_BYTES} bytes, since GitHub starts no run of a workflow file over 500 KB`,
+      ),
+    )
+}
 export function permissionFindings(workflows: Texts, ownRepository = ''): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -6519,13 +6613,16 @@ const stepWith = (steps: readonly WorkflowStep[], line: string) =>
 // canonical run, after every Services deploy but restore=down's; migrate is its canonical run, in nonprod
 // and prod alone, for a deploy, after the push and before Services. Only the one-off's end reads a
 // task's log. Every CLI line is a canonical one in a job that may run it, naming its stacks through
-// "$STAGE", which each job sets once, in a step whose if: is its own: a forward deploy is Platform, Data
-// and Tasks, then migrate, then Services; restore=down is RESTORE_DOWN's three calls; a rollback job's
-// only once AWS_CHECK said go. No failure passes: nothing in the workflow has continue-on-error, no
+// "$STAGE", which each job sets once, in a step whose if: is its own, and naming the stacks its step
+// deploys or diffs as CLI_STEP_STACKS writes them, literal sets never read from the canonical lines: a forward
+// deploy is Platform, Data and Tasks, then migrate, then Services; restore=down is RESTORE_DOWN's three calls;
+// a rollback is Tasks and Services, and a rollback job's only once AWS_CHECK said go. No failure passes: nothing in the workflow has continue-on-error, no
 // step's if: calls a status function, and a credentialed job runs every step up to its credentials
 // action (and AWS_CHECK after them) unconditionally, but its downloads.
 const UNCONDITIONAL =
   'runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:'
+const CLI_STEP_STACK =
+  "names on each CLI line the stacks its step deploys or diffs, as CLI_STACKS writes them: Platform, Data and Tasks forward, then Services (the drill's too), a rollback's Tasks and Services, restore=down's one stack, and prod-plan's diff of every stack, the rollback's Tasks and Services or restore=down's one stack"
 export function deployStepFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (id: string, rule: string) => found.add(at(DEPLOY, 'DPW-06', `${id}: ${rule}`))
@@ -6587,6 +6684,12 @@ export function deployStepFindings(workflows: Texts): Finding[] {
         const cdk = /"\$CDK"|\$\{?CDK\b/.test(line.text) && !/(?:^|[\s;&|(])CDK=/.test(line.code)
         if (cdk && !(CDK_LINE_JOBS[raw] ?? []).includes(id)) {
           add(id, 'every CLI line is one of the canonical deploy and diff lines, in a job that may run it')
+        }
+        // Each CLI line names the stacks its step deploys or diffs, as CLI_STEP_STACKS writes them.
+        const named = cdk ? cliStacksOf(line.text) : undefined
+        const sets = CLI_STEP_STACKS[id]?.[step.name ?? ''] ?? []
+        if (cdk && (named === undefined || !sets.some(set => sameStacks(named.stacks, set)))) {
+          add(id, CLI_STEP_STACK)
         }
       }
       // A one-off's step holds only its canonical parts.
@@ -7085,7 +7188,8 @@ const SMOKES: Readonly<Record<string, string>> = {
 // AWS_CHECK (the deploy job outputs replaced from its aws step, whose value AWS_CHECK_ENV pins as the
 // rollback's REPLACED);
 // rollback-prod's steps are rollback-nonprod's but for the environment's name; only prod and
-// rollback-prod deploy to prod, rollback-prod only the previous release's Tasks and Services; the runs a
+// rollback-prod deploy to prod, rollback-prod only the previous release's Tasks and Services, and every prod
+// deploy line names only stacks prod-plan's diff for its mode names (CLI_STACKS, literal sets); the runs a
 // smoke, a rollback, prod-gate or the approver rests on are pinned whole (PINNED_RUNS: prod's records, the
 // smokes, services_started, the read-back, the rollback jobs' releases and rolled, prod-plan's diff); and
 // outside build and synth only a pinned run, AWS_CHECK's step and prod-gate's call write an output.
@@ -7325,7 +7429,51 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       }
     }
   }
+  for (const finding of prodDiffStackFindings()) found.add(finding)
   return [...found]
+}
+
+// What an approval in prod deploys is what prod-plan's diff for its mode showed (DPW-08): a rollback's stacks
+// are the rollback diff's, restore=down's its diff's, and a forward deploy's within the diff of every stack,
+// each read from the canonical lines themselves (or the ones given, as the tests plant them) and held to
+// CLI_STACKS' literal sets, so no change to a deploy line's stacks leaves the approver reading a diff of fewer.
+export function prodDiffStackFindings(given: Readonly<Record<string, string>> = {}): Finding[] {
+  const lines: Readonly<Record<string, string>> = {
+    CDK_DEPLOY_FORWARD,
+    CDK_DEPLOY_SERVICES,
+    CDK_DEPLOY_ROLLBACK,
+    CDK_DEPLOY_DOWN,
+    CDK_DIFF_PROD,
+    CDK_DIFF_ROLLBACK,
+    CDK_DIFF_DOWN,
+    ...given,
+  }
+  const stacksOf = (name: string) => cliStacksOf(lines[name] ?? '')?.stacks ?? []
+  const within = (deployed: readonly string[], diffed: readonly string[]) =>
+    deployed.length > 0 &&
+    !deployed.includes('*') &&
+    (sameStacks(diffed, CLI_STACKS.diff.prod) || deployed.every(stack => diffed.includes(stack)))
+  const holds =
+    sameStacks(stacksOf('CDK_DEPLOY_ROLLBACK'), stacksOf('CDK_DIFF_ROLLBACK')) &&
+    sameStacks(stacksOf('CDK_DEPLOY_ROLLBACK'), CLI_STACKS.deploy.rollback) &&
+    sameStacks(stacksOf('CDK_DIFF_ROLLBACK'), CLI_STACKS.diff.rollback) &&
+    sameStacks(stacksOf('CDK_DEPLOY_DOWN'), stacksOf('CDK_DIFF_DOWN')) &&
+    sameStacks(stacksOf('CDK_DEPLOY_DOWN'), CLI_STACKS.deploy.down) &&
+    sameStacks(stacksOf('CDK_DIFF_DOWN'), CLI_STACKS.diff.down) &&
+    sameStacks(stacksOf('CDK_DIFF_PROD'), CLI_STACKS.diff.prod) &&
+    sameStacks(stacksOf('CDK_DEPLOY_FORWARD'), CLI_STACKS.deploy.forward) &&
+    sameStacks(stacksOf('CDK_DEPLOY_SERVICES'), CLI_STACKS.deploy.services) &&
+    within(stacksOf('CDK_DEPLOY_FORWARD'), stacksOf('CDK_DIFF_PROD')) &&
+    within(stacksOf('CDK_DEPLOY_SERVICES'), stacksOf('CDK_DIFF_PROD'))
+  return holds
+    ? []
+    : [
+        at(
+          DEPLOY,
+          'DPW-08',
+          "prod: deploys only the stacks prod-plan's diff for its mode shows: a rollback's Tasks and Services as the rollback diff, restore=down's one stack as its diff, and a forward deploy's within the diff of every stack",
+        ),
+      ]
 }
 
 // --- DPW-09: the gate, the bot test and the environments -----------------------------------------------
@@ -9210,14 +9358,17 @@ const ENV =
 const OUTPUTS = 'outputs only what JOB_OUTPUTS names, each from the step it names'
 const MAPPING =
   'writes env:, with: and outputs: as block mappings, never one expression GitHub would read as the whole mapping'
-// The CDK CLI's yargs reads every CDK_ variable in its environment as the option of that name (CDK_BUILD as
-// --build, a shell command it runs with the job's environment, CDK_PLUGIN as --plugin, a module it loads),
-// so no env: names one, and a credentialed run names none but the preamble's export of the two that turn
-// its telemetry and version check off (round 11).
-const CDK_VARIABLE = /^cdk_/i
+// The CDK CLI's yargs reads every variable in its environment whose name starts with CDK as the option the
+// rest of its name spells (yargs.env("CDK"), whose parser takes any name with that prefix, underscore or not:
+// CDK_BUILD and CDKBUILD as --build, a shell command it runs with the job's environment, CDK_PLUGIN and
+// CDKPLUGIN as --plugin, a module it loads, CDKroleArn as --role-arn), so no env: names one, in any letter
+// case, and no credentialed run names a word that starts with CDK and goes on (but "$CDK", the CLI's path) but
+// the preamble's export of the two that turn its telemetry and version check off (round 11).
+const CDK_VARIABLE = /^cdk/i
+const CDK_WORD = /(?<![\w$])cdk\w/i
 const PREAMBLE_CDK_EXPORT = 'export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true'
 const CDK_ENV =
-  "names no CDK_ variable, which the CDK CLI reads as its option of that name (CDK_BUILD as --build, CDK_PLUGIN as --plugin), but the preamble's export of its telemetry and version check"
+  "names no variable whose name starts with CDK, which the CDK CLI reads as the option the rest of its name spells (CDK_BUILD or CDKBUILD as --build, CDK_PLUGIN or CDKPLUGIN as --plugin), but the preamble's export of its telemetry and version check"
 
 function shapeOfJobsFindings(text: string, add: (where: string, rule: string) => void): void {
   const top = yamlLines(text).flatMap(line => /^([\w-]+):/.exec(line.text)?.[1] ?? [])
@@ -9318,6 +9469,67 @@ const PINNED_CREDENTIALED =
 // CLI runs with the job's environment before it reads --app, and on a diff --security-only, --template or
 // --context-lines, which would show the approver less than the deploy changes).
 const CLI_SELECTOR = /^"\$STAGE\/(?:Platform|Data|Tasks|Services|\$PART|\*)"$/
+// The stacks a CLI line names (DPW-06, DPW-08, DPW-10), as sets written here as literals and never read from
+// the canonical lines, so a change to which stacks a line deploys or diffs changes this table too: a deploy
+// takes Platform, Data and Tasks (forward), Services (Services and the drill), Tasks and Services (a rollback)
+// or one restore stack ($PART, restore=down), never every stack ("$STAGE/*" would take Services before migrate
+// and a rollback's Platform and Data, which no approval's diff shows); a diff takes every stack (prod's forward
+// and a restore up), Tasks and Services (a rollback's) or one restore stack (restore=down's).
+const CLI_STACKS = {
+  deploy: {
+    forward: ['Platform', 'Data', 'Tasks'],
+    services: ['Services'],
+    rollback: ['Tasks', 'Services'],
+    down: ['$PART'],
+  },
+  diff: { prod: ['*'], rollback: ['Tasks', 'Services'], down: ['$PART'] },
+} as const
+type CliCommand = keyof typeof CLI_STACKS
+// The command and stacks a CLI line names, in its order, or undefined for a line of no CLI shape.
+export function cliStacksOf(line: string): { command: CliCommand; stacks: string[] } | undefined {
+  const shape = /^(?:if )?run "\$CDK" (deploy|diff) --app "\$ASSEMBLY" (.*?)(?:; then)?$/.exec(line.trim())
+  if (shape === null) return undefined
+  const stacks: string[] = []
+  for (const word of (shape[2] ?? '').split(' ')) {
+    const stack = /^"\$STAGE\/(.+)"$/.exec(word)?.[1]
+    if (stack === undefined) break
+    stacks.push(stack)
+  }
+  return { command: shape[1] as CliCommand, stacks }
+}
+const sameStacks = (have: readonly string[], want: readonly string[]) =>
+  have.length === want.length && new Set(have).size === have.length && want.every(stack => have.includes(stack))
+// Whether a CLI line's stacks are one of its command's sets in CLI_STACKS.
+const cliStacksAllowed = (line: string): boolean => {
+  const named = cliStacksOf(line)
+  return (
+    named !== undefined &&
+    Object.values(CLI_STACKS[named.command]).some(set => sameStacks(named.stacks, set as readonly string[]))
+  )
+}
+// Which set each CLI step's lines name, by its job and step (DPW-06), again as literals: prod-plan's Diff
+// runs prod's forward diff, its rollback diff or restore=down's, by mode, and its Diff the rollback the
+// rollback diff alone.
+const CLI_STEP_STACKS: Readonly<Record<string, Readonly<Record<string, readonly (readonly string[])[]>>>> = {
+  nonprod: {
+    'Deploy Platform, Data and Tasks': [CLI_STACKS.deploy.forward],
+    'Deploy Services': [CLI_STACKS.deploy.services],
+    'Roll back to the target': [CLI_STACKS.deploy.rollback],
+    'drill-break': [CLI_STACKS.deploy.services],
+  },
+  prod: {
+    'Deploy Platform, Data and Tasks': [CLI_STACKS.deploy.forward],
+    'Deploy Services': [CLI_STACKS.deploy.services],
+    'Roll back to the target': [CLI_STACKS.deploy.rollback],
+    'Take the restore stage down': [CLI_STACKS.deploy.down],
+  },
+  'rollback-nonprod': { 'Roll back Tasks and Services': [CLI_STACKS.deploy.rollback] },
+  'rollback-prod': { 'Roll back Tasks and Services': [CLI_STACKS.deploy.rollback] },
+  'prod-plan': {
+    Diff: [CLI_STACKS.diff.rollback, CLI_STACKS.diff.prod, CLI_STACKS.diff.down],
+    'Diff the rollback': [CLI_STACKS.diff.rollback],
+  },
+}
 const CLI_WORDS: Readonly<Record<'deploy' | 'diff', readonly string[]>> = {
   deploy: [
     '--exclusively',
@@ -9349,6 +9561,7 @@ function cliLineIsSafe(line: string): boolean {
   const words = (shape[3] ?? '').split(' ')
   const selectors = words.filter(word => CLI_SELECTOR.test(word))
   if (selectors.length === 0 || new Set(selectors).size !== selectors.length) return false
+  if (!cliStacksAllowed(line)) return false
   // The selectors, then the flags, each a word or a word and its value, as the canonical lines write them.
   const rest = words.slice(selectors.length).join(' ')
   if (words.slice(0, selectors.length).some(word => !CLI_SELECTOR.test(word))) return false
@@ -9402,7 +9615,12 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       const lines = runLines(run, views)
       if (lines.some(line => REFUSED_CLI.test(line.text)))
         add(where, 'passes none of the CLI’s refused flags or subcommands')
-      if (credentialed && lines.some(line => /cdk_/i.test(line.text) && line.raw.trim() !== PREAMBLE_CDK_EXPORT)) {
+      if (
+        credentialed &&
+        lines.some(
+          line => (/cdk_/i.test(line.text) || CDK_WORD.test(line.text)) && line.raw.trim() !== PREAMBLE_CDK_EXPORT,
+        )
+      ) {
         add(where, CDK_ENV)
       }
       if (
@@ -9518,7 +9736,7 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
       ) {
         add(
           where,
-          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads',
+          'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads',
         )
       }
     })

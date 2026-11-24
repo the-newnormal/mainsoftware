@@ -60,6 +60,7 @@ import {
   canonicalTextFindings,
   canonicalToolLines,
   checkoutFindings,
+  cliStacksOf,
   codeLinesAsBash,
   credentialedCodeFindings,
   credentialJobFindings,
@@ -75,6 +76,7 @@ import {
   forbiddenWordFindings,
   foreignExpansionLines,
   functionDefinitions,
+  functionNameLines,
   GENERAL_WORDS,
   GUARD,
   gateFindings,
@@ -107,6 +109,7 @@ import {
   PULL_CHECKS,
   permissionFindings,
   pinnedScriptText,
+  prodDiffStackFindings,
   prodPathFindings,
   READ_BACK,
   RESTORE_DOWN,
@@ -134,9 +137,11 @@ import {
   timeoutAndGroupFindings,
   triggerFindings,
   unheldRecordLines,
+  WORKFLOW_BYTES,
   whatRunsText,
   wordAsRead,
   wordSplits,
+  workflowSizeFindings,
 } from './deploy-workflow.ts'
 import { moduleImports } from './imports.ts'
 import { ownRepository, readRepoFile, repoFiles, root } from './repo-files.ts'
@@ -1114,6 +1119,28 @@ describe('DPW-02 (C11-D55): permissions', () => {
     if (process.env.GITHUB_ACTIONS === 'true') expect(ownRepository()).toBeDefined()
     expect(permissionFindings(workflows, ownRepository() ?? '')).toEqual([])
   })
+
+  // Round 11: GitHub starts no run of a workflow file over 500 KB, and deploy.yml had grown past it with no rule
+  // reading a workflow's size, while CI stayed green because deploy.yml runs only on main or a dispatch.
+  it('holds every workflow to GitHub’s 500 KB (round 11)', () => {
+    const SIZE = (path: string) =>
+      `${path}: DPW-02 is at most ${WORKFLOW_BYTES} bytes, since GitHub starts no run of a workflow file over 500 KB`
+    const ci = readRepoFile(CI)
+    const padded = (bytes: number) => `${ci}${'#'.repeat(bytes - Buffer.byteLength(ci) - 1)}\n`
+    expect(workflowSizeFindings(withText(CI, padded(WORKFLOW_BYTES + 1))).filter(each => each.startsWith(CI))).toEqual([
+      SIZE(CI),
+    ])
+    expect(workflowSizeFindings(withText(CI, padded(WORKFLOW_BYTES))).filter(each => each.startsWith(CI))).toEqual([])
+    // A character over one byte counts as its UTF-8 bytes.
+    const wide = `${ci}#${'é'.repeat(Math.ceil((WORKFLOW_BYTES - Buffer.byteLength(ci)) / 2))}\n`
+    expect(wide.length).toBeLessThan(WORKFLOW_BYTES)
+    expect(workflowSizeFindings(withText(CI, wide)).filter(each => each.startsWith(CI))).toEqual([SIZE(CI)])
+    // deploy.yml is over the limit as committed, its canonical texts pasted into every run that runs them, so no
+    // push or dispatch starts it until its structure changes, which is the owner's to choose (TECH-SPEC T24 item
+    // 20). Every other workflow is within it; once deploy.yml is too, this names nothing and must say so.
+    expect(Buffer.byteLength(deployText)).toBeGreaterThan(WORKFLOW_BYTES)
+    expect(workflowSizeFindings(workflows)).toEqual([SIZE(DEPLOY)])
+  })
 })
 
 describe('DPW-03 (C11-D55, C11-D56): only the five environment jobs hold AWS credentials', () => {
@@ -1728,6 +1755,8 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
   const ORDER =
     'a forward deploy is the push, Platform, Data and Tasks, then migrate (for a deploy alone), then Services'
   const CLI = 'every CLI line is one of the canonical deploy and diff lines, in a job that may run it'
+  const STACKS =
+    "names on each CLI line the stacks its step deploys or diffs, as CLI_STACKS writes them: Platform, Data and Tasks forward, then Services (the drill's too), a rollback's Tasks and Services, restore=down's one stack, and prod-plan's diff of every stack, the rollback's Tasks and Services or restore=down's one stack"
   const DOWN =
     'restore=down takes Services, then Data, then Platform down, one call each, each only for a stack that exists and has settled'
   const AWS =
@@ -1811,9 +1840,10 @@ describe('DPW-06 (C11-D52, C11-D53; T24 items 5, 11, 13, 15, 18): the deploy job
     const oneCall = `run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" "$STAGE/Data" "$STAGE/Platform" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events`
     expect(
       find(`${indent(RESTORE_DOWN, 10)}\n`, `          ${oneCall}\n`, '      - name: Take the restore stage down\n'),
-    ).toEqual([at('prod', CLI), at('prod', DOWN)])
+    ).toEqual([at('prod', CLI), at('prod', STACKS), at('prod', DOWN)])
     expect(find('"$STAGE/Platform"', 'Hearth-nonprod-Platform', job('nonprod'))).toEqual([
       at('nonprod', CLI),
+      at('nonprod', STACKS),
       at('nonprod', ORDER),
     ])
     expect(
@@ -3753,7 +3783,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   const SETS =
     "sets a variable by printf -v, read, mapfile or for only on a canonical text's line, or the read-back's or the release loop's"
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const readBack = (id: string) => `${id} (Read back what runs)`
   const STEPS =
     'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
@@ -11489,7 +11519,7 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
   const at10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
   const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
@@ -13126,9 +13156,9 @@ describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DP
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const CLI =
-    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks and the flags the canonical lines write, so no short alias or other option the CLI reads'
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const CDK_ENV =
-    "names no CDK_ variable, which the CDK CLI reads as its option of that name (CDK_BUILD as --build, CDK_PLUGIN as --plugin), but the preamble's export of its telemetry and version check"
+    "names no variable whose name starts with CDK, which the CDK CLI reads as the option the rest of its name spells (CDK_BUILD or CDKBUILD as --build, CDK_PLUGIN or CDKPLUGIN as --plugin), but the preamble's export of its telemetry and version check"
   const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
   const token = ['ACTIONS', 'ID', 'TOKEN', 'REQUEST', 'TOKEN'].join('_')
   const spaced = `printf '%s\\n' "$${token}" | sed 's/./& /g'`
@@ -13321,5 +13351,192 @@ describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DP
     expect(actionPinFindings(plant(migrations, `${standIn}    name: Report\n${migrations}`, '', CI))).not.toContain(
       finding,
     )
+  })
+})
+
+// Round 11, iteration 3: which stacks each CLI line names, held to literal sets; the CDK variables the CLI's
+// yargs reads with no underscore; an arithmetic-looking $(( that bash reads as a substitution holding a
+// subshell, and <(( and >((; a function named after a builtin, a command or another text's function.
+describe('Round 11, iteration 3: the ways past the allowlist (DPW-06, DPW-08, DPW-10)', () => {
+  const at6 = (where: string, rule: string) => `${DEPLOY}: DPW-06 ${where}: ${rule}`
+  const at10 = (where: string, rule: string) => `${DEPLOY}: DPW-10 ${where}: ${rule}`
+  const STEP_STACK =
+    "names on each CLI line the stacks its step deploys or diffs, as CLI_STACKS writes them: Platform, Data and Tasks forward, then Services (the drill's too), a rollback's Tasks and Services, restore=down's one stack, and prod-plan's diff of every stack, the rollback's Tasks and Services or restore=down's one stack"
+  const PROD_STACKS = `${DEPLOY}: DPW-08 prod: deploys only the stacks prod-plan's diff for its mode shows: a rollback's Tasks and Services as the rollback diff, restore=down's one stack as its diff, and a forward deploy's within the diff of every stack`
+  const CLI =
+    'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
+  const CDK_ENV =
+    "names no variable whose name starts with CDK, which the CDK CLI reads as the option the rest of its name spells (CDK_BUILD or CDKBUILD as --build, CDK_PLUGIN or CDKPLUGIN as --plugin), but the preamble's export of its telemetry and version check"
+  // Every copy of a canonical CLI line in deploy.yml changed together, as an author edits the guard's constant
+  // and the workflow at once.
+  const everywhere = (from: string, to: string) => {
+    expect(deployText.includes(from), from).toBe(true)
+    return withText(DEPLOY, deployText.replaceAll(from, to))
+  }
+  const stacksTo = (line: string, from: string, to: string) => {
+    expect(line).toContain(from)
+    return line.replace(from, to)
+  }
+
+  // Round 11: nothing held which stacks a CLI line deploys or diffs, so a rollback's line made "$STAGE/*" (the
+  // selector prod-plan's own diff uses) deployed a target's Platform and Data under an approval whose diff showed
+  // only Tasks and Services, and a forward line made "$STAGE/*" deployed Services before migrate.
+  it('holds every CLI line to the stacks its step deploys or diffs (round 11)', () => {
+    const rollbackAll = stacksTo(CDK_DEPLOY_ROLLBACK, '"$STAGE/Tasks" "$STAGE/Services"', '"$STAGE/*"')
+    const planted = everywhere(CDK_DEPLOY_ROLLBACK, rollbackAll)
+    for (const id of ['nonprod', 'prod', 'rollback-nonprod', 'rollback-prod']) {
+      expect(deployStepFindings(planted), id).toContain(at6(id, STEP_STACK))
+    }
+    expect(credentialedCodeFindings(planted, manifests, lockfile)).toContain(
+      at10('prod (Roll back to the target)', CLI),
+    )
+    expect(credentialedCodeFindings(planted, manifests, lockfile)).toContain(
+      at10('rollback-prod (Roll back Tasks and Services)', CLI),
+    )
+    const forwardAll = stacksTo(CDK_DEPLOY_FORWARD, '"$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks"', '"$STAGE/*"')
+    const forward = everywhere(CDK_DEPLOY_FORWARD, forwardAll)
+    expect(deployStepFindings(forward)).toContain(at6('prod', STEP_STACK))
+    expect(credentialedCodeFindings(forward, manifests, lockfile)).toContain(
+      at10('prod (Deploy Platform, Data and Tasks)', CLI),
+    )
+    // A set CLI_STACKS writes, on a step that deploys another: Tasks and Services where Platform, Data and
+    // Tasks deploy, before migrate.
+    const swapped = everywhere(
+      CDK_DEPLOY_FORWARD,
+      stacksTo(
+        CDK_DEPLOY_FORWARD,
+        '"$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks"',
+        '"$STAGE/Tasks" "$STAGE/Services"',
+      ),
+    )
+    expect(deployStepFindings(swapped)).toContain(at6('nonprod', STEP_STACK))
+    expect(deployStepFindings(swapped)).toContain(at6('prod', STEP_STACK))
+    // The rollback's diff narrowed to Services while its deploy stays Tasks and Services.
+    const narrowed = everywhere(
+      CDK_DIFF_ROLLBACK,
+      stacksTo(CDK_DIFF_ROLLBACK, '"$STAGE/Tasks" "$STAGE/Services"', '"$STAGE/Services"'),
+    )
+    expect(deployStepFindings(narrowed)).toContain(at6('prod-plan', STEP_STACK))
+    expect(credentialedCodeFindings(narrowed, manifests, lockfile)).toContain(
+      at10('prod-plan (Diff the rollback)', CLI),
+    )
+    // Every committed line passes as it is.
+    expect(deployStepFindings(workflows)).toEqual([])
+  })
+
+  it("deploys in prod only the stacks prod-plan's diff for its mode names (round 11)", () => {
+    expect(prodDiffStackFindings()).toEqual([])
+    expect(prodPathFindings(workflows)).not.toContain(PROD_STACKS)
+    expect(cliStacksOf(CDK_DEPLOY_ROLLBACK)).toEqual({ command: 'deploy', stacks: ['Tasks', 'Services'] })
+    expect(cliStacksOf(CDK_DIFF_PROD)).toEqual({ command: 'diff', stacks: ['*'] })
+    for (const [name, line] of [
+      ['CDK_DEPLOY_ROLLBACK', stacksTo(CDK_DEPLOY_ROLLBACK, '"$STAGE/Tasks" "$STAGE/Services"', '"$STAGE/*"')],
+      ['CDK_DIFF_ROLLBACK', stacksTo(CDK_DIFF_ROLLBACK, '"$STAGE/Tasks" "$STAGE/Services"', '"$STAGE/Services"')],
+      [
+        'CDK_DEPLOY_FORWARD',
+        stacksTo(CDK_DEPLOY_FORWARD, '"$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks"', '"$STAGE/*"'),
+      ],
+      ['CDK_DEPLOY_SERVICES', stacksTo(CDK_DEPLOY_SERVICES, '"$STAGE/Services"', '"$STAGE/Data" "$STAGE/Services"')],
+      ['CDK_DIFF_PROD', stacksTo(CDK_DIFF_PROD, '"$STAGE/*"', '"$STAGE/Tasks" "$STAGE/Services"')],
+      ['CDK_DEPLOY_DOWN', stacksTo(CDK_DEPLOY_DOWN, '"$STAGE/$PART"', '"$STAGE/*"')],
+      ['CDK_DIFF_DOWN', stacksTo(CDK_DIFF_DOWN, '"$STAGE/$PART"', '"$STAGE/Services"')],
+    ] as const) {
+      expect(prodDiffStackFindings({ [name]: line }), name).toEqual([PROD_STACKS])
+    }
+  })
+
+  // Round 11: the CLI's yargs takes every variable whose name starts with CDK, underscore or not, so CDKBUILD
+  // ran a shell command as --build and CDKPLUGIN loaded a module as --plugin past a rule that read CDK_ alone.
+  it('names no variable whose name starts with CDK, underscore or not (round 11)', () => {
+    const services = '      - name: Deploy Services\n'
+    for (const name of ['CDKBUILD', 'CDKPLUGIN', 'CDKroleArn', 'CDK_BUILD', 'cdkBuild']) {
+      const env = `      - name: Deploy Services\n        env:\n          ${name}: echo built\n`
+      expect(credentialedCodeFindings(plant(services, env, job('nonprod')), manifests, lockfile), name).toContain(
+        at10('nonprod (Deploy Services)', CDK_ENV),
+      )
+    }
+    const jobEnv = `    env:\n      STAGE: nonprod\n`
+    expect(
+      credentialedCodeFindings(
+        plant(jobEnv, `${jobEnv}      CDKPLUGIN: /x/plugin.js\n`, job('nonprod')),
+        manifests,
+        lockfile,
+      ),
+    ).toContain(at10('nonprod', CDK_ENV))
+    const exported = 'export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true\n'
+    for (const line of [
+      "export CDKBUILD='npm run build'",
+      'declare -x CDKPLUGIN=/x/plugin.js',
+      `: "\${CDKBUILD:=x}"`,
+    ]) {
+      const planted = plant(exported, `${exported}          ${line}\n`, job('nonprod'))
+      expect(credentialedCodeFindings(planted, manifests, lockfile), line).toContain(
+        at10('nonprod (What runs)', CDK_ENV),
+      )
+    }
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  // Round 11: bash reads $((set) ) as a command substitution holding a subshell (its inner ( closes with a ) not
+  // straight before the frame's own), and <((set) ) and >((set) ) likewise, while the reader took each for
+  // arithmetic, so a set listing every variable, the OIDC request token among them, ran unread once the text
+  // declared set with local.
+  it('reads $(( … ) ), <(( and >(( as bash does (round 11)', () => {
+    const SHELL = `${GUARD}: DPW-10 AWS_CHECK: is written in the shell shellViews() reads`
+    const go = `  echo 'go=true' >>"$GITHUB_OUTPUT"\n`
+    expect(AWS_CHECK).toContain(go)
+    for (const [names, line] of [
+      ['set listing', 'listing=$((set) )'],
+      ['set listing', 'listing="$((set) )"'],
+      ['set lines', 'mapfile -t lines < <((set) )'],
+      ['set listing', 'listing=$((set)\n)'],
+    ] as const) {
+      const planted = AWS_CHECK.replace(go, `  local ${names}\n  ${line}\n${go}`)
+      expect(shellViews(planted).odd.has('arithmetic'), line).toBe(true)
+      expect(canonicalTextFindings({ AWS_CHECK: planted }), line).toContain(SHELL)
+    }
+    for (const text of ['x=$((set) )', 'echo "$((set) )"', 'cat <((set) )', 'tee >((set) )', 'x=$((1)']) {
+      expect(shellViews(text).odd.has('arithmetic'), text).toBe(true)
+    }
+    // An arithmetic expansion bash reads as one stays plain, with parentheses inside or not.
+    for (const text of ['x=$((1 + 2))', 'x=$(( (a + b) * 2 ))', 'echo "$(( (a) ))"', 'x=$( (cd /tmp) )']) {
+      expect(shellViews(text).odd.has('arithmetic'), text).toBe(false)
+    }
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // Round 11: a canonical text could define a function named after a builtin, and outside POSIX mode bash finds a
+  // function before a builtin, so exit() { :; } made every later exit 1 (each aws_refuse and asset_refuse) carry on.
+  it('defines a function only by a plain name of its own, once (round 11)', () => {
+    const RULE =
+      "defines a function only by a plain lower-case name of its own, once: never a builtin's or keyword's (bash finds a function before a builtin, exit and return among them), a command's a text or a run runs, or one another canonical text defines"
+    const anchor = 'is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }\n'
+    expect(AWS_CHECK).toContain(anchor)
+    const lineAfter = AWS_CHECK.slice(0, AWS_CHECK.indexOf(anchor) + anchor.length).split('\n').length
+    for (const definition of [
+      'exit() { :; }',
+      'return() { :; }',
+      'function local { :; }',
+      'printf() { :; }',
+      'set() { :; }',
+      'jq() { :; }',
+      'cat() { :; }',
+      'head() { :; }',
+      'record() { :; }',
+      'mask() { :; }',
+      'asset_refuse() { :; }',
+      'is_ancestor() { :; }',
+      'Exit() { :; }',
+      'x.y() { :; }',
+    ]) {
+      const planted = AWS_CHECK.replace(anchor, `${anchor}${definition}\n`)
+      expect(canonicalTextFindings({ AWS_CHECK: planted }), definition).toContain(
+        `${GUARD}: DPW-10 AWS_CHECK, line ${lineAfter}: ${RULE}`,
+      )
+    }
+    // A plain name of its own passes this rule.
+    const own = AWS_CHECK.replace(anchor, `${anchor}stage_name() { :; }\n`)
+    expect(functionNameLines(own, { AWS_CHECK: own })).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
   })
 })
