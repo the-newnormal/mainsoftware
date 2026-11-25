@@ -261,8 +261,8 @@
 // the gate's and prod-gate's reads of ci.yml's runs take it (round 12's fourth iteration: a ci.yml@x.yml read as
 // ci.yml), and the two runs ci.yml's held jobs run are literal block scalars (literalRun(): its second pass, where
 // the pins check written run: >- read as PINS_RUN here while YAML folded it into one printf that never ran the
-// check): deploy.yml is over 500 KB as committed, so no run of it starts until the owner's change to its structure
-// (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. GitHub reads a workflow's blob as
+// check): deploy.yml is under 500 KB as committed only by its shared runs, its expansion about twice the limit
+// (the paragraph on shared runs below; TECH-SPEC T24 item 20). GitHub reads a workflow's blob as
 // git holds it, and the owner reads every file's, while the rules, CI and the deploy jobs read the checkout, so no
 // tracked file carries a git attribute, as the working tree's or the index's .gitattributes gives it
 // (gitAttributeFindings() over gitAttributes(), which asks git check-attr both ways, since a checkout reads the
@@ -409,6 +409,21 @@
 // a failed job through, or a rollback the gate refused or after its release passed, beside the pins that
 // hold every if: whole. This file decides who and what may deploy, so it is on the owner's-read list
 // (C11-D74).
+//
+// Shared runs (round 13). GitHub starts no run of a workflow file over 500 KB, and the canonical texts pasted
+// into every run that runs them made deploy.yml about twice that, so a run several steps run whole is written
+// once, anchored on the first step that runs it (run: &name |) and aliased at each later one (run: *name), as
+// RUN_ANCHORS names it: each name holds one text built from the constants PINNED_RUNS pins, of at least
+// ALIAS_MIN_BYTES, and each anchor and alias stands under the comment sharedRunComment() writes, naming the
+// steps that share it, which DPW-02 holds exactly (SHARED_RUNS), and no other workflow shares a run
+// (NO_SHARED_RUNS). workflow.ts reads those two forms alone, and resolves each alias as GitHub's readers do, to
+// the latest earlier anchor of its name, with the shared-run comments dropped (expandRunAliases()), so
+// workflowJobs() and every rule that reads a job's steps read each step's run written out, the four that read
+// deploy.yml's lines by job (the id-token, group-name and masking scans and the action pins) read that
+// expansion, which jobSpans() alone takes (RunsWrittenOut), and the expansion is itself in the reader's shape
+// (EXPANDED_SHAPE). Only what an alias can't change reads the file as stored: its characters, shape, block
+// scalars, escapes, if: lines, top-level keys, triggers and words, the shared runs themselves, and its size,
+// which GitHub counts on the file as stored.
 //
 // What holds a change to a pinned text. Every run in deploy.yml is pinned whole, its glue lines and the
 // canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
@@ -6977,10 +6992,12 @@ function unreadCharacter(text: string): string | undefined {
 // full name runs a folder no rule reads.
 // DPW-02, the size (round 11): GitHub starts no run of a workflow file over 500 KB ("A workflow file larger
 // than 500 KB will not start runs", its Actions limits), so every workflow is held to 500,000 bytes as
-// written, the stricter reading of 500 KB. deploy.yml is over it as committed, its canonical texts pasted into
-// every run that runs them (ASSET_CHECK into nine), so no push to main and no dispatch starts it until it is
-// brought under the limit, a change to its structure that is the owner's to choose (TECH-SPEC T24 item 20);
-// until then the tests hold every other workflow to the limit and name deploy.yml's as the one finding.
+// stored, the stricter reading of 500 KB, and as GitHub counts it (its C# workflow parser checks a file's length
+// before its YAML reader starts, so before any alias is resolved). deploy.yml's canonical texts pasted into every
+// run that runs them (ASSET_CHECK into nine) made it about twice that, so it shares each run several steps run
+// whole as RUN_ANCHORS names it (round 13): its expansion, every shared run written out, is over the limit, and
+// the tests hold it to 2,000,000 bytes at most, far inside what that parser charges with every alias resolved. Its
+// structure stays the owner's decision, open (TECH-SPEC T24 item 20); the shared runs change no recorded one.
 export const WORKFLOW_BYTES = 500_000
 export function workflowSizeFindings(workflows: Texts): Finding[] {
   return [...workflows]

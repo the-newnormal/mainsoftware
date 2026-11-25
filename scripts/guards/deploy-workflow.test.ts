@@ -1356,11 +1356,19 @@ describe('DPW-02 (C11-D55): permissions', () => {
     const wide = `${ci}#${'é'.repeat(Math.ceil((WORKFLOW_BYTES - Buffer.byteLength(ci)) / 2))}\n`
     expect(wide.length).toBeLessThan(WORKFLOW_BYTES)
     expect(workflowSizeFindings(withText(CI, wide)).filter(each => each.startsWith(CI))).toEqual([SIZE(CI)])
-    // deploy.yml is over the limit as committed, its canonical texts pasted into every run that runs them, so no
-    // push or dispatch starts it until its structure changes, which is the owner's to choose (TECH-SPEC T24 item
-    // 20). Every other workflow is within it; once deploy.yml is too, this names nothing and must say so.
+    // Round 13: deploy.yml is under the limit as committed, each run several steps run whole written once and
+    // aliased (RUN_ANCHORS), while its expansion, every shared run written out as GitHub runs it, is over it, so
+    // the shared runs are what keep it under (TECH-SPEC T24 item 20). Every workflow is within it.
+    expect(Buffer.byteLength(committedDeploy)).toBeLessThanOrEqual(WORKFLOW_BYTES)
     expect(Buffer.byteLength(deployText)).toBeGreaterThan(WORKFLOW_BYTES)
-    expect(workflowSizeFindings(workflows)).toEqual([SIZE(DEPLOY)])
+    for (const [path, text] of workflows) expect(workflowSizeFindings(new Map([[path, text]])), path).toEqual([])
+    expect(workflowSizeFindings(workflows)).toEqual([])
+    // GitHub counts the limit on the file as stored, but its C# workflow parser counts what it reads, every alias
+    // resolved, against two budgets of its own: each string at about twice its length against a 10 MiB result
+    // budget, and each event against a 50,000-event cap, where an alias of a scalar replays one (deploy.yml reads
+    // as 2,772 events either way). Two million bytes of expansion is about 4 MB charged, far inside the first.
+    const EXPANDED_BYTES = 2_000_000
+    expect(Buffer.byteLength(deployText)).toBeLessThanOrEqual(EXPANDED_BYTES)
   })
 })
 
@@ -1718,6 +1726,14 @@ describe('DPW-02: deploy.yml’s shared runs (round 13)', () => {
     expect(new Set(Object.values(RUN_ANCHORS()).map(entry => entry.text)).size).toBe(Object.keys(RUN_ANCHORS()).length)
   })
 
+  // The committed file is exactly that layout: every RUN_ANCHORS text two or more steps run stored once, nothing
+  // else aliased, and every shared-run comment as sharedRunComment() writes it. A repeat outside RUN_ANCHORS stays
+  // written out until a reviewed entry names it.
+  it('holds deploy.yml as committed in that layout', () => {
+    expect(runAnchors(committedDeploy).aliases.length).toBeGreaterThan(0)
+    expect(aliased()).toBe(committedDeploy)
+  })
+
   it('holds deploy.yml laid out with its shared runs aliased, its expansion the file as the rules read it', () => {
     const text = aliased()
     expect(expandRunAliases(text)).toBe(deployText)
@@ -1955,7 +1971,16 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
         return head.test(line) ? [id] : []
       })
     }
-    expect(runsCliFetch(workflows)).toHaveLength(5)
+    // Five steps run it, each in its own job; the committed file stores it once, in nonprod, and aliases it in the
+    // other four.
+    expect(runsCliFetch(withText(DEPLOY, deployText))).toEqual([
+      'nonprod',
+      'rollback-nonprod',
+      'prod-plan',
+      'prod',
+      'rollback-prod',
+    ])
+    expect(runsCliFetch(workflows)).toEqual(['nonprod'])
     expect(() => differential('runsCliFetch', runsCliFetch)(workflows)).toThrow(/other layout/)
   })
 
@@ -8595,7 +8620,7 @@ describe('Round 12, iteration 4: setup-node’s workspace holds none of the repo
         expect(onlyBelow(planted), `${id}: ${what}`).toEqual([below(id)])
       }
       // setup-node moved before the checkout.
-      const text = workflows.get(DEPLOY) ?? ''
+      const text = deployText
       const from = text.indexOf(job(id))
       const checkout = text.indexOf("      - name: Check out the run's commit\n", from)
       const node = text.indexOf('      - name: Node, from .nvmrc\n', from)
