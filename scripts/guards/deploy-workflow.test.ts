@@ -3,8 +3,9 @@
 // DPW-02 refuses any line in a shape it doesn't read, so a reformatted workflow fails rather than passing
 // unread. Then each case is proved on planted text, an exact edit of the real file as the rules read it, every
 // shared run written out, that throws when its anchor is gone, and run again in the shared layout (each run
-// RUN_ANCHORS names anchored on its first step and aliased at the rest), where it must find the same, before it
-// holds the repository.
+// RUN_ANCHORS names anchored on its first step and aliased at the rest, and a plant into a shared text at every
+// step that runs it laid out shared under that text's name), where it must find the same, before it holds the
+// repository.
 // AWS_CHECK runs with bash and jq against planted AWS answers and a real git, ASSET_CHECK against
 // planted copies of the workload's own assembly, protect-environments.sh check --from against planted
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
@@ -105,6 +106,7 @@ import {
   IMAGE_CHECK,
   IMAGE_LAYOUT,
   IMAGE_UNPACK_RUN,
+  installedCliFindings,
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
@@ -302,9 +304,24 @@ function blockRuns(text: string): Array<{ line: number; end: number; place: Step
 // A written-out text (no anchor, alias or shared-run comment, else undefined) laid out as the committed file lays
 // out its shared runs: for each RUN_ANCHORS entry, the steps whose run is that text written whole at ten spaces,
 // where there are two or more, the first in file order anchored and the rest aliased, each under the comment
-// sharedRunComment() writes. Its expansion must be the text byte for byte, or it throws, unless the text is in
-// none of the reader's shapes (a plant of a shape the reader refuses, which needs no second layout).
-function realiased(text: string): string | undefined {
+// sharedRunComment() writes. And, where no two steps run an entry's text, the steps that share its name in the
+// committed file, if each still runs one text: a plant into a shared text, made (as every plant is) on the
+// written-out file at every step that runs it, is laid out shared too, under its name, so a rule that read the
+// stored lines by job is compared on it (round 13); such a layout is loose, its anchor no longer the entry's text,
+// which only DPW-02's SHARED_RUNS refuses. Its expansion must be the text byte for byte, or it throws, unless the
+// text is in none of the reader's shapes (a plant of a shape the reader refuses, which needs no second layout).
+let committedPlaces: ReadonlyMap<string, readonly StepPlace[]> | undefined
+const sharedPlaces = (): ReadonlyMap<string, readonly StepPlace[]> => {
+  if (committedPlaces !== undefined) return committedPlaces
+  const shared = runAnchors(committedDeploy)
+  const places = new Map<string, StepPlace[]>()
+  for (const each of [...shared.anchors, ...shared.aliases].sort((one, other) => one.line - other.line)) {
+    places.set(each.name, [...(places.get(each.name) ?? []), { job: each.job, step: each.step }])
+  }
+  committedPlaces = places
+  return places
+}
+function realiasedLayout(text: string): { text: string; loose: boolean } | undefined {
   const shared = runAnchors(text)
   if (shared.anchors.length + shared.aliases.length + shared.comments.length > 0) return undefined
   if (/^\s*#\s*shared run\b/im.test(text)) return undefined
@@ -312,11 +329,9 @@ function realiased(text: string): string | undefined {
   const runs = blockRuns(text).map(run => ({ ...run, block: lines.slice(run.line, run.end).join('\n') }))
   const edits = new Map<number, { lines: string[]; end: number }>()
   const place = ({ place: { job, step } }: (typeof runs)[number]): StepPlace => ({ job, step })
-  for (const [name, entry] of Object.entries(RUN_ANCHORS())) {
-    const written = `        run: |\n${indent(entry.text, 10)}`
-    const group = runs.filter(run => !edits.has(run.line) && run.block === written)
+  const share = (name: string, group: typeof runs) => {
     const [first, ...rest] = group
-    if (first === undefined || rest.length === 0) continue
+    if (first === undefined || rest.length === 0) return false
     edits.set(first.line, {
       lines: [...sharedRunComment('anchor', name, rest.map(place)), `        run: &${name} |`],
       end: first.line + 1,
@@ -327,6 +342,28 @@ function realiased(text: string): string | undefined {
         end: run.end,
       })
     }
+    return true
+  }
+  const unshared: string[] = []
+  for (const [name, entry] of Object.entries(RUN_ANCHORS())) {
+    const written = `        run: |\n${indent(entry.text, 10)}`
+    if (
+      !share(
+        name,
+        runs.filter(run => !edits.has(run.line) && run.block === written),
+      )
+    )
+      unshared.push(name)
+  }
+  let loose = false
+  for (const name of unshared) {
+    const group = (sharedPlaces().get(name) ?? []).flatMap(want => {
+      const run = runs.find(each => each.place.job === want.job && each.place.step === want.step)
+      return run === undefined ? [] : [run]
+    })
+    const committed = sharedPlaces().get(name)?.length ?? 0
+    if (group.length !== committed || group.some(run => edits.has(run.line) || run.block !== group[0]?.block)) continue
+    loose = share(name, group) || loose
   }
   const out: string[] = []
   for (let i = 0; i < lines.length; ) {
@@ -335,29 +372,33 @@ function realiased(text: string): string | undefined {
     i = edit?.end ?? i + 1
   }
   const result = out.join('\n')
-  if (expandRunAliases(result) === text) return result
+  if (expandRunAliases(result) === text) return { text: result, loose }
   if (shapeProblems(text).length > 0) return undefined
   throw new Error('realiased: its expansion is not the text it was made from')
 }
+const realiased = (text: string): string | undefined => realiasedLayout(text)?.text
 
 // deploy.yml's other layout: the committed file's expansion when it holds shared runs, or its shared runs aliased
 // when it holds none; a planted text's shared runs aliased, or none for a plant that already holds a shared run
 // or its comment (the reader's and DPW-02's own cases test those directly).
-let committedOther: { text: string | undefined } | undefined
-function otherLayout(text: string): string | undefined {
-  if (text !== committedDeploy) return realiased(text)
+let committedOther: { text: string; loose: boolean } | undefined
+function otherLayout(text: string): { text: string; loose: boolean } | undefined {
+  if (text !== committedDeploy) return realiasedLayout(text)
   const shared = runAnchors(committedDeploy)
-  committedOther ??= {
-    text: shared.anchors.length + shared.aliases.length > 0 ? deployText : realiased(committedDeploy),
+  if (shared.anchors.length + shared.aliases.length > 0) {
+    committedOther ??= { text: deployText, loose: false }
+    return committedOther
   }
-  return committedOther.text
+  return realiasedLayout(committedDeploy)
 }
 // A finding as either layout gives it: a line number (unreadCharacter's, deployPinProblems') read as any line.
 const layoutFree = (found: readonly string[]) =>
   [...new Set(found.map(each => each.replace(/\bline \d+/g, 'line N')))].sort()
 // A finding function that reads the workflows by path, called as given and again with deploy.yml in its other
 // layout, which must find the same: a rule that read the stored file by job would see an aliased run in its
-// anchor's job alone, and fail this in every case that plants into such a run.
+// anchor's job alone, and fail this in every case that plants into such a run, a plant into a shared text at every
+// step that runs it among them (a loose layout, where DPW-02's SHARED_RUNS, refusing the anchor's text, is set
+// aside on both sides).
 function differential<A extends unknown[]>(
   name: string,
   find: (workflows: Texts, ...rest: A) => Finding[],
@@ -366,29 +407,43 @@ function differential<A extends unknown[]>(
     const found = find(given, ...rest)
     const text = given.get(DEPLOY)
     const other = text === undefined ? undefined : otherLayout(text)
-    if (other !== undefined && other !== text) {
-      const again = find(new Map([...given].map(([path, each]) => [path, path === DEPLOY ? other : each])), ...rest)
-      expect(layoutFree(again), `${name} over deploy.yml's other layout`).toEqual(layoutFree(found))
+    if (other !== undefined && other.text !== text) {
+      const again = find(
+        new Map([...given].map(([path, each]) => [path, path === DEPLOY ? other.text : each])),
+        ...rest,
+      )
+      const aside = (each: readonly string[]) => (other.loose ? each.filter(finding => finding !== SHARED_RUNS) : each)
+      expect(layoutFree(aside(again)), `${name} over deploy.yml's other layout`).toEqual(layoutFree(aside(found)))
     }
     return found
   }
 }
 // Every finding function that reads the workflows by path, wrapped, but the size's, which counts the file as
-// stored.
-const actionPinFindings = differential('actionPinFindings', actionPinFindingsOf)
-const assetCheckFindings = differential('assetCheckFindings', assetCheckFindingsOf)
-const checkoutFindings = differential('checkoutFindings', checkoutFindingsOf)
-const credentialedCodeFindings = differential('credentialedCodeFindings', credentialedCodeFindingsOf)
-const credentialJobFindings = differential('credentialJobFindings', credentialJobFindingsOf)
-const deployStepFindings = differential('deployStepFindings', deployStepFindingsOf)
-const forbiddenWordFindings = differential('forbiddenWordFindings', forbiddenWordFindingsOf)
-const gateFindings = differential('gateFindings', gateFindingsOf)
-const maskingFindings = differential('maskingFindings', maskingFindingsOf)
-const permissionFindings = differential('permissionFindings', permissionFindingsOf)
-const prodPathFindings = differential('prodPathFindings', prodPathFindingsOf)
-const releaseFindings = differential('releaseFindings', releaseFindingsOf)
-const timeoutAndGroupFindings = differential('timeoutAndGroupFindings', timeoutAndGroupFindingsOf)
-const triggerFindings = differential('triggerFindings', triggerFindingsOf)
+// stored: each by the guard's own name for it, which DIFFERENTIAL records, so the readers' table is held to the
+// functions every case runs over both layouts (round 13).
+const DIFFERENTIAL = new Set<string>()
+function bothLayouts<A extends unknown[]>(
+  name: string,
+  find: (workflows: Texts, ...rest: A) => Finding[],
+): (workflows: Texts, ...rest: A) => Finding[] {
+  if (find.name !== name) throw new Error(`bothLayouts: ${name} wraps ${find.name}`)
+  DIFFERENTIAL.add(name)
+  return differential(name, find)
+}
+const actionPinFindings = bothLayouts('actionPinFindings', actionPinFindingsOf)
+const assetCheckFindings = bothLayouts('assetCheckFindings', assetCheckFindingsOf)
+const checkoutFindings = bothLayouts('checkoutFindings', checkoutFindingsOf)
+const credentialedCodeFindings = bothLayouts('credentialedCodeFindings', credentialedCodeFindingsOf)
+const credentialJobFindings = bothLayouts('credentialJobFindings', credentialJobFindingsOf)
+const deployStepFindings = bothLayouts('deployStepFindings', deployStepFindingsOf)
+const forbiddenWordFindings = bothLayouts('forbiddenWordFindings', forbiddenWordFindingsOf)
+const gateFindings = bothLayouts('gateFindings', gateFindingsOf)
+const maskingFindings = bothLayouts('maskingFindings', maskingFindingsOf)
+const permissionFindings = bothLayouts('permissionFindings', permissionFindingsOf)
+const prodPathFindings = bothLayouts('prodPathFindings', prodPathFindingsOf)
+const releaseFindings = bothLayouts('releaseFindings', releaseFindingsOf)
+const timeoutAndGroupFindings = bothLayouts('timeoutAndGroupFindings', timeoutAndGroupFindingsOf)
+const triggerFindings = bothLayouts('triggerFindings', triggerFindingsOf)
 
 const job = (id: string) => `\n  ${id}:\n`
 
@@ -1957,8 +2012,11 @@ describe('DPW-02: deploy.yml’s shared runs (round 13)', () => {
 })
 
 // The harness's own proof: a rule that read deploy.yml's stored lines by job, where an aliased run sits in its
-// anchor's job alone, fails differential(); and every reader of deploy.yml in the guard is listed with how it
-// reads, so a new one is a reviewed entry, and jobSpans() takes only the expansion.
+// anchor's job alone, fails differential(), on the committed file and on a plant into a shared text at every step
+// that runs it (laid out shared, round 13); and every reader of deploy.yml in the guard takes it through the guard's
+// accessors and is listed with how it reads, as stored only under a reason a reviewer reads, so a new one is a
+// reviewed entry, every listed reader runs over both layouts in every case, and jobSpans() and jobsOf() take only
+// the expansion.
 describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (round 13)', () => {
   it('fails a rule that reads the stored file’s lines by job', () => {
     // The jobs whose lines, as stored, run cli-fetch's text: its anchor's job alone once it is shared.
@@ -1984,22 +2042,60 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     expect(() => differential('runsCliFetch', runsCliFetch)(workflows)).toThrow(/other layout/)
   })
 
-  // Each function of deploy-workflow.ts that reads deploy.yml, by its path or through the map of workflows: through
-  // jobsOf() or workflowJobs() (which expands), through expandRunAliases(), and the file as stored only for what an
-  // alias can't change, with why.
-  const DEPLOY_TEXT_READERS: Readonly<Record<string, { jobs?: true; expanded?: true; stored?: string }>> = {
+  // Round 13: a plant into a shared text is made, as every plant is, on the written-out file at every step that
+  // runs it, so the shared layout realiased() made held it written out at each, and a rule that read the stored
+  // lines by job found it everywhere in both layouts. The plant is now laid out shared too, under its name.
+  it('fails a rule that reads the stored file’s lines by job on a plant into a shared text', () => {
+    const runsWget = (given: Texts): Finding[] => {
+      const text = given.get(DEPLOY) ?? ''
+      let id = ''
+      const ids = text.split('\n').flatMap(line => {
+        id = /^ {2}([\w-]+):$/.exec(line)?.[1] ?? id
+        return /\bwget\b/.test(line) ? [id] : []
+      })
+      return [...new Set(ids)]
+    }
+    const head = '          asset_refuse() {\n'
+    const planted = deployText.replaceAll(head, `          wget --version >/dev/null\n${head}`)
+    expect(planted.split(head).length - 1).toBe(9)
+    const layout = realiasedLayout(planted)
+    expect(layout?.loose).toBe(true)
+    expect(runAnchors(layout?.text ?? '').anchors.map(anchor => anchor.name)).toContain('asset-check')
+    expect(expandRunAliases(layout?.text ?? '')).toBe(planted)
+    expect(runsWget(withText(DEPLOY, planted))).toEqual([
+      'synth',
+      'synth-previous-nonprod',
+      'synth-previous-prod',
+      'nonprod',
+      'rollback-nonprod',
+      'prod-plan',
+      'prod',
+      'rollback-prod',
+    ])
+    expect(runsWget(withText(DEPLOY, layout?.text ?? ''))).toEqual(['synth'])
+    expect(() => differential('runsWget', runsWget)(withText(DEPLOY, planted))).toThrow(/other layout/)
+    // The rules themselves read it at every step: SHARED_RUNS, refusing the loose anchor's text, is set aside.
+    expect(() => assetCheckFindings(withText(DEPLOY, planted))).not.toThrow()
+    expect(() => permissionFindings(withText(DEPLOY, planted), ownRepository() ?? '')).not.toThrow()
+  }, 120_000)
+
+  // Each function of deploy-workflow.ts that reads deploy.yml, through the three ways the guard takes it (round 13):
+  // deployWritten() (every shared run written out, which jobsOf() alone takes) or workflowsWritten() for every
+  // workflow so, and the file as stored (deployStored(), or a walk of the map of workflows) only for what an alias
+  // can't change, with why. A reader that takes the file by its path, or as stored with no reason given, is refused,
+  // so a rule reading the stored lines job by job can stand only under a stored reason a reviewer reads.
+  const DEPLOY_TEXT_READERS: Readonly<Record<string, { jobs?: true; stored?: string }>> = {
     triggerFindings: { stored: 'its top-level on: (workflowTop()), where no alias can stand' },
     workflowSizeFindings: { stored: 'its size, which GitHub counts on the file as stored, before any alias resolves' },
     permissionFindings: {
       jobs: true,
-      expanded: true,
       stored: 'its shape: top-level permissions, characters, escapes, if: lines, block mappings and the shared runs',
     },
     credentialJobFindings: { jobs: true },
-    actionPinFindings: { expanded: true },
-    timeoutAndGroupFindings: { jobs: true, expanded: true },
+    actionPinFindings: {},
+    timeoutAndGroupFindings: { jobs: true },
     deployStepFindings: { jobs: true },
-    maskingFindings: { jobs: true, expanded: true },
+    maskingFindings: { jobs: true },
     prodPathFindings: { jobs: true },
     gateFindings: { jobs: true },
     credentialedCodeFindings: {
@@ -2017,6 +2113,8 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     },
     assetCheckFindings: { jobs: true },
   }
+  // The accessors themselves (deploy-workflow.ts, beside jobsOf()).
+  const ACCESSORS = ['deployWritten', 'deployStored', 'workflowsWritten']
   // Each top-level declaration of a source text, by name, with its text up to the next.
   const declarations = (source: string): Map<string, string> => {
     const found = new Map<string, string>()
@@ -2033,24 +2131,33 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     if (name !== undefined) found.set(name, body.join('\n'))
     return found
   }
-  // A declaration reads deploy.yml when it takes it by its path, or reads the map of workflows otherwise than for
-  // ci.yml alone: iterating it (for … of, a spread, forEach(), entries() or values()) or get() of another path. A
-  // reader listed as reading jobs calls jobsOf() (deploy.yml's) or workflowJobs() (any workflow's); one listed
-  // otherwise may still call workflowJobs(), which reads the expansion whatever the table says, as triggerFindings
-  // does for every workflow but deploy.yml.
-  const readsDeploy = (body: string): boolean =>
+  // A declaration takes deploy.yml as stored when it takes it by its path (from the map of workflows, which only the
+  // accessors may, or from any other map, as permissionFindings reads its shape problems), through deployStored(),
+  // or reads the map of workflows otherwise than for ci.yml alone: iterating it (for … of, a spread, forEach(), entries() or
+  // values()) or get() of another path. It reads deploy.yml when it does so or calls deployWritten() or
+  // workflowsWritten(). A reader listed as reading jobs calls jobsOf() (deploy.yml's) or workflowJobs() (any
+  // workflow's); one listed otherwise may still call workflowJobs(), which reads the expansion whatever the table
+  // says, as triggerFindings does for every workflow but deploy.yml.
+  const takesStored = (body: string): boolean =>
     body.includes('.get(DEPLOY)') ||
+    body.includes('deployStored(') ||
     /\bworkflows\.get\((?!CI\))|(?:\bof |\.\.\.)workflows\b|\bworkflows\.(?:forEach|entries|values)\(/.test(body)
+  const readsDeploy = (body: string): boolean =>
+    takesStored(body) || /\b(?:deployWritten|workflowsWritten)\(/.test(body)
   const unlisted = (source: string): string[] => {
     const problems: string[] = []
-    const readers = [...declarations(source)].filter(([, body]) => readsDeploy(body))
+    const readers = [...declarations(source)].filter(([name, body]) => !ACCESSORS.includes(name) && readsDeploy(body))
     for (const [name, body] of readers) {
       const listed = DEPLOY_TEXT_READERS[name]
       if (listed === undefined) problems.push(`${name} reads deploy.yml and isn't listed`)
-      else if (listed.jobs === true ? !/\b(?:jobsOf|workflowJobs)\(/.test(body) : body.includes('jobsOf(')) {
+      else if (/\bworkflows\.get\(DEPLOY\)/.test(body)) {
+        problems.push(`${name} takes deploy.yml by its path, not through deployWritten() or deployStored()`)
+      } else if (listed.jobs === true ? !/\b(?:jobsOf|workflowJobs)\(/.test(body) : body.includes('jobsOf(')) {
         problems.push(`${name} reads jobs otherwise`)
-      } else if ((listed.expanded === true) !== body.includes('expandRunAliases(')) {
-        problems.push(`${name} reads the expansion otherwise`)
+      } else if (listed.stored === undefined && takesStored(body)) {
+        problems.push(`${name} takes deploy.yml as stored, which its entry gives no reason for`)
+      } else if (listed.stored !== undefined && !takesStored(body)) {
+        problems.push(`${name} is listed as reading deploy.yml as stored and reads it so no more`)
       }
     }
     for (const name of Object.keys(DEPLOY_TEXT_READERS)) {
@@ -2058,18 +2165,29 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     }
     if (!/^function jobSpans\(text: RunsWrittenOut\)/m.test(source))
       problems.push('jobSpans takes more than the expansion')
+    if (!/^function jobsOf\(text: RunsWrittenOut\)/m.test(source)) problems.push('jobsOf takes more than the expansion')
     return problems
   }
   const source = readRepoFile('scripts/guards/deploy-workflow.ts')
 
-  it('lists every reader of deploy.yml in the guard with how it reads, and jobSpans() takes only the expansion', () => {
+  it('lists every reader of deploy.yml in the guard with how it reads, and jobSpans() and jobsOf() take only the expansion', () => {
     expect(unlisted(source)).toEqual([])
+    // Every listed reader but the size's, which counts the file as stored, is run over both layouts in every case
+    // (differential()), and no other.
+    expect([...DIFFERENTIAL].sort()).toEqual(
+      Object.keys(DEPLOY_TEXT_READERS)
+        .filter(name => name !== 'workflowSizeFindings')
+        .sort(),
+    )
     const planted = (read: string) =>
       `${source}\nexport function plantedFindings(workflows: Texts, path = DEPLOY): Finding[] {\n  const found: Finding[] = []\n  ${read}\n  return found\n}\n`
     // A reader by its path, and one through the map, in each way a function can walk it or take another path.
     for (const read of [
       "found.push(workflows.get(DEPLOY) ?? '')",
+      'found.push(deployStored(workflows))',
+      'found.push(...stepLines(deployWritten(workflows)))',
       'for (const [, text] of workflows) found.push(...stepLines(text))',
+      'for (const [, text] of workflowsWritten(workflows)) found.push(...stepLines(text))',
       'for (const [, text] of [...workflows]) found.push(...stepLines(text))',
       'workflows.forEach(text => found.push(...stepLines(text)))',
       'for (const [, text] of workflows.entries()) found.push(...stepLines(text))',
@@ -2082,22 +2200,49 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     expect(unlisted(planted("found.push(...stepLines(workflows.get(CI) ?? ''))"))).toEqual([])
     expect(unlisted(planted('if (workflows.has(DEPLOY)) found.push(DEPLOY)'))).toEqual([])
     const checkoutJobs =
-      "  for (const [path, text] of workflows) {\n    for (const job of workflowJobs(text)) {\n      if (path === DEPLOY && job.id !== 'build'"
+      "  for (const [path, text] of workflowsWritten(workflows)) {\n    for (const job of workflowJobs(text)) {\n      if (path === DEPLOY && job.id !== 'build'"
     expect(
       unlisted(source.replace(checkoutJobs, checkoutJobs.replace('workflowJobs(text)', '[] as WorkflowJob[]'))),
     ).toEqual(['checkoutFindings reads jobs otherwise'])
-    const triggerDeploy = "const deploy = workflows.get(DEPLOY) ?? ''\n  if (!onIsAsWritten("
+    const triggerDeploy = 'const deploy = deployStored(workflows)\n  if (!onIsAsWritten('
     expect(unlisted(source.replace(triggerDeploy, triggerDeploy.replace('\n', '\n  jobsOf(deploy)\n')))).toEqual([
       'triggerFindings reads jobs otherwise',
     ])
+    // A reader with no stored reason that takes the file as stored, as the stored layout's lines walked job by job
+    // (the round 13 plant: job ids from jobsOf(), lines from the file as stored), by its path or through the map.
+    const actionText =
+      'export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {\n  const text = deployWritten(workflows)'
+    expect(source).toContain(actionText)
+    expect(unlisted(source.replace(actionText, actionText.replace('deployWritten(', 'deployStored(')))).toEqual([
+      'actionPinFindings takes deploy.yml as stored, which its entry gives no reason for',
+    ])
     expect(
       unlisted(
-        source.replace('const text = expandRunAliases(workflows.get(DEPLOY)', 'const text = (workflows.get(DEPLOY)'),
+        source.replace(actionText, actionText.replace('deployWritten(workflows)', "workflows.get(DEPLOY) ?? ''")),
       ),
-    ).toEqual(['actionPinFindings reads the expansion otherwise'])
+    ).toEqual(['actionPinFindings takes deploy.yml by its path, not through deployWritten() or deployStored()'])
+    const assetJobs = 'for (const { id, steps } of jobsOf(deployWritten(workflows)).values()) {'
+    expect(source).toContain(assetJobs)
+    expect(
+      unlisted(
+        source.replace(
+          assetJobs,
+          `const stored = deployStored(workflows).split('\\n')\n  for (const { id, steps } of jobsOf(deployWritten(workflows)).values()) {`,
+        ),
+      ),
+    ).toEqual(['assetCheckFindings takes deploy.yml as stored, which its entry gives no reason for'])
+    const releaseText =
+      "const text = deployStored(workflows)\n  const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-13'"
+    expect(source).toContain(releaseText)
+    expect(unlisted(source.replace(releaseText, releaseText.replace('deployStored(', 'deployWritten(')))).toEqual([
+      'releaseFindings is listed as reading deploy.yml as stored and reads it so no more',
+    ])
     expect(
       unlisted(source.replace('function jobSpans(text: RunsWrittenOut)', 'function jobSpans(text: string)')),
     ).toEqual(['jobSpans takes more than the expansion'])
+    expect(unlisted(source.replace('function jobsOf(text: RunsWrittenOut)', 'function jobsOf(text: string)'))).toEqual([
+      'jobsOf takes more than the expansion',
+    ])
   })
 })
 
@@ -2890,7 +3035,7 @@ describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
       timeoutAndGroupFindings(plant(check, `${check}    concurrency:\n      group: Deploy-Prod\n`, '', CI)),
     ).toEqual([`${CI}: DPW-05 names neither deploy-nonprod nor deploy-prod, in any letter case`])
     // A group built by an expression could come to either deploy group, whatever its text.
-    const EXPRESSION = `${CI}: DPW-05 sets no concurrency group by an expression, which could come to deploy-nonprod or deploy-prod`
+    const EXPRESSION = `${CI}: DPW-05 sets no concurrency group by an expression, and writes no \${{ in a concurrency block, a quoted string or a comment included, since a group so built could come to deploy-nonprod or deploy-prod`
     expect(
       timeoutAndGroupFindings(
         plant(
@@ -2911,6 +3056,21 @@ describe('DPW-05 (C11-D47, C11-D79): timeouts and concurrency', () => {
         ),
       ),
     ).toEqual([EXPRESSION])
+    // Round 13: a # after a blank inside a quoted group is the string's own, and GitHub evaluates the expression
+    // after it (format('lint #{0}', github.ref)), which cutting every # after a blank as a comment hid; a comment
+    // holding one, and one on a line of its own at any indent within the block, are refused too.
+    for (const block of [
+      `    concurrency:\n      group: "lint #\${{ github.ref }}"\n      cancel-in-progress: true\n`,
+      `    concurrency:\n      group: 'lint #\${{ github.ref }}'\n`,
+      `    concurrency:\n      group: lint # \${{ github.ref }}\n`,
+      `    concurrency:\n# a comment\n      group: lint-\${{ github.ref }}\n`,
+      `    concurrency: { group: "lint #\${{ github.ref }}" }\n`,
+    ]) {
+      expect(timeoutAndGroupFindings(plant(check, `${check}${block}`, '', CI)), block).toEqual([EXPRESSION])
+    }
+    expect(
+      timeoutAndGroupFindings(plant(check, `${check}    concurrency:\n      # the group\n      group: lint\n`, '', CI)),
+    ).toEqual([])
   })
 
   it('holds the repository', () => {
@@ -5947,7 +6107,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const lock = JSON.parse(lockfile) as { packages: Record<string, Record<string, unknown>> }
     const entry = lock.packages['node_modules/aws-cdk'] ?? {}
     const LOCK =
-      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link"
+      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no dependency"
     const withEntry = (changed: Record<string, unknown>) =>
       credentialedCodeFindings(
         workflows,
@@ -5963,6 +6123,52 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(withEntry({ ...entry, resolved: 'https://registry.npmjs.org/aws-cdk/-/aws-cdk-0.0.1.tgz' })).toEqual([LOCK])
     expect(withEntry({ ...entry, integrity: 'sha1-0123456789abcdef0123456789abcdef01234567' })).toEqual([LOCK])
     expect(withEntry({ ...entry, integrity: undefined })).toEqual([LOCK])
+    // Round 13: the entry npm writes for a release that gained a runtime dependency or named its bin otherwise,
+    // which CLI_CHECK refuses in the package (npm writes a string bin as an object here, so the package's own
+    // manifest, which installedCliFindings() reads, is what catches that one).
+    expect(withEntry({ ...entry, dependencies: { 'some-runtime-dep': '^1.0.0' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, bin: { cdk: 'bin/cdk.js' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, bin: undefined })).toEqual([LOCK])
+  }, 30_000)
+
+  // Round 13: CLI_CHECK refuses, in every credentialed job, an aws-cdk whose manifest gained a dependency or names
+  // its bin otherwise, while the lockfile's entry, read as CLI_FETCH reads it, passed such a release, and CI's
+  // synths run the CLI through npm, which installs the dependency. So CI holds the package npm ci installed to
+  // CLI_CHECK's predicate: each plant below fails CLI_CHECK's own jq and this rule alike, and the installed
+  // package passes both.
+  it('holds the aws-cdk npm ci installs to CLI_CHECK’s predicate (round 13)', () => {
+    const folder = join(root, 'node_modules', 'aws-cdk')
+    const installed = readFileSync(join(folder, 'package.json'), 'utf8')
+    const links = readdirSync(folder, { recursive: true, withFileTypes: true })
+      .filter(each => each.isSymbolicLink())
+      .map(each => join(each.parentPath, each.name))
+    const INSTALLED =
+      "node_modules/aws-cdk/package.json: DPW-10 the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency and no symbolic link"
+    const pin = (JSON.parse(manifests.get('infra/package.json') ?? '{}') as { devDependencies: Record<string, string> })
+      .devDependencies['aws-cdk']
+    const predicate = /jq -e --arg pin "\$pin" '([^']*)'/.exec(CLI_CHECK)?.[1]
+    if (pin === undefined || predicate === undefined) throw new Error('no pin, or no predicate in CLI_CHECK')
+    const cliCheckPasses = (text: string) =>
+      spawnSync('jq', ['-e', '--arg', 'pin', pin, predicate], { input: text, encoding: 'utf8' }).status === 0
+    expect(links).toEqual([])
+    expect(cliCheckPasses(installed)).toBe(true)
+    expect(installedCliFindings(manifests, installed, links)).toEqual([])
+    const manifest = JSON.parse(installed) as Record<string, unknown>
+    for (const change of [
+      { dependencies: { 'some-runtime-dep': '^1.0.0' } },
+      { bin: { cdk: 'bin/cdk.js' } },
+      { bin: 'bin/cdk' },
+      { bin: undefined },
+      { name: 'cdk' },
+      { version: '0.0.1' },
+    ]) {
+      const text = JSON.stringify({ ...manifest, ...change })
+      expect(cliCheckPasses(text), JSON.stringify(change)).toBe(false)
+      expect(installedCliFindings(manifests, text, []), JSON.stringify(change)).toEqual([INSTALLED])
+    }
+    expect(installedCliFindings(manifests, installed, [join(folder, 'lib', 'index.js')])).toEqual([INSTALLED])
+    expect(installedCliFindings(manifests, undefined, [])).toEqual([INSTALLED])
+    expect(installedCliFindings(manifests, '[]', [])).toEqual([INSTALLED])
   }, 30_000)
 
   // Round 4: a run's own lines (each outside a canonical text standing whole) are read through SHELL_TABLE, an
@@ -11638,7 +11844,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage",
   )
   const ECS = refused(
-    "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family",
+    "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family, or a task definition in a stack but its family's (api, realtime and worker in Services, migrate, probe and bastion in Tasks, none elsewhere)",
   )
   const NETWORK = refused(
     "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
@@ -12295,6 +12501,59 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       expect(check(plant)).toBe(expected)
     },
     30_000,
+  )
+
+  // Round 13. The task definition rule held a definition's family to its stage's six in any stack, while the release
+  // check holds its image to the release's digest in the Tasks and Services stacks alone, so a definition a
+  // release's own render put in another stack (Data, say) registered a revision of a one-off's family at any digest
+  // of the server's repository, the latest ACTIVE one the break-glass runbook's run-task by family would start. Each
+  // family now stands in its own stack alone: api, realtime and worker in Services, migrate, probe and bastion in
+  // Tasks, none elsewhere. Each plant passed the check without that line, and is refused by it.
+  const FAMILY_LINE = ASSET_CHECK.split('\n').find(line =>
+    line.includes(
+      'then "api", "realtime", "worker" elif $stack | test("-Tasks\\\\z") then "migrate", "probe", "bastion"',
+    ),
+  )
+  // A definition of the family, copied from one stack's template into another's under the path the label rule
+  // gives it there, with the parameters it reads.
+  const copiedDefinition = (family: string, from: string, to: string) => (dir: string) => {
+    const folder = nonprod(dir)
+    const origin = read(named(folder, from, '.template.json'))
+    const path = named(folder, to, '.template.json')
+    const template = read(path)
+    const found = Object.entries(origin.Resources as Record<string, Planted>).find(
+      ([, each]) => each.Type === 'AWS::ECS::TaskDefinition' && each.Properties.Family === family,
+    )
+    if (found === undefined) throw new Error(`no ${family} in ${from}`)
+    const [id, definition] = found
+    const copy = structuredClone(definition)
+    const metadata = copy.Metadata as Record<string, string>
+    metadata['aws:cdk:path'] = String(metadata['aws:cdk:path']).replace(`/${from}/`, `/${to}/`)
+    ;(template.Resources as Record<string, Planted>)[id] = copy
+    const written = JSON.stringify(copy)
+    const parameters = (template.Parameters ?? {}) as Record<string, unknown>
+    for (const [key, parameter] of Object.entries((origin.Parameters ?? {}) as Record<string, unknown>)) {
+      if (written.includes(JSON.stringify({ Ref: key }))) parameters[key] ??= parameter
+    }
+    template.Parameters = parameters
+    write(path, template)
+    rekey(folder, to)
+  }
+  it.each([
+    ["a one-off's definition in the Data stack", copiedDefinition('hearth-nonprod-bastion', 'Tasks', 'Data')],
+    ["a one-off's definition in the Platform stack", copiedDefinition('hearth-nonprod-migrate', 'Tasks', 'Platform')],
+    ["a one-off's definition in the Services stack", copiedDefinition('hearth-nonprod-bastion', 'Tasks', 'Services')],
+    ["a service's definition in the Tasks stack", copiedDefinition('hearth-nonprod-api', 'Services', 'Tasks')],
+  ] as const)(
+    'refuses %s, which passed without the family-by-stack line (round 13)',
+    (_, plant) => {
+      if (FAMILY_LINE === undefined) throw new Error('ASSET_CHECK holds no family-by-stack line')
+      expect(check(plant, RELEASE, source, process.env.PATH, ASSET_CHECK.replace(`${FAMILY_LINE}\n`, ''))).toBe(
+        'passed',
+      )
+      expect(check(plant)).toBe(ECS)
+    },
+    60_000,
   )
 
   // The tenth review's first attack (INPUTS-A1-01, INPUTS-A1-02, FLOW-A1-01). A release's own stage.ts, rendered
@@ -18544,5 +18803,79 @@ describe('Round 12: the refusals no case reached (DPW-01, DPW-02, DPW-03, DPW-06
     expect(jq(`jq -r --arg x y '.' <<<"$A"`)).toBe(true)
     expect(jq(`jq -r --arg 1x y '.' <<<"$A"`)).toBe(false)
     expect(jq(`jq -r --arg 'x y' z '.' <<<"$A"`)).toBe(false)
+  })
+})
+
+describe('Round 13, iteration 1: the ways past the reader and the rules (DPW-02, DPW-05, DPW-10)', () => {
+  const CREDENTIALED_RUNS =
+    'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch, IMAGE_CHECK’s listing and unpacking and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
+  const CANONICAL_RUNS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+
+  // A word at a command's start that began with a digit was read as an operand (a redirection's 2) wherever it
+  // stood, so a program whose name starts with one, as 7z, 7za and 7zr do (the runner image's archiver, which reads
+  // and writes any path it is given), was no command to any rule built on shellCommands(): CANONICAL_COMMANDS,
+  // DPW-10's credentialed list and the held tools. Only a word of digits alone is a descriptor now.
+  it('reads a program whose name starts with a digit as the command it runs', () => {
+    for (const [text, words] of [
+      ['7z x a.zip', ['7z']],
+      ['echo a; 7za l b', ['echo', '7za']],
+      ['x=$(7zr x c)', ['7zr']],
+      ['if 7z t x.zip; then :; fi', ['7z', ':', 'fi']],
+      ['cmd 2>&1', ['cmd']],
+      ['true 2>/dev/null', ['true']],
+      ['{ read -r x; } 3<file', ['read', '}']],
+      ['[ ! -L x ]', ['[']],
+      ['[ a != b ]', ['[']],
+    ] as const) {
+      expect(
+        shellCommands(text).map(each => each.word),
+        text,
+      ).toEqual(words)
+    }
+    const local = "  local step=$1 PART answer status basis=''\n"
+    const line = PLAN_BASIS.slice(0, PLAN_BASIS.indexOf(local) + local.length).split('\n').length
+    const zip = '7z a -tzip -mx0 -so "$RUNNER_TEMP/plan.zip" "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
+    for (const added of [`  ${zip}\n`, `  x=$(${zip})\n`, `  if ${zip}; then :; fi\n`, `  true | ${zip}\n`]) {
+      expect(PLAN_BASIS).toContain(local)
+      expect(canonicalTextFindings({ PLAN_BASIS: PLAN_BASIS.replace(local, `${local}${added}`) }), added).toContain(
+        `${GUARD}: DPW-10 PLAN_BASIS, line ${line}: ${CANONICAL_RUNS}`,
+      )
+    }
+    // In a credentialed job's run, as deploy.yml writes the text there (prod-plan's Diff runs PLAN_BASIS).
+    const written = `          ${local}`
+    expect(
+      credentialedCodeFindings(plant(written, `${written}            ${zip}\n`, job('prod-plan')), manifests, lockfile),
+    ).toContain(`${DEPLOY}: DPW-10 prod-plan (Diff): ${CREDENTIALED_RUNS}`)
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A shared run's comments named the step env: names its text reads for the asset check alone, while four other
+  // texts expand a name whose value differs between the steps that share them (the read-back's RELEASE, the
+  // previous release in the rollback jobs), so a reader of an alias saw no sign of which of its step's values the
+  // text reads. Each entry's reads is now exactly the names its text expands (in the code view, so no comment or
+  // single-quoted string counts) that its steps' env: (STEP_ENVS) give with values that differ between them.
+  it('names in each shared run’s comments every name of its steps’ env: its text reads with differing values', () => {
+    const runs = workflowJobs(deployText).flatMap(each => parsedSteps(each).map(step => ({ job: each.id, step })))
+    const differing: Record<string, string[]> = {}
+    for (const [name, entry] of Object.entries(RUN_ANCHORS())) {
+      const envs = runs
+        .filter(({ step }) => step.run === entry.text)
+        .map(({ job, step }) => STEP_ENVS[job]?.[step.name ?? ''] ?? {})
+      expect(envs.length, name).toBeGreaterThanOrEqual(2)
+      // Each expansion the code view keeps, its name read from the text at the same place (the view writes a
+      // quoted string's other characters as _), as foreignExpansionLines() reads them.
+      const views = shellViews(entry.text)
+      const expanded = new Set(
+        [...views.code.matchAll(/\$\{?[#!]?(?=[A-Za-z_])/g)].map(
+          match => /^\$\{?[#!]?([A-Za-z_]\w*)/.exec(views.text.slice(match.index))?.[1] ?? '',
+        ),
+      )
+      differing[name] = [...new Set(envs.flatMap(env => Object.keys(env)))]
+        .filter(each => expanded.has(each) && new Set(envs.map(env => env[each] ?? '')).size > 1)
+        .sort()
+      expect([...(entry.reads ?? [])].sort(), name).toEqual(differing[name])
+    }
+    expect(Object.entries(differing).filter(([, names]) => names.length > 0).length).toBe(5)
   })
 })

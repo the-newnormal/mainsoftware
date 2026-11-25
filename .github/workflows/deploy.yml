@@ -523,9 +523,11 @@ jobs:
           # the account's own namespace, in ap-southeast-1 or IAM's (or the one S3 ARN, ECR's image-layer bucket, which
           # the S3 gateway endpoint's one statement names), an account id (12 digits in a row outside a 64-hex digest),
           # or a Hearth name or parameter of another stage. And it holds each value a service acts on to the synth's
-          # shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
-          # by name in the account, its image the server's repository in the account at a digest, its log group and
-          # stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
+          # shape: a task definition's family is one of its stage's six, in its own stack alone (api, realtime and
+          # worker in Services, migrate, probe and bastion in Tasks, so every image stands where the release check
+          # below reads it), its task and execution roles its family's own by name in the account, its image the
+          # server's repository in the account at a digest, its log group and stream prefix its family's own, its one
+          # secret its stage's auth-secret parameter, and its hearth-role tag,
           # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
           # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
           # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
@@ -584,9 +586,9 @@ jobs:
           # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
           # prints whole.
           # Then it requires every Services template's Release output to be the release this job
-          # deploys, and every container image in the Tasks and Services templates to be the server image at its
-          # digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
-          # rule, never a path or value from the assembly.
+          # deploys, and every container image in the Tasks and Services templates, the only ones that hold one, to be
+          # the server image at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is
+          # one line naming the rule, never a path or value from the assembly.
           asset_refuse() {
             echo "asset-check: $1"
             exit 1
@@ -873,12 +875,13 @@ jobs:
                   def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
                   def of($t): $r[] | select(.Type == $t) | .Properties;
                   def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
+                  all(of("AWS::ECS::TaskDefinition"); .Family | IN(if $stack | test("-Services\\z") then "api", "realtime", "worker" elif $stack | test("-Tasks\\z") then "migrate", "probe", "bastion" else empty end | "hearth-" + $s + "-" + .)) and
                   all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
                   all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
                   all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
                   all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
                   ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
+                  asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family, or a task definition in a stack but its family's (api, realtime and worker in Services, migrate, probe and bastion in Tasks, none elsewhere)"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1174,7 +1177,8 @@ jobs:
           ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
           IMAGE_ID: ${{ needs.build.outputs.image }}
           IMAGE_DUE: ${{ needs.gate.outputs.build == 'true' && needs.gate.outputs.mode == 'deploy' && 'true' || 'false' }}
-        # Shared run &artifact-names: written once here, and run as written by prod (The artifacts' names).
+        # Shared run &artifact-names, reading each step's IMAGE_DUE: written once here, and run as written by prod (The
+        # artifacts' names).
         run: &artifact-names |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2062,8 +2066,8 @@ jobs:
           RELEASE: ${{ steps.release.outputs.release }}
           MODE: ${{ needs.gate.outputs.mode }}
           RESTORE: ${{ needs.gate.outputs.restore }}
-        # Shared run &read-back: written once here, and run as written by rollback-nonprod (Read back what runs), prod
-        # (Read back what runs) and rollback-prod (Read back what runs).
+        # Shared run &read-back, reading each step's RELEASE: written once here, and run as written by rollback-nonprod
+        # (Read back what runs), prod (Read back what runs) and rollback-prod (Read back what runs).
         run: &read-back |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2259,8 +2263,8 @@ jobs:
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
           PREVIOUS_COMMIT: ${{ needs.gate.outputs.previous_nonprod_commit }}
           PREVIOUS_DIGEST: ${{ needs.gate.outputs.previous_nonprod_digest }}
-        # Shared run &previous-step: written once here, and run as written by rollback-prod (This run's release and the
-        # previous one).
+        # Shared run &previous-step, reading each step's PREVIOUS_COMMIT and PREVIOUS_DIGEST: written once here, and run
+        # as written by rollback-prod (This run's release and the previous one).
         run: &previous-step |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2375,7 +2379,8 @@ jobs:
           PREVIOUS: ${{ steps.release.outputs.previous }}
           REPLACED: ${{ needs.nonprod.outputs.replaced }}
           FIRST: ${{ needs.gate.outputs.first_nonprod }}
-        # Shared run &rollback-what-runs: written once here, and run as written by rollback-prod (What runs).
+        # Shared run &rollback-what-runs, reading each step's FIRST and REPLACED: written once here, and run as written
+        # by rollback-prod (What runs).
         run: &rollback-what-runs |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2737,7 +2742,7 @@ jobs:
           RELEASE: ${{ steps.release.outputs.previous }}
           MODE: ${{ needs.gate.outputs.mode }}
           RESTORE: ${{ needs.gate.outputs.restore }}
-        # Shared run *read-back: the text written in nonprod (Read back what runs).
+        # Shared run *read-back, reading this step's RELEASE: the text written in nonprod (Read back what runs).
         run: *read-back
       - name: Rolled back
         id: done
@@ -2887,7 +2892,9 @@ jobs:
   # stacks), and for a deploy with a previous release the diff of the rollback that release's own assembly
   # would make, which prod's rollback job deploys. Its role reads the prod and restore stacks' templates, status
   # and resources and nothing else. It outputs its attempt, which the prod job's fast re-check holds to its own,
-  # and for a restore taken down what it read of each restore stack, which the prod job's down holds the stage to.
+  # what it read of the stage before its diff (basis, PLAN_BASIS's read of each stack), which the prod job's What
+  # runs holds the stage to before anything moves, and for a restore taken down what it read of each restore stack,
+  # which the prod job's down holds the stage to.
   prod-plan:
     needs: [gate, build, synth, synth-previous-prod, smoke-nonprod]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && ((needs.gate.outputs.target == 'prod' && ((needs.gate.outputs.mode == 'deploy' && needs.smoke-nonprod.result == 'success') || needs.gate.outputs.mode == 'rollback')) || (needs.gate.outputs.target == 'restore' && needs.gate.outputs.mode == 'deploy')) }}
@@ -3390,7 +3397,7 @@ jobs:
           ASSEMBLY_ID: ${{ needs.synth.outputs.assembly }}
           IMAGE_ID: ${{ needs.build.outputs.image }}
           IMAGE_DUE: ${{ needs.gate.outputs.build == 'true' && needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod' && 'true' || 'false' }}
-        # Shared run *artifact-names: the text written in nonprod (The artifacts' names).
+        # Shared run *artifact-names, reading this step's IMAGE_DUE: the text written in nonprod (The artifacts' names).
         run: *artifact-names
       - name: Download the assembly
         if: ${{ needs.synth.outputs.assembly != '' }}
@@ -4174,7 +4181,7 @@ jobs:
           RELEASE: ${{ steps.release.outputs.release }}
           MODE: ${{ needs.gate.outputs.mode }}
           RESTORE: ${{ needs.gate.outputs.restore }}
-        # Shared run *read-back: the text written in nonprod (Read back what runs).
+        # Shared run *read-back, reading this step's RELEASE: the text written in nonprod (Read back what runs).
         run: *read-back
 
   # The smoke (C11-D54): no credential. smoke.ts, from this run's own checkout, judges the read-back
@@ -4265,7 +4272,8 @@ jobs:
           BUILD_DIGEST: ${{ needs.build.outputs.digest }}
           PREVIOUS_COMMIT: ${{ needs.gate.outputs.previous_prod_commit }}
           PREVIOUS_DIGEST: ${{ needs.gate.outputs.previous_prod_digest }}
-        # Shared run *previous-step: the text written in rollback-nonprod (This run's release and the previous one).
+        # Shared run *previous-step, reading this step's PREVIOUS_COMMIT and PREVIOUS_DIGEST: the text written in
+        # rollback-nonprod (This run's release and the previous one).
         run: *previous-step
       - name: The artifacts' names
         env:
@@ -4358,7 +4366,8 @@ jobs:
           PREVIOUS: ${{ steps.release.outputs.previous }}
           REPLACED: ${{ needs.prod.outputs.replaced }}
           FIRST: ${{ needs.gate.outputs.first_prod }}
-        # Shared run *rollback-what-runs: the text written in rollback-nonprod (What runs).
+        # Shared run *rollback-what-runs, reading this step's FIRST and REPLACED: the text written in rollback-nonprod
+        # (What runs).
         run: *rollback-what-runs
       - name: Roll back Tasks and Services
         if: ${{ steps.aws.outputs.go == 'true' }}
@@ -4508,7 +4517,7 @@ jobs:
           RELEASE: ${{ steps.release.outputs.previous }}
           MODE: ${{ needs.gate.outputs.mode }}
           RESTORE: ${{ needs.gate.outputs.restore }}
-        # Shared run *read-back: the text written in nonprod (Read back what runs).
+        # Shared run *read-back, reading this step's RELEASE: the text written in nonprod (Read back what runs).
         run: *read-back
       - name: Rolled back
         id: done

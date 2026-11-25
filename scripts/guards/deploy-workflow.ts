@@ -112,7 +112,8 @@
 // every resource to the property paths and forms the workload synth writes for its type (one jq object literal
 // in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
 // each value a service acts on (a task's roles, image, logs, secret and tags and its one container, named server,
-// which the canonical texts read by that name, the Services stack's three services, each on its own family, as
+// which the canonical texts read by that name, each task definition in its own family's stack alone, so the release
+// check reads every image (round 13), the Services stack's three services, each on its own family, as
 // AWS_CHECK and the records need them, a service's network, ECS Exec and
 // target groups, a security group's egress, which must be there, and a rule's peer, a VPC endpoint's service and
 // each statement of its policy, held to the organisation's principals and, but in prod until its reviewed change,
@@ -420,10 +421,13 @@
 // the latest earlier anchor of its name, with the shared-run comments dropped (expandRunAliases()), so
 // workflowJobs() and every rule that reads a job's steps read each step's run written out, the four that read
 // deploy.yml's lines by job (the id-token, group-name and masking scans and the action pins) read that
-// expansion, which jobSpans() alone takes (RunsWrittenOut), and the expansion is itself in the reader's shape
-// (EXPANDED_SHAPE). Only what an alias can't change reads the file as stored: its characters, shape, block
+// expansion, which jobSpans() and jobsOf() alone take (RunsWrittenOut), and the expansion is itself in the reader's
+// shape (EXPANDED_SHAPE). Only what an alias can't change reads the file as stored: its characters, shape, block
 // scalars, escapes, if: lines, top-level keys, triggers and words, the shared runs themselves, and its size,
-// which GitHub counts on the file as stored.
+// which GitHub counts on the file as stored. Every rule takes deploy.yml through deployWritten(), deployStored()
+// or workflowsWritten() alone (round 13), and the test holds each to how its table says it reads, the file as
+// stored only under a reason named there, and runs each over both layouts in every case, a plant into a shared
+// text at every step that runs it included, so a rule that read the stored lines by job fails there.
 //
 // What holds a change to a pinned text. Every run in deploy.yml is pinned whole, its glue lines and the
 // canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
@@ -603,7 +607,8 @@ esac`
 // a restore at prod's newest record. So a change to what it pins exactly (a stack's properties, roles,
 // bootstrap version or termination protection, the asset manifests' shape, the outputs, and from review 10 each
 // resource type's property paths in its literal and each value it holds to the synth's shape, from round 11 a
-// task's one container, server, and the Services stack's three services) keeps accepting
+// task's one container, server, and the Services stack's three services, from round 13 each task definition in its
+// family's own stack) keeps accepting
 // each shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline
 // rollback or restore to a release before the change is refused (T24 item 22). No case can plant an older shape
 // until one exists.
@@ -693,9 +698,11 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # the account's own namespace, in ap-southeast-1 or IAM's (or the one S3 ARN, ECR's image-layer bucket, which
 # the S3 gateway endpoint's one statement names), an account id (12 digits in a row outside a 64-hex digest),
 # or a Hearth name or parameter of another stage. And it holds each value a service acts on to the synth's
-# shape: a task definition's family is one of its stage's six, its task and execution roles its family's own
-# by name in the account, its image the server's repository in the account at a digest, its log group and
-# stream prefix its family's own, its one secret its stage's auth-secret parameter, and its hearth-role tag,
+# shape: a task definition's family is one of its stage's six, in its own stack alone (api, realtime and
+# worker in Services, migrate, probe and bastion in Tasks, so every image stands where the release check
+# below reads it), its task and execution roles its family's own by name in the account, its image the
+# server's repository in the account at a digest, its log group and stream prefix its family's own, its one
+# secret its stage's auth-secret parameter, and its hearth-role tag,
 # which the deploy and break-glass roles' grants read, its own kind on the one-off definitions alone, and it
 # holds one container, named server, which the pipeline's checks, probe, read-back and one-offs read by that
 # name; a service runs on its stage's cluster, on Fargate, in its stage's isolated subnets and security
@@ -754,9 +761,9 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # resource's path), so a release names anything else a grant reaches by a literal ARN, which the IAM table
 # prints whole.
 # Then it requires every Services template's Release output to be the release this job
-# deploys, and every container image in the Tasks and Services templates to be the server image at its
-# digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is one line naming the
-# rule, never a path or value from the assembly.
+# deploys, and every container image in the Tasks and Services templates, the only ones that hold one, to be
+# the server image at its digest, reading the templateFile the CLI uploads, deploys and diffs. A refusal is
+# one line naming the rule, never a path or value from the assembly.
 asset_refuse() {
   echo "asset-check: $1"
   exit 1
@@ -1043,12 +1050,13 @@ check_release_in() {
         def param($n): type == "object" and keys == ["Ref"] and $p[.Ref].Default == $n;
         def of($t): $r[] | select(.Type == $t) | .Properties;
         def role($n): {"Fn::Join": ["", [(["arn", "aws", "iam", "", ""] | join(":")), {"Ref": "AWS::AccountId"}, (":role/" + $n)]]};
+        all(of("AWS::ECS::TaskDefinition"); .Family | IN(if $stack | test("-Services\\z") then "api", "realtime", "worker" elif $stack | test("-Tasks\\z") then "migrate", "probe", "bastion" else empty end | "hearth-" + $s + "-" + .)) and
         all(of("AWS::ECS::TaskDefinition"); .Family as $f | ($f | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker|migrate|probe|bastion)\\z")) and ($f | ltrimstr("hearth-" + $s + "-")) as $kind | .TaskRoleArn == role($f + "-task") and .ExecutionRoleArn == role($f + "-exec") and (.Tags // []) == (if $kind | IN("migrate", "probe", "bastion") then [{"Key": "hearth-role", "Value": $kind}] else [] end) and (.ContainerDefinitions | type == "array" and length > 0 and all(.[]; (.Image | type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | length == 2 and .[0] == "" and (.[1] | type == "array" and length == 4 and .[0] == {"Ref": "AWS::AccountId"} and .[1] == ".dkr.ecr.ap-southeast-1." and .[2] == {"Ref": "AWS::URLSuffix"} and (.[3] | type == "string" and test("\\A/hearth-server@sha256:[0-9a-f]{64}\\z"))))) and .LogConfiguration.LogDriver == "awslogs" and (.LogConfiguration.Options | .["awslogs-group"] == "/hearth/" + $s + "/" + $kind and .["awslogs-stream-prefix"] == $kind and .["awslogs-region"] == "ap-southeast-1") and all(.. | objects | select(has("ValueFrom")); .ValueFrom | param("/hearth/" + $s + "/auth-secret/arn"))))) and
         all(of("AWS::ECS::Service"); .Cluster == "hearth-" + $s and (.ServiceName | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime|worker)\\z")) and .LaunchType == "FARGATE" and (.EnableExecuteCommand // false) == false and (.TaskDefinition | ref("AWS::ECS::TaskDefinition")) and (.NetworkConfiguration.AwsvpcConfiguration | (.AssignPublicIp // "DISABLED") == "DISABLED" and (.Subnets | param("/hearth/" + $s + "/network/isolated-subnets")) and (.SecurityGroups | type == "array" and all(.[]; type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/security-group/(api|realtime|worker)\\z"))))) and all(.LoadBalancers // [] | .[]; .TargetGroupArn | type == "object" and keys == ["Ref"] and ($p[.Ref].Default | type == "string" and test("\\A/hearth/" + $s + "/target-group/(api|realtime)\\z")))) and
         all(of("AWS::ECS::Cluster"); .ClusterName == "hearth-" + $s) and
         all(of("AWS::ECS::TaskDefinition"); .ContainerDefinitions | length == 1 and .[0].Name == "server") and
         ([of("AWS::ECS::Service") | [.ServiceName, $r[.TaskDefinition.Ref].Properties.Family]] | sort) == (if $stack | test("-Services\\z") then ["api", "realtime", "worker"] | map("hearth-" + $s + "-" + .) | map([., .]) else [] end)' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family"
+        asset_refuse "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family, or a task definition in a stack but its family's (api, realtime and worker in Services, migrate, probe and bastion in Tasks, none elsewhere)"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -2798,8 +2806,10 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
 
 // DPW-02, the shared runs: the names deploy.yml may anchor a step's run under (run: &name | on the first step
 // that runs it, run: *name on each later one), each with the text it holds, built from the constants PINNED_RUNS
-// pins, so a name tells its reader the text an alias runs, and with the names of its steps' env: the text reads
-// beyond its job's, which its comments name. Each text is one that two or more steps run whole, of at least
+// pins, so a name tells its reader the text an alias runs, and with the names of its steps' env: the text expands
+// whose values differ between the steps that run it (reads; the job's STAGE aside), which its comments name, so a
+// reader of an alias sees which of its step's values the text reads: a case holds reads to exactly those names
+// (round 13). Each text is one that two or more steps run whole, of at least
 // ALIAS_MIN_BYTES, so the file stays under GitHub's 500 KB for a workflow file (WORKFLOW_BYTES); no name holds
 // uses, a word the pins proof refuses on any line of deploy.yml.
 export interface SharedRun {
@@ -2808,18 +2818,18 @@ export interface SharedRun {
 }
 export const RUN_ANCHORS = (): Readonly<Record<string, SharedRun>> => ({
   'asset-check': { text: ASSET_CHECK_RUN, reads: ['ASSEMBLY_FOLDER', 'RELEASE'] },
-  'read-back': { text: [PREAMBLE, READ_BACK].join('\n') },
-  'rollback-what-runs': { text: whatRunsText('rollback-nonprod') },
+  'read-back': { text: [PREAMBLE, READ_BACK].join('\n'), reads: ['RELEASE'] },
+  'rollback-what-runs': { text: whatRunsText('rollback-nonprod'), reads: ['FIRST', 'REPLACED'] },
   'cli-fetch': { text: CLI_FETCH },
   'cli-check': { text: CLI_CHECK },
   'image-unpack': { text: IMAGE_UNPACK_RUN },
-  'artifact-names': { text: artifactNamesRun('nonprod') },
+  'artifact-names': { text: artifactNamesRun('nonprod'), reads: ['IMAGE_DUE'] },
   'release-step': { text: RELEASE_STEP },
   'forward-run': { text: FORWARD_RUN },
   'manual-rollback-run': { text: MANUAL_ROLLBACK_RUN },
   'rollback-run': { text: ROLLBACK_RUN },
   'services-run': { text: SERVICES_RUN },
-  'previous-step': { text: PREVIOUS_STEP },
+  'previous-step': { text: PREVIOUS_STEP, reads: ['PREVIOUS_COMMIT', 'PREVIOUS_DIGEST'] },
   'mark-run': { text: MARK_RUN },
   'done-run': { text: DONE_RUN },
 })
@@ -3137,8 +3147,26 @@ interface Job {
   steps: WorkflowStep[]
 }
 
-function jobsOf(text: string): Map<string, Job> {
+// deploy.yml's jobs, each with its steps, read from the expansion alone (RunsWrittenOut), so every step that runs
+// a shared run is read with it.
+function jobsOf(text: RunsWrittenOut): Map<string, Job> {
   return new Map(workflowJobs(text).map(job => [job.id, { id: job.id, job, steps: parsedSteps(job) }]))
+}
+// The three ways a rule takes deploy.yml (round 13). deployWritten(): as GitHub runs it, every shared run written
+// out, which is how a rule reads its jobs, steps and lines, so none reads a shared run in its anchor's job alone.
+// deployStored(): as stored, for what an alias can't change alone (its characters, shape, block scalars, escapes,
+// if: lines, top-level keys, triggers and words, the shared runs themselves, and its size). workflowsWritten():
+// every workflow, deploy.yml written out, for a rule that walks them all by job or line. No rule takes the file by
+// its path or walks the map of workflows otherwise but one that reads it as stored, and the test's
+// DEPLOY_TEXT_READERS names each of those with why, so a rule reading the stored lines by job is a reviewed entry.
+export function deployWritten(workflows: Texts): RunsWrittenOut {
+  return expandRunAliases(workflows.get(DEPLOY) ?? '')
+}
+export function deployStored(workflows: Texts): string {
+  return workflows.get(DEPLOY) ?? ''
+}
+export function workflowsWritten(workflows: Texts): ReadonlyMap<string, RunsWrittenOut> {
+  return new Map([...workflows].map(([path, text]) => [path, expandRunAliases(text)]))
 }
 
 // The steps PINNED_RUNS holds under a rule whose run or if: isn't the one it names, whole, or that its job
@@ -3758,11 +3786,12 @@ function readCommands(run: string): ShellCommand[] {
       const word = outer ? (WORD_AT.exec(code)?.[0] ?? '') : (match[3] ?? '')
       const prefixes = (match[2] ?? '').trim().split(/\s+/).filter(Boolean)
       // An assignment alone (X=$(…)) runs nothing itself, what it substitutes is read after it, and a
-      // word that starts with -, = or a digit is an operand (a test's ! -L, a != , a redirection's 2),
-      // but after a wrapper, whose flag or operand it is (command -p, timeout 5), it is kept, so the
-      // wrapper is seen.
+      // word that starts with - or = is an operand (a test's ! -L, a != ), as is one of digits alone (a
+      // redirection's 2), but after a wrapper, whose flag or operand it is (command -p, timeout 5), it is
+      // kept, so the wrapper is seen. Any other word that starts with a digit is a program's name, read as
+      // one (round 13: 7z, the runner image's archiver, read as an operand, so no rule saw it run).
       if (word === '' || /^[A-Za-z_]\w*\+?=/.test(word)) continue
-      if (/^[-=\d]/.test(word) && !prefixes.some(prefix => WRAPPERS.includes(prefix))) continue
+      if (/^(?:[-=]|\d+$)/.test(word) && !prefixes.some(prefix => WRAPPERS.includes(prefix))) continue
       const line = lineOf(at)
       const after = (lines[line] ?? '').slice(at - (starts[line] ?? 0) + word.length)
       found.set(at, {
@@ -5489,8 +5518,11 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
 // env: hands its step, even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
 const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
 // The names a step's env: gives that only a pinned run's own lines expand, never a canonical text: an asset
-// check's ASSEMBLY_FOLDER, which its two calls (ASSET_CHECK_CALLS) read, so the folder ASSET_CHECK checks is the
-// one its call names, and no line of ASSET_CHECK reads which folder its step names.
+// check's ASSEMBLY_FOLDER, which its two calls (ASSET_CHECK_CALLS) read, so no line of ASSET_CHECK expands it.
+// The folder still reaches ASSET_CHECK's two functions as their argument ($1, then root and dir, which carry the
+// same path), so a line there could still treat one folder otherwise (round 13: a case on $1 that returns early
+// for one folder); such a line is held by the owner's read of ASSET_CHECK's change, as any dropped check is, and
+// not by this rule.
 const OWN_LINE_NAMES: readonly string[] = ['ASSEMBLY_FOLDER']
 const RUNNER_NAMES = (): readonly string[] => [...RUNNER_EXPANSIONS, 'GITHUB_SHA', 'SECONDS']
 // The names a step's env: gives from a secret or the job's token (round 12's fourth iteration, its second pass:
@@ -6810,7 +6842,7 @@ const FORBIDDEN_EVENTS = /\b(?:pull_request_target|workflow_run)\b/
 // workflow never gates merging and CLAUDE.md's way of adding a required check stays open.
 export function triggerFindings(workflows: Texts, ruleset: string): Finding[] {
   const found: Finding[] = []
-  const deploy = workflows.get(DEPLOY) ?? ''
+  const deploy = deployStored(workflows)
   if (!onIsAsWritten(blockValue(workflowTop(deploy).get('on') ?? []))) {
     found.push(
       at(
@@ -7109,12 +7141,12 @@ function expandedShapeHolds(text: string, shared: RunAnchors, shape: readonly nu
 }
 export function permissionFindings(workflows: Texts, ownRepository = ''): Finding[] {
   const found: Finding[] = []
-  const deploy = workflows.get(DEPLOY) ?? ''
+  const deploy = deployStored(workflows)
   const top = permissionsOf(workflowTop(deploy).get('permissions'))
   if (!(top instanceof Map) || !sameMap(top, READ)) {
     found.push(at(DEPLOY, 'DPW-02', 'the top-level permissions are contents: read alone'))
   }
-  for (const { id, job } of jobsOf(deploy).values()) {
+  for (const { id, job } of jobsOf(deployWritten(workflows)).values()) {
     const want = (JOB_PERMISSIONS as Readonly<Record<string, Readonly<Record<string, string>>>>)[id]
     const have = jobPermissions(job)
     if (want === undefined) found.push(at(DEPLOY, 'DPW-02', `${id}: is none of the seventeen jobs`))
@@ -7318,7 +7350,7 @@ const runsAws = (step: WorkflowStep) =>
 // names an environment, so none other can assume a deploy role.
 export function credentialJobFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
-  for (const { id, job, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
+  for (const { id, job, steps } of jobsOf(deployWritten(workflows)).values()) {
     const want = ENVIRONMENT_JOBS[id]
     const environment = jobEnvironment(job)
     if (want === undefined) {
@@ -7362,7 +7394,7 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // run nothing and exit 0, the pins unproved and a broken release's smoke passed, while check, on 5, still
 // ran a Node new enough to pass.
 export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {
-  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
+  const text = deployWritten(workflows)
   const spans = jobSpans(text)
   const found = new Set<Finding>()
   for (const { index, text: line } of yamlLines(text)) {
@@ -7668,7 +7700,7 @@ const GROUP_OF: Readonly<Record<string, string>> = {
 export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
   // Every shared run written out, so a group named in a shared run counts in every job that runs it.
-  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
+  const text = deployWritten(workflows)
   for (const { id, job } of jobsOf(text).values()) {
     const most = (TIMEOUTS as Readonly<Record<string, number>>)[id]
     const minutes = job.timeoutMinutes
@@ -7707,7 +7739,7 @@ export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
       )
     }
   })
-  for (const [path, other] of workflows) {
+  for (const [path, other] of workflowsWritten(workflows)) {
     if (path === DEPLOY) continue
     if (GROUPS.test(other)) {
       found.push(at(path, 'DPW-05', 'names neither deploy-nonprod nor deploy-prod, in any letter case'))
@@ -7717,7 +7749,7 @@ export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
         at(
           path,
           'DPW-05',
-          'sets no concurrency group by an expression, which could come to deploy-nonprod or deploy-prod',
+          'sets no concurrency group by an expression, and writes no ${{ in a concurrency block, a quoted string or a comment included, since a group so built could come to deploy-nonprod or deploy-prod',
         ),
       )
     }
@@ -7726,9 +7758,12 @@ export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
 }
 
 // Each concurrency: key in a workflow, at any depth (the top level's or a job's), with its value and every
-// line under it, comments blanked.
+// line under it, as written: nothing is cut as a comment, since a # after a blank inside a quoted scalar is the
+// string's own (round 13: group: "lint #${{ github.ref }}" is an expression GitHub evaluates, which cutting
+// every # after a blank hid), so a ${{ anywhere in the block is read, a comment's included. A line that is a
+// comment alone never ends the block, as YAML reads no structure from it.
 function concurrencyBlocks(text: string): string[] {
-  const lines = text.split('\n').map(line => line.replace(/(^|\s)#.*$/, '$1'))
+  const lines = text.split('\n')
   const blocks: string[] = []
   lines.forEach((line, index) => {
     const key = /^(\s*)(?:-\s+)?concurrency\s*:(.*)$/.exec(line)
@@ -7736,7 +7771,8 @@ function concurrencyBlocks(text: string): string[] {
     const depth = (key[1] ?? '').length
     const block = [key[2] ?? '']
     for (const next of lines.slice(index + 1)) {
-      if (next.trim() !== '' && next.length - next.trimStart().length <= depth) break
+      if (next.trim() !== '' && !next.trimStart().startsWith('#') && next.length - next.trimStart().length <= depth)
+        break
       block.push(next)
     }
     blocks.push(block.join('\n'))
@@ -7971,7 +8007,7 @@ const CLI_STEP_STACK =
 export function deployStepFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (id: string, rule: string) => found.add(at(DEPLOY, 'DPW-06', `${id}: ${rule}`))
-  for (const { id, job, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
+  for (const { id, job, steps } of jobsOf(deployWritten(workflows)).values()) {
     const deploy = DEPLOY_JOBS[id]
     // STAGE, set once at the job.
     const env = blockValue(job.keys.get('env') ?? [])
@@ -8351,7 +8387,7 @@ export function appendsOnly(run: string): boolean {
 export function maskingFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   // Every shared run written out, so a secret named in a shared run counts in every job that runs it.
-  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
+  const text = deployWritten(workflows)
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-07', `${where}: ${rule}`))
   const spans = jobSpans(text)
   text.split('\n').forEach((line, index) => {
@@ -8598,9 +8634,8 @@ function writesExactly(step: WorkflowStep | undefined, key: string, literal: str
 }
 export function prodPathFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
-  const text = workflows.get(DEPLOY) ?? ''
   const add = (id: string, rule: string) => found.add(at(DEPLOY, 'DPW-08', `${id}: ${rule}`))
-  const jobs = jobsOf(text)
+  const jobs = jobsOf(deployWritten(workflows))
   const prod = jobs.get('prod')
   if (prod === undefined || !['prod-gate', 'prod-plan'].every(need => jobNeeds(prod.job).includes(need))) {
     add('prod', 'needs prod-gate and prod-plan')
@@ -9104,7 +9139,7 @@ export function gateFindings(
 ): Finding[] {
   const found: Finding[] = []
   const add = (id: string, rule: string) => found.push(at(DEPLOY, 'DPW-09', `${id}: ${rule}`))
-  const jobs = jobsOf(workflows.get(DEPLOY) ?? '')
+  const jobs = jobsOf(deployWritten(workflows))
   const gate = jobs.get('gate')?.steps ?? []
   const plan = gate.findIndex(step => step.id === 'plan')
   const planStep = gate[plan]
@@ -11004,7 +11039,7 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
   if (!onceEach(top, TOP_KEYS) || !TOP_KEYS.every(key => top.includes(key))) {
     add('the top level', 'holds only name, on, permissions and jobs: no env, defaults or concurrency')
   }
-  for (const { id, job, steps } of jobsOf(text).values()) {
+  for (const { id, job, steps } of jobsOf(expandRunAliases(text)).values()) {
     if (!onceEach(job.keyNames, JOB_KEYS)) {
       add(
         id,
@@ -11223,12 +11258,13 @@ function cliLineIsSafe(line: string): boolean {
 // and set no input a pinned line reads (SETS_INPUT). In every job, credentialed or not, its steps are
 // JOB_STEPS' and no run names GITHUB_ENV, GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the
 // repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
-// registry's tarball at infra's pin, by its fixed URL, with a sha512 integrity and no link.
+// registry's tarball at infra's pin, by its fixed URL, with a sha512 integrity and no link, its cdk bin at bin/cdk
+// and no dependency (installedCliFindings() holds the package npm ci installs from it).
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
-  shapeOfJobsFindings(workflows.get(DEPLOY) ?? '', add)
-  const jobs = jobsOf(workflows.get(DEPLOY) ?? '')
+  shapeOfJobsFindings(deployStored(workflows), add)
+  const jobs = jobsOf(deployWritten(workflows))
   bindingFindings(jobs, add)
   // Every run of a credentialed job is one PINNED_RUNS pins whole, under its own if:, so none has a line
   // of its own: those it pins under DPW-10 are held here, the rest by the rule each names.
@@ -11404,7 +11440,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
     entry = undefined
   }
   // As CLI_FETCH reads it, so a lockfile it would refuse fails here first: the registry's tarball at infra's
-  // pin, by its fixed URL, with a sha512 integrity and no link.
+  // pin, by its fixed URL, with a sha512 integrity and no link; and as npm writes the entry of a package
+  // CLI_CHECK accepts, its cdk bin at bin/cdk and no dependency (round 13: installedCliFindings() holds the
+  // package itself).
   if (
     entry === undefined ||
     typeof pin !== 'string' ||
@@ -11412,17 +11450,77 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
     entry.resolved !== `https://registry.npmjs.org/aws-cdk/-/aws-cdk-${pin}.tgz` ||
     typeof entry.integrity !== 'string' ||
     !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity) ||
-    Object.hasOwn(entry, 'link')
+    Object.hasOwn(entry, 'link') ||
+    JSON.stringify(entry.bin) !== JSON.stringify({ cdk: 'bin/cdk' }) ||
+    Object.hasOwn(entry, 'dependencies')
   ) {
     found.add(
       at(
         'package-lock.json',
         'DPW-10',
-        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link",
+        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no dependency",
       ),
     )
   }
   return [...found]
+}
+
+// DPW-10, the installed CLI (round 13). CLI_CHECK refuses, in each credentialed job before its credentials, an
+// aws-cdk whose unpacked manifest isn't aws-cdk at infra's pin with its cdk bin at bin/cdk and no dependency, or
+// whose tree holds a symbolic link, since the job runs that one tarball with nothing installed beside it (T24
+// item 20). The lockfile's entry is read above as CLI_FETCH reads it, which a release that gained a runtime
+// dependency or named its bin otherwise still passes (npm writes a string bin as an object in the lockfile, while
+// the package's own manifest keeps the string, which CLI_CHECK's .bin.cdk can't index). So CI holds the package npm ci installed from that entry, the
+// same tarball by its sha512, to CLI_CHECK's predicate, at least as strictly: a CDK group PR whose release changes
+// the package's shape fails CI before merge, where otherwise every deploy after it would stop at CLI_CHECK while
+// the CLI pin's floor refuses the PR's revert. installed is node_modules/aws-cdk/package.json's text (undefined
+// when npm installed none) and links the paths under node_modules/aws-cdk that are symbolic links.
+export function installedCliFindings(
+  manifests: Texts,
+  installed: string | undefined,
+  links: readonly string[],
+): Finding[] {
+  let pin: unknown
+  try {
+    pin = (JSON.parse(manifests.get('infra/package.json') ?? '') as { devDependencies?: Record<string, unknown> })
+      .devDependencies?.['aws-cdk']
+  } catch {
+    pin = undefined
+  }
+  let manifest: Record<string, unknown> | undefined
+  try {
+    const parsed = JSON.parse(installed ?? '') as unknown
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      manifest = parsed as Record<string, unknown>
+    }
+  } catch {
+    manifest = undefined
+  }
+  const bin = manifest?.bin
+  const dependencies = manifest?.dependencies
+  const held =
+    manifest !== undefined &&
+    typeof pin === 'string' &&
+    /^[0-9]+\.[0-9]+\.[0-9]+$/.test(pin) &&
+    manifest.name === 'aws-cdk' &&
+    manifest.version === pin &&
+    typeof bin === 'object' &&
+    bin !== null &&
+    !Array.isArray(bin) &&
+    (bin as Record<string, unknown>).cdk === 'bin/cdk' &&
+    (dependencies === undefined ||
+      dependencies === null ||
+      (typeof dependencies === 'object' && !Array.isArray(dependencies) && Object.keys(dependencies).length === 0)) &&
+    links.length === 0
+  return held
+    ? []
+    : [
+        at(
+          'node_modules/aws-cdk/package.json',
+          'DPW-10',
+          "the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency and no symbolic link",
+        ),
+      ]
 }
 
 // --- DPW-11, DPW-12: every workflow -----------------------------------------------------------------------
@@ -11441,7 +11539,7 @@ export const actionRepository = (uses: string): string =>
     .toLowerCase()
 export function checkoutFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
-  for (const [path, text] of workflows) {
+  for (const [path, text] of workflowsWritten(workflows)) {
     for (const job of workflowJobs(text)) {
       if (path === DEPLOY && job.id !== 'build' && !nodeBelowCheckout(parsedSteps(job))) {
         found.push(at(path, 'DPW-11', `${job.id}: ${NODE_BELOW_CHECKOUT}`))
@@ -11719,9 +11817,9 @@ const MIGRATE_END = 'one_off_end migrate "$MIGRATE_LINES" "$RUN"'
 const UNPINNED = 'runs only what PINNED_RUNS pins whole: no run of deploy.yml has a line of its own'
 export function releaseFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
-  const text = workflows.get(DEPLOY) ?? ''
+  const text = deployStored(workflows)
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-13', `${where}: ${rule}`))
-  const jobs = jobsOf(text)
+  const jobs = jobsOf(deployWritten(workflows))
   const build = jobs.get('build')
   if (build === undefined || jobScalar(build.job, 'if') !== BUILD_IF || jobNeeds(build.job).join(',') !== 'gate') {
     add('build', 'runs only when the gate says so: a deploy, not a restore')
@@ -11917,7 +12015,7 @@ const checksFolder = (step: WorkflowStep | undefined, folder: string, release: s
 export function assetCheckFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-14', `${where}: ${rule}`))
-  for (const { id, steps } of jobsOf(workflows.get(DEPLOY) ?? '').values()) {
+  for (const { id, steps } of jobsOf(deployWritten(workflows)).values()) {
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       if (step.uses?.startsWith('actions/download-artifact@')) {
