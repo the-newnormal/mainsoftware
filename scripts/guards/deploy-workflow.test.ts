@@ -65,6 +65,7 @@ import {
   CI,
   CLI_CHECK,
   CLI_FETCH,
+  CLI_PIN_DRIFT,
   canonicalCommandLines,
   canonicalTextFindings,
   canonicalToolLines,
@@ -82,6 +83,7 @@ import {
   ENVIRONMENT_JOBS,
   evaluatedLines,
   evaluateIf,
+  exitingFunctions,
   FORWARD_RUN,
   forbiddenWordFindings,
   foreignExpansionLines,
@@ -298,7 +300,7 @@ const PINNED_09 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
 // DPW-04's finding for ci.yml's job that holds the CDK CLI's pin (round 12).
 const CLI_PIN_JOB_FINDING =
-  "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
+  "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs, and BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
 // DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
 const PINS_JOB_FINDING =
   "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
@@ -718,7 +720,7 @@ describe('DPW-01 (C11-D47, C11-D62): what starts the workflow', () => {
     expect(on('    branches: [main]\n', "    branches: [main, 'release/*']\n")).toEqual(ON)
     expect(on('        type: string\n', '        type: environment\n')).toEqual(ON)
     expect(on("        default: ''\n", "        default: ''\n        required: true\n")).toEqual(ON)
-    expect(triggerFindings(plant('  pull_request: {}\n', '  pull_request_target: {}\n', '', CI), rulesetText)).toEqual([
+    expect(triggerFindings(plant('  pull_request:\n', '  pull_request_target:\n', '', CI), rulesetText)).toEqual([
       `${CI}: DPW-01 uses neither pull_request_target nor workflow_run`,
     ])
     expect(
@@ -1025,16 +1027,19 @@ describe('DPW-02 (C11-D55): permissions', () => {
     ).toEqual([shape(CI)])
     expect(permissionFindings(plant('name: ci\n', 'name: &k "id\\x2Dtoken"\n', '', CI))).toEqual([shape(CI), escaped])
     // An escape in a flow sequence's item, a sequence item or a value after an anchor, not only after a key.
-    expect(
-      permissionFindings(
-        plant('on:\n  pull_request: {}\n', 'on: [push, "pull_request\\x5Ftarget"]\nx:\n  pull_request: {}\n', '', CI),
-      ),
-    ).toEqual([shape(CI), escaped])
+    expect(permissionFindings(plant('on:\n', 'on: [push, "pull_request\\x5Ftarget"]\nx:\n', '', CI))).toEqual([
+      shape(CI),
+      escaped,
+    ])
     expect(permissionFindings(plant('    branches: [main]\n', '    branches:\n      - "ma\\x69n"\n', '', CI))).toEqual([
       escaped,
     ])
-    // The empty flow mapping ci.yml's pull_request: {} uses still reads.
-    expect(permissionFindings(plant('  pull_request: {}\n', '  pull_request: { }\n', '', CI))).toEqual([])
+    // An empty flow mapping (pull_request: { }) still reads.
+    expect(
+      permissionFindings(
+        plant('  pull_request:\n    types: [opened, synchronize, reopened, edited]\n', '  pull_request: { }\n', '', CI),
+      ),
+    ).toEqual([])
   })
 
   // Round 6's GUARDS-02: YAML reads escapes in a double-quoted scalar alone, so a backslash after a double
@@ -3180,6 +3185,66 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     ).toContain(later('nonprod'))
     expect(prodPathFindings(removedStep('prod', 'Probe'))).toContain(later('prod'))
     expect(prodPathFindings(removedStep('nonprod', mark))).toContain(later('nonprod'))
+  })
+
+  // Round 12's third iteration, its second pass: the mark's place, the rollback's if: and the pinned runs were each
+  // held, but never the value the mark writes against the one the if: compares, so services_started written as
+  // the run's attempt, as yes or as "true " (GitHub compares strings whole, ignoring case alone) passed every rule
+  // and read as not 'true': a release whose smoke failed stayed live with no rollback. rolled written so left the
+  // rollback with no resmoke and no record. Each value is changed here in both copies, as the guard's constant
+  // and deploy.yml would change together.
+  it('holds services_started and rolled to the value their jobs’ if: compares', () => {
+    const marked = (stage: 'nonprod' | 'prod') =>
+      at(
+        stage,
+        `writes services_started on one line alone, echo "services_started=true" >>"$GITHUB_OUTPUT", the value rollback-${stage}'s if: compares ('true')`,
+      )
+    const rolled = (stage: 'nonprod' | 'prod') =>
+      at(
+        `rollback-${stage}`,
+        `writes rolled on one line alone, echo "rolled=true" >>"$GITHUB_OUTPUT", from the step its rolled output reads first, the value resmoke-${stage}'s if: compares ('true') as written, so the resmoke and its record follow a rollback`,
+      )
+    const markLine = '          echo "services_started=true" >>"$GITHUB_OUTPUT"\n'
+    const doneLine = '          echo "rolled=true" >>"$GITHUB_OUTPUT"\n'
+    const values = (planted: ReadonlyMap<string, string>) =>
+      prodPathFindings(planted).filter(each => each.includes(' on one line alone, '))
+    const everywhere = (from: string, to: string) => {
+      expect(deployText.split(from).length - 1, from).toBe(2)
+      return withText(DEPLOY, deployText.replaceAll(from, to))
+    }
+    for (const value of ['$GITHUB_RUN_ATTEMPT', 'yes', 'true ']) {
+      expect(values(everywhere(markLine, markLine.replace('=true"', `=${value}"`))), value).toEqual([
+        marked('nonprod'),
+        marked('prod'),
+      ])
+      expect(values(everywhere(doneLine, doneLine.replace('=true"', `=${value}"`))), value).toEqual([
+        rolled('nonprod'),
+        rolled('prod'),
+      ])
+    }
+    // A second write after the first, and a comment on the line.
+    expect(
+      values(everywhere(markLine, `${markLine}          echo "services_started=false" >>"$GITHUB_OUTPUT"\n`)),
+    ).toEqual([marked('nonprod'), marked('prod')])
+    expect(values(everywhere(doneLine, doneLine.replace('\n', ' # the rollback ran\n')))).toEqual([
+      rolled('nonprod'),
+      rolled('prod'),
+    ])
+    // The resmoke comparing another value, and the output read from the AWS check alone.
+    expect(
+      prodPathFindings(
+        plant("needs.rollback-prod.outputs.rolled == 'true'", "needs.rollback-prod.outputs.rolled == 'yes'"),
+      ),
+    ).toEqual([rolled('prod')])
+    expect(
+      prodPathFindings(
+        plant(
+          `      rolled: \${{ steps.done.outputs.rolled || steps.aws.outputs.rolled }}\n`,
+          `      rolled: \${{ steps.aws.outputs.rolled }}\n`,
+          job('rollback-nonprod'),
+        ),
+      ),
+    ).toEqual([rolled('nonprod')])
   })
 
   it('holds the repository', () => {
@@ -7491,7 +7556,8 @@ describe('Round 12: the CLI pin’s own job (DPW-04)', () => {
   const own = '  cli-pin:\n'
   const inJob = (from: string, to: string) => plant(from, to, own, CI)
   const checkRun = '          node scripts/check-cli-pin.ts "$BASE"\n'
-  const step = `      - if: \${{ github.event_name == 'pull_request' }}\n        working-directory: repo\n        env:\n          BASE: origin/\${{ github.base_ref }}\n        run: |\n${RESET_LINES}${checkRun}`
+  const driftLines = `${indent(CLI_PIN_DRIFT, 10)}\n`
+  const step = `      - if: \${{ github.event_name == 'pull_request' }}\n        working-directory: repo\n        env:\n          BASE: origin/\${{ github.base_ref }}\n        run: |\n${driftLines}${RESET_LINES}${checkRun}`
 
   it('runs the CLI pin check in a job of its own that check needs, before any of the repository’s code', () => {
     const jobText = ci.slice(ci.indexOf(own), ci.indexOf('\n  # ', ci.indexOf(own)) + 1)
@@ -7559,10 +7625,53 @@ describe('Round 12: the CLI pin’s own job (DPW-04)', () => {
       ['no reset before it', inJob(RESET_LINES, '')],
       ['a reset that keeps the index’s stat data', inJob('          git read-tree HEAD\n', '')],
       ['a runner of its own', inJob('    runs-on: ubuntu-24.04\n', '    runs-on: self-hosted\n')],
+      // Round 12's third iteration, its second pass: the reset wrote away the drift the check exists to refuse.
+      ['no drift check before the reset', inJob(driftLines, '')],
+      ['the drift check after the reset', inJob(`${driftLines}${RESET_LINES}`, `${RESET_LINES}${driftLines}`)],
+      [
+        'a drift check that compares the index, which a clean filter reads back',
+        inJob(driftLines, '          git diff --quiet || exit 1\n'),
+      ],
     ] as const) {
       expect(actionPinFindings(planted), what).toContain(finding)
     }
     expect(actionPinFindings(workflows, files)).toEqual([])
+  })
+})
+
+// Round 12's third iteration, its second pass: GitHub's default activities for pull_request are opened,
+// synchronize and reopened, and a change of a pull request's base is the edited activity, so a retarget started no
+// ci.yml run: the head kept the result of the run that tested its merge into the old base (whose own commits, a test
+// excluded, passed what the merged tree failed), which main's ruleset, the gate's PULL_CHECKS and history.ts plan
+// read. ci.yml now runs on edited too, and DPW-04 holds its triggers as a second layer.
+describe('Round 12: ci.yml runs again when a pull request’s base changes (DPW-04)', () => {
+  const RULE =
+    "starts on a pull request when it is opened, synchronised, reopened or edited (a change of its base is an edit, so the newest run tests the merge into the base it merges into, which main's ruleset, the gate and history.ts plan read) and on a push to main, and on nothing else"
+  const finding = `${CI}: DPW-04 ${RULE}`
+  const types = '    types: [opened, synchronize, reopened, edited]\n'
+  it('holds ci.yml to run on a pull request’s edited activity, a base change among them', () => {
+    expect(actionPinFindings(workflows, files)).not.toContain(finding)
+    for (const [what, planted] of [
+      ['the default activities', plant(`  pull_request:\n${types}`, '  pull_request: {}\n', '', CI)],
+      ['edited left out', plant(types, '    types: [opened, synchronize, reopened]\n', '', CI)],
+      [
+        'a flow mapping',
+        plant(
+          `  pull_request:\n${types}`,
+          '  pull_request: { types: [opened, synchronize, reopened, edited] }\n',
+          '',
+          CI,
+        ),
+      ],
+      ['a filter on its branches', plant(types, `${types}    branches: [main]\n`, '', CI)],
+      [
+        'another event',
+        plant('  push:\n    branches: [main]\n', '  push:\n    branches: [main]\n  workflow_dispatch: {}\n', '', CI),
+      ],
+      ['a push to every branch', plant('  push:\n    branches: [main]\n', '  push: {}\n', '', CI)],
+    ] as const) {
+      expect(actionPinFindings(planted, files), what).toContain(finding)
+    }
   })
 })
 
@@ -9384,16 +9493,19 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const ssm = (name: string) => ({ Type: 'AWS::SSM::Parameter::Value<String>', Default: name })
     // A resource of a type the synth writes, whose one property holds the value a case plants.
     const policy = (name: unknown) => ({ Type: 'AWS::SSM::Parameter', Properties: { Name: name } })
-    // The re-keyed layout and another of the stage's own entries pass, and a Sub over a pseudo-parameter and an
-    // attribute and an empty {} get past this rule, refused only by the outputs' own hold (an output the synth
-    // never writes, round 10's first attack), so each refusal below is its plant's. (Another stage's entry passed
-    // here before; the round-10 holds refuse it.)
+    // The re-keyed layout and another of the stage's own entries pass (under an id of CDK's own shape, which the
+    // label rule holds a parameter to: round 12's third iteration, its second pass), and a Sub over a
+    // pseudo-parameter and an attribute and an empty {} get past this rule, refused only by the outputs' own hold
+    // (an output the synth never writes, round 10's first attack), so each refusal below is its plant's. (Another
+    // stage's entry passed here before; the round-10 holds refuse it.)
     const outputs = (template: Record<string, unknown>) => template.Outputs as Record<string, unknown>
     expect(check(planted(() => {}))).toBe('passed')
     expect(
       check(
         planted(template => {
-          parameters(template).Worker = ssm('/hearth/nonprod/security-group/worker')
+          parameters(template).SsmParameterValuehearthnonprodsecuritygroupworker0A1B2C3DParameter = ssm(
+            '/hearth/nonprod/security-group/worker',
+          )
         }),
       ),
     ).toBe('passed')
@@ -11520,7 +11632,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // resource's path is now under its stack, of plain construct ids, unique, its logical id's but for CDK's hash,
   // and a role, group, task definition or service carries the path its name, or what uses it, gives it.
   const LABEL = refused(
-    "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it",
+    "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it; or a rule or parameter takes an id but CDK's own, or a resource one of theirs or an output's, under which the diff would label a resource the release removes",
   )
   const LOGICAL_ID = refused(
     "an artifact's logical id entry names a path or an id of another shape than a workload synth writes, which the diff would label a template's value by",
@@ -11926,6 +12038,118 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     },
     30_000,
   )
+
+  // Round 12's third iteration, its second pass: the label rule tied every resource's path, while the CLI labels
+  // each other id of the release's template (a rule's, a parameter's, an output's) by its first logical id entry,
+  // and a resource the release removes by that label whenever the release reuses its id. So a release that
+  // removed prod's api task role and wrote a rule under its id (an assertion that always holds, which the
+  // non-strict diff never shows), with a logical id entry for that id at the bastion task role's path, printed
+  // the api role's destroy line and its trust under the bastion's label; a parameter did the same. A template's
+  // rules and parameters now take CDK's own ids alone, and no resource takes one of those or an output's id.
+  type Sections = Template & { Rules?: Record<string, unknown>; Outputs?: Record<string, unknown> }
+  const ALWAYS = { Assertions: [{ Assert: { 'Fn::Not': [{ 'Fn::Contains': [['x'], 'y'] }] }, AssertDescription: 'x' }] }
+  const SSM = { Type: 'AWS::SSM::Parameter::Value<String>', Default: '/hearth/prod/zone/app' }
+  type LogicalEntry = { type?: string; data?: unknown }
+  // A logical id entry for an id at another construct's path, as release code's node.addMetadata() on that
+  // construct writes it, with the id's own entries gone, or (kept) CDK's own entry for a rule after it.
+  const entryFor = (id: string, path: string, kept?: string) => (dir: string) =>
+    edit(named(prod(dir), 'Platform', '.metadata.json'), json => {
+      for (const key of Object.keys(json)) {
+        const left = ((json[key] ?? []) as LogicalEntry[]).filter(
+          entry => !(entry.type === 'aws:cdk:logicalId' && entry.data === id),
+        )
+        if (left.length === 0) delete json[key]
+        else json[key] = left
+      }
+      json[path] = [...((json[path] ?? []) as LogicalEntry[]), { type: 'aws:cdk:logicalId', data: id }]
+      if (kept !== undefined) json[kept] = [{ type: 'aws:cdk:logicalId', data: id }]
+    })
+  // Prod's Platform with the role of a prefix removed and its id taken by a rule or a parameter, labelled at the
+  // path of another role.
+  const removedAs =
+    (prefix: string, section: 'Rules' | 'Parameters', label: string, kept?: string) => (dir: string) => {
+      let id = ''
+      inTemplate(prod, 'Platform', json => {
+        id = idOfPrefix(json.Resources, prefix)
+        delete json.Resources[id]
+        const sections = json as Sections
+        sections[section] = { ...(sections[section] ?? {}), [id]: section === 'Rules' ? ALWAYS : SSM }
+      })(dir)
+      entryFor(id, `/prod/Platform/Roles/${label}`, kept)(dir)
+    }
+  it.each([
+    [
+      "the api task role's removal labelled as the bastion task role's, through a rule under its id",
+      removedAs(API_TASK, 'Rules', 'BastionTask'),
+    ],
+    [
+      "the same, with CDK's own entry for the rule kept after the planted one",
+      removedAs(API_TASK, 'Rules', 'BastionTask', '/prod/Platform/Shadow'),
+    ],
+    [
+      "the bastion task role's removal labelled as the worker task role's, through a rule under its id",
+      removedAs('RolesBastionTask', 'Rules', 'WorkerTask'),
+    ],
+    [
+      "the api task role's removal labelled as the bastion task role's, through a parameter under its id",
+      removedAs(API_TASK, 'Parameters', 'BastionTask'),
+    ],
+    [
+      'a rule under an id but CDK’s bootstrap version check',
+      inTemplate(prod, 'Platform', json => {
+        const sections = json as Sections
+        sections.Rules = { ...(sections.Rules ?? {}), Spare: ALWAYS }
+      }),
+    ],
+    [
+      'a parameter under an id but CDK’s own',
+      inTemplate(prod, 'Platform', json => {
+        json.Parameters = { ...(json.Parameters ?? {}), Spare: SSM }
+      }),
+    ],
+    [
+      "a resource under the Services stack's Release output's id",
+      inTemplate(prod, 'Services', json => {
+        json.Resources.Release = {
+          Type: 'AWS::ElastiCache::ParameterGroup',
+          Properties: {
+            CacheParameterGroupFamily: 'valkey9',
+            Description: 'Hearth prod Valkey',
+            Properties: { 'maxmemory-policy': 'noeviction' },
+          },
+          Metadata: { 'aws:cdk:path': 'prod/Services/Release' },
+        } as unknown as Labelled
+      }),
+    ],
+  ] as const)(
+    'refuses %s (round 12)',
+    (_, plant) => {
+      expect(check(plant)).toBe(LABEL)
+    },
+    30_000,
+  )
+  it("passes the bastion task role's honest removal, and a resource of its own beside the Release output (round 12)", () => {
+    expect(
+      check(
+        inTemplate(prod, 'Platform', json => delete json.Resources[idOfPrefix(json.Resources, 'RolesBastionTask')]),
+      ),
+    ).toBe('passed')
+    expect(
+      check(
+        inTemplate(prod, 'Services', json => {
+          json.Resources.Spare = {
+            Type: 'AWS::ElastiCache::ParameterGroup',
+            Properties: {
+              CacheParameterGroupFamily: 'valkey9',
+              Description: 'Hearth prod Valkey',
+              Properties: { 'maxmemory-policy': 'noeviction' },
+            },
+            Metadata: { 'aws:cdk:path': 'prod/Services/Spare' },
+          } as unknown as Labelled
+        }),
+      ),
+    ).toBe('passed')
+  }, 30_000)
 
   // Round 12's fourth iteration: the custom-resource rule held the handler function's Role to any role of its
   // template, the roles rule let any role trust Lambda or VPC flow logs, and the label rule tied a named role's
@@ -16009,7 +16233,7 @@ describe('Round 12, iteration 4: the ways past the reader and the rules (DPW-06,
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const VERDICT_RULE =
-    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s) and opens no subshell where a command starts, so no refusal ends its step with status 0 or a subshell alone'
+    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
   const VERDICT_ALONE =
     'runs each deploy of the CLI and smoke.ts standing alone, outside any substitution, pipeline, negation, and-or list (a group’s or subshell’s included) or condition but the drill’s if, so its failure ends the step'
   const grep = 'grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
@@ -16389,5 +16613,141 @@ esac
       ).toContain(judged(`record-${stage}`))
     }
     expect(found(workflows).filter(each => each.endsWith(JUDGED))).toEqual([])
+  })
+})
+
+// Round 12's third iteration, its second pass: the gaps the finders proved past the reader and the rules after the
+// fourth iteration's fixes, each planted as they planted it and found at its root.
+describe('Round 12, iteration 3, its second pass: the ways past the reader and the rules (DPW-10)', () => {
+  const bash = (script: string) => spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8' })
+  const replaced = (text: string, ...pairs: ReadonlyArray<readonly [string, string]>) =>
+    pairs.reduce((each, [from, to]) => {
+      expect(each.split(from).length - 1, from).toBe(1)
+      return each.replace(from, to)
+    }, text)
+  const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
+  const atLine = (name: string, text: string, line: string) => `${GUARD}: DPW-10 ${name}, line ${lineOf(text, line)}: `
+  const VERDICT =
+    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+  const STREAM =
+    "hands jq -e no stream of values: it reads one file or a here-string on its own command, unless it is given -n or -s, and never its standard input otherwise (a pipe, a group, a function's caller, < <( … )) or more than one file, since -e reads the last value it reads alone"
+
+  // A case pattern [[:lower:]_]*) glues [[ to its word, so bash reads a pattern; the reader read a test from it to the
+  // next ]] on its line, past the pattern's ), and then the pattern on to the next unmatched ) anywhere: every
+  // command bash ran in between, lines after the esac among them, was seen by no rule. A pattern list holding the
+  // word [[ did the same. A test now starts only at the word [[, and a pattern holding the word is refused.
+  it('reads a test only at the word [[, and refuses a case pattern holding the word, so no pattern hides a command', () => {
+    const anchor = "  local step=$1 PART answer status basis=''"
+    const plant = (lines: string) => replaced(PLAN_BASIS, [anchor, `${anchor}\n${lines}`])
+    const grep = '  grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
+    const inCase = (item: string) => `  case "$step" in\n    ${item}\n  esac`
+    const hidden = (planted: string, line: string) =>
+      canonicalTextFindings({ PLAN_BASIS: planted }).some(each => each.startsWith(atLine('PLAN_BASIS', planted, line)))
+    // The grep in the item, on the pattern's line.
+    for (const pattern of ['[[:lower:]_]*)', '[[c]heck)', 'plan) : ;; [[a-z]*)', 'plan | [[a-z]*)', '( [[a-z]*)']) {
+      const item = `${pattern} grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2; : ]] ;;`
+      const planted = plant(inCase(item))
+      expect(hidden(planted, `    ${item}`), pattern).toBe(true)
+    }
+    // The grep, a cat and a set +o pipefail on lines of their own after the esac.
+    for (const after of [grep, '  cat "$RUNNER_TEMP/aws-cdk/package/package.json" >&2', '  set +o pipefail']) {
+      const planted = plant(`${inCase('[[:lower:]_]*) [[ -n "$step" ]] ;;')}\n${after}`)
+      expect(hidden(planted, after), after).toBe(true)
+    }
+    // A refusal's bare exit lines after the pattern, the verdict rule's idiom.
+    const bare = plant(
+      `${inCase('[[:lower:]_]*) [[ "$step" =~ ^[a-z]+$ ]] || exit 1 ;;')}\n  if [ "$step" = check ] && [ -z "$BASIS" ]; then\n    echo "plan-basis: prod-plan's basis is missing" | mask\n    exit\n  fi`,
+    )
+    expect(canonicalTextFindings({ PLAN_BASIS: bare })).toContain(`${atLine('PLAN_BASIS', bare, '    exit')}${VERDICT}`)
+    // The word [[ in a pattern list: bash reads it as a pattern, so the text is refused whole.
+    for (const pattern of ['[[ | [a-z]*)', 'plan) : ;; [[ | [a-z]*)', '( [[ | [a-z]*)', '[a-z]* | [[ )']) {
+      const planted = plant(inCase(`${pattern} grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2; : ]] ;;`))
+      expect(readsAsBash(planted), pattern).toBe(false)
+    }
+    const caseWord = bash('case "[[" in [[ ) echo pattern ;; esac')
+    expect(caseWord.stdout.trim()).toBe('pattern')
+    // A test where a command starts, and a POSIX class in a pattern that closes as a test would, read as before.
+    expect(readsAsBash(plant(inCase('[[:lower:]]*) [[ -n "$step" ]] ;;')))).toBe(true)
+    expect(readsAsBash(plant('  [[ -n "$step" ]] || exit 1'))).toBe(true)
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // jq -e reads the last value it reads alone, and JQ_PIPED_RULE holds it to one file or a here-string on its own
+  // command; the reader took a process substitution for a redirection and dropped it, so a <( … ) after the one
+  // file counted as none, and a here-string counted as jq's input though a later < <( … ) replaced it.
+  it('counts a process substitution as a file, and a here-string only as the last input on descriptor 0', () => {
+    const missing = `    jq -e '(.missing // []) | length == 0' "$dir/manifest.json" >/dev/null 2>&1 ||`
+    const psubFile = replaced(ASSET_CHECK, [
+      missing,
+      `    jq -e '(.missing // []) | length == 0' "$dir/manifest.json" <(echo '{}') >/dev/null 2>&1 ||`,
+    ])
+    expect(canonicalTextFindings({ ASSET_CHECK: psubFile })).toContain(
+      `${atLine('ASSET_CHECK', psubFile, missing.replace(' >/dev/null', " <(echo '{}') >/dev/null"))}${STREAM}`,
+    )
+    const counts = `      jq -e '(.counts | length) == 3' <<<"$out" >/dev/null || aws_refuse 'a service is missing'`
+    for (const line of [
+      `      jq -e '(.counts | length) == 3' <<<"$out" < <(echo '{"counts": [1, 1, 1]}') >/dev/null || aws_refuse 'a service is missing'`,
+      `      jq -e '(.counts | length) == 3' <<<"$out" 0<&3 >/dev/null || aws_refuse 'a service is missing'`,
+      `      jq -e '(.counts | length) == 3' 5<<<"$out" >/dev/null || aws_refuse 'a service is missing'`,
+    ]) {
+      const planted = replaced(AWS_CHECK, [counts, line])
+      expect(jqPipedLines(planted), line).toEqual([lineOf(planted, line) - 1])
+    }
+    // A process substitution alone beside the here-string is a file of no held shape.
+    const psubOnly = `      jq -e '(.counts | length) == 3' <(echo '{"counts": [1, 1, 1]}') <<<"$out" >/dev/null || aws_refuse 'a service is missing'`
+    const planted = replaced(AWS_CHECK, [counts, psubOnly])
+    expect(canonicalToolLines(planted)).toContain(lineOf(planted, psubOnly) - 1)
+    // bash hands jq the substitution as a file and reads the last redirection of descriptor 0.
+    expect(bash(`jq -e '. == 1' <(echo 2) <<<1 >/dev/null; echo "$?"`).stdout.trim()).toBe('1')
+    expect(bash(`jq -e '. == 1' <<<1 < <(echo 2) >/dev/null; echo "$?"`).stdout.trim()).toBe('1')
+    expect(jqPipedLines(AWS_CHECK)).toEqual([])
+    expect(jqPipedLines(ASSET_CHECK)).toEqual([])
+  })
+
+  // A refusal inside a substitution handed to a command as its argument ends that subshell alone: bash clears
+  // errexit there, and the command's status (0 for : or echo) is what set -e sees. So : "$([ … ] || aws_refuse …)"
+  // went on past AWS_CHECK's refusal, and TASKS_OUTPUTS' shape check in : "$( … )" handed aws a cluster of any
+  // shape. A substitution now holds no exit and no call of a function that exits, itself or through another.
+  it('refuses an exit, or a call of a function that exits, inside a substitution', () => {
+    const open = `    [ "$status" != UPDATE_ROLLBACK_FAILED ] ||`
+    const refusal = `      aws_refuse "the Services stack is UPDATE_ROLLBACK_FAILED (an update whose rollback failed), which waits for tier 2 (deploy-and-rollback.md)"`
+    for (const [opened, closed] of [
+      [`    : "$([ "$status" != UPDATE_ROLLBACK_FAILED ] ||`, `${refusal})"`],
+      [`    echo "$([ "$status" != UPDATE_ROLLBACK_FAILED ] ||`, `${refusal})" | mask`],
+    ] as const) {
+      const planted = replaced(AWS_CHECK, [open, opened], [refusal, closed])
+      expect(canonicalTextFindings({ AWS_CHECK: planted }), opened).toContain(
+        `${atLine('AWS_CHECK', planted, opened)}${VERDICT}`,
+      )
+    }
+    const shape = '  if [ "$CLUSTER" != "hearth-$STAGE" ]'
+    const tasks = replaced(
+      TASKS_OUTPUTS,
+      [shape, '  : "$(if [ "$CLUSTER" != "hearth-$STAGE" ]'],
+      ['    exit 1\n  fi\n', '    exit 1\n  fi)"\n'],
+    )
+    const tasksLine = tasks.split('\n').find(line => line.startsWith('  : "$(if [ "$CLUSTER"')) ?? ''
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: tasks })).toContain(
+      `${atLine('TASKS_OUTPUTS', tasks, tasksLine)}${VERDICT}`,
+    )
+    const refuses = new Set(['refuse', 'check'])
+    for (const [text, lines] of [
+      [': "$(exit 1)"', [0]],
+      ['echo "$(refuse)"', [0]],
+      ['x=$(check a)', [0]],
+      ['cat <(refuse)', [0]],
+      ['x=$(get a)', []],
+      ['x=$((1 + 2))', []],
+      ['while read -r a; do :; done < <(list "$x")', []],
+    ] as const) {
+      expect(verdictLines(text, refuses), text).toEqual(lines)
+    }
+    // A function that exits through another is one too, and one that returns is not.
+    expect([
+      ...exitingFunctions(['a() { exit 1; }\nb() { a "$1"; }\nc() { return 1; }\nd() { echo "$(c)"; }']),
+    ]).toEqual(['a', 'b'])
+    // bash: the exit ends the substitution alone, and : passes.
+    expect(bash('set -e; : "$(exit 1)"; echo went on').stdout.trim()).toBe('went on')
+    expect(canonicalTextFindings()).toEqual([])
   })
 })

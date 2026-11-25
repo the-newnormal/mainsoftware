@@ -26,14 +26,17 @@
 // The CDK CLI's pin check (scripts/check-cli-pin.ts) runs the same way, in ci.yml's job cli-pin that check
 // needs, behind the same two held actions with no npm cache and before any of the repository's code, reading
 // the manifest as the head commits it (round 12): in migrations it ran after npm ci and the migration order
-// check, either of which could write over what it read. Both checks first refuse a checkout whose files aren't
-// HEAD's blobs byte for byte (scripts/checkout-blobs.ts), since a checkout writes each file through
+// check, either of which could write over what it read. A checkout writes each file through every
 // .gitattributes while the owner reads the blob: an ident attribute on infra/package.json checked out a lower
 // CLI than its blob pinned, which CLI_FETCH read on main, and one on check-action-pins.ts made a comparison its
 // blob held into one that never did (round 12's third iteration). Each job checks out into a folder below the
 // workspace where setup-node runs node, npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path names
 // from the folder it runs in or any above it, and writes every file again as its blob before node runs
-// (BLOB_RESET), since the drift check can't hold its own file; no Yarn file stands in the tree (YARN_FILE); and
+// (BLOB_RESET), since a drift check in node can't hold its own file; and since that reset also writes away the
+// drift a deploy job's checkout of main would read, the CLI pin's step first refuses, in its own shell, a checkout
+// whose regular files aren't HEAD's blobs byte for byte (CLI_PIN_DRIFT; round 12's third iteration, its second
+// pass: an ident in infra/.gitattributes passed the job after the reset); no Yarn file stands in the tree
+// (YARN_FILE); and
 // every deploy.yml job but the build's checks out below its setup-node too (DPW-11), the gate, prod-gate and the
 // smokes into REPO_FOLDER (round 12's fourth iteration: a .yarnrc decided both checks, the plan, prod-gate's
 // verdict and every smoke).
@@ -44,7 +47,10 @@
 // closed before it opened, at another commit, as Renovate's reused branch names leave, shares nothing. What
 // stays is what GitHub's own required checks, which read a commit's checks by its sha, can't tell either: a
 // re-run, inside that window, of a closed pull request's earlier run at the same commit, which needs the
-// branch pushed back to that commit. .nvmrc, which chooses that job's Node and every deploy job's, is
+// branch pushed back to that commit. ci.yml runs on a pull request's edited activity too, a change of its base
+// among them, so the newest run tests the merge into the base it merges into (DPW-04 holds its triggers: round
+// 12's third iteration, its second pass, where a retarget started no run and the gate read a run that tested the
+// merge into the old base). .nvmrc, which chooses that job's Node and every deploy job's, is
 // 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one job a
 // Node on which a script's entry runs nothing and exits 0.
 // Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
@@ -125,7 +131,12 @@
 // the IAM table prints whole (round 12's second iteration); and a template holds one VPC at most, at the synth's
 // path, since every rule that reads the template's network held a VPC by its type alone and a second VPC at
 // <stage>/Platform/Network/Vpc printed as the workload's own, so a condition naming it, or a flow log moved to it,
-// read in the diff byte for byte as the workload's (round 12's third iteration).
+// read in the diff byte for byte as the workload's (round 12's third iteration). And a template's rules and
+// parameters take CDK's own ids alone (its bootstrap version check, its bootstrap version and its SSM parameter
+// values), which no resource takes, nor an output's id: the CLI labels each other id of the release's template by
+// its first logical id entry, and a resource the release removes by that label when the release reuses its id,
+// so a removed api task role printed its destroy line and its trust under the bastion's label, through a rule the
+// non-strict diff never shows or a parameter (round 12's third iteration, its second pass).
 // protect-environments.sh, which the gate runs as a file, has its first line (the interpreter) held whole
 // and its head read as bash reads it, so no shebang or line JavaScript calls a comment skips its refusal; and
 // the code the gate's check runs, from its first code line to its end, is pinned whole by its SHA-256, since
@@ -182,7 +193,11 @@
 // services_started output reads stands before its Deploy Services, Roll back to the target, drill-break or Take the
 // restore stage down, Probe and Read back what runs, read as written, never through JOB_STEPS (DPW-08, round 12's
 // second iteration: moved after the Probe with JOB_STEPS, GitHub's default success() skipped it once the Probe
-// failed, so a release whose probe failed stayed live with no rollback), and so are
+// failed, so a release whose probe failed stayed live with no rollback), and writes services_started on one code
+// line, echo "services_started=true" >>"$GITHUB_OUTPUT", as each rollback job's last step writes rolled=true, the
+// values the rollback's and the resmoke's if: compare, read as written (DPW-08, round 12's third iteration, its
+// second pass: written as the run's attempt, as yes or as "true ", it read as not 'true', and no rollback ran),
+// and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
@@ -248,9 +263,11 @@
 // the list before it in the background, where a refusal's exit 1 ends a subshell alone and set -e never sees it:
 // round 12's third iteration; and a then, do, else or elif straight after ]], ) or }, a for NAME do and a
 // function whose body isn't a { … } group, each where bash starts a command the reader reads none: round 12's
-// fourth iteration), to ending a step or a function only by a literal status and opening no subshell where a
-// command starts (verdictLines(): a refusal's bare exit after echo … | mask, and ( … ) || echo around PROBE's
-// call, each ended the step with 0: round 12's fourth iteration), to evaluating
+// fourth iteration), to ending a step or a function only by a literal status, opening no subshell where a
+// command starts and refusing inside no substitution (verdictLines(): a refusal's bare exit after echo … | mask,
+// and ( … ) || echo around PROBE's call, each ended the step with 0: round 12's fourth iteration; and an exit, or
+// a call of a function that exits, in a $( … ), <( … ) or >( … ) ends that subshell alone, so : "$( … ||
+// aws_refuse …)" went on with 0: its third iteration's second pass), to evaluating
 // only what it sets itself (outsideEvaluations(): every arithmetic, test operator, subscript, name a builtin takes,
 // descriptor's variable and variable bash evaluates, a default or an element's assignment counting as the name's, a
 // name arithmetic re-reads as an expression counting only when it is lower-case, assigned before that site and, if
@@ -330,7 +347,10 @@
 // stands before it, a canonical text's jq -e reads one file or a here-string on its own command unless given -n
 // or -s, never its standard input otherwise, and a run's own jq that reads no here-string of its own counts as
 // piped (round 12's third iteration: a comment after the |, a helper its caller pipes into, a group, get or
-// < <( … ) fed AWS_CHECK's every count is one a stream). A here-string holding several JSON texts is read the same
+// < <( … ) fed AWS_CHECK's every count is one a stream), a process substitution being a file it is given, never a
+// redirection, and a here-string its input only as the last redirection of descriptor 0 (its second pass: <( … )
+// after the one file, and < <( … ) after the here-string, each fed jq a value its line didn't show). A here-string
+// holding several JSON texts is read the same
 // way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an earlier jq, a
 // variable built of several (by += or from jq -c '.[]') being the owner's read's to catch; each file is an
 // assembly's, which the CLI parses as one JSON text.
@@ -353,7 +373,11 @@
 // >&2'' hides no command after it (round 12's second iteration); a ! or { starts a command only where a command
 // starts, in the chain after a boundary as the keywords do, and a function definition's head before its body's {,
 // so echo x ! [[ hands echo two words and hides nothing (round 12's third iteration); the | of >| is a
-// redirection's, never a boundary, so a [[ as its target is no test (round 12's fourth iteration); the words no
+// redirection's, never a boundary, so a [[ as its target is no test (round 12's fourth iteration); a test starts
+// only at the word [[, a blank or ( after it, as bash's reserved word does, and a case pattern holding the word [[
+// is no shape it reads, since bash reads it there as a pattern (a pattern [[:lower:]_]*) read as a test blanked to
+// a later ]] past its ), and every command up to the next unmatched ) anywhere, the esac and lines after it among
+// them, read as pattern: round 12's third iteration, its second pass); the words no
 // credentialed
 // job may name at all
 // (an interpreter's, say) are found anywhere outside a comment.
@@ -668,7 +692,12 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # group, task definition and service to the path what it is gives it: a role's name (CDK's two unnamed roles,
 # the flow log's or the function's that takes it), the parameter, load balancer or endpoints that name a
 # group, a task definition's family and a service's name, so no release shows a grant to one role, or a rule
-# on one group, under another's label. And no role names anything by a reference but the account's id, the
+# on one group, under another's label. It holds a template's rules and parameters to CDK's own ids (its
+# bootstrap version check, its bootstrap version and its SSM parameter values), and no resource to one of
+# those ids or an output's: the diff labels every other id of the release's template by its first logical
+# id entry, and a resource the release removes by that label when the release reuses its id, so a rule
+# (which the non-strict diff never shows) or a parameter could print a removed role's grants, or a removed
+# group's rules, under another's label. And no role names anything by a reference but the account's id, the
 # template's VPC and its default security group (the network perimeter's aws:SourceVpc and CDK's handler's
 # grant): the diff prints any other reference in a grant or a trust by a label no rule ties to what it
 # resolves to (a log group's name, or a parameter's stored value under a logical id entry that can read as a
@@ -1029,6 +1058,8 @@ check_release_in() {
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-(?<part>Platform|Data|Tasks|Services)\\z")) as $at | ($at.s + "/" + $at.part) as $base |
         {"api": "Api", "realtime": "Realtime", "worker": "Worker", "migrate": "Migrate", "probe": "Probe", "bastion": "Bastion", "valkey": "Valkey", "task": "Task", "exec": "Exec"} as $cap |
         [$r[] | .Metadata["aws:cdk:path"]] as $paths |
+        ((.Rules // {}) | keys | all(. == "CheckBootstrapVersion")) and ((.Parameters // {}) | keys | all(test("\\A(BootstrapVersion|SsmParameterValue[A-Za-z0-9]+Parameter)\\z"))) and
+        ([.Rules, .Parameters, .Outputs | . // {} | keys[]] as $own | all($r | keys[]; test("\\A(BootstrapVersion|CheckBootstrapVersion|SsmParameterValue[A-Za-z0-9]*Parameter)\\z") or IN($own[]) | not)) and
         all($paths[]; type == "string" and test("\\A" + $base + "(/[A-Za-z0-9:]+)+\\z")) and
         ([$paths[] | strings | sub("/(Default|Resource)\\z"; "")] as $labels | all($labels[]; . as $label | ($labels | map(select(. == $label)) | length) == 1)) and
         ([$r[] | select(.Type == "AWS::EC2::VPC") | .Metadata["aws:cdk:path"]] | . == [] or . == [$at.s + "/Platform/Network/Vpc/Resource"]) and
@@ -1037,7 +1068,7 @@ check_release_in() {
         all($r | to_entries[] | select(.value.Type == "AWS::EC2::SecurityGroup"); .key as $id | {"Fn::GetAtt": [$id, "GroupId"]} as $att | [($r[] | select(.Type == "AWS::SSM::Parameter" and .Properties.Value == $att) | .Properties.Name | capture("\\A/hearth/[a-z]+/security-group/(?<k>[a-z]+)\\z") | $cap[.k]), ($r[] | select(.Type == "AWS::ElasticLoadBalancingV2::LoadBalancer" and any(.Properties.SecurityGroups[]?; . == $att)) | "Alb"), ($r[] | select(.Type == "AWS::EC2::VPCEndpoint" and any(.Properties.SecurityGroupIds[]?; . == $att)) | "Endpoints")] as $labels | all($labels[]; . == $labels[0]) and (($labels | length) == 0 or .value.Metadata["aws:cdk:path"] == $base + "/Network/Groups/" + $labels[0])) and
         all($r[] | select(.Type == "AWS::ECS::TaskDefinition"); [.Properties.Family | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Task/Resource"] == [.Metadata["aws:cdk:path"]]) and
         all($r[] | select(.Type == "AWS::ECS::Service"); [.Properties.ServiceName | capture("\\Ahearth-[a-z]+-(?<k>[a-z]+)\\z") | $base + "/" + $cap[.k] + "Service"] == [.Metadata["aws:cdk:path"]])' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it"
+        asset_refuse "a resource's construct path, which the diff's tables name it by, isn't the synth's: under its own stack, of plain construct ids, unique as the diff prints it, its logical id's but for CDK's hash, one VPC at most and at the synth's path, and for a role, security group, task definition or service the one its name, or what names it, gives it; or a rule or parameter takes an id but CDK's own, or a resource one of theirs or an output's, under which the diff would label a resource the release removes"
       case "$stack" in
         Hearth-*-Services)
           services=$((services + 1))
@@ -1485,7 +1516,11 @@ export const NEWEST_RELEASE = sh`newest_release() {
 // unshared, while one open at any moment while it was, or one at its head commit, shares it. GitHub's own
 // required checks read a commit's checks by its sha too, and a re-run, inside that window, of a closed pull
 // request's earlier run at the same commit (which needs the branch pushed back to that commit) can't be
-// told apart: that is what stays.
+// told apart: that is what stays. A base changed while the pull request was open starts a run on the merge
+// into the new base, since ci.yml runs on the edited activity too (CI_ON), so the newest run is that one: by
+// GitHub's default activities a base change started none, and the newest run had tested the merge into the old
+// base, whose own commits (a test excluded, say) had passed checks the merged tree failed (round 12's third
+// iteration, its second pass).
 export const PULL_CHECKS = sh`set -euo pipefail
 # For a deploy (C11-D49): the merged pull request into main whose merge commit is this run's, its
 # head's tree, and the conclusions of its ci.yml run's check and migrations jobs on that head: the
@@ -3363,13 +3398,22 @@ const FUNCTION_HEAD = String.raw`\s*(?:function\s+[^\s;&|()<>'"$=\x60\\]+(?:\s*\
 const COMMAND_START = `(?:${COMMAND_BOUNDARY})${COMMAND_CHAIN}(?:${FUNCTION_HEAD}${COMMAND_CHAIN})?`
 const ENDS_AT_COMMAND_START = new RegExp(`(?:${COMMAND_START})\\s*$`)
 
+// A case pattern that holds the word [[ (at the pattern's start, or after a blank, | or ( , and a blank or ( after
+// it), which commandCode() marks with PATTERN_TEST in its first character and readsAsBash() refuses.
+const PATTERN_WORD_TEST = /(?:^|[\s|(])\[\[[ \t(]/
+const PATTERN_TEST = '\uE001'
 // The code view with the words bash reads as operands and not as commands blanked too: a [[ … ]] test's
 // operands and patterns, and each case item's patterns, all but the $( … ) substitutions inside them. Only
 // a [[ or a case where a command starts is one (as an argument either is a word like any other), and a
 // line a backslash-newline continues starts no command, so neither hides what bash runs. A case is read
 // across lines as bash reads it: its subject up to in, then each item's pattern up to its ), then the
 // item's commands up to ;; (or ;&, ;;&) or esac, so a one-line case or several items on a line are read
-// too.
+// too. A test starts only at the word [[, as bash's reserved word is, a blank or ( after it (round 12's third
+// iteration, its second pass): a case pattern [[:lower:]_]*) glues [[ to the rest of its word, and read as a test
+// it had the blanking run to the next ]] on its line, past the pattern's ), so the scan read the pattern on to
+// the next unmatched ) anywhere, and every command bash ran in between, lines after the esac among them, was
+// seen by no rule. A pattern that holds the word [[ (bash reads it there as a pattern, never a test) is marked
+// with PATTERN_TEST, and readsAsBash() refuses the text.
 function commandCode(code: string): string {
   const raw = code.split('\n')
   const continued = raw.map((_, n) => n > 0 && code.includes('\\') && /(?:^|[^\\])(?:\\\\)*\\$/.test(raw[n - 1] ?? ''))
@@ -3377,7 +3421,7 @@ function commandCode(code: string): string {
     !(continued[n] && line.slice(0, at).trim() === '') && ENDS_AT_COMMAND_START.test(line.slice(0, at))
   const text = raw
     .map((line, n) =>
-      line.replace(/\[\[([^\n]*?)\]\]/g, (whole, inner: string, at: number) =>
+      line.replace(/\[\[(?=[ \t(])([^\n]*?)\]\]/g, (whole, inner: string, at: number) =>
         startsCommand(line, n, at) ? `[[${keepSubstitutions(inner)}]]` : whole,
       ),
     )
@@ -3451,6 +3495,7 @@ function commandCode(code: string): string {
       }
       const blanked = keepSubstitutions(text.slice(i, end))
       for (let at = 0; at < blanked.length; at++) out[i + at] = blanked[at] ?? ''
+      if (PATTERN_WORD_TEST.test(text.slice(i, end))) out[i] = PATTERN_TEST
       if (end < text.length) out[end] = ';'
       top.in = 'body'
       i = end + 1
@@ -3984,6 +4029,7 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
   if (ESCAPED_BREAK.test(views.code) || LINE_JOIN.test(run) || SUBSTITUTED_WORD.test(views.code)) return false
   if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
+  if (/(?<![\w-])case\s/.test(views.code) && commandCode(views.code).includes(PATTERN_TEST)) return false
   // (Only a text whose code names local or export has one to read.)
   const names = /\b(?:local|export)\b/.test(views.code)
     ? shellCommands(run).filter(command => command.word === 'local' || command.word === 'export')
@@ -4315,13 +4361,16 @@ export function wordSplits(word: string): boolean {
   return false
 }
 // A redirection's word (<<<"$x", >/dev/null, 2>&1, &>/dev/null), with its target when the target is a word of
-// its own.
+// its own. A process substitution, <( … ) or >( … ), is no redirection: bash hands the command its path
+// (/dev/fd/63) as an argument, so it is kept as one (round 12's third iteration, its second pass: read as a
+// redirection, jq -e '…' "$dir/manifest.json" <(echo '{}') counted one file, and jq read the last alone).
 const REDIRECTING = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])|^&>>?/
+const PROCESS_SUBSTITUTION = /^[<>]\(/
 function withoutRedirections(words: readonly string[]): string[] {
   const kept: string[] = []
   for (let i = 0; i < words.length; i++) {
     const word = words[i] ?? ''
-    const operator = REDIRECTING.exec(word)?.[0]
+    const operator = PROCESS_SUBSTITUTION.test(word) ? undefined : REDIRECTING.exec(word)?.[0]
     if (operator === undefined) kept.push(word)
     else if (operator === word) i++
   }
@@ -4778,6 +4827,9 @@ const PIPED = /(?:^|[^|>])\|&?(?:\s|[{(!]|\b(?:then|do|else|elif|if|while|until|
 // Each jq a text calls, as the code view reads it: its line, whether it is given -e, and -n or -s, whether a pipe
 // feeds it, how many files it is given (a word that expands to several, "${stackfiles[@]}", counted as two),
 // whether its own words hand it a here-string, and its program (a single-quoted one unquoted).
+// A word that redirects standard input (<, <<<, <>, <&, with 0 or no descriptor before it), but a process
+// substitution, which is an argument.
+const INPUT_REDIRECTION = /^0?(?:<<<|<>|<&|<(?![<(]))/
 type JqCall = {
   line: number
   status: boolean
@@ -4795,7 +4847,10 @@ function jqCalls(text: string): JqCall[] {
     for (const match of line.matchAll(/(?<![\w$/.{-])jq(?![\w-])/g)) {
       const at = offset + match.index
       const written = commandWords(views.text, at + match[0].length)
-      const hereString = written.some(word => /^\d*<<</.test(word))
+      // jq's standard input is the last redirection of descriptor 0 its words write (bash applies them left to
+      // right), so a here-string feeds it only if no <, <>, <& or 0< comes after it, and only on descriptor 0.
+      const inputs = written.filter(word => INPUT_REDIRECTION.test(word))
+      const hereString = /^0?<<</.test(inputs.at(-1) ?? '')
       const words = withoutRedirections(written)
       let i = 0
       let status = false
@@ -5336,6 +5391,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
   }
   const found: Finding[] = []
   const functions = CANONICAL_FUNCTIONS(texts)
+  const exiting = exitingFunctions(Object.values({ ...CANONICAL_BY_NAME(), ...texts }))
   const alsoSet = Object.values(texts).flatMap(namesSetIn)
   // Every text a canonical text runs joined with: the others (the guard's own, with any given in their place)
   // and every pinned run, own lines and all; and every name an env: hands a step or a job.
@@ -5387,7 +5443,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of readerLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${READER_RULE}`)
     }
-    for (const line of verdictLines(text)) found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${VERDICT_RULE}`)
+    for (const line of verdictLines(text, exiting)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${VERDICT_RULE}`)
+    }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
@@ -5402,11 +5460,67 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
 // subshell opened where a command starts. A refusal written echo "…" | mask, then a bare exit, ended its step with
 // mask's status, 0, and PROBE's last call wrapped in ( … ) || echo "…" turned the probe's exit 1 into a step that
 // passed: the glue's table holds exit to one argument and each check's call to stand alone, while a canonical
-// text's own exits and subshells were held by nothing. No committed text writes either.
+// text's own exits and subshells were held by nothing. Nor does a substitution ($( … ), <( … ) or >( … )) hold an
+// exit or a call of a canonical function that exits, itself or through another (round 12's third iteration, its
+// second pass): there the exit ends the substitution's subshell alone (bash clears errexit in it), so
+// : "$([ … ] || aws_refuse "…")" went on with :'s status, 0, past AWS_CHECK's refusal, and TASKS_OUTPUTS' shape
+// check in : "$( … )" handed aws a cluster of any shape. No committed text writes any of them.
 const VERDICT_RULE =
-  'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s) and opens no subshell where a command starts, so no refusal ends its step with status 0 or a subshell alone'
+  'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
 const SUBSHELL = /(?:^|[;&|!{]|(?<![\w-])(?:then|do|else|elif|if|while|until))[ \t]*\((?!\()/gm
-export function verdictLines(text: string): number[] {
+const EXIT_WORD = /(?<![\w$-])exit(?![\w-])/
+const callsAny = (code: string, names: ReadonlySet<string>) =>
+  [...names].some(name =>
+    new RegExp(String.raw`(?<![\w$.-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\w-])`).test(code),
+  )
+// The canonical functions whose body (read on the command code, from its { to the } that closes it) exits, or calls
+// one that does.
+export function exitingFunctions(texts: readonly string[]): ReadonlySet<string> {
+  const bodies = new Map<string, string>()
+  for (const text of texts) {
+    const code = commandCode(shellViews(text).code)
+    for (const match of code.matchAll(DEFINITION)) {
+      const name = match[1] ?? match[2] ?? ''
+      const open = code.indexOf('{', match.index + match[0].length)
+      if (open < 0) continue
+      let depth = 0
+      let end = open
+      for (; end < code.length; end++) {
+        if (code[end] === '{') depth++
+        else if (code[end] === '}' && --depth === 0) break
+      }
+      bodies.set(name, `${bodies.get(name) ?? ''}\n${code.slice(open, end + 1)}`)
+    }
+  }
+  const exiting = new Set<string>()
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const [name, body] of bodies) {
+      if (!exiting.has(name) && (EXIT_WORD.test(body) || callsAny(body, exiting))) {
+        exiting.add(name)
+        grew = true
+      }
+    }
+  }
+  return exiting
+}
+// Each $( … ), <( … ) and >( … ) of the command code (never arithmetic's $(( ), nested ones too: its start and
+// what it runs.
+function substitutionSpans(code: string): Array<{ at: number; inner: string }> {
+  const spans: Array<{ at: number; inner: string }> = []
+  for (let i = 0; i < code.length; i++) {
+    if (!'$<>'.includes(code[i] ?? '') || code[i + 1] !== '(' || (code[i] === '$' && code[i + 2] === '(')) continue
+    let depth = 0
+    let end = i + 1
+    for (; end < code.length; end++) {
+      if (code[end] === '(') depth++
+      else if (code[end] === ')' && --depth === 0) break
+    }
+    spans.push({ at: i, inner: code.slice(i + 2, end) })
+  }
+  return spans
+}
+export function verdictLines(text: string, exiting: ReadonlySet<string> = exitingFunctions([text])): number[] {
   const code = commandCode(shellViews(text).code)
   const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
   const lines = new Set<number>()
@@ -5418,6 +5532,9 @@ export function verdictLines(text: string): number[] {
     if (!numbered && !passed) lines.add(lineOf(match.index))
   }
   for (const match of code.matchAll(SUBSHELL)) lines.add(lineOf(match.index))
+  for (const span of substitutionSpans(code)) {
+    if (EXIT_WORD.test(span.inner) || callsAny(span.inner, exiting)) lines.add(lineOf(span.at))
+  }
   return [...lines].sort((a, b) => a - b)
 }
 
@@ -6680,8 +6797,9 @@ export function workflowSizeFindings(workflows: Texts): Finding[] {
 // .gitattributes, $GIT_DIR/info/attributes and core.attributesFile, and as --cached reads it from the index's
 // .gitattributes, which a checkout reads first (gitAttributes() asks both: a .gitattributes that gave itself a
 // working-tree-encoding checked out as text git can't parse, so the working tree's reading named no attribute
-// while the checkout had re-encoded a workflow through the index's). This is the second layer: the two checks
-// that run first in their jobs refuse a checkout whose files aren't HEAD's blobs (scripts/checkout-blobs.ts).
+// while the checkout had re-encoded a workflow through the index's). This is the second layer: the CLI pin's step
+// refuses, in its own shell before anything else, a checkout whose regular files aren't HEAD's blobs
+// (CLI_PIN_DRIFT), and both pins checks run on the blobs (BLOB_RESET).
 export function gitAttributeFindings(attributes: ReadonlyMap<string, readonly string[]>): Finding[] {
   return [...attributes]
     .filter(([, set]) => set.length > 0)
@@ -6969,6 +7087,7 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
   if (!cliPinJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CLI_PIN_JOB_RULE))
   if (!requiredJobsNamed(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', REQUIRED_NAMES_RULE))
+  if (!ciOnHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CI_ON_RULE))
   if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
   return [...found]
 }
@@ -7085,14 +7204,28 @@ function pinsJobHolds(ci: string): boolean {
 // steps are only the pins job's checkout (with the whole history, which the base's manifest needs) and
 // setup-node with no cache, held to PINS_JOB_ACTIONS, and the check, on a pull request, against the base's
 // remote-tracking name, in REPO_FOLDER after BLOB_RESET as the pins job's (a pull request's .yarnrc moved
-// origin/main to HEAD, and a lowered pin passed: round 12's fourth iteration); check needs it, and on a push
+// origin/main to HEAD, and a lowered pin passed: round 12's fourth iteration), and before that reset after
+// CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs (round 12's third iteration, its second
+// pass); check needs it, and on a push
 // the step is skipped and the job succeeds, since check
 // fails on a skipped need. The script reads HEAD's committed manifest too. This is a second layer, as
 // pinsJobHolds is: the owner's read of ci.yml holds it.
 export const CLI_PIN_JOB = 'cli-pin'
 export const CLI_PIN_CHECK = 'node scripts/check-cli-pin.ts "$BASE"'
-export const CLI_PIN_RUN = `${BLOB_RESET}\n${CLI_PIN_CHECK}`
-const CLI_PIN_JOB_RULE = `runs ${CLI_PIN_CHECK} in a job of its own, ${CLI_PIN_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it`
+// The checkout compared with HEAD's blobs in the step's own shell, before BLOB_RESET (round 12's third iteration,
+// its second pass): the deploy jobs read the CLI's pin from main's checkout, which git writes through every
+// .gitattributes, so here a drift is itself what the check refuses, and BLOB_RESET, which makes node run the blobs
+// the owner read, also wrote away the drift that check-cli-pin.ts's own checkoutDrift() looks for: an ident in
+// infra/.gitattributes checked out a lower pin than the manifest's blob held, the job passed, and every deploy job
+// fetched the lower CLI. So the run, read from the workflow's blob, which no attribute rewrites, first hashes every
+// regular file of HEAD's tree as the working tree holds it, with no filter, and refuses unless each is its blob (a
+// symbolic link or a submodule takes no attribute's bytes); a git that fails ends the step (bash -e, pipefail),
+// and a path git quotes is one hash-object can't read, which refuses.
+export const CLI_PIN_DRIFT = `blobs=$(git ls-tree -r HEAD | awk '$1 == "100644" || $1 == "100755"')
+[ -n "$blobs" ] && [ "$(cut -f1 <<<"$blobs" | cut -d' ' -f3)" = "$(cut -f2- <<<"$blobs" | git hash-object --no-filters --stdin-paths)" ] ||
+  { echo "cli-pin: the checkout isn't HEAD's blobs byte for byte (a git attribute, such as ident, eol, text, filter or working-tree-encoding, wrote other bytes), which a deploy job's checkout of main would read"; exit 1; }`
+export const CLI_PIN_RUN = `${CLI_PIN_DRIFT}\n${BLOB_RESET}\n${CLI_PIN_CHECK}`
+const CLI_PIN_JOB_RULE = `runs ${CLI_PIN_CHECK} in a job of its own, ${CLI_PIN_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs, and BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it`
 function cliPinJobHolds(ci: string): boolean {
   const jobs = workflowJobs(ci)
   const own = jobs.filter(job => job.id === CLI_PIN_JOB)
@@ -7119,6 +7252,32 @@ function cliPinJobHolds(ci: string): boolean {
     sameMap(run.env, { BASE: `origin/${expr('github.base_ref')}` }) &&
     run.run === CLI_PIN_RUN &&
     jobNeeds(check).includes(CLI_PIN_JOB)
+  )
+}
+// ci.yml's triggers (round 12's third iteration, its second pass): a pull request when it is opened, synchronised,
+// reopened or edited, and a push to main, nothing else. GitHub's default activities for pull_request are the
+// first three alone, and a change of a pull request's base is the edited activity, so a retarget started no run:
+// the head kept the result of a run that tested its merge into the old base, which main's ruleset, the gate's
+// PULL_CHECKS and history.ts plan all read as the merged pull request's own. This is a second layer: the owner's
+// read of ci.yml holds it.
+const CI_ON = new Map<string, readonly string[]>([
+  ['pull_request', ['opened', 'synchronize', 'reopened', 'edited']],
+  ['push', ['main']],
+])
+const CI_ON_RULE =
+  "starts on a pull request when it is opened, synchronised, reopened or edited (a change of its base is an edit, so the newest run tests the merge into the base it merges into, which main's ruleset, the gate and history.ts plan read) and on a push to main, and on nothing else"
+function ciOnHolds(ci: string): boolean {
+  const on = blockValue(workflowTop(ci).get('on') ?? [])
+  if (!isMap(on) || !keysAre(on, [...CI_ON.keys()])) return false
+  const pull = on.get('pull_request')
+  const push = on.get('push')
+  return (
+    isMap(pull) &&
+    keysAre(pull, ['types']) &&
+    sameList(pull.get('types'), CI_ON.get('pull_request') ?? []) &&
+    isMap(push) &&
+    keysAre(push, ['branches']) &&
+    sameList(push.get('branches'), CI_ON.get('push') ?? [])
   )
 }
 // The required checks by their names (round 11): GitHub reports a job, and the ruleset's required check, the gate's
@@ -8001,6 +8160,18 @@ const SMOKES: Readonly<Record<string, string>> = {
 // smoke, a rollback, prod-gate or the approver rests on are pinned whole (PINNED_RUNS: prod's records, the
 // smokes, services_started, the read-back, the rollback jobs' releases and rolled, prod-plan's diff); and
 // outside build and synth only a pinned run, AWS_CHECK's step and prod-gate's call write an output.
+// The lines the mark and a rollback's last step write their outputs by (DPW-08), written here, never read from
+// MARK_RUN or DONE_RUN, which move with the workflow.
+const MARK_WRITE = 'echo "services_started=true" >>"$GITHUB_OUTPUT"'
+const DONE_WRITE = 'echo "rolled=true" >>"$GITHUB_OUTPUT"'
+// Whether a step's run writes a key on exactly one code line (whole-line comments aside), that line the literal.
+function writesExactly(step: WorkflowStep | undefined, key: string, literal: string): boolean {
+  const lines = (step?.run ?? '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => !line.startsWith('#') && line.includes(key))
+  return lines.length === 1 && lines[0] === literal
+}
 export function prodPathFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -8247,6 +8418,39 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       add(
         deploy,
         `writes services_started (the step its output reads) before ${later.slice(0, -1).join(', ')} and ${later.at(-1)}, each there, so a failure from the Services deploy on starts ${rollback}`,
+      )
+    }
+    // The values those two steps write, held as written beside what the if:s compare (round 12's third
+    // iteration, its second pass): the mark's place, the rollback's if: and the pinned runs were each held, but
+    // never the value, so services_started written as the run's attempt, as yes or as "true " (GitHub compares
+    // strings whole, ignoring case alone) read as not 'true', and a release whose smoke failed stayed live with
+    // no rollback; rolled the same left the rollback with no resmoke and no record. Each is written on one code
+    // line, the literal below, by the step its job's output reads, and resmoke-<env>'s if: compares rolled to
+    // 'true' as written.
+    const mark = deploySteps.find(step => markId !== undefined && step.id === markId)
+    if (!writesExactly(mark, 'services_started', MARK_WRITE)) {
+      add(
+        deploy,
+        `writes services_started on one line alone, ${MARK_WRITE}, the value ${rollback}'s if: compares ('true')`,
+      )
+    }
+    const rollbackOutputs = blockValue(job?.job.keys.get('outputs') ?? [])
+    const rolledOutput = isMap(rollbackOutputs) ? rollbackOutputs.get('rolled') : undefined
+    const doneId =
+      typeof rolledOutput === 'string'
+        ? /^\$\{\{ steps\.([\w-]+)\.outputs\.rolled(?: \|\| steps\.aws\.outputs\.rolled)? \}\}$/.exec(rolledOutput)?.[1]
+        : undefined
+    const done = job?.steps.find(step => doneId !== undefined && doneId !== 'aws' && step.id === doneId)
+    const resmoke = jobs.get(`resmoke-${deploy}`)
+    const resmokeIf = resmoke === undefined ? '' : (jobScalar(resmoke.job, 'if') ?? '')
+    if (
+      !writesExactly(done, 'rolled', DONE_WRITE) ||
+      !resmokeIf.includes(`needs.${rollback}.outputs.rolled == 'true'`) ||
+      evaluateIf(resmokeIf, { [`needs.${rollback}.outputs.rolled`]: '' }) !== false
+    ) {
+      add(
+        rollback,
+        `writes rolled on one line alone, ${DONE_WRITE}, from the step its rolled output reads first, the value resmoke-${deploy}'s if: compares ('true') as written, so the resmoke and its record follow a rollback`,
       )
     }
     // The gate's verdict on the automatic rollback (floor-crossed, say, refuses it) and the failure it

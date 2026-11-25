@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cliPinOf, cliPinProblems } from './check-cli-pin.ts'
+import { CLI_PIN_CHECK, CLI_PIN_RUN } from './guards/deploy-workflow.ts'
 import { root } from './guards/repo-files.ts'
 
 const SCRIPT = join(root, 'scripts/check-cli-pin.ts')
@@ -182,6 +183,10 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
   // next $ with no blank in it, so a manifest whose blob holds two devDependencies, the last keeping main's pin,
   // checked out holding the first alone, pinning a lower CLI: the blob passed here, and every deploy job fetched
   // the lower CLI. The check now refuses a checkout whose files aren't HEAD's blobs, as a fresh clone writes it.
+  // Its second pass: the job's step writes every file again as its blob (BLOB_RESET) before node runs, which
+  // also wrote away the drift this check looked for, so the job passed; the step's own shell now compares the
+  // checkout with HEAD's blobs first. The job's run is run here as the job runs it, in a fresh clone, whose own
+  // .gitattributes is in infra/ (a nested one applies to the paths below it, as the root's does).
   it('refuses a checkout whose manifest an ident attribute rewrote (round 12)', () => {
     const dir = repo('2.1146.1', '2.1146.1')
     const git = gitIn(dir)
@@ -194,8 +199,8 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
       encoding: 'utf8',
     }).trim()
     git('update-index', '--cacheinfo', `100644,${blob},infra/package.json`)
-    writeFileSync(join(dir, '.gitattributes'), 'infra/package.json ident\n')
-    git('add', '.gitattributes')
+    writeFileSync(join(dir, 'infra/.gitattributes'), 'package.json ident\n')
+    git('add', 'infra/.gitattributes')
     git('commit', '-qm', 'the CLI lowered in the checkout alone')
     const committed = execFileSync('git', ['show', 'HEAD:infra/package.json'], { cwd: dir, encoding: 'utf8' })
     expect(cliPinOf(committed)).toBe('2.1146.1')
@@ -208,6 +213,32 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     expect(run.stderr).toContain("infra/package.json: the checkout's bytes aren't its committed blob's")
     expect(run.stderr).toContain(DRIFT)
     expect(run.stdout).not.toContain('OK')
+    // The job's step, under the shell GitHub runs it with, the script named by its path here.
+    const step = (cwd: string) =>
+      spawnSync(
+        'bash',
+        [
+          '--noprofile',
+          '--norc',
+          '-eo',
+          'pipefail',
+          '-c',
+          CLI_PIN_RUN.replace(CLI_PIN_CHECK, `node '${SCRIPT}' "$BASE"`),
+        ],
+        { cwd, encoding: 'utf8', env: { ...process.env, BASE: 'origin/main' } },
+      )
+    const refused = step(job)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toContain("cli-pin: the checkout isn't HEAD's blobs byte for byte")
+    expect(refused.stdout).not.toContain('OK')
+    // The same commit without the attribute, checked out fresh, passes the step whole.
+    git('rm', '-q', 'infra/.gitattributes')
+    git('commit', '-qm', 'no attribute')
+    const clean = join(dirname(job), 'clean')
+    git('clone', '-q', '--branch', 'feature', dir, clean)
+    const passed = step(clean)
+    expect(passed.status, passed.stderr).toBe(0)
+    expect(passed.stdout).toContain('OK: aws-cdk 2.1146.1 is no lower than origin/main')
   })
 
   // A link read as no pin (round 11): git show prints a symbolic link's target path, which no JSON parse reads,

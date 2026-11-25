@@ -1,6 +1,10 @@
 name: ci
 on:
-  pull_request: {}
+  # A pull request's edited activity is a change of its title, its description or its base: GitHub starts
+  # no run on a base change otherwise, so the head would keep the result of a run that tested its merge
+  # into the old base, which main's ruleset, the gate (PULL_CHECKS) and history.ts plan would all read.
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 permissions:
@@ -83,8 +87,12 @@ jobs:
   # package manager before it: in migrations it ran after npm ci and the migration order check, which could
   # rewrite the manifest, a remote-tracking ref or the PATH's node or git, and setup-node's npm cache, which
   # asks npm for its folder (reading the pull request's .npmrc) and restores into it. Its checkout and
-  # setup-node are the pins job's, held to PINS_JOB_ACTIONS, the checkout in repo/ and the step first
-  # writing every file again as its blob, as there. On a push the step is skipped and the job
+  # setup-node are the pins job's, held to PINS_JOB_ACTIONS, the checkout in repo/ and the step writing
+  # every file again as its blob, as there; but first, in its own shell, it refuses a checkout whose
+  # regular files aren't HEAD's blobs byte for byte, since the deploy jobs read the pin from main's
+  # checkout, which git writes through every .gitattributes (an ident in infra/.gitattributes checked
+  # out a lower pin than the blob held), and the reset would write that drift away before node looks
+  # for it. On a push the step is skipped and the job
   # succeeds, since check fails on a skipped need. What holds this job is the owner's read of this file;
   # DPW-04 is a second layer, as for action-pins.
   cli-pin:
@@ -105,6 +113,9 @@ jobs:
         env:
           BASE: origin/${{ github.base_ref }}
         run: |
+          blobs=$(git ls-tree -r HEAD | awk '$1 == "100644" || $1 == "100755"')
+          [ -n "$blobs" ] && [ "$(cut -f1 <<<"$blobs" | cut -d' ' -f3)" = "$(cut -f2- <<<"$blobs" | git hash-object --no-filters --stdin-paths)" ] ||
+            { echo "cli-pin: the checkout isn't HEAD's blobs byte for byte (a git attribute, such as ident, eol, text, filter or working-tree-encoding, wrote other bytes), which a deploy job's checkout of main would read"; exit 1; }
           printf '* -text -eol -ident -filter -working-tree-encoding\n' >.git/info/attributes
           git read-tree HEAD
           git checkout-index --all --force

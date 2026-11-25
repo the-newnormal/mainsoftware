@@ -7,12 +7,15 @@
 // out pinning a lower one, which CLI_FETCH then fetched while the CLI pin check read the blob, and a check could
 // compare in its blob and compare nothing in its checkout (round 12's third iteration). So the two checks that
 // run first in their jobs, with nothing of the repository's before them (scripts/check-cli-pin.ts and
-// scripts/check-action-pins.ts), first refuse a checkout whose files aren't their committed blobs, byte for byte,
+// scripts/check-action-pins.ts), refuse a checkout whose files aren't their committed blobs, byte for byte,
 // whatever attribute or step made them differ, and DPW-02 refuses any git attribute on any file as a second layer.
 // This can't hold the check that calls it, or a module imported before it runs (this one among them), since an
 // attribute that rewrites a file can rewrite the call too: so each job's step, read from the workflow's blob,
 // first writes every file again as its blob (BLOB_RESET, in the deploy-workflow guard), before node runs either
-// check (round 12's fourth iteration).
+// check (round 12's fourth iteration). After that reset this finds nothing in CI, so the CLI pin's step, whose
+// checkout's drift is itself what a deploy job would read, compares the checkout with HEAD's blobs in its own
+// shell before the reset (CLI_PIN_DRIFT; round 12's third iteration, its second pass); here this holds a run
+// without that step, such as a person's own.
 // This file decides what those two checks run on, so it is on the owner's-read list beside them.
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'

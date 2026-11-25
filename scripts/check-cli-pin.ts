@@ -15,16 +15,18 @@
 // isn't an exact version or is lower than BASE's. CLI_FETCH and CLI_CHECK read the pin from main's checkout,
 // which git writes through .gitattributes, while the owner reads the blob: an ident attribute on the manifest
 // checked out a lower pin than its blob held, so the blob passed here while every deploy job fetched the lower
-// CLI (round 12's third iteration). So it first refuses a checkout whose files aren't HEAD's blobs byte for
-// byte (checkout-blobs.ts), which its job, running nothing of the repository's before it, writes through the
-// attributes main's checkout will; then it reads HEAD's committed manifest, which that checkout holds. That
-// drift check can't hold this file, or a module imported before it runs, which an attribute could rewrite with
-// the call, so the job's step first writes every file again as its blob (BLOB_RESET, in the deploy-workflow
-// guard) before node runs this (round 12's fourth iteration). It runs in a job of its own with nothing of the
-// repository's before it (round 12): its checkout is a folder below the workspace where setup-node runs node,
-// npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path names from the folder it runs in or any
-// above it (a pull request's .yarnrc moved origin/main to HEAD, and a lowered pin passed: round 12's fourth
-// iteration); and in the migrations job it ran
+// CLI (round 12's third iteration). So the job's step, read from the workflow's blob, which no attribute
+// rewrites, first refuses in its own shell a checkout whose regular files aren't HEAD's blobs byte for byte
+// (CLI_PIN_DRIFT, in the deploy-workflow guard), as its job writes them through the attributes main's checkout
+// will; then it writes every file again as its blob (BLOB_RESET), since a drift check in node can't hold this
+// file, or a module imported before it runs, which an attribute could rewrite with the call (round 12's fourth
+// iteration); and only then runs this, which refuses drift too (checkout-blobs.ts) where it runs without that
+// step, and reads HEAD's committed manifest. The reset alone wrote away the drift this file's own check looked
+// for, so an ident in infra/.gitattributes passed the job (round 12's third iteration, its second pass). It runs
+// in a job of its own with nothing of the repository's before it (round 12): its checkout is a folder below the
+// workspace where setup-node runs node, npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path
+// names from the folder it runs in or any above it (a pull request's .yarnrc moved origin/main to HEAD, and a
+// lowered pin passed: round 12's fourth iteration); and in the migrations job it ran
 // after npm ci and the migration order check, both off the owner's-read list, either of which could write the
 // working tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or
 // put another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm
