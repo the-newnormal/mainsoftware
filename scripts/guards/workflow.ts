@@ -27,10 +27,12 @@
 // other anchor, alias, tag or merge key in every workflow through shapeProblems(). It reads a block scalar's
 // lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, but a line of blanks
 // alone, which it reads as empty while YAML keeps its blanks past the block's indent (so the deploy-workflow
-// guard refuses a line ending in a blank in every workflow), and drops its last line break, so literalProblems() names each block scalar folded (>) or given an indentation
-// indicator, which YAML reads otherwise, indicatorProblems() each given an indentation indicator alone,
-// and blockScalarProblems() each on a key but run:, whose value GitHub reads with that line
-// break. commentLines() names the YAML comment lines, never a line starting with # inside a block
+// guard refuses a line ending in a blank in every workflow), and drops its last line break, so
+// literalProblems() names each block scalar folded (>) or given an indentation indicator, which YAML reads
+// otherwise, indicatorProblems() each given an indentation indicator alone, and blockScalarProblems() each on a
+// key but run:, whose value GitHub reads with that line break; a shared run's anchor takes `|` alone, so an
+// alias written out as `run: |` and the anchor's content lines holds the value YAML gives the alias.
+// commentLines() names the YAML comment lines, never a line starting with # inside a block
 // scalar, which is the scalar's. It splits a file into lines only at a newline, so a carriage return,
 // NEL, LS or PS, which YAML readers break lines at too, would hide what follows it on its line from
 // every rule: the deploy-workflow guard refuses any of them, a tab, and any other control or format

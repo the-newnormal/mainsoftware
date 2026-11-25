@@ -430,7 +430,9 @@
 // so any change to what deploy.yml runs changes this file's constants and deploy.yml together. Both are on the
 // owner's-read list, as are every other workflow, the environments, protect-environments.sh, the pins check
 // and the files this guard reads its rules from (action-pins.ts, workflow.ts, repo-files.ts and imports.ts,
-// beside this one), so the owner reads every changed line as written. The rules
+// beside this one), so the owner reads every changed line as written. A changed line inside a shared run's
+// anchor changes every step that aliases it, each named in the comment above the anchor (sharedRunComment()), so
+// it is read there for all of them. The rules
 // here read bash, jq and GitHub's YAML and expressions, which no reader short of the real one models whole, so
 // over such a change they are a second layer behind that read. They catch a form an author could write by
 // mistake, or that reads as harmless in a diff: an unquoted expansion, a value carried from one place into
