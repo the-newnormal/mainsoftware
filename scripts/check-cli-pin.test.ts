@@ -280,9 +280,9 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     expect(baseLinked.stdout).not.toContain('OK')
   })
 
-  // A pull request retargeted to main (round 11): GitHub starts no run when a base changes, and main's ruleset
-  // reads the result the head commit holds, so a branch that already holds main's head is held to main's pin
-  // whatever its base.
+  // A pull request retargeted to main (round 11): ci.yml runs again when a base changes (its edited activity),
+  // and as a second layer behind that run, since main's ruleset reads the result the head commit holds, a branch
+  // that already holds main's head is held to main's pin whatever its base.
   it('holds a branch that holds main to main’s pin, whatever its base', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hearth-cli-pin-'))
     repos.push(dir)

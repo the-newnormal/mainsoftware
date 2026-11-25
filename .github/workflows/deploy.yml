@@ -12,8 +12,9 @@
 # OIDC, and they run no repository code (C11-D48): a checkout for the lockfile and history,
 # downloads by artifact id, the asset and release checks, the CLI check, the credentials action, the
 # registry's CDK CLI from an empty folder, skopeo, aws, gh api, git and jq, each inline. Prod deploys
-# only after its reviewer approves, with the diff before (prod-plan) and main's own CI and the
-# records re-checked (prod-gate, then the prod job's fast re-check). A smoke that fails, or a deploy
+# only after its reviewer approves, with the diff before (prod-plan) and main's own CI, the records and
+# the live environments re-checked (prod-gate, then the records again in the prod job's fast re-check),
+# since a re-run of prod-plan re-runs prod-gate and prod but never the gate. A smoke that fails, or a deploy
 # job that fails once its Services deploy began, starts the pipeline's own rollback to the previous
 # release (the newest record when the gate read them, or for a drill-smoke the one that ran before the
 # current commit first did; prod's again behind the reviewer), which deploys
@@ -37,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Where to deploy (prod runs non-prod first; restore is prod's restore stage)
+        description: Where to deploy (a prod deploy runs non-prod first, a rollback its target alone; restore is prod's restore stage)
         type: choice
         options: [nonprod, prod, restore]
         default: nonprod
@@ -5134,7 +5135,11 @@ jobs:
             record hearth-release "$PAYLOAD"
           fi
           if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
-            echo "record: the release's own smoke didn't pass, so the run ends red"
+            if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
+              echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+            else
+              echo "record: the release's own smoke didn't pass, so the run ends red"
+            fi
             exit 1
           fi
 
@@ -6617,7 +6622,10 @@ jobs:
 
   # The prod gate (C11-D52): no credential and no environment, before the prod job's approval. A deploy
   # waits for main's own CI on its commit; a rollback or a restore doesn't (T24 item 20), but each is
-  # checked again against prod's records, read afresh.
+  # checked again against prod's records, read afresh. Then the environments are checked live as written
+  # again, as the gate checks them (C11-D49): a re-run of prod-plan re-runs this job and prod but never the
+  # gate, and GitHub applies prod's protection as it stands when prod queues, so every path into prod, a
+  # fresh run's or a re-run's, reads them here, just before it.
   prod-gate:
     needs: [gate, build, nonprod, smoke-nonprod, prod-plan]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.gate.outputs.target == 'prod' || needs.gate.outputs.target == 'restore') && needs.prod-plan.result == 'success' }}
@@ -6688,6 +6696,12 @@ jobs:
             sleep 30
           done
           echo "prod-gate: main's check and migrations passed on this commit" >>"$GITHUB_STEP_SUMMARY"
+      - name: The environments are live as written
+        working-directory: repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: scripts/protect-environments.sh check "$REPO"
       - name: The prod gate
         id: check
         working-directory: repo
@@ -9814,6 +9828,10 @@ jobs:
             fi
           fi
           if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
-            echo "record: the release's own smoke didn't pass, so the run ends red"
+            if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
+              echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+            else
+              echo "record: the release's own smoke didn't pass, so the run ends red"
+            fi
             exit 1
           fi

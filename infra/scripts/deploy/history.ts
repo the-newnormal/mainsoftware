@@ -38,7 +38,10 @@
 // choose-ecs takes every digest ECR tags with the current commit (`sha-<commit>-*`), the running one
 // among them. A refusal is one line, `history: refused <code>: <why>`, and exit 1; input it can't use
 // (a commit choose or validate needs that the clone lacks among it) is one line naming it, and exit 2.
-// An ignored record is one line on stderr. The records folder holds what the gate saves, one `gh api`
+// An ignored record is one line on stderr, and so is the release record plan refuses as `off-main` (a
+// current release, or a drill-smoke's previous): its id, environment and commit. A forged one, newest by
+// its api revision, refuses every run that deploys its environment until a person removes it
+// (deploy-and-rollback.md), and this line names it. The records folder holds what the gate saves, one `gh api`
 // answer a file: release-nonprod.json, release-prod.json (and migrated-nonprod.json, migrated-prod.json
 // and restore-prod.json, which plan doesn't read).
 import { execFileSync } from 'node:child_process'
@@ -290,6 +293,19 @@ export type Outcome<T> = { ok: true; value: T } | { ok: false; reason: Refusal }
 const ok = <T>(value: T): Outcome<T> => ({ ok: true, value })
 const no = <T = never>(reason: Refusal): Outcome<T> => ({ ok: false, reason })
 
+// The release record a plan refused as off main, which the command line names on stderr.
+export interface OffMainRecord {
+  env: RecordEnvironment
+  id: number
+  commit: string
+}
+export type PlanOutcome = Outcome<PlanOutputs> | { ok: false; reason: 'off-main'; record: OffMainRecord }
+const offMain = (env: RecordEnvironment, record: ReleaseRecord): PlanOutcome => ({
+  ok: false,
+  reason: 'off-main',
+  record: { env, id: record.id, commit: record.commit },
+})
+
 // The index of the current release's oldest record: the oldest of any build of its commit (or of a
 // record naming its digest under another commit, which only a forged record would), or -1 for none.
 const firstOfCurrent = (records: readonly ReleaseRecord[], release: Release) =>
@@ -535,7 +551,7 @@ function readInputs(input: PlanInput): Outcome<{ target: Target; mode: Mode; rel
 // release is that current release, which may be an earlier build of the run's own commit (a dispatch
 // after a rejected approval); a drill-smoke's is the one that ran before the current commit first did,
 // and must be strictly older.
-export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
+export async function plan(input: PlanInput): Promise<PlanOutcome> {
   if (input.event !== 'push' && input.event !== 'workflow_dispatch') return no('bad-event')
   if (input.ref !== 'refs/heads/main') return no('not-main')
   if (input.actor === '' || input.triggeringActor === '' || !COMMIT.test(input.sha)) return no('bad-input')
@@ -572,7 +588,7 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
       outputs[`first_${env}` as const] = 'true'
       continue
     }
-    if (!isAncestor(newest.commit, sha)) return no('off-main')
+    if (!isAncestor(newest.commit, sha)) return offMain(env, newest)
     currents[env] = newest
     outputs[`current_${env}` as const] = releaseText(newest)
     outputs[`current_${env}_id` as const] = String(newest.id)
@@ -632,7 +648,7 @@ export async function plan(input: PlanInput): Promise<Outcome<PlanOutputs>> {
     const chosen = chooseFromRecords(input.records.nonprod, running, isAncestor)
     if (!chosen.ok) return chosen
     const previous = chosen.value
-    if (!isAncestor(previous.commit, sha)) return no('off-main')
+    if (!isAncestor(previous.commit, sha)) return offMain('nonprod', previous)
     // The chooser never takes a build of the running commit, so an ancestor of the run's commit is
     // strictly older than it; this keeps the rule whatever the chooser becomes.
     if (!strictlyOlder(previous.commit, running.commit, isAncestor)) return no('previous-not-older')
@@ -927,7 +943,15 @@ async function run(argv: readonly string[], io: Io): Promise<0 | 1 | 2> {
         expansionsMet: gitExpansionsMet(repo, required(flags, 'sha')),
         domains: io.domains ?? Object.values(DOMAINS),
       })
-      if (!result.ok) return refuse(io, result.reason)
+      if (!result.ok) {
+        if ('record' in result) {
+          const { env, id, commit } = result.record
+          io.warn(
+            `history: hearth-release record ${id} in ${env} names ${commit}, which is not on main at the run's commit\n`,
+          )
+        }
+        return refuse(io, result.reason)
+      }
       for (const key of PLAN_OUTPUTS) io.write(`${key}=${result.value[key]}\n`)
       return 0
     }

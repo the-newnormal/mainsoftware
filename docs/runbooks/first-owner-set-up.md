@@ -161,7 +161,7 @@ The correction refuses once the founder has signed in (C0.16's phone change does
 ## Afterwards
 
 - Once the founder has signed in, the person on call schedules the secret's deletion: the database now holds the only copy needed. Not before, so a correction stays possible.
-- The person on call records the use in the break-glass log, for the quarterly review, and resumes the deploy pipeline.
+- The person on call records the use in the break-glass log, for the quarterly review, and a repo admin resumes the deploy pipeline, as step 10 of *In production: the network path, in order* says, never with a `gh` login of the user Claude Code runs as.
 - If the AWS CLI's history turns out to have been on during a run, the person on call deletes `~/.aws/cli/history/history.db`.
 - The DPO notes the set-up in their log, then follows [Publishing a version of the notice](publishing-the-notice.md).
 

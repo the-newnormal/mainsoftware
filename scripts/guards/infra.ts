@@ -1,6 +1,10 @@
 // The infra source guard's rules (IG, C0.11; TECH-SPEC T24 item 28), read by infra.test.ts, which
 // proves each on planted text and then holds the repository to it. This file and infra.test.ts are on
-// the owner's-read list (C11-D74): they hold the rules every infra change is checked against.
+// the owner's-read list (C11-D74): they hold the rules every infra change is checked against. So are the
+// files the two read their rules from: boundaries.ts, identifying.ts and imports.ts, which this file reads
+// its rules through, and repo-files.ts and workflow.ts, through which infra.test.ts reads the repository's
+// files and its workflows; the models list and the agent markers it reads (infra/src/config/models.ts,
+// scripts/owner-bootstrap/target.ts) are on the list by their own paths.
 //
 // Cases so far (C0.11 PR 1 to PR 4): IG-01 to IG-12, and C11-D62's synth scripts: synth:lz, and from
 // PR 3 the workload's synth (the pipeline's) and synth:ci (CI's), with no hook around any of them. From

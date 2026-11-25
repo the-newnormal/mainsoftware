@@ -1,20 +1,30 @@
 // The files the guard tests read: everything git tracks plus new files it doesn't ignore. So
 // node_modules/, build output and local-data/ are never read: local-data/ holds people's data,
 // which coding agents and CI never open (CLAUDE.md, Security and privacy).
+//
+// The deploy-workflow and infra guards read the repository through this file: which files there are
+// (repoFiles), the git attributes a checkout writes them through (gitAttributes) and this repository's own
+// name (ownRepository). A change here can weaken either guard without a line of it changing, so this file,
+// like imports.ts, is one of the files those two guards read their rules from, on CLAUDE.md's owner's-read
+// list (TECH-SPEC T24 item 31). Their planted cases pass their own file lists and names, so repo-files.test.ts
+// holds what repoFiles and ownRepository answer, and DPW-02's planted repositories what gitAttributes does.
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const root = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
 
-export function repoFiles(): string[] {
+// Dot-named files and those in dot folders (.nvmrc, .github/workflows/, .claude/, a .yarnrc) are listed like
+// any other: the deploy-workflow guard finds the workflows it reads, and a Yarn file or a module that would
+// shadow one of its own, only through this list.
+export function repoFiles(cwd = root): string[] {
   const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
-    cwd: root,
+    cwd,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   })
   // A tracked file deleted in the working tree is still listed, so keep only files that exist.
-  return out.split('\0').filter(path => path && !/(^|\/)local-data\//.test(path) && existsSync(join(root, path)))
+  return out.split('\0').filter(path => path && !/(^|\/)local-data\//.test(path) && existsSync(join(cwd, path)))
 }
 
 export const readRepoFile = (path: string) => readFileSync(join(root, path), 'utf8')
@@ -50,13 +60,17 @@ export function gitAttributes(paths: readonly string[], cwd = root): Map<string,
 // This repository's owner/name, lower-cased: GitHub's GITHUB_REPOSITORY in CI, or else the last two folders of
 // the origin remote's URL (https://host/owner/name(.git) or git@host:owner/name(.git)); undefined when neither
 // reads as one. The DPW-02 case refuses a step that names this repository's own action by its full name.
+// GitHub's name comes first: it is the repository the run is for, whatever the checkout's remote names.
 const OWNER_NAME = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
-export function ownRepository(): string | undefined {
-  const fromCi = process.env.GITHUB_REPOSITORY ?? ''
+export function ownRepository(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  cwd = root,
+): string | undefined {
+  const fromCi = env.GITHUB_REPOSITORY ?? ''
   if (OWNER_NAME.test(fromCi)) return fromCi.toLowerCase()
   let url = ''
   try {
-    url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim()
+    url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
   } catch {
     return undefined
   }

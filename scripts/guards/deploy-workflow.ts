@@ -25,7 +25,7 @@
 // name: either's, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name.
 // The CDK CLI's pin check (scripts/check-cli-pin.ts) runs the same way, in ci.yml's job cli-pin that check
 // needs, behind the same two held actions with no npm cache and before any of the repository's code, reading
-// the manifest as the head commits it (round 12): in migrations it ran after npm ci and the migration order
+// the manifest as the head commits it (round 12): in migrations it would run after npm ci and the migration order
 // check, either of which could write over what it read. A checkout writes each file through every
 // .gitattributes while the owner reads the blob: an ident attribute on infra/package.json checked out a lower
 // CLI than its blob pinned, which CLI_FETCH read on main, and one on check-action-pins.ts made a comparison its
@@ -81,9 +81,11 @@
 // or turn into HTML that hides the rest; a credentialed run writes no file by a redirection but its outputs, its
 // summary and /dev/null, and the diff in prod-plan's two diff runs alone, a > after && being a write of its own
 // (round 12's fourth iteration, its second pass: &&>"$f" emptied the CLI), and every run, in every job, writes
-// the summary and its outputs only by appending (appendsOnly(), its second pass: a > erased the gate's lines
-// naming the records history.ts ignored) (CLI_FETCH's and IMAGE_CHECK's tools write only their own folders, each
-// on its own line: FETCH_TOOLS, IMAGE_TOOLS); and ASSET_CHECK holds every template to the
+// the summary and its outputs only by appending, expanding either file's name only as a >> target or tee -a's
+// operand (appendsOnly(), its second pass: a > erased the gate's lines naming the records history.ts ignored; and
+// round 12's lenses: a name holding the path, or cp, mv, dd, truncate or sed -i onto it, erased them too)
+// (CLI_FETCH's and IMAGE_CHECK's tools write only their own folders, each on its own line: FETCH_TOOLS,
+// IMAGE_TOOLS); and ASSET_CHECK holds every template to the
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
@@ -412,7 +414,8 @@
 // canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
 // so any change to what deploy.yml runs changes this file's constants and deploy.yml together. Both are on the
 // owner's-read list, as are every other workflow, the environments, protect-environments.sh, the pins check
-// and the files this guard reads its rules from, so the owner reads every changed line as written. The rules
+// and the files this guard reads its rules from (action-pins.ts, workflow.ts, repo-files.ts and imports.ts,
+// beside this one), so the owner reads every changed line as written. The rules
 // here read bash, jq and GitHub's YAML and expressions, which no reader short of the real one models whole, so
 // over such a change they are a second layer behind that read. They catch a form an author could write by
 // mistake, or that reads as harmless in a diff: an unquoted expansion, a value carried from one place into
@@ -2461,7 +2464,11 @@ if [ "$TARGET" = restore ]; then
   fi
 else`
 const RECORD_TAIL = sh`if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
-  echo "record: the release's own smoke didn't pass, so the run ends red"
+  if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
+    echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+  else
+    echo "record: the release's own smoke didn't pass, so the run ends red"
+  fi
   exit 1
 fi`
 export const recordRun = (stage: Stage) =>
@@ -2742,6 +2749,7 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
       rule: 'DPW-08',
       if: expr("needs.gate.outputs.mode == 'deploy' && needs.gate.outputs.target == 'prod'"),
     },
+    'The environments are live as written': { run: ENVIRONMENTS_CHECK, rule: 'DPW-09', cwd: REPO_FOLDER },
     'The prod gate': { run: PROD_GATE_CALL, rule: 'DPW-08', cwd: REPO_FOLDER },
   },
   nonprod: { ...deployRuns('nonprod'), ...credentialedRuns('nonprod') },
@@ -2816,7 +2824,7 @@ export function codeLinesAsBash(lines: readonly string[]): string[] {
 // neither, so a line keyed on anything the two differ in (a variable, a file, what gh answers) would end the
 // check differently in the gate and in every test. Pinned, the code changes only with the pin, in the same PR,
 // an owner's read (EXPAND-A4-02, round 6). The comments above the first code line stay free to edit.
-export const PROTECT_ENVIRONMENTS_SHA256 = '6ca4a6c3572f7972a27166cfe2d9b71ce3aa9138dbab874ebcb6d0de4e671e39'
+export const PROTECT_ENVIRONMENTS_SHA256 = '3988fecde6f1d0da2fcf1e5fc62a7ff8559385538690d11caf37e82e424c1d25'
 export function pinnedScriptText(script: string): string {
   const lines = script.split('\n')
   const first = lines.findIndex((line, i) => i > 0 && !/^[ \t]*(?:#[\s\S]*)?$/.test(line))
@@ -8093,10 +8101,28 @@ const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
 // gate's Plan step's } >"$GITHUB_STEP_SUMMARY" erased the lines naming the records history.ts ignored, and a > into
 // the outputs erases the step's earlier outputs while bindingFindings() still reads them as written; only a
 // credentialed run's summary writes were held to >>. Read on the command code, so a quoted word is none.
+// And either file's name is expanded only as such a target or tee -a's operand, the whole word (round 12's
+// lenses): a redirection's text alone let a write through a name holding the path (summary="$GITHUB_STEP_SUMMARY"
+// and then } >"$summary") or by a program (cp, mv, dd of=, truncate, sed -i onto it), each erasing it as > does.
 const APPENDS_ONLY =
-  'writes the job summary and its outputs only by appending (>> or tee -a), so no write erases what the step wrote there before'
+  'writes the job summary and its outputs only by appending (>> or tee -a), expanding either file’s name only as that whole target or operand, so no write erases what the step wrote there before'
 const STEP_FILE_WRITE = /(?<![<>]|(?<!&)&)((?:\d+|&)?(?:<>|>>?\|?))\s*([^\s;|()<>]+)/g
 const STEP_FILE = /GITHUB_(?:OUTPUT|STEP_SUMMARY)/
+// An expansion of either name in the command code ($NAME or ${NAME…}, quoted or not), the whole word it may stand
+// as (the code keeps a double quote and writes the text inside one as _), and what may stand before that word: >>
+// (with a descriptor or &), or tee -a where a command starts.
+const STEP_FILE_EXPANSION = /\$\{?GITHUB_(?:OUTPUT|STEP_SUMMARY)(?![A-Za-z0-9_])/g
+const STEP_FILE_WORD = /"?\$(?:GITHUB_(?:OUTPUT|STEP_SUMMARY)|\{GITHUB_(?:OUTPUT|STEP_SUMMARY)\})"?(?=$|[ \t;&|)])/y
+const APPEND_BEFORE = /(?:^|[^<>&\d])(?:\d+|&)?>>[ \t]*$/
+const TEE_BEFORE = /tee[ \t]+-a[ \t]+$/
+const appendedAt = (line: string, at: number) => {
+  const start = line[at - 1] === '"' ? at - 1 : at
+  STEP_FILE_WORD.lastIndex = start
+  if (STEP_FILE_WORD.exec(line) === null) return false
+  const before = line.slice(0, start)
+  const tee = TEE_BEFORE.exec(before)
+  return APPEND_BEFORE.test(before) || (tee !== null && ENDS_AT_COMMAND_START.test(before.slice(0, tee.index)))
+}
 export function appendsOnly(run: string): boolean {
   const code = commandCode(shellViews(run).code)
   return (
@@ -8105,7 +8131,10 @@ export function appendsOnly(run: string): boolean {
     ) &&
     shellCommands(run).every(
       command => command.word !== 'tee' || !STEP_FILE.test(command.tail) || /^\s*-a\s/.test(command.tail),
-    )
+    ) &&
+    code
+      .split('\n')
+      .every(line => [...line.matchAll(STEP_FILE_EXPANSION)].every(({ index }) => appendedAt(line, index)))
   )
 }
 export function maskingFindings(workflows: Texts): Finding[] {
@@ -8849,10 +8878,11 @@ function environmentFile(name: string, text: string): Record<string, unknown> | 
 // holds exactly the three files, each the environment file's shape and none letting an admin bypass its
 // rules: prod.json asks for at least one reviewer, prod-plan.json for none, nonprod.json for one exactly
 // when non-prod holds real data (C0.12's flip can't land half done); the script's agent markers are the Owner
-// bootstrap script's; and the gate's reads of the records and main's ruleset, its check of the live
-// environments and its plan are pinned whole under their own if: (GATE_RECORDS, RULESET_CHECK,
-// ENVIRONMENTS_CHECK, PLAN_STEP), so no line of their own or if: ends or skips one, forges what the plan
-// reads or writes a gate output.
+// bootstrap script's; prod-gate runs the same check again, just before its own verdict, since a re-run of
+// prod-plan re-runs prod-gate and prod but never the gate; and the gate's reads of the records and main's
+// ruleset, its check of the live environments (and prod-gate's) and its plan are pinned whole under their own
+// if: (GATE_RECORDS, RULESET_CHECK, ENVIRONMENTS_CHECK, PLAN_STEP), so no line of their own or if: ends or
+// skips one, forges what the plan reads or writes a gate output.
 export function gateFindings(
   workflows: Texts,
   environments: Texts,
@@ -8875,12 +8905,21 @@ export function gateFindings(
   }
   const check = gate.findIndex(step => step.run === ENVIRONMENTS_CHECK)
   if (check < 0 || plan < 0 || check > plan) add('gate', 'runs scripts/protect-environments.sh check before it plans')
+  // prod-gate checks them again, last before its own verdict: a re-run of prod-plan re-runs prod-gate and prod
+  // but never the gate, and GitHub applies prod's protection as it stands when prod queues, so the gate's check
+  // alone would leave prod, on a re-run or long after a fresh run's gate, deploying under settings nothing read.
+  const prodGate = jobs.get('prod-gate')?.steps ?? []
+  const verdict = prodGate.findIndex(step => step.id === 'check')
+  const again = prodGate.findIndex(step => step.run === ENVIRONMENTS_CHECK)
+  if (again < 0 || verdict < 0 || again !== verdict - 1) {
+    add('prod-gate', 'runs scripts/protect-environments.sh check just before its own verdict')
+  }
   // The steps the plan rests on, each pinned whole under its own if:, so no line of its own or if: ends or
   // skips one, forges a file the plan reads or writes a gate output of its own.
   for (const place of unpinnedRuns(jobs, 'DPW-09')) {
     add(
       place,
-      "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own",
+      "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan and prod-gate rest on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own",
     )
   }
   for (const { id, job } of jobs.values()) {
@@ -9314,7 +9353,7 @@ const programOf = (word: ShellWord | undefined): string | undefined =>
 // the ninth review's second attack); and, given -e, a program that prints one value, fed by no pipe unless it is
 // also given -n (JQ_PIPED_RULE, round 12); and, given -n, fed nothing at all, by a pipe, a here-string or a
 // redirection, which it would never read (JQ_UNREAD_RULE, round 12's fourth iteration, its second pass).
-function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false): boolean {
+export function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false): boolean {
   if (args.some(manyWords)) return false
   const given: string[] = []
   let i = 0
@@ -10157,6 +10196,7 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'prod-gate': {
     "Prod's release records": GH_ENV,
     "main's own CI": { ...GH_ENV, SHA: expr('github.sha') },
+    'The environments are live as written': GH_ENV,
     'The prod gate': {
       MODE,
       TARGET: gateOutput('target'),
@@ -10595,7 +10635,14 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
     ['Diff'],
     ['Diff the rollback'],
   ],
-  'prod-gate': [CHECKOUT_STEP, NODE_STEP, ["Prod's release records"], ["main's own CI"], ['The prod gate']],
+  'prod-gate': [
+    CHECKOUT_STEP,
+    NODE_STEP,
+    ["Prod's release records"],
+    ["main's own CI"],
+    ['The environments are live as written'],
+    ['The prod gate'],
+  ],
   prod: deploySteps('prod'),
   'smoke-prod': SMOKE_STEPS,
   'rollback-prod': ROLLBACK_STEPS,

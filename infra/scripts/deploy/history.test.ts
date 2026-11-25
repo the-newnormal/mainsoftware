@@ -301,6 +301,10 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     expect(parsed.records[2]?.migratedCommit).toBe('b'.repeat(40))
     // gh's --paginate --slurp writes an array of pages; it reads the same.
     expect(parseReleaseRecords([[good], [nullMigrated]], 'prod').records.map(record => record.id)).toEqual([11, 17])
+    // A list mixing pages and deployments is neither, and is input it can't use.
+    expect(() => parseReleaseRecords([[good], nullMigrated], 'prod')).toThrow(
+      'the records are not a list of deployments',
+    )
     expect(() => parseReleaseRecords({ id: 1 }, 'prod')).toThrow()
     expect(() => parseReleaseRecords([{ id: 'x', task: 'hearth-release', environment: 'prod' }], 'prod')).toThrow()
     // A deployment id that isn't a positive integer is input it can't use, never a record's id that
@@ -322,6 +326,18 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
     )
     expect(parsed.records.map(record => record.id)).toEqual([29, 31, 30])
     expect(current(parsed.records)?.id).toBe(30)
+    // The api's revision alone orders them, as the fast re-checks read it: records whose realtime and worker
+    // revisions run the other way round read in the api's order.
+    const crossed = (id: number, api: number, other: number) => {
+      const record = deployment(id, 'nonprod', at(1), D.a, api)
+      const services = (record.payload as { services: Record<string, string> }).services
+      services.realtime = `hearth-nonprod-realtime:${other}`
+      services.worker = `hearth-nonprod-worker:${other}`
+      return record
+    }
+    expect(parseReleaseRecords([crossed(40, 7, 1), crossed(41, 6, 2)], 'nonprod').records.map(r => r.id)).toEqual([
+      41, 40,
+    ])
     const migrations = parseMigrationRecords(
       [
         { id: 9, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(2) } },
@@ -388,6 +404,13 @@ describe('C11-D61, T24 item 23: the release record’s payload', () => {
         task: 'hearth-restore',
         environment: 'prod',
         payload: { schema: 1, kind: 'up', commit: at(4), digest: D.d.slice(0, -1) },
+      },
+      // Non-prod's: the restore stage is prod's alone, so it is neither read nor named.
+      {
+        id: 12,
+        task: 'hearth-restore',
+        environment: 'nonprod',
+        payload: { schema: 1, kind: 'up', commit: at(4), digest: D.d },
       },
     ])
     expect(restores).toEqual({
@@ -677,14 +700,28 @@ describe('C11-D58, T24 item 22: choosing the release to go back to from ECS’s 
     expect(chooseFromEcs(disagree, c)).toEqual({ ok: false, reason: 'services-disagree' })
     expect(chooseFromEcs(sameForAll([[20, D.c, 3]]), c)).toEqual({ ok: false, reason: 'none-qualifies' })
     expect(chooseFromEcs(sameForAll([[20, D.b, 2]]), c)).toEqual({ ok: false, reason: 'none-qualifies' })
+    // A deployment that finished at the same instant as the current release's first didn't finish before it,
+    // in whichever order ECS lists the two.
+    for (const tied of [
+      [
+        [20, D.b, 2],
+        [20, D.c, 3],
+      ],
+      [
+        [20, D.c, 3],
+        [20, D.b, 2],
+      ],
+    ] as const) {
+      expect(chooseFromEcs(sameForAll(tied), c)).toEqual({ ok: false, reason: 'none-qualifies' })
+    }
     const pages = sameForAll([
       [10, D.b, 2],
       [20, D.c, 3],
     ])
-    expect(chooseFromEcs(pages, c, new Set(['hearth-prod-realtime:2']))).toEqual({
-      ok: false,
-      reason: 'drill-revision',
-    })
+    // A drill's revision of any of the three roles.
+    for (const drill of ['hearth-prod-api:2', 'hearth-prod-realtime:2', 'hearth-prod-worker:2']) {
+      expect(chooseFromEcs(pages, c, new Set([drill])), drill).toEqual({ ok: false, reason: 'drill-revision' })
+    }
     expect(chooseFromEcs(pages, c, new Set(['hearth-prod-realtime:3']))).toMatchObject({ ok: true })
   })
 
@@ -934,6 +971,17 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     expect(await refusalOf(dispatch({ mode: 'rollback', release: at(4) }, { floorsAllowed: () => false }))).toBe(
       'floor-crossed',
     )
+    // A target rebuilt and recorded again (a dispatch after a rejected approval) holds two builds: the rollback
+    // deploys the newer, the build that last ran as that release, never the older.
+    const rebuilt = records(
+      'nonprod',
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(4), D.a, 2),
+      deployment(103, 'nonprod', at(5), D.e, 3),
+    )
+    expect(
+      await outputsOf(dispatch({ mode: 'rollback', release: at(4) }, { records: { nonprod: rebuilt, prod: [] } })),
+    ).toMatchObject({ commit: at(4), digest: D.a })
   })
 
   it('C11-D59: drill-break runs non-prod’s current release; drill-smoke, after a forward deploy of the run’s commit, adds the release before it as the previous', async () => {
@@ -1089,6 +1137,12 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
     expect(await refusalOf(planInput({ checks: { ...checks, headTree: git(['rev-parse', `${at(5)}^{tree}`]) } }))).toBe(
       'pr-tree-differs',
     )
+    // A run's commit git gives no tree for is refused too, on a first deploy as well, where no record's
+    // ancestry check reads the commit first.
+    expect(await refusalOf(planInput({ treeOf: () => undefined }))).toBe('pr-tree-differs')
+    expect(await refusalOf(planInput({ treeOf: () => undefined, records: { nonprod: [], prod: [] } }))).toBe(
+      'pr-tree-differs',
+    )
     // Another pull request from the same head branch open while the merged one was, or at its head commit, or a
     // listing of that branch's pull requests not read whole (shared): GitHub ties no ci.yml run to the pull request
     // that started it, so such a run at the same head can't be told from the merged one's, whichever passed.
@@ -1145,6 +1199,24 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       prod,
     }
     expect(await refusalOf(dispatch({ mode: 'drill-smoke' }, { records: branchThenHead }))).toBe('off-main')
+    // A refusal that comes from a record names it, so a forged one can be found and removed; a rollback's
+    // release is the dispatch's own input, and names none.
+    expect(await plan(planInput({ records: withBranch }))).toEqual({
+      ok: false,
+      reason: 'off-main',
+      record: { env: 'nonprod', id: 109, commit: branch },
+    })
+    expect(await plan(dispatch({ target: 'restore', restore: 'down' }, { records: offProd }))).toEqual({
+      ok: false,
+      reason: 'off-main',
+      record: { env: 'prod', id: 209, commit: branch },
+    })
+    expect(await plan(dispatch({ mode: 'drill-smoke' }, { records: branchThenHead }))).toEqual({
+      ok: false,
+      reason: 'off-main',
+      record: { env: 'nonprod', id: 108, commit: branch },
+    })
+    expect(await plan(dispatch({ mode: 'rollback', release: branch }))).toEqual({ ok: false, reason: 'off-main' })
   })
 })
 
@@ -1285,6 +1357,21 @@ describe('C11-D52, T24 item 20: prod-gate', () => {
     expect(await prodGate({ ...rollback, commit: branch, digest: D.e, records: onBranch })).toEqual({
       ok: false,
       reason: 'not-on-main',
+    })
+    // A target with two recorded builds is checked against the newer, whose digest the gate output.
+    const rebuilt = records(
+      'prod',
+      deployment(201, 'prod', at(3), D.c, 1),
+      deployment(202, 'prod', at(3), D.b, 2),
+      deployment(203, 'prod', at(4), D.d, 3),
+    )
+    expect(await prodGate({ ...rollback, digest: D.b, recordId: '203', records: rebuilt })).toEqual({
+      ok: true,
+      value: { current_prod_id: '203' },
+    })
+    expect(await prodGate({ ...rollback, digest: D.c, recordId: '203', records: rebuilt })).toEqual({
+      ok: false,
+      reason: 'record-changed',
     })
   })
 
@@ -1634,8 +1721,12 @@ describe('C11-D58, C11-D61: the command line', () => {
       { ...deployment(103, 'nonprod', at(5), D.e, 3), payload: 'not an object' },
     ])
     writeJson(join(folder, 'release-prod.json'), [deployment(202, 'prod', at(4), D.d, 2)])
+    // Prod's, a later non-prod one, and a later one in another environment (prod-plan's), which no
+    // reading takes for a record environment's.
     const migratedFile = writeJson(join(scratch, 'migrated.json'), [
       { id: 4, task: 'hearth-migrated', environment: 'prod', payload: { schema: 1, commit: at(3) } },
+      { id: 5, task: 'hearth-migrated', environment: 'nonprod', payload: { schema: 1, commit: at(4) } },
+      { id: 6, task: 'hearth-migrated', environment: 'prod-plan', payload: { schema: 1, commit: at(5) } },
     ])
     const empty = writeJson(join(scratch, 'empty.json'), [])
     const push = [
@@ -1657,6 +1748,8 @@ describe('C11-D58, C11-D61: the command line', () => {
       out: [`commit ${at(3)}`],
       err: [],
     })
+    // With no --env, non-prod's and prod's alike, and never another environment's.
+    expect(await cli(['migrated', '--records', migratedFile])).toEqual({ code: 0, out: [`commit ${at(4)}`], err: [] })
     const nonprodRecords = join(folder, 'release-nonprod.json')
     expect(
       await cli(['choose', '--env', 'nonprod', '--records', nonprodRecords, '--current', `${at(5)}:${D.e}`]),
@@ -2064,6 +2157,13 @@ describe('C11-D58, C11-D61: the command line', () => {
         err: [],
       })
     }
+    // A checks file with a key more is bad input, never read as the checks it also holds.
+    const extraKey = writeJson(join(scratch, 'plan-checks-extra.json'), { ...GOOD_CHECKS(), extra: 1 })
+    expect(await plan({ ...PUSH, checks: extraKey })).toEqual({
+      code: 2,
+      out: ['history: --checks is not the pull request checks'],
+      err: [],
+    })
     for (const [i, pull] of [0, -1, 7.5, '7', true].entries()) {
       const badPull = writeJson(join(scratch, `plan-checks-pull-${i}.json`), { ...GOOD_CHECKS(), pull })
       expect(await plan({ ...PUSH, checks: badPull }), JSON.stringify(pull)).toEqual({
@@ -2076,8 +2176,12 @@ describe('C11-D58, C11-D61: the command line', () => {
     expect(await plan({ ...PUSH, checks: noPull })).toEqual(refused('pr-not-found'))
     expect(await plan({ mode: 'rollback', release: branch })).toEqual(refused('off-main'))
     // --repo is where git answers (the command's folder otherwise): a folder outside any clone knows
-    // no commit, so the current releases read as off main.
-    expect(await plan({ ...PUSH, checks, repo: scratch })).toEqual(refused('off-main'))
+    // no commit, so the current releases read as off main, the first of them named on stderr (a rollback's
+    // release, above, is the dispatch's own input, and no record is named).
+    expect(await plan({ ...PUSH, checks, repo: scratch })).toEqual({
+      ...refused('off-main'),
+      err: [`history: hearth-release record 103 in nonprod names ${at(6)}, which is not on main at the run's commit`],
+    })
     // A rollback, a drill and a restore print what plan decides for the same input in process.
     const same = {
       records: { nonprod: nonprodRecords, prod: prodRecords },
@@ -2111,7 +2215,7 @@ describe('C11-D58, C11-D61: the command line', () => {
     )
   })
 
-  it('C11-D58: choose-ecs reads break-glass’s saved pages, every page to the one whose next is null', async () => {
+  it('C11-D58: choose-ecs reads break-glass’s saved pages, every deployments page to the one whose next is null and every revisions file', async () => {
     const pages = join(scratch, 'pages')
     const history: Record<string, ReadonlyArray<readonly [number, string, number]>> = {
       api: [
@@ -2139,10 +2243,15 @@ describe('C11-D58, C11-D61: the command line', () => {
           deployments: page,
         })
       }
-      writeJson(
-        join(pages, `${role}-revisions-1.json`),
-        entries.map(([, digest, revision], i) => [revisionArn(role, i + 1), taskDefinitionArn(role, revision), digest]),
-      )
+      const revisions = entries.map(([, digest, revision], i) => [
+        revisionArn(role, i + 1),
+        taskDefinitionArn(role, revision),
+        digest,
+      ])
+      // And its revisions in two files, as break-glass saves one a describe-service-revisions call of at most
+      // 20: a deployment whose revision is in the second is read as any other.
+      const files = role === 'api' ? [revisions.slice(0, 2), revisions.slice(2)] : [revisions]
+      for (const [i, file] of files.entries()) writeJson(join(pages, `${role}-revisions-${i + 1}.json`), file)
     }
     expect(await cli(['choose-ecs', '--pages', pages, '--current-digest', D.c])).toEqual({
       code: 0,

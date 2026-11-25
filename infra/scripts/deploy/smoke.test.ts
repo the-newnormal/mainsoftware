@@ -172,6 +172,9 @@ describe('SMK-T01 to SMK-T05 (C11-D54): the anonymous checks on recorded answers
     expect(smk02({ status: 503, error: MARKER }, undefined)).toEqual({ pass: false, code: 'error-other' })
     expect(smk02({ status: 503 }, undefined)).toEqual({ pass: false, code: 'error-none' })
     expect(smk02('no-answer', undefined)).toEqual({ pass: false, code: 'no-answer' })
+    // An upgrade (101) is no answer of the sign-in route's, either way round.
+    expect(smk02({ upgraded: true }, undefined)).toEqual({ pass: false, code: 'status-101' })
+    expect(smk02({ upgraded: true }, 'twilio')).toEqual({ pass: false, code: 'status-101' })
   })
 
   it('SMK-T03 (SMK-03): 403 passes; 400, 503 and 200 fail', () => {
@@ -957,7 +960,8 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
     for (const [argv, out] of cases) expect(await cli(argv, none), out).toEqual({ code: 2, out })
     // A release whose profiles.ts the smoke can't use: its profile names an smsProvider the smoke doesn't
     // know, it has no profile for --env, it names no host for it (originHost answering nothing, or appHost
-    // while originHost answers), or an export is of another kind (PROFILES a list, appHost a string).
+    // while originHost answers), or an export is of another kind (PROFILES a list, appHost or originHost a
+    // string).
     // Each is refused as bad input before anything is asked: never judged as if smsProvider were unset or
     // twilio, and never a smoke that exits 0 having asked and judged nothing.
     const source = readFileSync(PROFILES_SOURCE, 'utf8')
@@ -993,6 +997,10 @@ describe('SMK-T08 (C11-D54): the read-back, --profile-at and what the smoke prin
       ],
       [
         edited(source, hostFunction('appHost'), "\nexport const appHost = 'nonprod.example.invalid'\n"),
+        "smoke: --profile-at's profiles.ts is not one the smoke can read\n",
+      ],
+      [
+        edited(source, hostFunction('originHost'), "\nexport const originHost = 'origin.nonprod.example.invalid'\n"),
         "smoke: --profile-at's profiles.ts is not one the smoke can read\n",
       ],
     ]

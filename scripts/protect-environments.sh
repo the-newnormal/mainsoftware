@@ -19,21 +19,28 @@
 #   scripts/protect-environments.sh check --from <dir> [owner/repo]
 #   PROD_REVIEWERS=<login>[,<login>...] scripts/protect-environments.sh apply [owner/repo]
 #
-# check only reads: the deploy workflow's gate runs it on every run, and refuses the run unless every
-# environment is live exactly as written (C11-D49). For each environment it reads the environment, its
+# check only reads: the deploy workflow's gate runs it on every run, and prod-gate runs it again just
+# before every prod job, a re-run's included, and each refuses the run unless every environment is live
+# exactly as written (C11-D49). For each environment it reads the environment, its
 # deployment branch policies and its custom deployment protection rules, and then the repository's
 # OIDC subject template, and compares them field by field: required_reviewers 0 means no
-# required-reviewers rule at all and n a rule with at least n reviewers, prevent_self_review as
-# written where that rule exists, no wait timer (or 0), the branch policy setting exactly as written
-# with exactly one branch policy, main of type branch, no custom protection rule, can_admins_bypass
-# present and equal (absent counts as differing), and the subject template not the default, with
-# exactly the keys repo, context and job_workflow_ref. It prints `protect-environments: <name> ok`,
-# or `protect-environments: <name> <field> differs` for each finding (a field's name, never a
-# value), and exits 0 when every environment and the template are as written, else 1. A read that
-# fails differs. With --from it reads answers saved earlier from <dir> instead of calling GitHub
-# (<name>.json, <name>-branch-policies.json and <name>-protection-rules.json for each environment,
-# and oidc.json), so a test can run the comparison on fixtures and a repo admin can check answers
-# saved before.
+# required-reviewers rule at all and n a rule listing exactly n reviewers, each of type User (GitHub
+# lets any one listed reviewer approve, so a further user or a team beside them is a loosening),
+# prevent_self_review as written where that rule exists, no wait timer (or 0), the branch policy
+# setting exactly as written with exactly one branch policy, main of type branch, no custom protection
+# rule, can_admins_bypass present and equal (absent counts as differing), and the subject template not
+# the default, with exactly the keys repo, context and job_workflow_ref. It prints
+# `protect-environments: <name> ok`, or `protect-environments: <name> <field> differs` for each finding
+# (a field's name, never a value), and exits 0 when every environment and the template are as written,
+# else 1. A read that fails differs. With --from it reads answers saved earlier from <dir> instead of
+# calling GitHub (<name>.json, <name>-branch-policies.json and <name>-protection-rules.json for each
+# environment, and oidc.json), so a test can run the comparison on fixtures and a repo admin can check
+# answers saved before.
+#
+# Which users the rule lists check can't know, since no login is committed (the repository is public)
+# and the gate's log is public too: one user swapped for another, or a login apply resolved to the wrong
+# account, still prints `protect-environments: prod ok`, and only a person's own read of the reviewers
+# GitHub lists, on their own terminal, finds it.
 #
 # The subject template's answer also carries use_immutable_subject, which falls back to the organisation's
 # setting, and sub_claim_prefix: between them they decide whether a token's subject names the repository as
@@ -51,8 +58,8 @@
 # refuses is set, before anything else runs (AGENT_MARKERS below, declared once and kept equal to
 # scripts/owner-bootstrap/target.ts's by the deploy-workflow guard), and the deny rules in
 # .claude/settings.json name it. It needs the gh CLI logged in as a repo admin (Administration
-# write). A file that asks for reviewers needs PROD_REVIEWERS, the reviewers' GitHub logins,
-# comma-separated, set for the one command: logins are given at run time and never committed, since
+# write). A file that asks for reviewers needs PROD_REVIEWERS, exactly that many reviewers' GitHub
+# logins, comma-separated, set for the one command: logins are given at run time and never committed, since
 # the repository is public. For each environment it sets the wait timer, self-review, reviewers
 # (each login resolved to its user id), the branch policy setting and admin bypass, makes the branch
 # policies exactly main of type branch (deleting any other, adding main if it is missing), then runs
@@ -152,7 +159,8 @@ differing() {
       (if $e.name == $d.environment then empty else "name" end),
       (rules("required_reviewers") as $r
         | if $d.required_reviewers == 0 then (if ($r | length) == 0 then empty else "required_reviewers" end)
-          elif ($r | length) == 1 and (($r[0].reviewers // []) | length) >= $d.required_reviewers then empty
+          elif ($r | length) == 1 and ($r[0].reviewers | type) == "array" and ($r[0].reviewers | length) == $d.required_reviewers
+            and all($r[0].reviewers[]; type == "object" and .type == "User") then empty
           else "required_reviewers" end),
       (rules("required_reviewers") as $r
         | if ($r | length) == 1 and $r[0].prevent_self_review != $d.prevent_self_review then "prevent_self_review"
@@ -236,8 +244,8 @@ apply() {
     people=null
     if [ "$count" -gt 0 ]; then
       people=$(reviewers)
-      if [ "$(jq length <<<"$people")" -lt "$count" ]; then
-        echo "protect-environments: $name asks for $count reviewers; set PROD_REVIEWERS for this command" >&2
+      if [ "$(jq length <<<"$people")" -ne "$count" ]; then
+        echo "protect-environments: $name asks for exactly $count reviewers; set PROD_REVIEWERS to that many logins for this command" >&2
         exit 2
       fi
     fi

@@ -26,15 +26,16 @@
 // in a job of its own with nothing of the repository's before it (round 12): its checkout is a folder below the
 // workspace where setup-node runs node, npm and yarn, since Yarn 1 runs the program a .yarnrc's yarn-path
 // names from the folder it runs in or any above it (a pull request's .yarnrc moved origin/main to HEAD, and a
-// lowered pin passed: round 12's fourth iteration); and in the migrations job it ran
+// lowered pin passed: round 12's fourth iteration); and in the migrations job it would run
 // after npm ci and the migration order check, both off the owner's-read list, either of which could write the
 // working tree's manifest back to the base's (one line in the order check did), move a remote-tracking ref, or
 // put another node or git first on the PATH (GITHUB_PATH reaches every later step), and after setup-node's npm
-// cache, which asks npm for its folder through the pull request's own .npmrc and restores into it. GitHub
-// starts no run when a pull request's base changes, and main's ruleset reads the result its head commit already
-// holds, so a branch that already holds main's head (one a retarget to
-// main would leave up to date, needing no new push) is compared with origin/main too, whatever its base: the
-// result then holds for any base the pull request is moved to (round 11). Both manifests must be regular
+// cache, which asks npm for its folder through the pull request's own .npmrc and restores into it. ci.yml runs
+// again when a pull request's base changes (its edited activity, which DPW-04's ciOnHolds() holds), so this
+// check then compares the head with the new base. As a second layer behind that run, since main's ruleset reads
+// the result the head commit already holds, a branch that already holds main's head (one a retarget to main
+// would leave up to date, needing no new push) is compared with origin/main too, whatever its base: the result
+// then holds for any base the pull request is moved to (round 11). Both manifests must be regular
 // files, each read as itself: git show prints a symbolic link's target path, never the file it names, so a
 // link would read as no pin at all, while jq in the deploy jobs reads through it. A base that pins no exact
 // version is refused too, since main has pinned one since C0.11 PR 2, so nothing reads as nothing to compare.

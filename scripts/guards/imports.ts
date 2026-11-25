@@ -1,5 +1,10 @@
 // How the guard tests read source: the module specifiers a file loads, the npm package each names,
 // and the code a script or page runs with its comments stripped.
+//
+// The infra guard reads, through this file, every import and package it holds infra/ and the deploy scripts
+// to, and the deploy-workflow guard the modules it and the pins check load, so a change here can weaken either
+// guard without a line of it changing: like repo-files.ts, this is one of the files those two guards read
+// their rules from, on CLAUDE.md's owner's-read list (TECH-SPEC T24 item 31).
 import ts from 'typescript'
 
 // The npm package an import specifier loads: 'openai/resources' and 'npm:openai@4' load openai.

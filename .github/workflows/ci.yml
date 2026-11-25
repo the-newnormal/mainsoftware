@@ -84,7 +84,7 @@ jobs:
   # refuses a schema newer than it reads, so a lowered pin would break a rollback to such a release. The
   # check reads the base's infra/package.json and its own head's as committed, so it needs the whole
   # history. It runs in a job of its own, as action-pins does, with none of the repository's code and no
-  # package manager before it: in migrations it ran after npm ci and the migration order check, which could
+  # package manager before it: in migrations it would run after npm ci and the migration order check, which could
   # rewrite the manifest, a remote-tracking ref or the PATH's node or git, and setup-node's npm cache, which
   # asks npm for its folder (reading the pull request's .npmrc) and restores into it. Its checkout and
   # setup-node are the pins job's, held to PINS_JOB_ACTIONS, the checkout in repo/ and the step writing

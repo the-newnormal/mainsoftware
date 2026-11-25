@@ -101,6 +101,7 @@ import {
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
+  jqIsHeld,
   jqPipedLines,
   jqPrintsOne,
   jqProgramIsHeld,
@@ -301,7 +302,7 @@ const STANDS_ALONE =
 const PINNED_08 =
   "runs as written, whole and under its own if: (PINNED_RUNS): the pull request's checks, main's CI, the prod gate, prod's records, the smoke, services_started, the read-back, a rollback's releases and rolled, and the approver's diff, so no line of its own ends one early or writes an output or a file of its own"
 const PINNED_09 =
-  "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan rests on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
+  "runs as written, whole and under its own if: (PINNED_RUNS): the records, main's ruleset and the live environments the plan and prod-gate rest on and the plan itself, so no line of its own ends one early, skips one, forges what the plan reads or writes an output of its own"
 // DPW-04's finding for ci.yml's job that holds the CDK CLI's pin (round 12).
 const CLI_PIN_JOB_FINDING =
   "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs, and BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
@@ -346,7 +347,7 @@ describe('DPW: the guard reads the deploy workflow', () => {
     'resmoke-nonprod': 3,
     'record-nonprod': 1,
     'prod-plan': 13,
-    'prod-gate': 5,
+    'prod-gate': 6,
     prod: 22,
     'smoke-prod': 3,
     'rollback-prod': 14,
@@ -3615,6 +3616,26 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
       at('gate', 'runs scripts/protect-environments.sh check before it plans'),
       at('gate (The environments are live as written)', PINNED_09),
     ])
+    // Round 12's lenses: a re-run of prod-plan re-runs prod-gate and prod but never the gate, so prod-gate
+    // checks the environments again, just before its verdict; dropped, or moved before main's CI (which may
+    // wait half an hour), prod would queue under settings nothing read since.
+    const AGAIN = 'runs scripts/protect-environments.sh check just before its own verdict'
+    expect(gate(removedStep('prod-gate', 'The environments are live as written'))).toEqual([
+      at('prod-gate', AGAIN),
+      at('prod-gate (The environments are live as written)', PINNED_09),
+    ])
+    expect(gate(movedStep('prod-gate', 'The environments are live as written', "Prod's release records"))).toEqual([
+      at('prod-gate', AGAIN),
+    ])
+    expect(
+      gate(
+        plant(
+          '      - name: The environments are live as written\n',
+          `      - name: The environments are live as written\n        if: \${{ false }}\n`,
+          job('prod-gate'),
+        ),
+      ),
+    ).toEqual([at('prod-gate (The environments are live as written)', PINNED_09)])
     // An if: that skips the check on a push lets every push plan with no comparison of the live environments.
     for (const condition of ["github.event_name == 'workflow_dispatch'", 'false']) {
       expect(
@@ -3913,11 +3934,10 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
     expect(createHash('sha256').update(pinnedScriptText(protectEnvironments)).digest('hex')).toBe(
       PROTECT_ENVIRONMENTS_SHA256,
     )
-    const header = "# check only reads: the deploy workflow's gate"
-    expect(protectEnvironments.includes(header)).toBe(true)
-    expect(
-      gate(workflows, environments, holds, protectEnvironments.replace(header, '# check reads only: the gate')),
-    ).toEqual([])
+    // The comments above the first code line stay free to edit: the header's first line, whatever it says.
+    const header = protectEnvironments.split('\n')[1] ?? ''
+    expect(header.startsWith('# ')).toBe(true)
+    expect(gate(workflows, environments, holds, protectEnvironments.replace(header, '# another header'))).toEqual([])
   })
 
   // codeLinesAsBash drops exactly the lines bash skips: each sample runs under bash, and the sample's
@@ -4378,6 +4398,23 @@ describe('DPW-09 (C11-D49, C11-D56, C11-D59, C11-D69): the gate, the bot test an
         () => write('prod.json', reviewersRule({ reviewers: [] })),
         'protect-environments: prod required_reviewers differs',
       )
+      // GitHub lets any one listed reviewer approve, so a further user or a team beside the one prod.json asks
+      // for, a team alone, an entry of no type or a list that isn't one loosens the rule: check counts the
+      // reviewers exactly and takes users alone.
+      for (const reviewers of [
+        [{ type: 'User' }, { type: 'User' }],
+        [{ type: 'User' }, { type: 'Team' }],
+        [{ type: 'Team' }],
+        [{}],
+        [1],
+        'x',
+        { type: 'User' },
+      ]) {
+        planted(
+          () => write('prod.json', reviewersRule({ reviewers })),
+          'protect-environments: prod required_reviewers differs',
+        )
+      }
       planted(
         () =>
           write('nonprod.json', {
@@ -16944,7 +16981,7 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
   const UNREAD =
     'hands a jq given -n no data, no file, here-string, input redirection or pipe, since it reads none of it and checks null'
   const APPENDS =
-    'writes the job summary and its outputs only by appending (>> or tee -a), so no write erases what the step wrote there before'
+    'writes the job summary and its outputs only by appending (>> or tee -a), expanding either file’s name only as that whole target or operand, so no write erases what the step wrote there before'
   const JUDGED =
     "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
   const bash = (script: string, env: Record<string, string> = {}) =>
@@ -17189,15 +17226,56 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
     expect(maskingFindings(inStep('prod-plan', 'Diff', down, down.replace('>>', '>')))).toContain(
       `${DEPLOY}: DPW-07 prod-plan (Diff): ${APPENDS}`,
     )
+    // Round 12's lenses: the summary's path held in a name of the run's own and written through it with >, or
+    // a prepared file copied onto it, each erases what the step wrote there before as a > does, by no redirection
+    // into either name.
+    const plan = "          {\n            echo '### The plan'\n"
+    expect(
+      maskingFindings(
+        withText(
+          DEPLOY,
+          edited(
+            deployText,
+            stepText(deployText, 'gate', 'Plan'),
+            replaced(
+              stepText(deployText, 'gate', 'Plan'),
+              [plan, `          summary="$GITHUB_STEP_SUMMARY"\n${plan}`],
+              [gateSummary, '} >"$summary"\n'],
+            ),
+            job('gate'),
+          ),
+        ),
+      ),
+    ).toContain(`${DEPLOY}: DPW-07 gate (Plan): ${APPENDS}`)
+    expect(
+      maskingFindings(
+        inStep('gate', 'Plan', plan, `          cp "$RUNNER_TEMP/plan.md" "$GITHUB_STEP_SUMMARY"\n${plan}`),
+      ),
+    ).toContain(`${DEPLOY}: DPW-07 gate (Plan): ${APPENDS}`)
     for (const [text, holds] of [
       ['{\n  echo x\n} >"$GITHUB_STEP_SUMMARY"', false],
       ['echo a=b >"$GITHUB_OUTPUT"', false],
       ['echo a=b 1>"$GITHUB_OUTPUT"', false],
       ['echo a=b >|"$GITHUB_OUTPUT"', false],
       ['echo x | tee "$GITHUB_STEP_SUMMARY"', false],
+      ['summary="$GITHUB_STEP_SUMMARY"\n{\n  echo x\n} >"$summary"', false],
+      ['f=$GITHUB_OUTPUT; echo a=b >"$f"', false],
+      ['cp "$RUNNER_TEMP/plan.md" "$GITHUB_STEP_SUMMARY"', false],
+      ['mv "$RUNNER_TEMP/plan.md" "$GITHUB_STEP_SUMMARY"', false],
+      ['dd if=x of="$GITHUB_OUTPUT"', false],
+      ['truncate -s 0 "$GITHUB_STEP_SUMMARY"', false],
+      ['sed -i d "$GITHUB_STEP_SUMMARY"', false],
+      ['cp tee -a "$GITHUB_STEP_SUMMARY"', false],
+      ['echo a=b >>"$GITHUB_OUTPUT"x', false],
+      ['echo a=b >>"x$GITHUB_OUTPUT"', false],
+      ['echo a=b >>"$' + '{GITHUB_OUTPUT%/*}/x"', false],
       ['echo x | tee -a "$GITHUB_STEP_SUMMARY"', true],
+      ['tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/x" >&2', true],
       ['echo a=b >>"$GITHUB_OUTPUT"', true],
+      ['echo a=b 2>>"$GITHUB_OUTPUT"; echo c=d &>>"$GITHUB_OUTPUT"', true],
+      ['echo a=b >>$' + '{GITHUB_OUTPUT}', true],
       ['echo \'>"$GITHUB_OUTPUT"\'', true],
+      ['# cp x "$GITHUB_OUTPUT"\necho a', true],
     ] as const) {
       expect(appendsOnly(text), text).toBe(holds)
     }
@@ -17266,5 +17344,82 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
       }
     }
     expect(releaseFindings(workflows).filter(each => each.endsWith(JUDGED))).toEqual([])
+  })
+})
+
+// Round 12's lenses: refusals no planted case reached, so a refactor could drop or narrow one with every case
+// still green. Each is planted here as an author would write it and found, alone, by the rule that holds it.
+describe('Round 12: the refusals no case reached (DPW-01, DPW-02, DPW-03, DPW-06, DPW-07, DPW-10)', () => {
+  const restore =
+    '      restore:\n        description: up or down for target restore; none otherwise\n        type: choice\n        options: [none, up, down]\n        default: none\n'
+  const restoreDescription = '        description: up or down for target restore; none otherwise\n'
+  const at = (rule: string, text: string) => `${DEPLOY}: ${rule} ${text}`
+
+  it('holds the dispatch to exactly its four inputs, each with a description (DPW-01)', () => {
+    const ON = [
+      at('DPW-01', 'on: is a push to main and a dispatch with exactly the target, mode, release and restore inputs'),
+    ]
+    const on = (from: string, to: string) => triggerFindings(plant(from, to), rulesetText)
+    expect(
+      on(restore, `${restore}      ref:\n        description: A ref\n        type: string\n        default: ''\n`),
+    ).toEqual(ON)
+    expect(on(restoreDescription, "        description: ''\n")).toEqual(ON)
+    expect(
+      on('  workflow_dispatch:\n    inputs:\n', '  workflow_dispatch:\n    types: [requested]\n    inputs:\n'),
+    ).toEqual(ON)
+  })
+
+  it('refuses a job of no name it knows and an escape in deploy.yml (DPW-02)', () => {
+    const extra =
+      '\n  extra:\n    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n    steps:\n      - name: x\n        run: echo x\n'
+    expect(permissionFindings(plant(job('gate'), `${extra}  gate:\n`))).toEqual([
+      at('DPW-02', 'extra: is none of the seventeen jobs'),
+    ])
+    expect(
+      permissionFindings(
+        plant(restoreDescription, '        description: "up or down for target restore\\x3B none otherwise"\n'),
+      ),
+    ).toEqual([at('DPW-02', 'spells no key or value with an escape, which could name id-token or write-all unseen')])
+  })
+
+  it('refuses an environment job without the credentials action (DPW-03)', () => {
+    const action = '        uses: aws-actions/configure-aws-credentials@'
+    expect(credentialJobFindings(plant(action, action.replace('credentials@', 'credential@'), job('nonprod')))).toEqual(
+      [at('DPW-03', 'nonprod: takes its credentials through the credentials action')],
+    )
+  })
+
+  it('sets STAGE only at the job that may set it (DPW-06)', () => {
+    expect(
+      deployStepFindings(
+        plant('    cache-mode: none\n', '    cache-mode: none\n    env:\n      STAGE: nonprod\n', job('gate')),
+      ),
+    ).toEqual([at('DPW-06', 'gate: sets no STAGE')])
+    expect(
+      deployStepFindings(plant('        env:\n', '        env:\n          STAGE: nonprod\n', job('nonprod'))),
+    ).toEqual([at('DPW-06', 'nonprod: sets STAGE once, at the job, to nonprod')])
+  })
+
+  it('sets no AWS_ variable in a credentialed step’s env: or on a run line (DPW-07)', () => {
+    const AWS = [at('DPW-07', 'nonprod: sets no AWS_ variable and no ROLE_TO_ASSUME')]
+    expect(
+      maskingFindings(plant('        env:\n', '        env:\n          AWS_REGION: ap-southeast-1\n', job('nonprod'))),
+    ).toEqual(AWS)
+    const stop = '          echo "::stop-commands::$stop_token"\n'
+    expect(maskingFindings(plant(stop, `${stop}          AWS_REGION=us-east-1\n`, job('nonprod')))).toEqual(AWS)
+  })
+
+  it('refuses a manifest npm can’t read and a jq --arg of no name (DPW-10)', () => {
+    expect(
+      credentialedCodeFindings(workflows, new Map([...manifests, ['apps/web/package.json', '{']]), lockfile),
+    ).toEqual(['apps/web/package.json: DPW-10 is a package.json npm can read'])
+    const jq = (line: string) => {
+      const command = readShell(line).commands.find(each => each.name === 'jq')
+      if (command === undefined) throw new Error(`no jq in ${line}`)
+      return jqIsHeld(command.args, false, true)
+    }
+    expect(jq(`jq -r --arg x y '.' <<<"$A"`)).toBe(true)
+    expect(jq(`jq -r --arg 1x y '.' <<<"$A"`)).toBe(false)
+    expect(jq(`jq -r --arg 'x y' z '.' <<<"$A"`)).toBe(false)
   })
 })
