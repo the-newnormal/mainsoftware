@@ -79,8 +79,11 @@
 // that diff showed (prod-plan outputs what it read of each, and down refuses before any deploy unless it reads the
 // same), and writes the diff into its summary as an indented code block, which no line of a release's own text can end
 // or turn into HTML that hides the rest; a credentialed run writes no file by a redirection but its outputs, its
-// summary and /dev/null, and the diff in prod-plan's two diff runs alone (CLI_FETCH's and IMAGE_CHECK's tools write
-// only their own folders, each on its own line: FETCH_TOOLS, IMAGE_TOOLS); and ASSET_CHECK holds every template to the
+// summary and /dev/null, and the diff in prod-plan's two diff runs alone, a > after && being a write of its own
+// (round 12's fourth iteration, its second pass: &&>"$f" emptied the CLI), and every run, in every job, writes
+// the summary and its outputs only by appending (appendsOnly(), its second pass: a > erased the gate's lines
+// naming the records history.ts ignored) (CLI_FETCH's and IMAGE_CHECK's tools write only their own folders, each
+// on its own line: FETCH_TOOLS, IMAGE_TOOLS); and ASSET_CHECK holds every template to the
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
@@ -111,8 +114,12 @@
 // AWS_CHECK and the records need them, a service's network, ECS Exec and
 // target groups, a security group's egress, which must be there, and a rule's peer, a VPC endpoint's service and
 // each statement of its policy, held to the organisation's principals and, but in prod until its reviewed change,
-// its resources, the load balancer's attributes, a listener's and record's targets, a route's table, never an
-// isolated subnet's, a parameter's stored value, a role's trust and, but in prod until that change, a task role's
+// its resources, the load balancer's attributes, a listener's and record's targets (a listener HTTPS on 443 with
+// a certificate), a route's table, never an isolated subnet's, no subnet giving a public address, and in the
+// restore stage no internet gateway, route, load balancer, listener, rule, target group, certificate or record, no
+// group open to any address and no service behind a load balancer (round 12's fourth iteration, its second pass:
+// prod's way in, copied into the restore stage under its own names, passed, the restore stage holding no rule of
+// its own, which IAC-20 holds over CI's fake release alone), a parameter's stored value, a role's trust and, but in prod until that change, a task role's
 // network perimeter, a tag's key, and each stack's outputs, which the one-offs, the release checks and the
 // read-back read) to the synth's shape, since the stage's own code that writes them is rendered only for a real
 // release and the diff prints an added resource as one line (a container's environment, command and health check
@@ -163,7 +170,10 @@
 // outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step, as
 // every job's call of a check does, the synths' too, and each deploy of the CLI and smoke.ts does, but the
 // drill's if: round 12's fourth iteration, where a group's } || STATUS=$? went on past a failed deploy or
-// smoke), no line of its
+// smoke; and prod-plan's diff runs, the one form exempt, held to it, each ending with exit "$STATUS" standing
+// alone after its diff lines' wrappings, its STATUS and DOWN_STATUS set only as the committed texts set them
+// (diffFormHolds(): its second pass, where the rollback diff with no exit, or the diff ending exit
+// "$DOWN_STATUS", ended prod-plan green after a failed diff), no line of its
 // own sets an input a pinned line reads (its step's or job's env:, a canonical text's variable, REGISTRY or
 // RUN, ACCOUNT_ID, or a name an aws value reads or the read-back builds one from but by the commands
 // AWS_VALUE_LINES writes, each from AWS's answer to a call by the stage's names, never a stack's outputs, and
@@ -172,7 +182,9 @@
 // outputs, summary, folder and run ids), an array's elements' names among them (round 12's second iteration:
 // SEEN=("$ACTIONS_ID_TOKEN_REQUEST_TOKEN") read none and made the token a name of the run's own), so neither the
 // OIDC request token the runner hands every run step of a job with an id-token nor the job's token is handed, in
-// any form the table reads, to a tool that could print it in pieces. The wiring between the runs is pinned too: every job's steps are the guard's, in order, by name and
+// any form the table reads, to a tool that could print it in pieces; nor does a canonical text make a name a step's
+// env: gives from a secret its own by setting it (round 12's fourth iteration, its second pass:
+// ACCOUNT_ID="${ACCOUNT_ID:-}", the set -u default, then printed the account id in halves). The wiring between the runs is pinned too: every job's steps are the guard's, in order, by name and
 // action (JOB_STEPS), so no step of its own stands before a pinned run in any job, and no run of any job names
 // GITHUB_ENV, GITHUB_PATH or GITHUB_STATE, which would hand a later step a variable (BASH_ENV, say), a path or a
 // state; every env: and every job's outputs: is the guard's, whole (STEP_ENVS, STAGES, JOB_OUTPUTS),
@@ -203,7 +215,9 @@
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
 // (PINNED_RUNS), so no line of its own or if: ends or skips one early, writes an output, a file or a record
 // of its own, or hands it another input (a record job's COMMIT:DIGEST and SERVICES, and their previous
-// release's, being its smokes' RELEASE and read-back's job as the workflow writes them, and a rollback's REPLACED
+// release's, being its smokes' RELEASE and read-back's job as the workflow writes them, its SMOKE and RESMOKE its
+// smoke's and resmoke's results as written (its second pass: SMOKE from the deploy job's result recorded a release
+// whose smoke failed as deployed), and a rollback's REPLACED
 // its deploy job's replaced output, each compared as written: round 12's fourth iteration, where github.sha and
 // the gate's current release, each equal to what it replaced on a push, read otherwise in a dispatched
 // rollback), and in a record's writer no line but the guard's own literals
@@ -243,7 +257,9 @@
 // workflow is at most 500,000 bytes (workflowSizeFindings()), since GitHub starts no run of a workflow file over
 // 500 KB, and no workflow's name holds an @, so the path before a run path's first @ names its file exactly, as
 // the gate's and prod-gate's reads of ci.yml's runs take it (round 12's fourth iteration: a ci.yml@x.yml read as
-// ci.yml): deploy.yml is over 500 KB as committed, so no run of it starts until the owner's change to its structure
+// ci.yml), and the two runs ci.yml's held jobs run are literal block scalars (literalRun(): its second pass, where
+// the pins check written run: >- read as PINS_RUN here while YAML folded it into one printf that never ran the
+// check): deploy.yml is over 500 KB as committed, so no run of it starts until the owner's change to its structure
 // (TECH-SPEC T24 item 20), and the tests name it as the one finding until then. GitHub reads a workflow's blob as
 // git holds it, and the owner reads every file's, while the rules, CI and the deploy jobs read the checkout, so no
 // tracked file carries a git attribute, as the working tree's or the index's .gitattributes gives it
@@ -263,7 +279,10 @@
 // the list before it in the background, where a refusal's exit 1 ends a subshell alone and set -e never sees it:
 // round 12's third iteration; and a then, do, else or elif straight after ]], ) or }, a for NAME do and a
 // function whose body isn't a { … } group, each where bash starts a command the reader reads none: round 12's
-// fourth iteration), to ending a step or a function only by a literal status, opening no subshell where a
+// fourth iteration; and an append before a command's word, NAME+=, or redirections written with no blank between
+// them, read as no prefix, and a function's body counted to a } that was an argument or escaped, each hiding a
+// command or an exit: its second pass), to ending a step or a function only by a literal status, opening no
+// subshell where a
 // command starts and refusing inside no substitution (verdictLines(): a refusal's bare exit after echo … | mask,
 // and ( … ) || echo around PROBE's call, each ended the step with 0: round 12's fourth iteration; and an exit, or
 // a call of a function that exits, in a $( … ), <( … ) or >( … ) ends that subshell alone, so : "$( … ||
@@ -349,7 +368,10 @@
 // piped (round 12's third iteration: a comment after the |, a helper its caller pipes into, a group, get or
 // < <( … ) fed AWS_CHECK's every count is one a stream), a process substitution being a file it is given, never a
 // redirection, and a here-string its input only as the last redirection of descriptor 0 (its second pass: <( … )
-// after the one file, and < <( … ) after the here-string, each fed jq a value its line didn't show). A here-string
+// after the one file, and < <( … ) after the here-string, each fed jq a value its line didn't show). And a jq given
+// -n is handed no data at all, no file, here-string, input redirection or pipe (JQ_UNREAD_RULE, jqIsHeld()), since
+// it reads none and checks null: jq -ne '…' "$dir/$file" passed whatever the template held (round 12's fourth
+// iteration, its second pass). A here-string
 // holding several JSON texts is read the same
 // way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an earlier jq, a
 // variable built of several (by += or from jq -c '.[]') being the owner's read's to catch; each file is an
@@ -421,6 +443,7 @@ import {
   jobPermissions,
   jobScalar,
   literalProblems,
+  literalRun,
   parsedSteps,
   permissionsOf,
   shapeProblems,
@@ -666,11 +689,14 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # aws:ResourceOrgID, or, in prod alone until a reviewed change turns its resource statement on, one statement
 # binding principals alone; the load balancer and target groups hold the attributes the synth writes (no
 # access, connection or health-check log destination), the template's network and targets by IP alone; a
-# listener serves the template's certificates with a fixed response, a rule forwards to the template's target
-# groups, the record is an alias of the template's load balancer in its stage's zone, routes reach the
-# template's internet gateway from no route table of an isolated subnet (those its stage's isolated-subnets
-# parameter names), and flow logs the template's log group by their own unnamed role, trusted by VPC flow
-# logs alone; and SSM parameters, the secret, log groups, roles, the cache and tags are its stage's, each
+# listener serves HTTPS on 443 with the template's certificates and a fixed response, a rule forwards to the
+# template's target groups, the record is an alias of the template's load balancer in its stage's zone, routes
+# reach the template's internet gateway from no route table of an isolated subnet (those its stage's
+# isolated-subnets parameter names), no subnet gives a public address on launch, and flow logs the template's
+# log group by their own unnamed role, trusted by VPC flow logs alone; the restore stage, sealed, holds no
+# internet gateway, route, load balancer, listener, rule, target group, certificate or record, no group open
+# to any address and no service behind a load balancer (IAC-20 holds the same of CI's synth alone); and SSM
+# parameters, the secret, log groups, roles, the cache and tags are its stage's, each
 # parameter holding the template's own resource's value (or a host name for Valkey's endpoint), each role
 # trusted by ECS tasks, VPC flow logs or Lambda alone, in the account, a named role (a task or execution
 # role) by ECS tasks alone, and each task role, but in prod until the same change, bound by its network
@@ -1011,13 +1037,15 @@ check_release_in() {
         def resources: .Condition | type == "object" and keys == ["StringEquals"] and (.StringEquals | type == "object" and keys == ["aws:PrincipalOrgID", "aws:ResourceOrgID"] and all(.[]; org));
         ([of("AWS::SSM::Parameter") | select(.Name == "/hearth/" + $s + "/network/isolated-subnets") | .Value | objects | .["Fn::Join"] | arrays | .[1] | arrays | .[] | objects | .Ref]) as $isolated |
         ([of("AWS::EC2::Route") | .RouteTableId | objects | .Ref]) as $routed |
+        ($s != "restore" or (all($r[]; .Type | IN("AWS::EC2::InternetGateway", "AWS::EC2::VPCGatewayAttachment", "AWS::EC2::Route", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::CertificateManager::Certificate", "AWS::Route53::RecordSet") | not) and all(of("AWS::EC2::SecurityGroup"); (.SecurityGroupIngress // []) == []) and all(of("AWS::ECS::Service"); (.LoadBalancers // []) == []))) and
+        all(of("AWS::EC2::Subnet"); (.MapPublicIpOnLaunch // false) == false) and
         all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; . == {"CidrIp": "255.255.255.255/32", "Description": "Disallow all traffic", "FromPort": 252, "IpProtocol": "icmp", "ToPort": 86})) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
         all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
         all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
         all(of("AWS::EC2::VPCEndpoint"); .ServiceName as $service | ($service | type == "string" and test("\\Acom\\.amazonaws\\.ap-southeast-1\\.(ecr\\.api|ecr\\.dkr|logs|secretsmanager|ssmmessages|s3)\\z")) and (.VpcId | ref("AWS::EC2::VPC")) and all(.SubnetIds // [] | .[]; ref("AWS::EC2::Subnet")) and all(.RouteTableIds // [] | .[]; ref("AWS::EC2::RouteTable")) and all(.SecurityGroupIds // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and (.PolicyDocument | type == "object" and keys == ["Statement", "Version"] and .Version == "2012-10-17") and (($service | ltrimstr("com.amazonaws.ap-southeast-1.")) as $name | .PolicyDocument.Statement as $all | if $name == "s3" then .VpcEndpointType == "Gateway" and ($all | type == "array" and length == 2 and .[0] == {"Sid": "EcrImageLayers", "Effect": "Allow", "Principal": {"AWS": "*"}, "Action": "s3:GetObject", "Resource": (["arn", "aws", "s3", "", "", "prod-ap-southeast-1-starport-layer-bucket/*"] | join(":"))} and (.[1] | allow("OrgResources"; ["s3:GetObject", "s3:ListBucket", "s3:PutObject"]) and resources)) else .VpcEndpointType == "Interface" and ($name | split(".")[0] + ":*") as $actions | ({"ecr.api": ["ecr:GetAuthorizationToken"], "ssmmessages": ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"]}[$name] // []) as $owned | ($all | type == "array" and ((length == (if $owned == [] then 1 else 2 end) and (.[0] | allow("OrgPrincipalsToOrgResources"; $actions) and resources) and ($owned == [] or (.[1] | allow("OrgPrincipalsToAwsResources"; $owned) and principals))) or ($s == "prod" and length == 1 and (.[0] | allow("OrgPrincipals"; $actions) and principals)))) end)) and
         all(of("AWS::ElasticLoadBalancingV2::LoadBalancer"); .Name == "hearth-" + $s and .Type == "application" and all(.Subnets // [] | .[]; ref("AWS::EC2::Subnet")) and all(.SecurityGroups // [] | .[]; att("AWS::EC2::SecurityGroup"; "GroupId")) and all(.LoadBalancerAttributes // [] | .[]; .Key | IN("deletion_protection.enabled", "routing.http2.enabled", "idle_timeout.timeout_seconds", "routing.http.drop_invalid_header_fields.enabled", "routing.http.desync_mitigation_mode"))) and
         all(of("AWS::ElasticLoadBalancingV2::TargetGroup"); (.Name | type == "string" and test("\\Ahearth-" + $s + "-(api|realtime)\\z")) and .TargetType == "ip" and (.VpcId | ref("AWS::EC2::VPC")) and all(.TargetGroupAttributes // [] | .[]; .Key | IN("deregistration_delay.timeout_seconds", "stickiness.enabled", "load_balancing.algorithm.type"))) and
-        all(of("AWS::ElasticLoadBalancingV2::Listener"); (.LoadBalancerArn | ref("AWS::ElasticLoadBalancingV2::LoadBalancer")) and all(.Certificates // [] | .[]; .CertificateArn | ref("AWS::CertificateManager::Certificate")) and all(.DefaultActions // [] | .[]; .Type == "fixed-response")) and
+        all(of("AWS::ElasticLoadBalancingV2::Listener"); (.LoadBalancerArn | ref("AWS::ElasticLoadBalancingV2::LoadBalancer")) and .Port == 443 and .Protocol == "HTTPS" and (.Certificates | type == "array" and length > 0 and all(.[]; .CertificateArn | ref("AWS::CertificateManager::Certificate"))) and all(.DefaultActions // [] | .[]; .Type == "fixed-response")) and
         all(of("AWS::ElasticLoadBalancingV2::ListenerRule"); (.ListenerArn | ref("AWS::ElasticLoadBalancingV2::Listener")) and all(.Actions // [] | .[]; .Type == "forward" and (.TargetGroupArn | ref("AWS::ElasticLoadBalancingV2::TargetGroup")))) and
         all(of("AWS::Route53::RecordSet"); (.HostedZoneId | param("/hearth/" + $s + "/zone/app")) and (.AliasTarget.HostedZoneId | att("AWS::ElasticLoadBalancingV2::LoadBalancer"; "CanonicalHostedZoneID")) and .AliasTarget.DNSName == {"Fn::Join": ["", ["dualstack.", {"Fn::GetAtt": [.AliasTarget.HostedZoneId["Fn::GetAtt"][0], "DNSName"]}]]}) and
         all(of("AWS::CertificateManager::Certificate"); .ValidationMethod == "DNS" and all(.DomainValidationOptions // [] | .[]; .HostedZoneId | param("/hearth/" + $s + "/zone/app"))) and
@@ -1027,7 +1055,7 @@ check_release_in() {
         all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
         all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
         all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone"
+        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -3545,8 +3573,11 @@ export const WRAPPERS: readonly string[] = [
 // What may stand before a command's word: run, get, a wrapper with its flags, an assignment, a redirection.
 // A redirection's target is a word, any run of quoted and bare parts joined, as bash reads it (round 12,
 // second iteration): read as one part alone, <<<"$step"'' or >&2'' took no prefix and the line read as no command
-// at all, so the command bash ran after it was seen by no rule.
-const PREFIXES = String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*=(?:[^\s$]|\$(?!\())*|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"])+)\s+)*)`
+// at all, so the command bash ran after it was seen by no rule. An assignment may append (NAME+=), and a
+// redirection may be followed straight by the next one, as bash reads both (round 12's fourth iteration, its
+// second pass): basis+='' cp …, or >&2<<<x . …, took the assignment or the descriptor for the command's word, so
+// the cp onto the CLI, or the source of the assembly's file, that bash ran was read by no command rule.
+const PREFIXES = String.raw`((?:(?:run|get|(?:exec|command|builtin|nohup|time|sudo|xargs)(?:\s+-\S*)*|timeout(?:\s+-\S+)*\s+\S+|env(?:\s+-\S+)*(?:\s+[A-Za-z_]\w*=\S*)*|[A-Za-z_]\w*\+?=(?:[^\s$]|\$(?!\())*)\s+|(?:\d+|&)?(?:>>|<<<|<<-?|<>|>&|<&|>\||[<>])(?!\()\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|()<>'"])+(?:\s+|(?=(?:\d+|&)?[<>])))*)`
 const COMMAND = new RegExp(
   String.raw`(${COMMAND_START})\s*${PREFIXES}` +
     String.raw`(?!(?:then|do|else|elif|if|while|until)(?![\w-])|\{\s|\$\(|!\s)("[^"\n]*"|'[^'\n]*'|(?:[^\s;&|()<>'"$]|\$(?!\())+)`,
@@ -3779,9 +3810,10 @@ function canonicalLines(run: string): ReadonlySet<number> {
 // A backslash before a blank, a #, a line's end, or (round 12) a ( or ), which the case scanner, counting
 // parentheses in the code view, would read as a pattern's own, so \(|*) had it blank the item's commands; and
 // from round 12's second iteration before a ;, &, |, !, {, < or >, which the code view keeps and the reader of
-// command starts takes for an operator, so plan\;[[ had commandCode() blank the commands after it. The
-// canonical texts' only unquoted escape is \.
-const ESCAPED_BREAK = /\\(?:[\s#();&|!{<>]|$)/m
+// command starts takes for an operator, so plan\;[[ had commandCode() blank the commands after it; and from
+// round 12's fourth iteration, its second pass, before a }, which exitingFunctions() would read as a group's
+// close, though bash keeps it inside ${step:-\}}. The canonical texts' only unquoted escape is \.
+const ESCAPED_BREAK = /\\(?:[\s#();&|!{}<>]|$)/m
 // A backslash at a line's end anywhere in a text as written, quoted or not: inside double quotes bash removes
 // it with the line break and joins the two lines into one word, so a $ and a backslash ending one line and
 // (cmd) or {NAME} starting the next run cmd or expand NAME, as outside quotes and in a here-document, while
@@ -4819,6 +4851,16 @@ export function jqPipedLines(text: string): number[] {
     ),
   )
 }
+// A jq given -n reads no input at all (jq's manual: the filter runs once, with null as its input), so a check
+// written jq -ne '…' "$dir/$file" or jq -n -e '…' <<<"$X" checked null, and every (.X // {}) | all(…),
+// [ … .[] … ] | all(…) or … | not then passed whatever its data held (round 12's fourth iteration, its second
+// pass). So a jq given -n is handed no data: no file, no here-string or other redirection of its input, and no
+// pipe; it builds only from --arg and --argjson, as every committed jq -n does.
+const JQ_UNREAD_RULE =
+  'hands a jq given -n no data, no file, here-string, input redirection or pipe, since it reads none of it and checks null'
+export function jqUnreadLines(text: string): number[] {
+  return lineNumbers(jqCalls(text).filter(call => call.noInput && call.fed))
+}
 const lineNumbers = (calls: ReadonlyArray<{ line: number }>) =>
   [...new Set(calls.map(call => call.line))].sort((a, b) => a - b)
 // Whether the code before a command ends with a pipe that feeds it: a | or |& (never || or >|), then only blanks,
@@ -4834,6 +4876,8 @@ type JqCall = {
   line: number
   status: boolean
   oneInput: boolean
+  noInput: boolean
+  fed: boolean
   piped: boolean
   files: number
   hereString: boolean
@@ -4854,12 +4898,14 @@ function jqCalls(text: string): JqCall[] {
       const words = withoutRedirections(written)
       let i = 0
       let status = false
-      let oneInput = false
+      let noInput = false
+      let slurp = false
       for (; i < words.length; i++) {
         const word = words[i] ?? ''
         if (JQ_FLAG.test(word)) {
           status ||= word.includes('e')
-          oneInput ||= /[ns]/.test(word)
+          noInput ||= word.includes('n')
+          slurp ||= word.includes('s')
         } else if (word === '--arg' || word === '--argjson') i += 2
         else break
       }
@@ -4867,7 +4913,11 @@ function jqCalls(text: string): JqCall[] {
       const body = /^'[^']*'$/.test(program) ? program.slice(1, -1) : program
       const piped = PIPED.test(views.code.slice(Math.max(0, at - 200), at))
       const files = words.slice(i + 1).reduce((count, word) => count + (expandsToMany(word) ? 2 : 1), 0)
-      calls.push({ line: n, status, oneInput, piped, files, hereString, program: body })
+      // Whether its words or a pipe hand it data, which with -n it reads none of (JQ_UNREAD_RULE, its own rule:
+      // JQ_PIPED_RULE still reads -n as reading no stream).
+      const fed = files > 0 || inputs.length > 0 || piped
+      const oneInput = slurp || noInput
+      calls.push({ line: n, status, oneInput, noInput, fed, piped, files, hereString, program: body })
     }
     offset += line.length + 1
   }
@@ -5338,12 +5388,28 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
 // even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
 const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
 const RUNNER_NAMES = (): readonly string[] => [...RUNNER_EXPANSIONS, 'GITHUB_SHA', 'SECONDS']
+// The names a step's env: gives from a secret or the job's token (round 12's fourth iteration, its second pass:
+// only canonicalGiven() dropped them, so a canonical text that set ACCOUNT_ID="${ACCOUNT_ID:-}", the ordinary set -u
+// default, made the push's account id, from secrets.AWS_ACCOUNT_ID, a name of its own, and printed it in two
+// halves, which neither the runner's masks nor mask match). No text's own assignment makes one its own.
+let SECRET_GIVEN: ReadonlySet<string> | undefined
+const secretGiven = (): ReadonlySet<string> => {
+  SECRET_GIVEN ??= new Set(
+    Object.values(STEP_ENVS)
+      .flatMap(steps => Object.values(steps).flatMap(env => Object.entries(env)))
+      .filter(([, value]) => /secrets|github\s*\.\s*token/i.test(value))
+      .map(([name]) => name),
+  )
+  return SECRET_GIVEN
+}
 const namesSetIn = (text: string): string[] => [...NAMES_SET_BY(text), ...shellCommands(text).flatMap(builtinNames)]
+// A name no text may make its own: the runner's and the credentials' namespaces, the tokens, and a secret's.
+const foreign = (name: string) =>
+  CREDENTIAL_NAMESPACE.test(name) || TOKEN_NAMES.includes(name) || secretGiven().has(name)
 let CANONICAL_GIVEN: ReadonlySet<string> | undefined
 const canonicalGiven = (): ReadonlySet<string> => {
   if (CANONICAL_GIVEN === undefined) {
     const envs = Object.values(STEP_ENVS).flatMap(steps => Object.values(steps).flatMap(env => Object.entries(env)))
-    const secret = new Set(envs.filter(([, value]) => /secrets|github\s*\.\s*token/i.test(value)).map(([name]) => name))
     CANONICAL_GIVEN = new Set(
       [
         ...envs.map(([name]) => name),
@@ -5352,7 +5418,7 @@ const canonicalGiven = (): ReadonlySet<string> => {
         'ASSEMBLY',
         'DIFF',
         ...Object.values(CANONICAL_BY_NAME()).flatMap(namesSetIn),
-      ].filter(name => !secret.has(name) && !CREDENTIAL_NAMESPACE.test(name)),
+      ].filter(name => !secretGiven().has(name) && !CREDENTIAL_NAMESPACE.test(name)),
     )
   }
   return CANONICAL_GIVEN
@@ -5361,11 +5427,7 @@ const canonicalGiven = (): ReadonlySet<string> => {
 // view, so a jq program's own $name in single quotes is none), given the names the texts beside it set.
 export function foreignExpansionLines(text: string, alsoSet: readonly string[] = []): number[] {
   const views = shellViews(text)
-  const allowed = new Set([
-    ...canonicalGiven(),
-    ...alsoSet.filter(name => !CREDENTIAL_NAMESPACE.test(name) && !TOKEN_NAMES.includes(name)),
-    ...RUNNER_NAMES(),
-  ])
+  const allowed = new Set([...canonicalGiven(), ...alsoSet.filter(name => !foreign(name)), ...RUNNER_NAMES()])
   const lines = new Set<number>()
   for (const match of views.code.matchAll(/\$\{?[#!]?(?=[A-Za-z_])/g)) {
     const name = /^\$\{?[#!]?([A-Za-z_]\w*)/.exec(views.text.slice(match.index))?.[1] ?? ''
@@ -5434,6 +5496,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of jqPipedLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_PIPED_RULE}`)
     }
+    for (const line of jqUnreadLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_UNREAD_RULE}`)
+    }
     for (const line of fileNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
     }
@@ -5474,7 +5539,12 @@ const callsAny = (code: string, names: ReadonlySet<string>) =>
     new RegExp(String.raw`(?<![\w$.-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\w-])`).test(code),
   )
 // The canonical functions whose body (read on the command code, from its { to the } that closes it) exits, or calls
-// one that does.
+// one that does. A } closes a group only where a command starts (a line's start, or after ;, & or |, and blanks),
+// and an escaped character or a ${ … } is stepped over whole (round 12's fourth iteration, its second pass): a
+// plain count closed the body at : ${step:-\}} or : }, so an exit after it was read as outside the function and
+// its call in a substitution passed. bash refuses a } at such a place inside a group but as its close (a case
+// pattern there is a syntax error), and a } it reads as a close after fi, done, esac, ) or ]], which this reads
+// as no close, only lengthens the body, so more is read as exiting, never less.
 export function exitingFunctions(texts: readonly string[]): ReadonlySet<string> {
   const bodies = new Map<string, string>()
   for (const text of texts) {
@@ -5486,8 +5556,29 @@ export function exitingFunctions(texts: readonly string[]): ReadonlySet<string> 
       let depth = 0
       let end = open
       for (; end < code.length; end++) {
+        if (code[end] === '\\') {
+          end++
+          continue
+        }
+        if (code.startsWith('${', end)) {
+          let inner = 1
+          for (end += 2; end < code.length && inner > 0; end++) {
+            if (code[end] === '\\') end++
+            else if (code.startsWith('${', end)) {
+              inner++
+              end++
+            } else if (code[end] === '}') inner--
+          }
+          end--
+          continue
+        }
         if (code[end] === '{') depth++
-        else if (code[end] === '}' && --depth === 0) break
+        else if (
+          code[end] === '}' &&
+          /(?:^|[;&|])[ \t]*$/.test(code.slice(code.lastIndexOf('\n', end - 1) + 1, end)) &&
+          --depth === 0
+        )
+          break
       }
       bodies.set(name, `${bodies.get(name) ?? ''}\n${code.slice(open, end + 1)}`)
     }
@@ -7143,6 +7234,9 @@ export const BLOB_RESET = `printf '* -text -eol -ident -filter -working-tree-enc
 git read-tree HEAD
 git checkout-index --all --force`
 export const PINS_CHECK = 'node scripts/check-action-pins.ts'
+// Both held runs are written run: |, a literal block scalar (literalRun(); round 12's fourth iteration, its second
+// pass): written run: >-, the pins check's four lines read as PINS_RUN here while YAML folded them into one printf,
+// so check-action-pins.ts never ran and the job went green.
 export const PINS_RUN = `${BLOB_RESET}\n${PINS_CHECK}`
 const NEEDS_FAILED = expr(
   "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
@@ -7186,6 +7280,7 @@ function pinsJobHolds(ci: string): boolean {
     only(run, ['name', 'working-directory', 'run']) &&
     run?.keys.get('working-directory') === REPO_FOLDER &&
     run.run === PINS_RUN &&
+    literalRun(run) &&
     onceEach(check.keyNames, ['needs', 'if', 'runs-on', 'timeout-minutes', 'steps']) &&
     jobScalar(check, 'runs-on') === 'ubuntu-24.04' &&
     jobNeeds(check).includes(PINS_JOB) &&
@@ -7219,8 +7314,11 @@ export const CLI_PIN_CHECK = 'node scripts/check-cli-pin.ts "$BASE"'
 // infra/.gitattributes checked out a lower pin than the manifest's blob held, the job passed, and every deploy job
 // fetched the lower CLI. So the run, read from the workflow's blob, which no attribute rewrites, first hashes every
 // regular file of HEAD's tree as the working tree holds it, with no filter, and refuses unless each is its blob (a
-// symbolic link or a submodule takes no attribute's bytes); a git that fails ends the step (bash -e, pipefail),
-// and a path git quotes is one hash-object can't read, which refuses.
+// symbolic link or a submodule takes no attribute's bytes). GitHub runs a step with no shell: as bash -e on a file,
+// with no pipefail, so a git that fails leaves the listing empty, or the comparison unequal, either of which
+// refuses, or fails the reset after it; and a path git quotes (a byte at or above 0x80, a control character, a
+// double quote or a backslash) hash-object --stdin-paths unquotes, reading a line that starts with a double quote
+// C-style, so every regular file is compared by its own bytes, whatever its name.
 export const CLI_PIN_DRIFT = `blobs=$(git ls-tree -r HEAD | awk '$1 == "100644" || $1 == "100755"')
 [ -n "$blobs" ] && [ "$(cut -f1 <<<"$blobs" | cut -d' ' -f3)" = "$(cut -f2- <<<"$blobs" | git hash-object --no-filters --stdin-paths)" ] ||
   { echo "cli-pin: the checkout isn't HEAD's blobs byte for byte (a git attribute, such as ident, eol, text, filter or working-tree-encoding, wrote other bytes), which a deploy job's checkout of main would read"; exit 1; }`
@@ -7251,6 +7349,7 @@ function cliPinJobHolds(ci: string): boolean {
     run.keys.get('working-directory') === REPO_FOLDER &&
     sameMap(run.env, { BASE: `origin/${expr('github.base_ref')}` }) &&
     run.run === CLI_PIN_RUN &&
+    literalRun(run) &&
     jobNeeds(check).includes(CLI_PIN_JOB)
   )
 }
@@ -7542,7 +7641,7 @@ const GOES_ON =
 // holds a check's call: outside any substitution, pipeline, negation, and-or list (a group's or a subshell's
 // included) or condition. Two forms are the workflow's own: the drill's if, whose CDK_DEPLOY_DRILL line is
 // the deploy that must fail and whose body refuses when it doesn't, and prod-plan's diffs (DIFF_RUNS), each
-// in { … } >"$DIFF" || STATUS=$? and ended by exit "$STATUS", which no deploy is.
+// in { … } >"$DIFF" || STATUS=$? and ended by exit "$STATUS", which no deploy is, a form diffFormHolds() holds.
 const VERDICT_ALONE =
   'runs each deploy of the CLI and smoke.ts standing alone, outside any substitution, pipeline, negation, and-or list (a group’s or subshell’s included) or condition but the drill’s if, so its failure ends the step'
 const isVerdict = (command: GlueCommand) =>
@@ -7562,6 +7661,68 @@ function verdictsStandAlone(run: string): boolean {
         read.commands.some(
           each => each.name === 'if' && each.line === command.line && standsAlone(each, read.commands),
         )),
+  )
+}
+
+// prod-plan's diffs, held to the form the exemption above rests on (round 12's fourth iteration, its second pass):
+// it named their exit "$STATUS" and no rule read it, so a diff run with that last line dropped, or ending
+// exit "$DOWN_STATUS", ended prod-plan green after a failed diff (|| lifts set -e from the CLI's line), the summary
+// still saying the plan fails, and prod waited for approval over a diff of only the stacks the CLI reached. A run
+// that diffs (a CLI diff line, or RESTORE_DOWN_DIFF) ends with exit "$STATUS" standing alone, its only exit or
+// return of its own; wraps each of its own diff lines in { … } >"$DIFF" || STATUS=$? and each down diff line in
+// { … } >>"$DIFF" || { DOWN_STATUS=$?; break; }, each on lines of their own; sets STATUS only by one STATUS=0,
+// those lines and if [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi, and DOWN_STATUS only by one
+// DOWN_STATUS=0, DOWN_STATUS=1 and the down wrapping's; and sets neither by a builtin's word.
+const DIFF_FORM =
+  'ends each diff run with exit "$STATUS" standing alone, its only exit, wraps each diff line in { … } >"$DIFF" || STATUS=$? (a down diff’s in { … } >>"$DIFF" || { DOWN_STATUS=$?; break; }), and sets STATUS and DOWN_STATUS only as the diff runs do, so a failed diff fails prod-plan'
+const DIFF_WRAP = ['{', '} >"$DIFF" || STATUS=$?']
+const DOWN_WRAP = ['{', '} >>"$DIFF" || {', 'DOWN_STATUS=$?', 'break', '}']
+const STATUS_LINES = new Map([
+  ['STATUS', ['STATUS=0', DIFF_WRAP[1], 'if [ "$DOWN_STATUS" != 0 ]; then STATUS="$DOWN_STATUS"; fi']],
+  ['DOWN_STATUS', ['DOWN_STATUS=0', 'DOWN_STATUS=1', 'DOWN_STATUS=$?']],
+])
+export function diffFormHolds(run: string): boolean {
+  const lines = run.replace(/\n+$/, '').split('\n')
+  const trimmed = lines.map(line => line.trim())
+  const own = [CDK_DIFF_PROD, CDK_DIFF_ROLLBACK]
+  if (!trimmed.some(line => own.includes(line) || line === CDK_DIFF_DOWN) && !run.includes(RESTORE_DOWN_DIFF)) {
+    return true
+  }
+  const wrapped = (at: number, wrap: readonly string[]) =>
+    trimmed[at - 1] === wrap[0] && wrap.slice(1).every((line, i) => trimmed[at + 1 + i] === line)
+  const code = shellViews(run).code.split('\n')
+  // Each line that sets STATUS or DOWN_STATUS by an assignment, read on the code view, so a quoted word is none.
+  const setting = (name: string) =>
+    code.flatMap((line, at) => (new RegExp(`(?:^|[\\s;&|(){}])${name}\\+?=`).test(line) ? [at] : []))
+  const read = readShell(run)
+  const last = lines.length - 1
+  const [exit, ...others] = read.commands.filter(command => command.name === 'exit' || command.name === 'return')
+  return (
+    trimmed.every((line, at) => !own.includes(line) || wrapped(at, DIFF_WRAP)) &&
+    trimmed.every((line, at) => line !== CDK_DIFF_DOWN || wrapped(at, DOWN_WRAP)) &&
+    [...STATUS_LINES].every(([name, allowed]) => {
+      const at = setting(name)
+      const first = at.filter(line => trimmed[line] === `${name}=0`)
+      return (
+        at.every(line => allowed.includes(trimmed[line] ?? '')) &&
+        (name === 'DOWN_STATUS' && at.length === 0 ? first.length === 0 : first.length === 1) &&
+        at.every(line => line >= (first[0] ?? 0)) &&
+        at.every(
+          line =>
+            trimmed[line] !== 'DOWN_STATUS=$?' || (trimmed[line - 2] === CDK_DIFF_DOWN && wrapped(line - 2, DOWN_WRAP)),
+        )
+      )
+    }) &&
+    !shellCommands(run)
+      .flatMap(builtinNames)
+      .some(name => STATUS_LINES.has(name)) &&
+    lines[last] === 'exit "$STATUS"' &&
+    !/(?:\\|&&|\|\||\||[({])\s*$/.test(lines[last - 1] ?? '') &&
+    others.length === 0 &&
+    exit?.line === last &&
+    exit.alone &&
+    !exit.substituted &&
+    !exit.inSubstitution
   )
 }
 
@@ -7683,6 +7844,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
       add(id, GOES_ON)
     }
     if (steps.some(step => step.run !== undefined && !verdictsStandAlone(step.run))) add(id, VERDICT_ALONE)
+    if (steps.some(step => step.run !== undefined && !diffFormHolds(step.run))) add(id, DIFF_FORM)
     const credentials = credentialsAt(steps)
     // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped: but
     // the downloads, a download's asset check, which runs exactly when its download does (prod-plan's of the
@@ -7926,6 +8088,26 @@ const GH_TOKEN_LINE = `GH_TOKEN: ${expr('github.token')}`
 // skopeo command is run … or $(get …), get only ever first in a $( … ), whose output is kept (the registry
 // login alone piped into skopeo login, then the filter), each write to the job summary goes through mask,
 // the credentials action takes exactly its seven inputs, and no AWS_ variable or ROLE_TO_ASSUME is set.
+// Every run, in every job, writes the job summary and its outputs only by appending (round 12's fourth iteration,
+// its second pass): a redirection of any descriptor into either is >> (or &>>), and a tee into either is tee -a. The
+// gate's Plan step's } >"$GITHUB_STEP_SUMMARY" erased the lines naming the records history.ts ignored, and a > into
+// the outputs erases the step's earlier outputs while bindingFindings() still reads them as written; only a
+// credentialed run's summary writes were held to >>. Read on the command code, so a quoted word is none.
+const APPENDS_ONLY =
+  'writes the job summary and its outputs only by appending (>> or tee -a), so no write erases what the step wrote there before'
+const STEP_FILE_WRITE = /(?<![<>]|(?<!&)&)((?:\d+|&)?(?:<>|>>?\|?))\s*([^\s;|()<>]+)/g
+const STEP_FILE = /GITHUB_(?:OUTPUT|STEP_SUMMARY)/
+export function appendsOnly(run: string): boolean {
+  const code = commandCode(shellViews(run).code)
+  return (
+    [...code.matchAll(STEP_FILE_WRITE)].every(
+      ([, op, target]) => !STEP_FILE.test(target ?? '') || /^(?:\d+|&)?>>$/.test(op ?? ''),
+    ) &&
+    shellCommands(run).every(
+      command => command.word !== 'tee' || !STEP_FILE.test(command.tail) || /^\s*-a\s/.test(command.tail),
+    )
+  )
+}
 export function maskingFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const text = workflows.get(DEPLOY) ?? ''
@@ -7974,6 +8156,7 @@ export function maskingFindings(workflows: Texts): Finding[] {
       // AWS session or the job's token to a tool that prints it in pieces (the ninth review's fourth attack: the
       // gate's own echo "$GH_TOKEN" | sed 's/./& /g', in a job this rule once left out, spaced out its token).
       if (!expandsOnlyItsOwn(run, read, [...jobNames, ...step.env.keys()])) add(where, EXPANDS_ITS_OWN)
+      if (!appendsOnly(run)) add(where, APPENDS_ONLY)
       // env or printenv, by name or path, as a command or a word handed to one (sudo printenv, xargs env,
       // find -exec /usr/bin/env), quoted or not, since bash hands a program the word with its quotes taken
       // off. A program the run starts is handed a script only as one word (bash -c "printenv X"), which DPW-07
@@ -9129,8 +9312,9 @@ const programOf = (word: ShellWord | undefined): string | undefined =>
 // jq given its flags, then one program (single-quoted, or . alone) and no file to read; no word of which
 // expands to several ("${NAME[@]}" as an --arg's value hands jq each element as a word, a program among them;
 // the ninth review's second attack); and, given -e, a program that prints one value, fed by no pipe unless it is
-// also given -n (JQ_PIPED_RULE, round 12).
-function jqIsHeld(args: readonly ShellWord[], piped = false): boolean {
+// also given -n (JQ_PIPED_RULE, round 12); and, given -n, fed nothing at all, by a pipe, a here-string or a
+// redirection, which it would never read (JQ_UNREAD_RULE, round 12's fourth iteration, its second pass).
+function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false): boolean {
   if (args.some(manyWords)) return false
   const given: string[] = []
   let i = 0
@@ -9148,6 +9332,7 @@ function jqIsHeld(args: readonly ShellWord[], piped = false): boolean {
   const flags = args.slice(0, i).filter(arg => JQ_FLAGS.includes(arg.raw))
   const status = flags.some(arg => arg.raw.includes('e'))
   const noInput = flags.some(arg => arg.raw.includes('n'))
+  if (noInput && fed) return false
   return jqProgramIsHeld(program, given) && (!status || (jqPrintsOne(program) && (!piped || noInput)))
 }
 // gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
@@ -9402,7 +9587,11 @@ const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
   // A jq reads a here-string of its own, or else its standard input, which counts as a pipe's whatever feeds it
   // (round 12's third iteration: a group or a function after a pipe holds a jq that no previous command feeds).
   jq: ({ args, previous, redirections }) =>
-    jqIsHeld(args, previous !== undefined || !redirections.some(each => each.op === '<<<')),
+    jqIsHeld(
+      args,
+      previous !== undefined || !redirections.some(each => each.op === '<<<'),
+      previous !== undefined || redirections.some(each => each.op.startsWith('<')),
+    ),
   gh: ({ args }) => ghIsHeld(args),
   // The step's own files: the pushed digest and prod-plan's diff.
   cat: ({ args }) => argText(args) === '"$RUNNER_TEMP/pushed"' || argText(args) === '"$DIFF"',
@@ -9646,8 +9835,10 @@ const STEP_FILES = /\bGITHUB_(?:ENV|PATH)\b/
 // HELD_NAMES holds), so no write these rules read rewrites a file the CLI or a tool then runs (the CLI
 // CLI_FETCH unpacked, say), whatever a canonical text sets DIFF to. A write is any redirection that opens its
 // target for writing: >, >>, >|, &>, a descriptor's (2>) and the read-write <> (1<>file, which rewrites the
-// file in place).
-const REDIRECTION = /(?<![<>&])(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
+// file in place). Only a > after < or >, or after the single & of &>, is the same write's; one after && is a write
+// of its own (round 12's fourth iteration, its second pass: [ -n "$step" ] &&>"$f" emptied the CLI before
+// prod-plan's diff, which then ran an empty file with status 0, and read as no write).
+const REDIRECTION = /(?<![<>]|(?<!&)&)(?:\d+|&)?(?:<>|>>?\|?)\s*(\(|[^\s;|()<>]+)/g
 const WRITABLE = /^(?:\/dev\/null|&[12]|"\$(?:GITHUB_OUTPUT|GITHUB_STEP_SUMMARY)")$/
 const DIFF_TARGET = '"$DIFF"'
 const writable = (target: string, diffRun: boolean) => WRITABLE.test(target) || (diffRun && target === DIFF_TARGET)
@@ -11126,9 +11317,13 @@ const RECORD_JOBS = ['record-nonprod', 'record-prod']
 // github.sha, the run's commit, which the gate's commit equals on every push and dispatched deploy, wrote a
 // dispatched rollback's record under main's head with the target's image, so the next deploy's expansion check
 // asked about main's head and passed a floor the release that runs hadn't reached, and the pipeline's rollback
-// would go back to main's head's code with that image.
+// would go back to main's head's code with that image. The verdicts that decide whether it writes, and what, are
+// held the same way (round 12's fourth iteration, its second pass): SMOKE is its smoke's result and RESMOKE its
+// resmoke's, each written here. SMOKE read from the deploy job's result, a one-token change that lined it up with
+// DIGEST and SERVICES beside it, recorded a release whose smoke failed as deployed, the job green, while the
+// pipeline's rollback had put the previous release back; the next gate then read the failed release as what runs.
 const JUDGED =
-  "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way"
+  "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
 function recordsWhatWasJudged(jobs: ReadonlyMap<string, Job>, id: string): boolean {
   const stage = id.replace(/^record-/, '')
   const envOf = (job: string, step: string) => jobs.get(job)?.steps.find(each => each.name === step)?.env
@@ -11150,7 +11345,9 @@ function recordsWhatWasJudged(jobs: ReadonlyMap<string, Job>, id: string): boole
   }
   return (
     judged(`smoke-${stage}`, 'COMMIT', 'DIGEST', 'SERVICES') &&
-    judged(`resmoke-${stage}`, 'PREVIOUS_COMMIT', 'PREVIOUS_DIGEST', 'ROLLBACK_SERVICES')
+    judged(`resmoke-${stage}`, 'PREVIOUS_COMMIT', 'PREVIOUS_DIGEST', 'ROLLBACK_SERVICES') &&
+    record?.get('SMOKE') === expr(`needs.smoke-${stage}.result`) &&
+    record.get('RESMOKE') === expr(`needs.resmoke-${stage}.result`)
   )
 }
 const RECORD_WORDS = [

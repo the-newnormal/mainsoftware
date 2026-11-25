@@ -213,20 +213,19 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     expect(run.stderr).toContain("infra/package.json: the checkout's bytes aren't its committed blob's")
     expect(run.stderr).toContain(DRIFT)
     expect(run.stdout).not.toContain('OK')
-    // The job's step, under the shell GitHub runs it with, the script named by its path here.
-    const step = (cwd: string) =>
-      spawnSync(
-        'bash',
-        [
-          '--noprofile',
-          '--norc',
-          '-eo',
-          'pipefail',
-          '-c',
-          CLI_PIN_RUN.replace(CLI_PIN_CHECK, `node '${SCRIPT}' "$BASE"`),
-        ],
-        { cwd, encoding: 'utf8', env: { ...process.env, BASE: 'origin/main' } },
-      )
+    // The job's step as GitHub runs a step with no shell: key, bash -e on a file, with no pipefail (actions/runner's
+    // ScriptHandler; round 12's fourth iteration, its second pass: this ran it with pipefail, which GitHub doesn't),
+    // the script named by its path here.
+    const step = (cwd: string, path = process.env.PATH ?? '') => {
+      const file = join(mkdtempSync(join(tmpdir(), 'hearth-cli-pin-step-')), 'step.sh')
+      repos.push(dirname(file))
+      writeFileSync(file, CLI_PIN_RUN.replace(CLI_PIN_CHECK, `node '${SCRIPT}' "$BASE"`))
+      return spawnSync('bash', ['-e', file], {
+        cwd,
+        encoding: 'utf8',
+        env: { ...process.env, BASE: 'origin/main', PATH: path },
+      })
+    }
     const refused = step(job)
     expect(refused.status).toBe(1)
     expect(refused.stdout).toContain("cli-pin: the checkout isn't HEAD's blobs byte for byte")
@@ -239,6 +238,17 @@ describe('check-cli-pin: the CDK CLI never goes down', () => {
     const passed = step(clean)
     expect(passed.status, passed.stderr).toBe(0)
     expect(passed.stdout).toContain('OK: aws-cdk 2.1146.1 is no lower than origin/main')
+    // A git that fails, which with no pipefail ends no step, leaves the listing empty, which refuses.
+    const bin = mkdtempSync(join(tmpdir(), 'hearth-cli-pin-git-'))
+    repos.push(bin)
+    const real = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    writeFileSync(join(bin, 'git'), `#!/bin/bash\nif [ "$1" = ls-tree ]; then exit 128; fi\nexec '${real}' "$@"\n`, {
+      mode: 0o755,
+    })
+    const failed = step(clean, `${bin}:${process.env.PATH ?? ''}`)
+    expect(failed.status).toBe(1)
+    expect(failed.stdout).toContain("cli-pin: the checkout isn't HEAD's blobs byte for byte")
+    expect(failed.stdout).not.toContain('OK')
   })
 
   // A link read as no pin (round 11): git show prints a symbolic link's target path, which no JSON parse reads,

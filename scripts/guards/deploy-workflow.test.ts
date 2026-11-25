@@ -47,6 +47,7 @@ import {
   AWS_CHECK,
   actionPinFindings,
   actionRepository,
+  appendsOnly,
   artifactNamesRun,
   assetCheckFindings,
   awsNameLines,
@@ -80,6 +81,7 @@ import {
   DIFF_RUN,
   DUE_ENVS,
   deployStepFindings,
+  diffFormHolds,
   ENVIRONMENT_JOBS,
   evaluatedLines,
   evaluateIf,
@@ -102,6 +104,7 @@ import {
   jqPipedLines,
   jqPrintsOne,
   jqProgramIsHeld,
+  jqUnreadLines,
   MAIN_CI,
   MASK_RUN,
   MIGRATE_LINES,
@@ -172,6 +175,7 @@ import {
   jobNeeds,
   jobPermissions,
   jobScalar,
+  literalRun,
   parsedSteps,
   workflowJobs,
   workflowTop,
@@ -10539,7 +10543,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family",
   )
   const NETWORK = refused(
-    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone",
+    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
   )
   const STORED = refused(
     "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape",
@@ -12164,7 +12168,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
   )
   const FLOW_ROLE = refused(
-    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone",
+    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
   )
   const NAMED_TRUST = refused(
     "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape",
@@ -12255,6 +12259,179 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     'refuses %s (round 12’s fourth iteration)',
     (_, plant, refusal) => {
       expect(check(plant)).toBe(refusal)
+    },
+    30_000,
+  )
+
+  // Round 12's fourth iteration, its second pass: ASSET_CHECK held the task subnets' network invariants for every
+  // stage alike, so prod's own internet gateway, public subnets and routes, its load balancer's group open to
+  // the internet, the load balancer, a listener on 443 in plain HTTP with no certificate (the restore stage has
+  // no zone), the target groups and the restore services behind them, each copied into the restore stage under
+  // its own names as a real release's render could write them, passed, and the approver's diff showed each as
+  // the restore stage's own. IAC-20 refuses them over CI's fake release alone. The restore stage now holds none
+  // of them, no group open to any address and no service behind a load balancer; and a listener anywhere is
+  // HTTPS on 443 with a certificate, and no subnet gives a public address, as IAC-20 holds.
+  const lineOut = (text: string, start: string) => {
+    const lines = text.split('\n')
+    const at = lines.flatMap((line, i) => (line.trimStart().startsWith(start) ? [i] : []))
+    if (at.length !== 1) throw new Error(`${at.length} lines of ASSET_CHECK start ${start}`)
+    return lines.filter((_, i) => i !== at[0]).join('\n')
+  }
+  const once = (text: string, from: string, to: string) => {
+    if (text.split(from).length !== 2) throw new Error(`ASSET_CHECK holds ${from} other than once`)
+    return text.replace(from, to)
+  }
+  // The text without the restore stage's rule, and the text before this pass, so each plant is shown to reach the
+  // rule it is for.
+  const UNSEALED = lineOut(ASSET_CHECK, '($s != "restore" or (')
+  const EARLIER = once(
+    once(
+      lineOut(lineOut(ASSET_CHECK, '($s != "restore" or ('), 'all(of("AWS::EC2::Subnet"); (.MapPublicIpOnLaunch'),
+      ' and .Port == 443 and .Protocol == "HTTPS" and (.Certificates | type == "array" and length > 0 and all(.[]; .CertificateArn | ref("AWS::CertificateManager::Certificate")))',
+      ' and all(.Certificates // [] | .[]; .CertificateArn | ref("AWS::CertificateManager::Certificate"))',
+    ),
+    '; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"',
+    '"',
+  )
+  // prod's own resources whose logical ids start with one of the prefixes, renamed to the restore stage as a
+  // release would render them there: their paths, names, parameters and subnets' ranges.
+  const asRestore = (value: unknown): unknown =>
+    typeof value === 'string'
+      ? value
+          .replace(/^prod\//, 'restore/')
+          .replaceAll('hearth-prod', 'hearth-restore')
+          .replaceAll('/hearth/prod/', '/hearth/restore/')
+          .replaceAll('Hearth prod', 'Hearth restore')
+          .replace(/^10\.30\.0\.0\/24$/, '10.40.32.0/24')
+          .replace(/^10\.30\.1\.0\/24$/, '10.40.33.0/24')
+      : Array.isArray(value)
+        ? value.map(asRestore)
+        : typeof value === 'object' && value !== null
+          ? Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, asRestore(inner)]))
+          : value
+  const prodsIntoRestore =
+    (prefixes: readonly string[], change: (added: Record<string, Labelled>, json: Template) => void = () => {}) =>
+    (dir: string) => {
+      const own = read(named(prod(dir), 'Platform', '.template.json')) as unknown as Template
+      const added = Object.fromEntries(
+        Object.entries(own.Resources)
+          .filter(([id]) => prefixes.some(prefix => id.startsWith(prefix)))
+          .map(([id, resource]) => [id, asRestore(resource) as Labelled]),
+      )
+      if (Object.keys(added).length === 0) throw new Error(`no ${prefixes.join(', ')} in prod's Platform`)
+      inTemplate(restore, 'Platform', json => {
+        change(added, json)
+        Object.assign(json.Resources, added)
+      })(dir)
+    }
+  const ofTypeIn = (resources: Record<string, Labelled>, type: string) =>
+    Object.values(resources).filter(resource => resource.Type === type)
+  const plainHttp = (added: Record<string, Labelled>) => {
+    const listeners = ofTypeIn(added, 'AWS::ElasticLoadBalancingV2::Listener')
+    if (listeners.length === 0) throw new Error('no listener')
+    for (const listener of listeners) {
+      listener.Properties.Protocol = 'HTTP'
+      delete listener.Properties.Certificates
+      delete listener.Properties.SslPolicy
+    }
+  }
+  // The load balancer in the restore stage's own isolated subnets, so no plant but the gateway's adds a subnet.
+  const inIsolatedSubnets = (added: Record<string, Labelled>, json: Template) => {
+    const subnets = Object.entries(json.Resources)
+      .filter(([, resource]) => resource.Type === 'AWS::EC2::Subnet')
+      .map(([id]) => ({ Ref: id }))
+    for (const balancer of ofTypeIn(added, 'AWS::ElasticLoadBalancingV2::LoadBalancer'))
+      balancer.Properties.Subnets = subnets
+  }
+  const GATEWAY = ['NetworkVpcpublicSubnet', 'NetworkVpcIGW', 'NetworkVpcVPCGW']
+  const BALANCER = ['NetworkGroupsAlb', 'NetworkGroupsApiFromAlb', 'NetworkGroupsRealtimeFromAlb', 'LoadBalancerAlb']
+  const behindTargetGroups = inTemplate(restore, 'Services', json => {
+    json.Parameters = json.Parameters ?? {}
+    for (const [service, group] of [
+      ['ApiService', 'api'],
+      ['RealtimeService', 'realtime'],
+    ] as const) {
+      const parameter = `SsmParameterValuehearthrestoretargetgroup${group}C96584B6F00A464EAD1953AFF4B05118Parameter`
+      json.Parameters[parameter] = {
+        Type: 'AWS::SSM::Parameter::Value<String>',
+        Default: `/hearth/restore/target-group/${group}`,
+      }
+      const resource = json.Resources[service]
+      if (resource === undefined) throw new Error(`no ${service}`)
+      resource.Properties.HealthCheckGracePeriodSeconds = 30
+      resource.Properties.LoadBalancers = [
+        { ContainerName: 'server', ContainerPort: 3000, TargetGroupArn: { Ref: parameter } },
+      ]
+    }
+  })
+  // The load balancer alone, with no listener, its dependence on prod's routes dropped.
+  const balancerAlone = (added: Record<string, Labelled>, json: Template) => {
+    for (const [id, resource] of Object.entries(added))
+      if (resource.Type === 'AWS::ElasticLoadBalancingV2::Listener') delete added[id]
+    for (const balancer of ofTypeIn(added, 'AWS::ElasticLoadBalancingV2::LoadBalancer')) delete balancer.DependsOn
+    inIsolatedSubnets(added, json)
+  }
+  const plainHttpAlone = (added: Record<string, Labelled>, json: Template) => {
+    for (const balancer of ofTypeIn(added, 'AWS::ElasticLoadBalancingV2::LoadBalancer')) delete balancer.DependsOn
+    inIsolatedSubnets(added, json)
+    plainHttp(added)
+  }
+  it.each([
+    [
+      "prod's internet gateway, its attachment, public subnets and default routes, in the restore stage",
+      prodsIntoRestore(GATEWAY),
+      UNSEALED,
+    ],
+    [
+      "prod's load balancer and its group open to the internet, in the restore stage's subnets",
+      prodsIntoRestore(BALANCER, balancerAlone),
+      UNSEALED,
+    ],
+    [
+      'the same with a listener on 443 in plain HTTP and no certificate',
+      prodsIntoRestore(BALANCER, plainHttpAlone),
+      EARLIER,
+    ],
+    [
+      "the whole of prod's way in, gateway, load balancer, plain HTTP listener and target groups, and the restore services behind them",
+      (dir: string) => {
+        prodsIntoRestore(
+          [
+            ...GATEWAY,
+            ...BALANCER,
+            'LoadBalancerApiTargets',
+            'LoadBalancerRealtimeTargets',
+            'LoadBalancerWsRule',
+            'LoadBalancerApiRule',
+            'ParametersApiTargetGroup',
+            'ParametersRealtimeTargetGroup',
+          ],
+          plainHttp,
+        )(dir)
+        behindTargetGroups(dir)
+      },
+      EARLIER,
+    ],
+    ["the restore stage's api and realtime behind target groups", behindTargetGroups, UNSEALED],
+    [
+      "prod's listener in plain HTTP with no certificate",
+      inTemplate(prod, 'Platform', json => plainHttp(json.Resources)),
+      EARLIER,
+    ],
+    [
+      "a subnet of non-prod's giving a public address on launch",
+      inTemplate(nonprod, 'Platform', json => {
+        const subnet = ofTypeIn(json.Resources, 'AWS::EC2::Subnet')[0]
+        if (subnet === undefined) throw new Error('no subnet')
+        subnet.Properties.MapPublicIpOnLaunch = true
+      }),
+      EARLIER,
+    ],
+  ] as const)(
+    'refuses %s, which passed the text without its rule (round 12’s fourth iteration, its second pass)',
+    (_, plant, without) => {
+      expect(check(plant)).toBe(NETWORK)
+      expect(check(plant, RELEASE, source, process.env.PATH, without)).toBe('passed')
     },
     30_000,
   )
@@ -16584,7 +16761,7 @@ esac
   // check read that commit.
   it('records what its smokes judged, read from the workflow’s own env (DPW-13)', () => {
     const JUDGED =
-      "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way"
+      "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
     const judged = (id: string) => `${DEPLOY}: DPW-13 ${id} (Write the record): ${JUDGED}`
     const found = (planted: ReadonlyMap<string, string>) => releaseFindings(planted)
     for (const [stage, from, to] of [
@@ -16749,5 +16926,345 @@ describe('Round 12, iteration 3, its second pass: the ways past the reader and t
     // bash: the exit ends the substitution alone, and : passes.
     expect(bash('set -e; : "$(exit 1)"; echo went on').stdout.trim()).toBe('went on')
     expect(canonicalTextFindings()).toEqual([])
+  })
+})
+
+// Round 12's fourth iteration, its second pass: the gaps the finders proved past the reader and the rules after the
+// third iteration's second pass, each planted as they planted it and found at its root.
+describe('Round 12, iteration 4, its second pass: the ways past the reader and the rules (DPW-04, DPW-06, DPW-07, DPW-10, DPW-13)', () => {
+  const COMMANDS =
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+  const EXPANDS =
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+  const VERDICT =
+    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+  const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
+  const DIFF_FORM =
+    'ends each diff run with exit "$STATUS" standing alone, its only exit, wraps each diff line in { … } >"$DIFF" || STATUS=$? (a down diff’s in { … } >>"$DIFF" || { DOWN_STATUS=$?; break; }), and sets STATUS and DOWN_STATUS only as the diff runs do, so a failed diff fails prod-plan'
+  const UNREAD =
+    'hands a jq given -n no data, no file, here-string, input redirection or pipe, since it reads none of it and checks null'
+  const APPENDS =
+    'writes the job summary and its outputs only by appending (>> or tee -a), so no write erases what the step wrote there before'
+  const JUDGED =
+    "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
+  const bash = (script: string, env: Record<string, string> = {}) =>
+    spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8', env: { ...process.env, ...env } })
+  const replaced = (text: string, ...pairs: ReadonlyArray<readonly [string, string]>) =>
+    pairs.reduce((each, [from, to]) => {
+      expect(each.split(from).length - 1, from).toBe(1)
+      return each.replace(from, to)
+    }, text)
+  const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
+  // deploy.yml with one exact edit inside one step's lines.
+  const inStep = (jobId: string, name: string, from: string, to: string) => {
+    const step = stepText(deployText, jobId, name)
+    return withText(DEPLOY, edited(deployText, step, replaced(step, [from, to]), job(jobId)))
+  }
+  const BASIS_ANCHOR = "  local step=$1 PART answer status basis=''"
+
+  // An append before a command's word (NAME+=), or redirections written with no blank between them, read as no
+  // prefix: the reader took the assignment or the descriptor for the command's word, so the cp onto the CLI, or
+  // the source of the assembly's file, bash ran after it was read by no command rule.
+  it('reads the command after an append or after redirections written together (DPW-10)', () => {
+    for (const line of [
+      `  basis+='' cp "$RUNNER_TEMP/assembly/manifest.json" "$RUNNER_TEMP/aws-cdk/package/bin/cdk"`,
+      `  basis+='' . "$RUNNER_TEMP/assembly/manifest.json"`,
+      `  >&2<<<x . "$RUNNER_TEMP/assembly/manifest.json"`,
+      `  2>&1>&2 grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json"`,
+      `  <<<x>&2 grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json"`,
+      `  basis+='' set +e`,
+    ]) {
+      const planted = replaced(PLAN_BASIS, [BASIS_ANCHOR, `${BASIS_ANCHOR}\n${line}`])
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), line).toContain(
+        `${GUARD}: DPW-10 PLAN_BASIS, line ${lineOf(planted, line)}: ${COMMANDS}`,
+      )
+    }
+    for (const [text, word] of [
+      ["x+='' cp a b", 'cp'],
+      ['>&2<<<x . f', '.'],
+      ['2>&1>&2 grep x', 'grep'],
+      ['<<<x>&2 grep x', 'grep'],
+      ['>a<b cat', 'cat'],
+    ] as const) {
+      expect(
+        shellCommands(text).map(command => command.word),
+        text,
+      ).toEqual([word])
+    }
+    // bash runs both.
+    expect(bash('x+=1 printenv x').stdout.trim()).toBe('1')
+    expect(bash('>/dev/null<<<x echo ran >&2').stderr.trim()).toBe('ran')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A canonical text that set a name a step's env: gives from a secret (ACCOUNT_ID="${ACCOUNT_ID:-}", the ordinary
+  // set -u default) made it a name of its own, so the push's account id could be printed in two halves, which no
+  // mask matches.
+  it('lets no text make a secret’s name its own by setting it (DPW-07)', () => {
+    const anchor = 'CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"'
+    const print = `echo "account \${ACCOUNT_ID%??????} \${ACCOUNT_ID#??????}"`
+    const planted = replaced(PREAMBLE, [anchor, `${anchor}\nACCOUNT_ID="\${ACCOUNT_ID:-}"\n${print}`])
+    expect(canonicalTextFindings({ PREAMBLE: planted })).toContain(
+      `${GUARD}: DPW-07 PREAMBLE, line ${lineOf(planted, print)}: ${EXPANDS}`,
+    )
+    expect(foreignExpansionLines(`echo "\${ACCOUNT_ID%??????}"`, ['ACCOUNT_ID'])).toEqual([0])
+    expect(foreignExpansionLines('echo "$x"', ['x'])).toEqual([])
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A plain count of every { and } closed a function's body at : ${step:-\}} or : }, so an exit after it was read
+  // as outside the function and its call in a substitution passed, swallowed by :'s status 0.
+  it('reads a function’s body to the } that closes it as bash does (DPW-10)', () => {
+    const argument = 'plan_refuse() {\n  : }\n  echo "$1"\n  exit 1\n}'
+    expect([...exitingFunctions([argument])]).toEqual(['plan_refuse'])
+    expect([...exitingFunctions([`a() {\n  : "\${x:-}" }\n  exit 1\n}`])]).toEqual(['a'])
+    const escaped = `plan_refuse() {\n  : \${step:-\\}}\n  exit 1\n}`
+    expect([...exitingFunctions([escaped])]).toEqual(['plan_refuse'])
+    expect(readsAsBash(escaped)).toBe(false)
+    const call = `  : "$([ -n "$BASIS" ] || [ "$step" = plan ] || plan_refuse "prod-plan's basis is missing")"`
+    for (const body of ['  : }', `  : "\${x:-}" }`]) {
+      const planted = replaced(PLAN_BASIS, [
+        BASIS_ANCHOR,
+        `${BASIS_ANCHOR}\n  plan_refuse() {\n${body}\n    echo "plan-basis: $1"\n    exit 1\n  }\n${call}`,
+      ])
+      expect(canonicalTextFindings({ PLAN_BASIS: planted }), body).toContain(
+        `${GUARD}: DPW-10 PLAN_BASIS, line ${lineOf(planted, call)}: ${VERDICT}`,
+      )
+    }
+    // bash keeps the escaped } inside the expansion and the argument } in the body, and : swallows the exit.
+    expect(bash(`f() { : \${x:-\\}}; exit 1; }; : "$(f)"; echo went on`).stdout.trim()).toBe('went on')
+    expect(bash('f() { : }; exit 1; }; : "$(f)"; echo went on').stdout.trim()).toBe('went on')
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A > glued to && is a write of its own: [ -n "$step" ] &&>"$f" emptied prod-plan's CLI before its diff, which then
+  // ran an empty file with status 0 and showed the approver nothing. Planted in prod's What runs, which writes no
+  // diff, so the write found is the plant's (a change to a diff run here, away from DIFF_RUNS, makes its own
+  // writes to "$DIFF" findings).
+  it('reads a write after && as a write (DPW-10)', () => {
+    for (const write of ['&&>', '&&>>', '&&>|']) {
+      const line = `          [ -n "$STAGE" ] ${write}"$RUNNER_TEMP/aws-cdk/package/bin/cdk"\n`
+      expect(
+        credentialedCodeFindings(
+          addedBefore('prod', 'What runs', '          plan_basis check\n', line),
+          manifests,
+          lockfile,
+        ),
+        write,
+      ).toContain(`${DEPLOY}: DPW-10 prod (What runs): ${WRITES}`)
+    }
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-andand-'))
+    try {
+      writeFileSync(join(folder, 'cli'), 'x\n')
+      expect(bash(`[ -n x ] &&>"${join(folder, 'cli')}"; wc -c <"${join(folder, 'cli')}"`).stdout.trim()).toBe('0')
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  // prod-plan's diff runs were exempt from standing alone on their exit "$STATUS", which no rule read: with that
+  // line dropped, or ending exit "$DOWN_STATUS", a failed diff ended prod-plan green and prod waited for approval.
+  it('holds each diff run to ending with exit "$STATUS" after its wrapped diffs, so a failed diff fails prod-plan (DPW-06)', () => {
+    const end = '\nexit "$STATUS"'
+    expect(DIFF_RUN.endsWith(end) && ROLLBACK_DIFF_RUN.endsWith(end)).toBe(true)
+    expect(diffFormHolds(DIFF_RUN) && diffFormHolds(ROLLBACK_DIFF_RUN)).toBe(true)
+    for (const [what, text] of [
+      ['no exit', DIFF_RUN.slice(0, -end.length)],
+      ['exit "$DOWN_STATUS"', `${DIFF_RUN.slice(0, -end.length)}\nexit "$DOWN_STATUS"`],
+      ["the rollback's diff with no exit", ROLLBACK_DIFF_RUN.slice(0, -end.length)],
+      ['STATUS set again', DIFF_RUN.replace('\ncat "$DIFF"\n', '\nSTATUS=0\ncat "$DIFF"\n')],
+      ['an exit 0 before the end', DIFF_RUN.replace('\ncat "$DIFF"\n', '\ncat "$DIFF"\nexit 0\n')],
+      ['read sets STATUS', DIFF_RUN.replace('\ncat "$DIFF"\n', '\nread -r STATUS <<<0\ncat "$DIFF"\n')],
+      ['a diff not wrapped', ROLLBACK_DIFF_RUN.replace('} >"$DIFF" || STATUS=$?', '} >"$DIFF" || true')],
+      ["the down diff's status dropped", DIFF_RUN.replace('      DOWN_STATUS=$?\n', '      DOWN_STATUS=0\n')],
+      ['the exit in an and-or list', `${DIFF_RUN.slice(0, -end.length)}\n[ -n "$STAGE" ] &&\nexit "$STATUS"`],
+    ] as const) {
+      expect(text === DIFF_RUN || text === ROLLBACK_DIFF_RUN, what).toBe(false)
+      expect(diffFormHolds(text), what).toBe(false)
+    }
+    const form = `${DEPLOY}: DPW-06 prod-plan: ${DIFF_FORM}`
+    for (const [what, planted] of [
+      [
+        'Diff ending exit "$DOWN_STATUS"',
+        inStep('prod-plan', 'Diff', '          exit "$STATUS"\n', '          exit "$DOWN_STATUS"\n'),
+      ],
+      ['Diff the rollback with no exit', inStep('prod-plan', 'Diff the rollback', '          exit "$STATUS"\n', '')],
+    ] as const) {
+      expect(deployStepFindings(planted), what).toContain(form)
+    }
+    expect(deployStepFindings(workflows).filter(each => each.endsWith(DIFF_FORM))).toEqual([])
+    // Each diff run as committed, with a stand-in CLI that prints part of a diff and fails, ends with the CLI's
+    // status, for a deploy, a rollback and a restore up, and the rollback's diff; with exit "$DOWN_STATUS" it ended 0.
+    const runWith = (run: string, env: Record<string, string>) => {
+      const folder = mkdtempSync(join(tmpdir(), 'hearth-diff-exit-'))
+      try {
+        execFileSync('mkdir', ['-p', join(folder, 'aws-cdk/package/bin'), join(folder, 'bin')])
+        writeFileSync(
+          join(folder, 'aws-cdk/package/bin/cdk'),
+          "#!/bin/bash\necho 'Stack prod/Platform'\necho 'There were no differences'\necho 'failed to read a template' >&2\nexit 3\n",
+          { mode: 0o755 },
+        )
+        writeFileSync(join(folder, 'bin/aws'), "#!/bin/bash\necho 'Stack with id x does not exist' >&2\nexit 254\n", {
+          mode: 0o755,
+        })
+        for (const file of ['summary', 'output']) writeFileSync(join(folder, file), '')
+        const ran = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
+          encoding: 'utf8',
+          env: {
+            PATH: `${join(folder, 'bin')}:${process.env.PATH ?? ''}`,
+            HOME: folder,
+            RUNNER_TEMP: folder,
+            GITHUB_STEP_SUMMARY: join(folder, 'summary'),
+            GITHUB_OUTPUT: join(folder, 'output'),
+            ...env,
+          },
+        })
+        return { status: ran.status, summary: readFileSync(join(folder, 'summary'), 'utf8') }
+      } finally {
+        rmSync(folder, { recursive: true, force: true })
+      }
+    }
+    const deploy = { STAGE: 'prod', MODE: 'deploy', RESTORE: '' }
+    for (const [what, run, env] of [
+      ['a deploy', DIFF_RUN, deploy],
+      ['a rollback', DIFF_RUN, { ...deploy, MODE: 'rollback' }],
+      ['a restore up', DIFF_RUN, { STAGE: 'restore', MODE: 'restore', RESTORE: 'up' }],
+      ["the rollback's diff", ROLLBACK_DIFF_RUN, deploy],
+    ] as const) {
+      const ran = runWith(run, env)
+      expect(ran.status, what).toBe(3)
+      expect(ran.summary, what).toContain('The diff failed (exit 3), so this plan fails')
+    }
+    expect(runWith(`${DIFF_RUN.slice(0, -end.length)}\nexit "$DOWN_STATUS"`, deploy).status).toBe(0)
+  }, 120_000)
+
+  // A jq given -n reads no input, so a check handed a file or a here-string with -n checked null and passed
+  // whatever its data held.
+  it('hands a jq given -n no data (DPW-10)', () => {
+    for (const [text, lines] of [
+      [`jq -ne '.a' "$dir/$file"`, [0]],
+      [`jq -n -e '.a' <<<"$X"`, [0]],
+      [`jq -e -n '.a' <<<"$X"`, [0]],
+      [`jq -nr '.a' <"$f"`, [0]],
+      [`x | jq -n '.'`, [0]],
+      [`jq -nc --arg a "$b" '{a: $a}'`, []],
+      [`jq -n --argjson x "$X" -e '$x | .a'`, []],
+      [`jq -e '.a' <<<"$X"`, []],
+      [`jq -se 'all(.[]; f)' "$dir/manifest.json"`, []],
+    ] as const) {
+      expect(jqUnreadLines(text), text).toEqual(lines)
+    }
+    const role = ASSET_CHECK.split('\n').find(line => line.trimStart().startsWith("jq -e '[.Resources // {}"))
+    if (role === undefined) throw new Error('no role check')
+    const planted = replaced(ASSET_CHECK, [role, role.replace("jq -e '", "jq -ne '")])
+    expect(canonicalTextFindings({ ASSET_CHECK: planted })).toContain(
+      `${GUARD}: DPW-10 ASSET_CHECK, line ${lineOf(planted, role.replace("jq -e '", "jq -ne '"))}: ${UNREAD}`,
+    )
+    // The read-back's ARN check in glue, as jq -n -e and jq -e -n, and the push's tag check.
+    const arn = `if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then`
+    for (const flags of ['-n -e', '-e -n']) {
+      expect(
+        credentialedCodeFindings(plant(arn, arn.replace('jq -e', `jq ${flags}`), job('nonprod')), manifests, lockfile),
+        flags,
+      ).toContain(`${DEPLOY}: DPW-10 nonprod (Read back what runs): ${HELD}`)
+    }
+    // jq: -n checks null whatever the here-string holds.
+    const check = `jq %s 'tostring | ascii_downcase | contains("arn:") | not' <<<'"arn:aws:x"' >/dev/null`
+    expect(bash(check.replace('%s', '-e')).status).toBe(1)
+    expect(bash(check.replace('%s', '-n -e')).status).toBe(0)
+    expect(canonicalTextFindings()).toEqual([])
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+
+  // The gate's Plan step's summary written with >, which erased the lines naming the records history.ts ignored,
+  // and the down diff's output written with >, which erased the step's earlier outputs.
+  it('writes the job summary and outputs only by appending, in every job (DPW-07)', () => {
+    const gateSummary = '} >>"$GITHUB_STEP_SUMMARY"\n'
+    expect(maskingFindings(inStep('gate', 'Plan', gateSummary, gateSummary.replace('>>', '>')))).toContain(
+      `${DEPLOY}: DPW-07 gate (Plan): ${APPENDS}`,
+    )
+    const down = 'echo "down=$DOWN_READ" >>"$GITHUB_OUTPUT"'
+    expect(RESTORE_DOWN_DIFF).toContain(down)
+    expect(maskingFindings(inStep('prod-plan', 'Diff', down, down.replace('>>', '>')))).toContain(
+      `${DEPLOY}: DPW-07 prod-plan (Diff): ${APPENDS}`,
+    )
+    for (const [text, holds] of [
+      ['{\n  echo x\n} >"$GITHUB_STEP_SUMMARY"', false],
+      ['echo a=b >"$GITHUB_OUTPUT"', false],
+      ['echo a=b 1>"$GITHUB_OUTPUT"', false],
+      ['echo a=b >|"$GITHUB_OUTPUT"', false],
+      ['echo x | tee "$GITHUB_STEP_SUMMARY"', false],
+      ['echo x | tee -a "$GITHUB_STEP_SUMMARY"', true],
+      ['echo a=b >>"$GITHUB_OUTPUT"', true],
+      ['echo \'>"$GITHUB_OUTPUT"\'', true],
+    ] as const) {
+      expect(appendsOnly(text), text).toBe(holds)
+    }
+    expect(maskingFindings(workflows)).toEqual([])
+  })
+
+  // ci.yml's pins check written run: >-, which parsedSteps() read as its four lines while YAML folded them into one
+  // printf, so check-action-pins.ts never ran and the job went green; and the CLI pin's run the same way.
+  it('holds the two runs ci.yml’s held jobs run to a literal block scalar (DPW-04)', () => {
+    const ciText = workflows.get(CI) ?? ''
+    for (const [id, finding] of [
+      ['action-pins', PINS_JOB_FINDING],
+      ['cli-pin', CLI_PIN_JOB_FINDING],
+    ] as const) {
+      for (const header of ['>-', '>', '>+']) {
+        expect(
+          actionPinFindings(plant('        run: |\n', `        run: ${header}\n`, `\n  ${id}:\n`, CI)),
+          `${id} ${header}`,
+        ).toContain(`${CI}: DPW-04 ${finding}`)
+      }
+    }
+    for (const id of ['action-pins', 'cli-pin']) {
+      const held = workflowJobs(ciText).find(each => each.id === id)
+      if (held === undefined) throw new Error(`no ${id} job`)
+      const run = parsedSteps(held).at(-1)
+      expect(run !== undefined && literalRun(run), id).toBe(true)
+    }
+    expect(actionPinFindings(workflows)).toEqual([])
+  })
+
+  // CLI_PIN_DRIFT reads a path git quotes: hash-object --stdin-paths unquotes a line that starts with a double
+  // quote, so a file whose name git quotes is compared by its own bytes, and its drift refused.
+  it('compares a file whose name git quotes by its own bytes (CLI_PIN_DRIFT)', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-quoted-'))
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: folder, encoding: 'utf8' })
+      git('init', '-q', '-b', 'main')
+      writeFileSync(join(folder, 'docs-café.md'), 'notes\n')
+      writeFileSync(join(folder, 'quote"and\\back'), 'b\n')
+      git('add', '-A')
+      git('-c', 'user.name=t', '-c', 'user.email=t@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'c')
+      expect(git('ls-tree', '-r', 'HEAD')).toContain('"docs-caf\\303\\251.md"')
+      const drift = () => spawnSync('bash', ['-e', '-c', CLI_PIN_DRIFT], { cwd: folder, encoding: 'utf8' })
+      expect(drift().status).toBe(0)
+      writeFileSync(join(folder, 'docs-café.md'), 'notes, rewritten\n')
+      const refused = drift()
+      expect(refused.status).toBe(1)
+      expect(refused.stdout).toContain("cli-pin: the checkout isn't HEAD's blobs byte for byte")
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  // A record job's verdicts held through STEP_ENVS alone: SMOKE read from the deploy job's result, a one-token change
+  // made with recordEnv's, recorded a release whose smoke failed as deployed and the job green.
+  it('holds a record job’s SMOKE and RESMOKE to its smoke’s and resmoke’s results, as written (DPW-13)', () => {
+    for (const stage of ['nonprod', 'prod']) {
+      for (const [from, to] of [
+        [`SMOKE: \${{ needs.smoke-${stage}.result }}`, `SMOKE: \${{ needs.${stage}.result }}`],
+        [`RESMOKE: \${{ needs.resmoke-${stage}.result }}`, `RESMOKE: \${{ needs.rollback-${stage}.result }}`],
+      ] as const) {
+        expect(
+          releaseFindings(plant(`          ${from}\n`, `          ${to}\n`, job(`record-${stage}`))),
+          `${stage} ${to}`,
+        ).toContain(`${DEPLOY}: DPW-13 record-${stage} (Write the record): ${JUDGED}`)
+      }
+    }
+    expect(releaseFindings(workflows).filter(each => each.endsWith(JUDGED))).toEqual([])
   })
 })

@@ -391,6 +391,19 @@ export function parsedSteps(job: WorkflowJob): WorkflowStep[] {
   })
 }
 
+// Whether a step's run: is a literal block scalar (|, |- or |+, with no indentation indicator), the one form whose
+// lines GitHub hands bash as parsedSteps() reads them (round 12's fourth iteration, its second pass): parsedSteps()
+// reads a folded one (>, >- or >+) as its lines unjoined, while YAML joins each line break between two lines
+// that start with no blank into a space, so ci.yml's pins check written run: >- read as PINS_RUN here and ran at
+// GitHub as one printf whose other words it ignored, with the check never run and the job green.
+export function literalRun(step: WorkflowStep): boolean {
+  const values = step.lines.flatMap((line, i) => {
+    const key = /^ {8}run:(?:\s+(.*))?$/.exec(i === 0 ? `        ${line.slice(8)}` : line)
+    return key ? [(key[1] ?? '').trim()] : []
+  })
+  return values.length === 1 && LITERAL_SCALAR.test(values[0] ?? '')
+}
+
 // What each line of a workflow is to YAML: a YAML line, a comment, a block scalar's content or blank. A
 // block scalar's content is read as blockScalar() reads it: the lines past its key, ending at the first
 // indented less than its first line, so a line starting with # inside it is content (bash's to read, and
@@ -465,8 +478,9 @@ export function blockScalarProblems(text: string): number[] {
 
 // The lines (by index) whose key's value is a block scalar with an indentation indicator (|2, >-1), whose
 // content YAML takes at an indent this reader doesn't, so a line YAML reads as content would be read
-// here as YAML or the other way round (DPW-02 refuses each in every workflow; a folded one, which no rule
-// outside deploy.yml reads as bash, stays allowed there).
+// here as YAML or the other way round (DPW-02 refuses each in every workflow; a folded one stays allowed
+// outside deploy.yml, whose runs DPW-02 holds literal, but for ci.yml's two runs DPW-04 reads as bash, the
+// pins check's and the CLI pin's, which literalRun() holds literal).
 export function indicatorProblems(text: string): number[] {
   return yamlLines(text).flatMap(({ index, text: line }) => {
     const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
