@@ -46,7 +46,9 @@ import {
   ARTIFACT_CALLS,
   ARTIFACT_NAMES,
   ARTIFACTS_STEP,
+  ASSEMBLY_FOLDERS,
   ASSET_CHECK,
+  ASSET_CHECK_RUN,
   AWS_CHECK,
   actionPinFindings as actionPinFindingsOf,
   actionRepository,
@@ -86,6 +88,7 @@ import {
   deployStepFindings as deployStepFindingsOf,
   diffFormHolds,
   ENVIRONMENT_JOBS,
+  envGivenLines,
   evaluatedLines,
   evaluateIf,
   exitingFunctions,
@@ -1878,7 +1881,33 @@ describe('DPW-02: deploy.yml’s shared runs (round 13)', () => {
     ])
     const found = credentialed(changed).filter(each => each.includes('(PINNED_RUNS)'))
     expect(found).toEqual([pinned('prod (The pinned CDK CLI)')])
-  })
+    // asset-check's anchor, in synth, which no credential rule reads: a line added there is found at each of the
+    // nine steps that run it, under DPW-10 in the credentialed jobs and DPW-13 in the synths.
+    const header = '        run: &asset-check |\n'
+    expect(aliased().split(header)).toHaveLength(2)
+    const atAssetCheck = edited(aliased(), header, `${header}          true\n`)
+    expect(credentialed(atAssetCheck)).toEqual(
+      expect.arrayContaining(
+        [
+          'nonprod (Check the assembly)',
+          'rollback-nonprod (Check the previous assembly)',
+          'prod-plan (Check the assembly)',
+          'prod-plan (Check the previous assembly)',
+          'prod (Check the assembly)',
+          'rollback-prod (Check the previous assembly)',
+        ].map(pinned),
+      ),
+    )
+    expect(releaseFindings(withText(DEPLOY, atAssetCheck))).toEqual(
+      expect.arrayContaining(
+        [
+          "synth (Check the release's assembly)",
+          "synth-previous-nonprod (Check nonprod's previous assembly)",
+          "synth-previous-prod (Check prod's previous assembly)",
+        ].map(where => `${DEPLOY}: DPW-13 ${where}: ${PINNED_13}`),
+      ),
+    )
+  }, 60_000)
 
   // The pins proof runs before any of the repository's code and reads deploy.yml as stored, so it reads the
   // shared layout itself: an alias holds no uses:, and an anchored text is read line by line like any run.
@@ -8798,8 +8827,10 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
 
 describe('DPW-14 (C11-D76): the asset and release checks', () => {
   const at = (where: string, rule: string) => `${DEPLOY}: DPW-14 ${where}: ${rule}`
+  const UPLOADED =
+    "runs ASSET_CHECK on each assembly it uploads, before the upload, in a step that checks the folder its ASSEMBLY_FOLDER names (one of ASSEMBLY_FOLDERS, the upload's) against the release its RELEASE names (the one its job synthesised)"
   const CHECKED =
-    "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
+    "runs ASSET_CHECK on each folder it downloaded, in a step of its own that checks the folder its ASSEMBLY_FOLDER names (one of ASSEMBLY_FOLDERS, the download's) against the release its RELEASE names (the one that folder holds), after its download, under its download's if: or none, and before the credentials action"
 
   it('finds each planted breakage in the workflow', () => {
     // GUARDS-02: null == 0 is true on GitHub, so this download would run with empty artifact-ids; round 2's
@@ -8826,7 +8857,7 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
       assetCheckFindings(plant("asset_refuse 'the assembly holds a symbolic link'", 'true', job('nonprod'))),
     ).toEqual([at('nonprod', CHECKED), at('nonprod (Check the assembly)', STANDS_ALONE)])
     expect(
-      assetCheckFindings(plant('check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"', 'true', job('prod'))),
+      assetCheckFindings(plant('check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"', 'true', job('prod'))),
     ).toEqual([at('prod', CHECKED), at('prod (Check the assembly)', STANDS_ALONE)])
     expect(
       assetCheckFindings(plant(`        if: \${{ needs.synth.outputs.assembly != '' }}\n`, '', job('nonprod'))),
@@ -8860,9 +8891,118 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
       ),
     ).toEqual([at('nonprod (Deploy Platform, Data and Tasks)', 'starts the CLI in CDK_FOLDER’s fresh folder')])
     expect(assetCheckFindings(removedStep('synth', "Check the release's assembly"))).toEqual([
-      at("synth (Upload the release's assembly)", 'runs ASSET_CHECK on each assembly it uploads, before the upload'),
+      at("synth (Upload the release's assembly)", UPLOADED),
     ])
   })
+
+  // Round 13: the nine steps that check an assembly run one text, ASSET_CHECK_RUN, whose two calls read the folder
+  // from the step's ASSEMBLY_FOLDER and the release from its RELEASE, so those two env: entries say what each step
+  // checks: DPW-14 holds the folder to ASSEMBLY_FOLDERS and the one its download or upload names, and the release
+  // to the one that folder holds, and STEP_ENVS pins both (DPW-10's env: finding).
+  it("checks the folder each step's ASSEMBLY_FOLDER names against the release its RELEASE names (round 13)", () => {
+    const ENV =
+      'sets only the environment variables the workflow uses, each to the value STEP_ENVS names (a job, STAGE alone): no BASH_ENV, PATH or NODE_OPTIONS, and no input from another step, job or context'
+    const pinnedEnv = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${ENV}`
+    const inStep = (text: string, id: string, name: string, from: string, to: string) => {
+      const step = stepText(text, id, name)
+      return edited(text, step, edited(step, from, to), job(id))
+    }
+    const changed = (id: string, name: string, from: string, to: string) =>
+      withText(DEPLOY, inStep(deployText, id, name, from, to))
+    const credentialed = (planted: Texts) => credentialedCodeFindings(planted, manifests, lockfile)
+    // Every check runs the one text, its folder and release in its env:.
+    const previousOf = (stage: string) =>
+      `\${{ needs.gate.outputs.previous_${stage}_commit }}:\${{ needs.gate.outputs.previous_${stage}_digest }}`
+    const checks = workflowJobs(deployText).flatMap(each =>
+      parsedSteps(each)
+        .filter(step => step.run === ASSET_CHECK_RUN)
+        .map(step => [each.id, step.name, step.env.get('ASSEMBLY_FOLDER'), step.env.get('RELEASE')]),
+    )
+    expect(checks).toEqual([
+      ['synth', "Check the release's assembly", 'assembly', `\${{ steps.synth.outputs.release }}`],
+      [
+        'synth-previous-nonprod',
+        "Check nonprod's previous assembly",
+        'assembly-previous-nonprod',
+        previousOf('nonprod'),
+      ],
+      ['synth-previous-prod', "Check prod's previous assembly", 'assembly-previous-prod', previousOf('prod')],
+      ['nonprod', 'Check the assembly', 'assembly', `\${{ steps.release.outputs.release }}`],
+      [
+        'rollback-nonprod',
+        'Check the previous assembly',
+        'assembly-previous',
+        `\${{ steps.release.outputs.previous }}`,
+      ],
+      ['prod-plan', 'Check the assembly', 'assembly', `\${{ steps.release.outputs.release }}`],
+      ['prod-plan', 'Check the previous assembly', 'assembly-previous', previousOf('prod')],
+      ['prod', 'Check the assembly', 'assembly', `\${{ steps.release.outputs.release }}`],
+      ['rollback-prod', 'Check the previous assembly', 'assembly-previous', `\${{ steps.release.outputs.previous }}`],
+    ])
+    expect(new Set(checks.map(([, , folder]) => folder))).toEqual(new Set(ASSEMBLY_FOLDERS))
+    // nonprod's check pointed at another of the four folders: the one it downloaded goes unchecked.
+    const another = changed(
+      'nonprod',
+      'Check the assembly',
+      '          ASSEMBLY_FOLDER: assembly\n',
+      '          ASSEMBLY_FOLDER: assembly-previous\n',
+    )
+    expect(assetCheckFindings(another)).toEqual([at('nonprod', CHECKED)])
+    expect(credentialed(another)).toContain(pinnedEnv('nonprod (Check the assembly)'))
+    // A folder outside ASSEMBLY_FOLDERS, with nonprod's download moved there too, which the list alone refuses.
+    const elsewhere = inStep(
+      deployText,
+      'nonprod',
+      'Download the assembly',
+      `          path: \${{ runner.temp }}/assembly\n`,
+      `          path: \${{ runner.temp }}/assembly-elsewhere\n`,
+    )
+    const outside = withText(
+      DEPLOY,
+      inStep(
+        elsewhere,
+        'nonprod',
+        'Check the assembly',
+        '          ASSEMBLY_FOLDER: assembly\n',
+        '          ASSEMBLY_FOLDER: assembly-elsewhere\n',
+      ),
+    )
+    expect(assetCheckFindings(outside)).toEqual([at('nonprod', CHECKED)])
+    expect(credentialed(outside)).toContain(pinnedEnv('nonprod (Check the assembly)'))
+    // A rollback's check given this run's release, where its folder holds the previous one.
+    const release = changed(
+      'rollback-nonprod',
+      'Check the previous assembly',
+      `          RELEASE: \${{ steps.release.outputs.previous }}\n`,
+      `          RELEASE: \${{ steps.release.outputs.release }}\n`,
+    )
+    expect(assetCheckFindings(release)).toEqual([at('rollback-nonprod', CHECKED)])
+    expect(credentialed(release)).toContain(pinnedEnv('rollback-nonprod (Check the previous assembly)'))
+    // synth's check with no ASSEMBLY_FOLDER (set -u would stop it at its first call): its upload goes unchecked.
+    const dropped = changed('synth', "Check the release's assembly", '          ASSEMBLY_FOLDER: assembly\n', '')
+    expect(assetCheckFindings(dropped)).toEqual([at("synth (Upload the release's assembly)", UPLOADED)])
+    expect(credentialed(dropped)).toContain(pinnedEnv("synth (Check the release's assembly)"))
+    // synth-previous-prod's check given nonprod's previous release.
+    const swapped = changed(
+      'synth-previous-prod',
+      "Check prod's previous assembly",
+      `          RELEASE: ${previousOf('prod')}\n`,
+      `          RELEASE: ${previousOf('nonprod')}\n`,
+    )
+    expect(assetCheckFindings(swapped)).toEqual([at("synth-previous-prod (Upload prod's previous assembly)", UPLOADED)])
+    expect(credentialed(swapped)).toContain(pinnedEnv("synth-previous-prod (Check prod's previous assembly)"))
+    // prod-plan's check under its previous assembly's if: pointed at the release's folder, whose download runs
+    // unconditionally: a check skipped where its download runs (DPW-06).
+    const skipped = changed(
+      'prod-plan',
+      'Check the previous assembly',
+      '          ASSEMBLY_FOLDER: assembly-previous\n',
+      '          ASSEMBLY_FOLDER: assembly\n',
+    )
+    expect(deployStepFindings(skipped)).toContain(
+      `${DEPLOY}: DPW-06 prod-plan: runs every step up to its credentials action, and AWS_CHECK after it, unconditionally, but its downloads, a download’s asset check under that download’s if:, and its image check, under the push’s if:`,
+    )
+  }, 60_000)
 
   it('holds the repository', () => {
     expect(assetCheckFindings(workflows)).toEqual([])
@@ -9830,6 +9970,47 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     const said = `${result.stdout}${result.stderr}`.trim()
     return result.status === 0 ? `passed${said === '' ? '' : `: ${said}`}` : said
   }
+  // Round 13: the nine steps that check an assembly run one text, ASSET_CHECK_RUN, whose calls read the folder from
+  // the step's ASSEMBLY_FOLDER and the release from its RELEASE. Run as a step runs it (bash -e -o pipefail, its
+  // env: set, the runner's folder in RUNNER_TEMP), it says what the literal calls said, the rollbacks' reading
+  // PREVIOUS: it passes the right folder and release, and refuses a folder that isn't there and another release;
+  // and with no ASSEMBLY_FOLDER or RELEASE, set -u stops it.
+  function step(run: string, env: Readonly<Record<string, string>>, temp: string) {
+    const base = { ...process.env }
+    for (const name of ['ASSEMBLY_FOLDER', 'RELEASE', 'PREVIOUS']) delete base[name]
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
+      encoding: 'utf8',
+      env: { ...base, RUNNER_TEMP: temp, ...env },
+    })
+    return { status: result.status, said: [...spoken(result.stdout), ...result.stderr.trim().split('\n')] }
+  }
+  it('runs ASSET_CHECK_RUN as a step, reading its folder and release from its env: as the literal calls did (round 13)', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'hearth-dpw14-step-'))
+    made.push(temp)
+    cpSync(source, join(temp, 'assembly'), { recursive: true })
+    const literal = (folder: string, variable: string) =>
+      [
+        STOP_HEAD,
+        ASSET_CHECK,
+        `check_assembly "$RUNNER_TEMP/${folder}"`,
+        `check_release_in "$RUNNER_TEMP/${folder}" "$${variable}"`,
+      ].join('\n')
+    const other = `${'e'.repeat(40)}:sha256:${'0'.repeat(64)}`
+    const right = step(ASSET_CHECK_RUN, { ASSEMBLY_FOLDER: 'assembly', RELEASE }, temp)
+    expect(right.status).toBe(0)
+    expect(right).toEqual(step(literal('assembly', 'RELEASE'), { RELEASE }, temp))
+    const missing = step(ASSET_CHECK_RUN, { ASSEMBLY_FOLDER: 'assembly-previous', RELEASE }, temp)
+    expect(missing.status).not.toBe(0)
+    expect(missing).toEqual(step(literal('assembly-previous', 'PREVIOUS'), { PREVIOUS: RELEASE }, temp))
+    const released = step(ASSET_CHECK_RUN, { ASSEMBLY_FOLDER: 'assembly', RELEASE: other }, temp)
+    expect(released.status).not.toBe(0)
+    expect(released).toEqual(step(literal('assembly', 'RELEASE'), { RELEASE: other }, temp))
+    expect(step(ASSET_CHECK_RUN, { RELEASE }, temp).said.join('\n')).toMatch(/ASSEMBLY_FOLDER: unbound variable/)
+    expect(step(ASSET_CHECK_RUN, { ASSEMBLY_FOLDER: 'assembly' }, temp).said.join('\n')).toMatch(
+      /RELEASE: unbound variable/,
+    )
+  }, 240_000)
+
   // ASSET_CHECK over a build, with a jq first on PATH that runs the real one with -c added and notes every
   // call handed -e whose program printed other than one value, since jq -e reads the last value alone: the
   // check's outcome, then each such call. DPW-10 (jqPrintsOne) holds the texts' programs; this holds the
@@ -13497,16 +13678,16 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
   // call in a pipeline, after !, beside && or || or as a condition has its failure ignored by set -e. Each
   // canonical check, and each record job's function, is held to standing alone.
   it("holds each check's call to standing alone, so its refusal ends the step (FLOW-A2-01)", () => {
-    const assembly = '          check_assembly "$RUNNER_TEMP/assembly"\n'
+    const assembly = '          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"\n'
     for (const call of [
-      'CHECKED=$(check_assembly "$RUNNER_TEMP/assembly") || echo "$CHECKED"',
-      'check_assembly "$RUNNER_TEMP/assembly" | tee -a "$GITHUB_STEP_SUMMARY"',
-      '! check_assembly "$RUNNER_TEMP/assembly"',
-      'check_assembly "$RUNNER_TEMP/assembly" || echo x',
-      'echo x && check_assembly "$RUNNER_TEMP/assembly"',
-      'if check_assembly "$RUNNER_TEMP/assembly"; then echo x; fi',
-      'if [ a = b ]; then echo x; elif check_assembly "$RUNNER_TEMP/assembly"; then echo y; fi',
-      '{ check_assembly "$RUNNER_TEMP/assembly"; } || echo x',
+      'CHECKED=$(check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER") || echo "$CHECKED"',
+      'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER" | tee -a "$GITHUB_STEP_SUMMARY"',
+      '! check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
+      'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER" || echo x',
+      'echo x && check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
+      'if check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"; then echo x; fi',
+      'if [ a = b ]; then echo x; elif check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"; then echo y; fi',
+      '{ check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"; } || echo x',
     ]) {
       expect(credentialed(plant(assembly, `          ${call}\n`, job('nonprod'))), call).toContain(
         at('DPW-10', 'nonprod (Check the assembly)', HELD),
@@ -13543,13 +13724,15 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     }
     // Every job's check call is held so, the synth jobs' too, which no credential rule reads (DPW-14).
     expect(
-      assetCheckFindings(plant(assembly, '          check_assembly "$RUNNER_TEMP/assembly" || echo x\n', job('synth'))),
+      assetCheckFindings(
+        plant(assembly, '          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER" || echo x\n', job('synth')),
+      ),
     ).toContain(at('DPW-14', "synth (Check the release's assembly)", STANDS_ALONE))
     expect(
       assetCheckFindings(
         plant(
-          '          check_assembly "$RUNNER_TEMP/assembly-previous-prod"\n',
-          '          X=$(check_assembly "$RUNNER_TEMP/assembly-previous-prod") || echo "$X"\n',
+          '          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"\n',
+          '          X=$(check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER") || echo "$X"\n',
           job('synth-previous-prod'),
         ),
       ),
@@ -13710,9 +13893,14 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
       [
         STOP_HEAD,
         ASSET_CHECK,
-        'check_assembly "$RUNNER_TEMP/assembly-previous"',
-        'check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"',
+        'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
+        'check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"',
       ].join('\n'),
+    )
+    // The folder it checks is the one prod's rollback job downloads, and the release the previous one.
+    expect(named('Check the previous assembly')?.env.get('ASSEMBLY_FOLDER')).toBe('assembly-previous')
+    expect(named('Check the previous assembly')?.env.get('RELEASE')).toBe(
+      `\${{ needs.gate.outputs.previous_prod_commit }}:\${{ needs.gate.outputs.previous_prod_digest }}`,
     )
     expect(named('Diff the rollback')?.run).toBe(ROLLBACK_DIFF_RUN)
     expect(ROLLBACK_DIFF_RUN).toContain('ASSEMBLY="$RUNNER_TEMP/assembly-previous"')
@@ -13723,7 +13911,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
       )
     }
     const CHECKED =
-      "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
+      "runs ASSET_CHECK on each folder it downloaded, in a step of its own that checks the folder its ASSEMBLY_FOLDER names (one of ASSEMBLY_FOLDERS, the download's) against the release its RELEASE names (the one that folder holds), after its download, under its download's if: or none, and before the credentials action"
     expect(assetCheckFindings(removedStep('prod-plan', 'Check the previous assembly'))).toEqual([
       at('DPW-14', 'prod-plan', CHECKED),
     ])
@@ -13957,7 +14145,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const EXPANDS =
-    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   // TASKS_OUTPUTS with one of its lines replaced by others, and the 1-based line of the first that holds `mark`.
   const OUTPUTS = `  outputs=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-Tasks" --query 'Stacks[0].Outputs' --output json)`
@@ -14787,6 +14975,61 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
     expect(canonicalTextFindings()).toEqual([])
   })
 
+  // Round 13: an asset check reads its folder and its release from its step's env: (ASSEMBLY_FOLDER and RELEASE),
+  // so no canonical text sets a name a step's or a job's env: gives, in any spelling, or a line of ASSET_CHECK could
+  // point the calls after it at another folder or release; and none expands ASSEMBLY_FOLDER, which only those
+  // calls read.
+  it("sets no name an env: gives in a canonical text, and expands ASSEMBLY_FOLDER only on an asset check's calls (round 13)", () => {
+    const ENV_GIVEN =
+      "sets no name a step's or a job's env: gives (STEP_ENVS's names and STAGE), in any spelling, so a pinned call line reads from its step's env: what STEP_ENVS pins"
+    const EXPANDS =
+      "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(envGivenLines(text, name), name).toEqual([])
+    // Each way bash sets a name, for the asset check's two names, the PREVIOUS it read before and the job's STAGE,
+    // at ASSET_CHECK's top and at STOP_HEAD's end.
+    const forms = (name: string) => [
+      `${name}=x`,
+      `${name}="x"`,
+      `[ -n "$${name}" ] && ${name}=x`,
+      `: "\${${name}:=x}"`,
+      `local ${name}=x`,
+      `local ${name}`,
+      `for ${name} in x; do :; done`,
+      `IFS= read -r ${name} <<<'x'`,
+      `mapfile -t ${name} <<<'x'`,
+      `printf -v ${name} '%s' x`,
+      `${name}+=x`,
+      `(( ${name} = 1 ))`,
+    ]
+    const end = STOP_HEAD.split('\n').length
+    for (const name of ['ASSEMBLY_FOLDER', 'RELEASE', 'PREVIOUS', 'STAGE']) {
+      for (const form of forms(name)) {
+        expect(envGivenLines(`${form}\n${ASSET_CHECK}`, 'ASSET_CHECK'), form).toContain(0)
+        expect(envGivenLines(`${STOP_HEAD}\n${form}`, 'STOP_HEAD'), form).toContain(end)
+      }
+      expect(canonicalTextFindings({ STOP_HEAD: `${STOP_HEAD}\n${name}=x` })).toContain(
+        canonical('STOP_HEAD', end + 1, ENV_GIVEN),
+      )
+    }
+    // declare, typeset, unset, readonly, eval and export off its lines run no command CANONICAL_COMMANDS names.
+    for (const form of [
+      'declare ASSEMBLY_FOLDER=x',
+      'typeset ASSEMBLY_FOLDER=x',
+      'unset ASSEMBLY_FOLDER',
+      'readonly ASSEMBLY_FOLDER',
+      "eval 'ASSEMBLY_FOLDER=x'",
+      'export ASSEMBLY_FOLDER=x',
+    ]) {
+      expect(canonicalCommandLines(`${STOP_HEAD}\n${form}`, new Set()), form).toContain(end)
+    }
+    // A canonical text that expands ASSEMBLY_FOLDER is DPW-07's, though a step's env: gives it; RELEASE, which
+    // AWS_CHECK's ecr_has calls expand, it may.
+    const expands = `${STOP_HEAD}\necho "$ASSEMBLY_FOLDER"`
+    expect(foreignExpansionLines(expands)).toEqual([end])
+    expect(canonicalTextFindings({ STOP_HEAD: expands })).toContain(canonical('STOP_HEAD', end + 1, EXPANDS, 'DPW-07'))
+    expect(foreignExpansionLines(`${STOP_HEAD}\necho "$RELEASE"`)).toEqual([])
+  }, 60_000)
+
   // COMMANDS-A2-02: the stop token was a name STOP_HEAD sets, so any canonical text could expand it, and
   // echo "::$stop_token::" resumed workflow commands for the rest of the step: a ##[add-mask] in a release's
   // own template text then hid a line of the approver's diff. The token is named on STOP_COMMANDS's two lines
@@ -15521,7 +15764,7 @@ describe('Round 9, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const EXPANDS =
-    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
     `${GUARD}: ${id} ${name}, line ${line}: ${rule}`
   const plantAfter = (text: string, anchor: string, added: string) => {
@@ -17787,7 +18030,7 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const EXPANDS =
-    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+    "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const VERDICT =
     'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"

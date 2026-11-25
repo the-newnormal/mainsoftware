@@ -418,6 +418,7 @@ jobs:
       - name: Check the release's assembly
         env:
           RELEASE: ${{ steps.synth.outputs.release }}
+          ASSEMBLY_FOLDER: assembly
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -956,8 +957,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly"
-          check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: Upload the release's assembly
         id: assembly
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1015,6 +1016,7 @@ jobs:
         if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
         env:
           RELEASE: ${{ needs.gate.outputs.previous_nonprod_commit }}:${{ needs.gate.outputs.previous_nonprod_digest }}
+          ASSEMBLY_FOLDER: assembly-previous-nonprod
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -1553,8 +1555,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly-previous-nonprod"
-          check_release_in "$RUNNER_TEMP/assembly-previous-nonprod" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: Upload nonprod's previous assembly
         id: previous-nonprod
         if: ${{ needs.gate.outputs.previous_nonprod_commit != '' }}
@@ -1613,6 +1615,7 @@ jobs:
         if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
         env:
           RELEASE: ${{ needs.gate.outputs.previous_prod_commit }}:${{ needs.gate.outputs.previous_prod_digest }}
+          ASSEMBLY_FOLDER: assembly-previous-prod
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2151,8 +2154,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly-previous-prod"
-          check_release_in "$RUNNER_TEMP/assembly-previous-prod" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: Upload prod's previous assembly
         id: previous-prod
         if: ${{ needs.gate.outputs.previous_prod_commit != '' }}
@@ -2337,6 +2340,7 @@ jobs:
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
+          ASSEMBLY_FOLDER: assembly
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -2875,8 +2879,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly"
-          check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: The fast re-check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3924,6 +3928,8 @@ jobs:
       - name: Check the previous assembly
         env:
           PREVIOUS: ${{ steps.release.outputs.previous }}
+          ASSEMBLY_FOLDER: assembly-previous
+          RELEASE: ${{ steps.release.outputs.previous }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -4462,8 +4468,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly-previous"
-          check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
@@ -5268,6 +5274,7 @@ jobs:
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
+          ASSEMBLY_FOLDER: assembly
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -5806,12 +5813,14 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly"
-          check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: Check the previous assembly
         if: ${{ needs.synth-previous-prod.outputs.assembly != '' && needs.gate.outputs.mode == 'deploy' }}
         env:
           PREVIOUS: ${{ needs.gate.outputs.previous_prod_commit }}:${{ needs.gate.outputs.previous_prod_digest }}
+          ASSEMBLY_FOLDER: assembly-previous
+          RELEASE: ${{ needs.gate.outputs.previous_prod_commit }}:${{ needs.gate.outputs.previous_prod_digest }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -6350,8 +6359,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly-previous"
-          check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail
@@ -6907,6 +6916,7 @@ jobs:
       - name: Check the assembly
         env:
           RELEASE: ${{ steps.release.outputs.release }}
+          ASSEMBLY_FOLDER: assembly
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -7445,8 +7455,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly"
-          check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: The fast re-check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -8601,6 +8611,8 @@ jobs:
       - name: Check the previous assembly
         env:
           PREVIOUS: ${{ steps.release.outputs.previous }}
+          ASSEMBLY_FOLDER: assembly-previous
+          RELEASE: ${{ steps.release.outputs.previous }}
         run: |
           set -euo pipefail
           # The runner reads a line holding ##[name] anywhere, or starting with ::name::, as a workflow command
@@ -9139,8 +9151,8 @@ jobs:
             done < <(assembly_dirs "$root")
             [ "$services" -gt 0 ] || asset_refuse 'the assembly holds no Services template'
           }
-          check_assembly "$RUNNER_TEMP/assembly-previous"
-          check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"
+          check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"
+          check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"
       - name: The pinned CDK CLI
         run: |
           set -euo pipefail

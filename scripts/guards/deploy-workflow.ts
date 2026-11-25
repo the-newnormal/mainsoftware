@@ -2053,7 +2053,7 @@ docker run --rm --read-only --network host -e "MIGRATION_DATABASE_URL=postgres:/
 
 // The synth's runs (C11-D51, C11-D76, DPW-13): the release's synth, by mode, and each previous release's,
 // each in its own checkout's folder (its working-directory, pinned with its run); the asset checks before
-// each upload are DPW-14's assetCheckRun. Synth holds no secret and runs repository code by design, but
+// each upload are DPW-14's ASSET_CHECK_RUN. Synth holds no secret and runs repository code by design, but
 // its runs choose the commit, the release and the context the assembly is synthesised with, so none has a
 // line of its own: npm's and the CLI's own aliases (run-script, synthesize, --context) or a quoted word
 // would pass a rule that reads the text. Synth's own asset check holds only against these texts, never
@@ -2493,15 +2493,28 @@ export const recordRun = (stage: Stage) =>
 // CLI_CHECK, the account id's mask, AWS_CHECK with its job's call, each CLI step and the probe; the fast
 // re-checks are canonical texts standing whole.
 export const MASK_RUN = 'echo "::add-mask::$ACCOUNT_ID"'
-export const assetCheckRun = (folders: readonly string[], variable: string) =>
-  [
-    STOP_HEAD,
-    ASSET_CHECK,
-    ...folders.flatMap(folder => [
-      `check_assembly "$RUNNER_TEMP/${folder}"`,
-      `check_release_in "$RUNNER_TEMP/${folder}" "$${variable}"`,
-    ]),
-  ].join('\n')
+// The asset check every step that checks an assembly runs (DPW-14): STOP_HEAD, ASSET_CHECK and its two calls, one
+// text for every folder, so deploy.yml writes it once (RUN_ANCHORS). Each call reads the folder from the step's
+// ASSEMBLY_FOLDER and the release that folder holds from its RELEASE (in a previous assembly's check, the previous
+// release, which the step's PREVIOUS, now read by nothing, names too), both from the step's env:, which GitHub sets
+// before bash starts: STEP_ENVS pins each step's two values, DPW-14 holds its ASSEMBLY_FOLDER to ASSEMBLY_FOLDERS and the folder
+// its download or upload names and its RELEASE to the release that folder holds, no canonical text sets either
+// (ENV_GIVEN_RULE, DPW-10), and no canonical text expands ASSEMBLY_FOLDER (OWN_LINE_NAMES, DPW-07), so only these
+// two lines read it. Each expansion is double-quoted, so neither is split or globbed, and every folder is a plain
+// name: each call is handed exactly the words the literal folder and release once wrote on it.
+export const ASSET_CHECK_CALLS = [
+  'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
+  'check_release_in "$RUNNER_TEMP/$ASSEMBLY_FOLDER" "$RELEASE"',
+] as const
+export const ASSET_CHECK_RUN = [STOP_HEAD, ASSET_CHECK, ...ASSET_CHECK_CALLS].join('\n')
+// The folders an asset check's ASSEMBLY_FOLDER may name (DPW-14): the release's assembly, a rollback's or
+// prod-plan's previous one as its download writes it, and each synth-previous job's own.
+export const ASSEMBLY_FOLDERS = [
+  'assembly',
+  'assembly-previous',
+  'assembly-previous-nonprod',
+  'assembly-previous-prod',
+] as const
 // A step that runs one CLI line: the preamble, what it is, its folder, CDK_FOLDER and the line.
 const cliRun = (what: string, assembly: 'assembly' | 'assembly-previous', line: string) =>
   [PREAMBLE, what, `ASSEMBLY="$RUNNER_TEMP/${assembly}"`, CDK_FOLDER, line].join('\n')
@@ -2640,8 +2653,8 @@ export const artifactNamesRun = (id: string) => [STOP_HEAD, ARTIFACT_NAMES, ...(
 const checksBefore = (id: string, recheck?: string): Pinned => ({
   [ARTIFACTS_STEP]: { run: artifactNamesRun(id), rule: 'DPW-10' },
   ...(DEPLOY_JOBS[id]?.rollback === true
-    ? { 'Check the previous assembly': { run: assetCheckRun(['assembly-previous'], 'PREVIOUS'), rule: 'DPW-10' } }
-    : { 'Check the assembly': { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-10' } }),
+    ? { 'Check the previous assembly': { run: ASSET_CHECK_RUN, rule: 'DPW-10' } }
+    : { 'Check the assembly': { run: ASSET_CHECK_RUN, rule: 'DPW-10' } }),
   ...(recheck === undefined ? {} : { 'The fast re-check': { run: recheck, rule: 'DPW-10' } }),
   'The pinned CDK CLI': { run: CLI_FETCH, rule: 'DPW-10' },
   "The CLI is the registry's": { run: CLI_CHECK, rule: 'DPW-10' },
@@ -2663,11 +2676,7 @@ const credentialedRuns = (id: 'nonprod' | 'prod' | 'prod-plan' | 'rollback-nonpr
     case 'prod-plan':
       return {
         ...checksBefore(id),
-        'Check the previous assembly': {
-          run: assetCheckRun(['assembly-previous'], 'PREVIOUS'),
-          rule: 'DPW-10',
-          if: PLAN_PREVIOUS_IF,
-        },
+        'Check the previous assembly': { run: ASSET_CHECK_RUN, rule: 'DPW-10', if: PLAN_PREVIOUS_IF },
       }
     case 'nonprod':
     case 'prod':
@@ -2722,17 +2731,13 @@ const previousSynthRuns = (stage: 'nonprod' | 'prod'): Pinned => {
       if: condition,
       cwd,
     },
-    [`Check ${stage}'s previous assembly`]: {
-      run: assetCheckRun([`assembly-previous-${stage}`], 'RELEASE'),
-      rule: 'DPW-13',
-      if: condition,
-    },
+    [`Check ${stage}'s previous assembly`]: { run: ASSET_CHECK_RUN, rule: 'DPW-13', if: condition },
   }
 }
 const synthRuns = (): Pinned => ({
   'Install the release': { run: INSTALL_RUN, rule: 'DPW-13', cwd: 'release' },
   'Synthesise the release': { run: SYNTH_RUN, rule: 'DPW-13', cwd: 'release' },
-  "Check the release's assembly": { run: assetCheckRun(['assembly'], 'RELEASE'), rule: 'DPW-13' },
+  "Check the release's assembly": { run: ASSET_CHECK_RUN, rule: 'DPW-13' },
 })
 export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   gate: {
@@ -2785,6 +2790,7 @@ export interface SharedRun {
   reads?: readonly string[]
 }
 export const RUN_ANCHORS = (): Readonly<Record<string, SharedRun>> => ({
+  'asset-check': { text: ASSET_CHECK_RUN, reads: ['ASSEMBLY_FOLDER', 'RELEASE'] },
   'read-back': { text: [PREAMBLE, READ_BACK].join('\n') },
   'rollback-what-runs': { text: whatRunsText('rollback-nonprod') },
   'cli-fetch': { text: CLI_FETCH },
@@ -5459,12 +5465,16 @@ const CANONICAL_FUNCTIONS = (texts: Readonly<Record<string, string>>): ReadonlyS
 // run's own lines alone): the runner's own that a run's own lines may expand (RUNNER_EXPANSIONS), the run's
 // commit (GITHUB_SHA) and bash's SECONDS; and, outside the runner's and the credentials' namespaces (ACTIONS_,
 // GITHUB_, RUNNER_, AWS_, GH_, INPUT_, STATE_), a name a canonical text sets, one a step's env: (STEP_ENVS) or a
-// job's (STAGE) gives from no secret or token, or the one-offs' TOKEN, the assembly's folder (ASSEMBLY) and
-// prod-plan's diff file (DIFF, RESTORE_DOWN_DIFF's), which a run's own lines set before the texts that read
-// them. So no canonical text expands, in any form this reads, the OIDC request
-// token or its URL, the runtime token, an AWS_ variable, the job's token or a secret an env: hands its step,
-// even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
+// job's (STAGE) gives from no secret or token, but those only a pinned run's own lines read (OWN_LINE_NAMES), or
+// the one-offs' TOKEN, the assembly's folder (ASSEMBLY) and prod-plan's diff file (DIFF, RESTORE_DOWN_DIFF's),
+// which a run's own lines set before the texts that read them. So no canonical text expands, in any form this
+// reads, the OIDC request token or its URL, the runtime token, an AWS_ variable, the job's token or a secret an
+// env: hands its step, even after setting the name to itself (NAME="$NAME"), whose expansion bash reads first.
 const CREDENTIAL_NAMESPACE = /^(?:ACTIONS|GITHUB|RUNNER|AWS|GH|INPUT|STATE)_/
+// The names a step's env: gives that only a pinned run's own lines expand, never a canonical text: an asset
+// check's ASSEMBLY_FOLDER, which its two calls (ASSET_CHECK_CALLS) read, so the folder ASSET_CHECK checks is the
+// one its call names, and no line of ASSET_CHECK reads which folder its step names.
+const OWN_LINE_NAMES: readonly string[] = ['ASSEMBLY_FOLDER']
 const RUNNER_NAMES = (): readonly string[] => [...RUNNER_EXPANSIONS, 'GITHUB_SHA', 'SECONDS']
 // The names a step's env: gives from a secret or the job's token (round 12's fourth iteration, its second pass:
 // only canonicalGiven() dropped them, so a canonical text that set ACCOUNT_ID="${ACCOUNT_ID:-}", the ordinary set -u
@@ -5496,7 +5506,7 @@ const canonicalGiven = (): ReadonlySet<string> => {
         'ASSEMBLY',
         'DIFF',
         ...Object.values(CANONICAL_BY_NAME()).flatMap(namesSetIn),
-      ].filter(name => !secretGiven().has(name) && !CREDENTIAL_NAMESPACE.test(name)),
+      ].filter(name => !secretGiven().has(name) && !CREDENTIAL_NAMESPACE.test(name) && !OWN_LINE_NAMES.includes(name)),
     )
   }
   return CANONICAL_GIVEN
@@ -5514,7 +5524,32 @@ export function foreignExpansionLines(text: string, alsoSet: readonly string[] =
   return [...lines].sort((a, b) => a - b)
 }
 const CANONICAL_EXPANDS_RULE =
-  "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token, the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+  "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
+
+// The names a step's or a job's env: gives a run (DPW-10): every STEP_ENVS name and the job's STAGE, none of which
+// a canonical text sets, by an assignment in any spelling assigns() reads or a word a builtin is handed (read,
+// mapfile, for, printf -v, local and the rest builtinNames() reads), on any line; declare, typeset, unset,
+// readonly, eval and export off its lines canonicalCommandLines() refuses already. So a pinned call line that reads
+// one (an asset check's ASSEMBLY_FOLDER and RELEASE, say) reads what STEP_ENVS pins for its step, whatever the
+// texts before it run (round 13: with the folder read from the step's env:, a line of ASSET_CHECK setting
+// ASSEMBLY_FOLDER would point its own calls at another folder, which no other rule reads).
+let ENV_GIVEN: { names: readonly string[]; assignment: RegExp } | undefined
+const envGiven = () => {
+  if (ENV_GIVEN === undefined) {
+    const names = [
+      ...new Set([
+        'STAGE',
+        ...Object.values(STEP_ENVS).flatMap(steps => Object.values(steps).flatMap(env => Object.keys(env))),
+      ]),
+    ].sort()
+    ENV_GIVEN = { names, assignment: assigns(names.join('|')) }
+  }
+  return ENV_GIVEN
+}
+export const envGivenLines = (text: string, name: string): number[] =>
+  heldNameLines(text, name, envGiven().names, envGiven().assignment, [], [])
+const ENV_GIVEN_RULE =
+  "sets no name a step's or a job's env: gives (STEP_ENVS's names and STAGE), in any spelling, so a pinned call line reads from its step's env: what STEP_ENVS pins"
 
 // DPW-10's rule over the canonical texts, which a run may hold whole: each is written in the shell
 // shellViews() and shellCommands() read (readsAsBash()), so the rules read its commands as bash runs them,
@@ -5582,6 +5617,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of awsNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${AWS_NAME_RULE}`)
+    }
+    for (const line of envGivenLines(text, name)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${ENV_GIVEN_RULE}`)
     }
     for (const line of readerLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${READER_RULE}`)
@@ -8009,8 +8047,9 @@ export function deployStepFindings(workflows: Texts): Finding[] {
     if (steps.some(step => step.run !== undefined && !diffFormHolds(step.run))) add(id, DIFF_FORM)
     const credentials = credentialsAt(steps)
     // Every step up to the credentials (and AWS_CHECK after them) runs, so none of the checks is skipped: but
-    // the downloads, a download's asset check, which runs exactly when its download does (prod-plan's of the
-    // previous assembly), and the image check, which runs exactly when the push it guards does (DPW-13).
+    // the downloads, a download's asset check (ASSET_CHECK_RUN on the folder it downloaded, by its step's
+    // ASSEMBLY_FOLDER), which runs exactly when its download does (prod-plan's of the previous assembly), and the
+    // image check, which runs exactly when the push it guards does (DPW-13).
     if (ENVIRONMENT_JOBS[id] !== undefined) {
       const last = deploy === undefined ? credentials : credentials + 1
       const checkedUnder = new Set(
@@ -8018,8 +8057,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
           if (!step.uses?.startsWith('actions/download-artifact@')) return []
           const path = step.with.get('path') ?? ''
           const folder = path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path
-          const variable = folder === 'assembly-previous' ? 'PREVIOUS' : 'RELEASE'
-          return [`${assetCheckRun([folder], variable)}\n${step.if ?? ''}`]
+          return [JSON.stringify([ASSET_CHECK_RUN, folder, step.if ?? ''])]
         }),
       )
       if (
@@ -8030,7 +8068,7 @@ export function deployStepFindings(workflows: Texts): Finding[] {
               step.if !== undefined &&
               !step.uses?.startsWith('actions/download-artifact@') &&
               !(step.run === IMAGE_UNPACK_RUN && step.if === PUSH_IF[id]) &&
-              !checkedUnder.has(`${step.run ?? ''}\n${step.if}`),
+              !checkedUnder.has(JSON.stringify([step.run ?? '', step.env.get('ASSEMBLY_FOLDER') ?? '', step.if])),
           )
       ) {
         add(id, UNCONDITIONAL)
@@ -9814,14 +9852,8 @@ const CANONICAL_CALLS: ReadonlyMap<string, readonly string[]> = new Map([
   ['plan_basis', ['plan_basis plan', 'plan_basis check']],
   ['check_image_archive', ['check_image_archive "$RUNNER_TEMP/image/image.tar"']],
   ['unpack_image', [`unpack_image "$RUNNER_TEMP/image/image.tar" "${IMAGE_LAYOUT}"`]],
-  ['check_assembly', ['check_assembly "$RUNNER_TEMP/assembly"', 'check_assembly "$RUNNER_TEMP/assembly-previous"']],
-  [
-    'check_release_in',
-    [
-      'check_release_in "$RUNNER_TEMP/assembly" "$RELEASE"',
-      'check_release_in "$RUNNER_TEMP/assembly-previous" "$PREVIOUS"',
-    ],
-  ],
+  ['check_assembly', [ASSET_CHECK_CALLS[0]]],
+  ['check_release_in', [ASSET_CHECK_CALLS[1]]],
 ])
 // The calls a record job's own lines make of its own two functions, each as written: a release record in
 // either, a restore record in record-prod alone, each from the payload release_payload built from the
@@ -10140,6 +10172,7 @@ const WITH_KEYS: Readonly<Record<string, readonly string[]>> = {
 const ENV_KEYS = [
   'ACCOUNT_ID',
   'ACTOR',
+  'ASSEMBLY_FOLDER',
   'ASSEMBLY_ID',
   'ATTEMPT',
   'BASIS',
@@ -10227,7 +10260,7 @@ export const DUE_ENVS: Readonly<Record<string, Readonly<Record<string, string>>>
 const deployEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<string, string>>>> => ({
   'The release this job deploys': RELEASE_ENV,
   [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, IMAGE_ID, ...DUE_ENVS[stage] },
-  'Check the assembly': { RELEASE: RELEASE_OUTPUT },
+  'Check the assembly': { RELEASE: RELEASE_OUTPUT, ASSEMBLY_FOLDER: 'assembly' },
   'The fast re-check':
     stage === 'nonprod'
       ? { ...GH_ENV, MODE, RECORD_ID: gateOutput('current_nonprod_id') }
@@ -10262,7 +10295,11 @@ const rollbackEnvs = (stage: Stage): Readonly<Record<string, Readonly<Record<str
     PREVIOUS_DIGEST: gateOutput(`previous_${stage}_digest`),
   },
   [ARTIFACTS_STEP]: { ...GH_ENV, PREVIOUS_ID: previousId(stage) },
-  'Check the previous assembly': { PREVIOUS: PREVIOUS_OUTPUT },
+  'Check the previous assembly': {
+    PREVIOUS: PREVIOUS_OUTPUT,
+    ASSEMBLY_FOLDER: 'assembly-previous',
+    RELEASE: PREVIOUS_OUTPUT,
+  },
   'Mask the account id': ACCOUNT_ENV,
   'What runs': AWS_CHECK_ENV[`rollback-${stage}`] ?? {},
   'Read back what runs': readBackEnv(PREVIOUS_OUTPUT),
@@ -10319,21 +10356,24 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
       GATE_DIGEST: gateOutput('digest'),
       BUILD_DIGEST,
     },
-    "Check the release's assembly": { RELEASE: expr('steps.synth.outputs.release') },
+    "Check the release's assembly": { RELEASE: expr('steps.synth.outputs.release'), ASSEMBLY_FOLDER: 'assembly' },
   },
   'synth-previous-nonprod': {
     "Synthesise nonprod's previous release": {
       COMMIT: gateOutput('previous_nonprod_commit'),
       DIGEST: gateOutput('previous_nonprod_digest'),
     },
-    "Check nonprod's previous assembly": { RELEASE: previousRelease('nonprod') },
+    "Check nonprod's previous assembly": {
+      RELEASE: previousRelease('nonprod'),
+      ASSEMBLY_FOLDER: 'assembly-previous-nonprod',
+    },
   },
   'synth-previous-prod': {
     "Synthesise prod's previous release": {
       COMMIT: gateOutput('previous_prod_commit'),
       DIGEST: gateOutput('previous_prod_digest'),
     },
-    "Check prod's previous assembly": { RELEASE: previousRelease('prod') },
+    "Check prod's previous assembly": { RELEASE: previousRelease('prod'), ASSEMBLY_FOLDER: 'assembly-previous-prod' },
   },
   nonprod: deployEnvs('nonprod'),
   'smoke-nonprod': smokeEnv('nonprod', false),
@@ -10343,8 +10383,12 @@ export const STEP_ENVS: Readonly<Record<string, Readonly<Record<string, Readonly
   'prod-plan': {
     'The release this job deploys': RELEASE_ENV,
     [ARTIFACTS_STEP]: { ...GH_ENV, ASSEMBLY_ID, PREVIOUS_ID: previousId('prod'), ...DUE_ENVS['prod-plan'] },
-    'Check the assembly': { RELEASE: RELEASE_OUTPUT },
-    'Check the previous assembly': { PREVIOUS: previousRelease('prod') },
+    'Check the assembly': { RELEASE: RELEASE_OUTPUT, ASSEMBLY_FOLDER: 'assembly' },
+    'Check the previous assembly': {
+      PREVIOUS: previousRelease('prod'),
+      ASSEMBLY_FOLDER: 'assembly-previous',
+      RELEASE: previousRelease('prod'),
+    },
     'Mask the account id': ACCOUNT_ENV,
     Diff: { MODE, RESTORE: gateOutput('restore') },
   },
@@ -11825,11 +11869,32 @@ const RUNNER_TEMP = `${expr('runner.temp')}/`
 // action; synth runs it on each folder it uploads, before the upload; every download-artifact step's if:
 // requires its artifact-ids non-empty (an empty one downloads every artifact of the run); and every step
 // that runs the CLI starts it in CDK_FOLDER's fresh folder; and in every job each check's call stands alone.
+// Each check is ASSET_CHECK_RUN, one text for every folder, which reads the folder from its step's ASSEMBLY_FOLDER
+// and the release from its step's RELEASE: so the step that checks a folder is the one whose ASSEMBLY_FOLDER names
+// it, one of ASSEMBLY_FOLDERS, and its RELEASE must be the release that folder holds (in a previous assembly's
+// check, the previous release, though What runs beside it in a rollback job reads RELEASE as this run's: each
+// step's RELEASE is its own).
 const CHECK_NAMES = [...CANONICAL_CALLS.keys()]
 const STANDS_ALONE =
   'calls each check standing alone, outside any substitution, pipeline, negation, and-or list or condition, so its refusal ends the step'
 const CHECKED_FOLDERS =
-  "runs ASSET_CHECK on each folder it downloaded, in a step of its own with the release that folder holds, after its download, under its download's if: or none, and before the credentials action"
+  "runs ASSET_CHECK on each folder it downloaded, in a step of its own that checks the folder its ASSEMBLY_FOLDER names (one of ASSEMBLY_FOLDERS, the download's) against the release its RELEASE names (the one that folder holds), after its download, under its download's if: or none, and before the credentials action"
+const CHECKED_UPLOADS =
+  "runs ASSET_CHECK on each assembly it uploads, before the upload, in a step that checks the folder its ASSEMBLY_FOLDER names (one of ASSEMBLY_FOLDERS, the upload's) against the release its RELEASE names (the one its job synthesised)"
+// The release each synth job's upload holds: the release's own synth's, or the gate's previous release of its stage.
+const SYNTHESISED: Readonly<Record<string, string>> = {
+  synth: expr('steps.synth.outputs.release'),
+  'synth-previous-nonprod': previousRelease('nonprod'),
+  'synth-previous-prod': previousRelease('prod'),
+}
+// Whether a step checks a folder: ASSET_CHECK_RUN, its ASSEMBLY_FOLDER that folder and one of ASSEMBLY_FOLDERS, and
+// its RELEASE the given release.
+const checksFolder = (step: WorkflowStep | undefined, folder: string, release: string | undefined) =>
+  step?.run === ASSET_CHECK_RUN &&
+  (ASSEMBLY_FOLDERS as readonly string[]).includes(folder) &&
+  step.env.get('ASSEMBLY_FOLDER') === folder &&
+  release !== undefined &&
+  step.env.get('RELEASE') === release
 export function assetCheckFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-14', `${where}: ${rule}`))
@@ -11863,19 +11928,18 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
         const path = download?.with.get('path') ?? ''
         const folder = path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path
         const previous = folder === 'assembly-previous'
-        const variable = previous ? 'PREVIOUS' : 'RELEASE'
         const release = !previous
           ? RELEASE_OUTPUT
           : rollback
             ? PREVIOUS_OUTPUT
             : previousRelease(id === 'prod-plan' ? 'prod' : ((STAGES[id] ?? '') as Stage))
-        const check = steps.findIndex(step => step.run === assetCheckRun([folder], variable))
+        const check = steps.findIndex(step => checksFolder(step, folder, release))
         const step = steps[check]
         return (
           check > index &&
           credentials >= 0 &&
           check < credentials &&
-          step?.env.get(variable) === release &&
+          step !== undefined &&
           (step.if === undefined || step.if === download?.if)
         )
       }
@@ -11901,9 +11965,8 @@ export function assetCheckFindings(workflows: Texts): Finding[] {
         const folder = path.startsWith(RUNNER_TEMP) ? path.slice(RUNNER_TEMP.length) : path
         const checked = steps
           .slice(0, index)
-          .some(other => other.run === assetCheckRun([folder], 'RELEASE') && other.if === step.if)
-        if (!checked)
-          add(`${id} (${label(step, index)})`, 'runs ASSET_CHECK on each assembly it uploads, before the upload')
+          .some(other => checksFolder(other, folder, SYNTHESISED[id]) && other.if === step.if)
+        if (!checked) add(`${id} (${label(step, index)})`, CHECKED_UPLOADS)
       })
     }
   }
