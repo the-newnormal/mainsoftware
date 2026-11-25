@@ -1984,10 +1984,12 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     expect(() => differential('runsCliFetch', runsCliFetch)(workflows)).toThrow(/other layout/)
   })
 
-  // Each function of deploy-workflow.ts that reads deploy.yml by its path: through jobsOf() (workflowJobs(), which
-  // expands), through expandRunAliases(), and the file as stored only for what an alias can't change, with why.
+  // Each function of deploy-workflow.ts that reads deploy.yml, by its path or through the map of workflows: through
+  // jobsOf() or workflowJobs() (which expands), through expandRunAliases(), and the file as stored only for what an
+  // alias can't change, with why.
   const DEPLOY_TEXT_READERS: Readonly<Record<string, { jobs?: true; expanded?: true; stored?: string }>> = {
     triggerFindings: { stored: 'its top-level on: (workflowTop()), where no alias can stand' },
+    workflowSizeFindings: { stored: 'its size, which GitHub counts on the file as stored, before any alias resolves' },
     permissionFindings: {
       jobs: true,
       expanded: true,
@@ -2003,6 +2005,11 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     credentialedCodeFindings: {
       jobs: true,
       stored: 'its top-level keys (shapeOfJobsFindings()), where no alias can stand',
+    },
+    checkoutFindings: { jobs: true },
+    forbiddenWordFindings: {
+      stored:
+        'DPW-12’s words anywhere in the file, comments included, which an alias adds none of, its anchor holding them',
     },
     releaseFindings: {
       jobs: true,
@@ -2026,14 +2033,23 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     if (name !== undefined) found.set(name, body.join('\n'))
     return found
   }
+  // A declaration reads deploy.yml when it takes it by its path, or reads the map of workflows otherwise than for
+  // ci.yml alone: iterating it (for … of, a spread, forEach(), entries() or values()) or get() of another path. A
+  // reader listed as reading jobs calls jobsOf() (deploy.yml's) or workflowJobs() (any workflow's); one listed
+  // otherwise may still call workflowJobs(), which reads the expansion whatever the table says, as triggerFindings
+  // does for every workflow but deploy.yml.
+  const readsDeploy = (body: string): boolean =>
+    body.includes('.get(DEPLOY)') ||
+    /\bworkflows\.get\((?!CI\))|(?:\bof |\.\.\.)workflows\b|\bworkflows\.(?:forEach|entries|values)\(/.test(body)
   const unlisted = (source: string): string[] => {
     const problems: string[] = []
-    const readers = [...declarations(source)].filter(([, body]) => body.includes('.get(DEPLOY)'))
+    const readers = [...declarations(source)].filter(([, body]) => readsDeploy(body))
     for (const [name, body] of readers) {
       const listed = DEPLOY_TEXT_READERS[name]
       if (listed === undefined) problems.push(`${name} reads deploy.yml and isn't listed`)
-      else if ((listed.jobs === true) !== body.includes('jobsOf(')) problems.push(`${name} reads jobs otherwise`)
-      else if ((listed.expanded === true) !== body.includes('expandRunAliases(')) {
+      else if (listed.jobs === true ? !/\b(?:jobsOf|workflowJobs)\(/.test(body) : body.includes('jobsOf(')) {
+        problems.push(`${name} reads jobs otherwise`)
+      } else if ((listed.expanded === true) !== body.includes('expandRunAliases(')) {
         problems.push(`${name} reads the expansion otherwise`)
       }
     }
@@ -2048,8 +2064,32 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
 
   it('lists every reader of deploy.yml in the guard with how it reads, and jobSpans() takes only the expansion', () => {
     expect(unlisted(source)).toEqual([])
-    const planted = `${source}\nexport function plantedFindings(workflows: Texts): Finding[] {\n  return [workflows.get(DEPLOY) ?? '']\n}\n`
-    expect(unlisted(planted)).toEqual(["plantedFindings reads deploy.yml and isn't listed"])
+    const planted = (read: string) =>
+      `${source}\nexport function plantedFindings(workflows: Texts, path = DEPLOY): Finding[] {\n  const found: Finding[] = []\n  ${read}\n  return found\n}\n`
+    // A reader by its path, and one through the map, in each way a function can walk it or take another path.
+    for (const read of [
+      "found.push(workflows.get(DEPLOY) ?? '')",
+      'for (const [, text] of workflows) found.push(...stepLines(text))',
+      'for (const [, text] of [...workflows]) found.push(...stepLines(text))',
+      'workflows.forEach(text => found.push(...stepLines(text)))',
+      'for (const [, text] of workflows.entries()) found.push(...stepLines(text))',
+      'for (const text of workflows.values()) found.push(...stepLines(text))',
+      "found.push(...stepLines(workflows.get(path) ?? ''))",
+    ]) {
+      expect(unlisted(planted(read)), read).toEqual(["plantedFindings reads deploy.yml and isn't listed"])
+    }
+    // ci.yml alone, and a check of which paths the map holds, read nothing of deploy.yml.
+    expect(unlisted(planted("found.push(...stepLines(workflows.get(CI) ?? ''))"))).toEqual([])
+    expect(unlisted(planted('if (workflows.has(DEPLOY)) found.push(DEPLOY)'))).toEqual([])
+    const checkoutJobs =
+      "  for (const [path, text] of workflows) {\n    for (const job of workflowJobs(text)) {\n      if (path === DEPLOY && job.id !== 'build'"
+    expect(
+      unlisted(source.replace(checkoutJobs, checkoutJobs.replace('workflowJobs(text)', '[] as WorkflowJob[]'))),
+    ).toEqual(['checkoutFindings reads jobs otherwise'])
+    const triggerDeploy = "const deploy = workflows.get(DEPLOY) ?? ''\n  if (!onIsAsWritten("
+    expect(unlisted(source.replace(triggerDeploy, triggerDeploy.replace('\n', '\n  jobsOf(deploy)\n')))).toEqual([
+      'triggerFindings reads jobs otherwise',
+    ])
     expect(
       unlisted(
         source.replace('const text = expandRunAliases(workflows.get(DEPLOY)', 'const text = (workflows.get(DEPLOY)'),
