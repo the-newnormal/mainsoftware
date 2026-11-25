@@ -3142,6 +3142,46 @@ describe('DPW-08 (C11-D52): the way to prod', () => {
     )
   })
 
+  // Round 12's second iteration: only JOB_STEPS, which moves with the workflow, held the step that writes
+  // services_started before the Services deploy. Moved after the Probe (JOB_STEPS with it), GitHub's default
+  // success() skipped it once the Probe failed, every rollback job's if: read services_started as '', and a
+  // release whose probe failed stayed live with no rollback. The rule reads the workflow alone, so each move
+  // here is found whatever JOB_STEPS says.
+  it('finds the step that writes services_started after any step from the Services deploy on', () => {
+    const third = { nonprod: 'drill-break', prod: 'Take the restore stage down' } as const
+    const later = (stage: 'nonprod' | 'prod') =>
+      at(
+        stage,
+        `writes services_started (the step its output reads) before Deploy Services, Roll back to the target, ${third[stage]}, Probe and Read back what runs, each there, so a failure from the Services deploy on starts rollback-${stage}`,
+      )
+    const mark = 'Services are about to change'
+    // The mark moved before another step in both deploy jobs, as an author would move it.
+    const moved = (before: string) => {
+      let text = deployText
+      for (const stage of ['nonprod', 'prod']) {
+        const step = stepText(text, stage, mark)
+        const without = edited(text, step, '', job(stage))
+        text = edited(without, `      - name: ${before}\n`, `${step}      - name: ${before}\n`, job(stage))
+      }
+      return withText(DEPLOY, text)
+    }
+    // Just after Deploy Services, just before the Probe, and after the Probe.
+    for (const before of ['Roll back to the target', 'Probe', 'Read back what runs']) {
+      expect(prodPathFindings(moved(before)), before).toEqual([later('nonprod'), later('prod')])
+    }
+    // One job alone.
+    expect(prodPathFindings(movedStep('prod', mark, 'Read back what runs'))).toEqual([later('prod')])
+    // The output read from a later step's id, and a step the mark must precede gone.
+    const output = `      services_started: \${{ steps.mark.outputs.services_started }}\n`
+    expect(
+      prodPathFindings(
+        plant(output, `      services_started: \${{ steps.readback.outputs.services_started }}\n`, job('nonprod')),
+      ),
+    ).toContain(later('nonprod'))
+    expect(prodPathFindings(removedStep('prod', 'Probe'))).toContain(later('prod'))
+    expect(prodPathFindings(removedStep('nonprod', mark))).toContain(later('nonprod'))
+  })
+
   it('holds the repository', () => {
     expect(prodPathFindings(workflows)).toEqual([])
   })

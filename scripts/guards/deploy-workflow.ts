@@ -178,7 +178,11 @@
 // reader needs, its result or one of its outputs), since GitHub reads any
 // other as '' with no error, so a step's id, a job's output or a run's key renamed with the table that pins it
 // can't leave services_started, replaced or rolled empty and the pipeline's rollback off (round 12; replaced from
-// its second iteration, whose write AWS_CHECK's comment named), and so are
+// its second iteration, whose write AWS_CHECK's comment named), and the step whose id each deploy job's
+// services_started output reads stands before its Deploy Services, Roll back to the target, drill-break or Take the
+// restore stage down, Probe and Read back what runs, read as written, never through JOB_STEPS (DPW-08, round 12's
+// second iteration: moved after the Probe with JOB_STEPS, GitHub's default success() skipped it once the Probe
+// failed, so a release whose probe failed stayed live with no rollback), and so are
 // every job's if: and needs: and every action step's if:, whole (JOB_IFS, JOB_NEEDS, ACTION_IFS), so no
 // decision GitHub makes about running a job or a step (an automatic rollback, say) is read only in part;
 // each run a gate, an approval, a smoke, a rollback or a record rests on is pinned whole with its step's if:
@@ -7985,7 +7989,8 @@ const SMOKES: Readonly<Record<string, string>> = {
 // attempt (the job outputs attempt, and the smoke's one
 // step reading READBACK first refuses another, SMOKE_ATTEMPT); each rollback job needs build, takes this
 // run's digest from build for a deploy and from the gate for a drill-smoke, runs only when the gate allows
-// the automatic rollback (rollback_<env>), once its deploy job set services_started and only once its
+// the automatic rollback (rollback_<env>), once its deploy job set services_started (in a step that stands
+// before every step from the Services deploy on, so a failure there starts it) and only once its
 // smoke or its deploy job failed (its if: whole is JOB_IFS', DPW-10), and judges the release that deploy
 // replaced from that job's own
 // AWS_CHECK (the deploy job outputs replaced from its aws step, whose value AWS_CHECK_ENV pins as the
@@ -8209,6 +8214,39 @@ export function prodPathFindings(workflows: Texts): Finding[] {
       add(
         rollback,
         `needs build, takes this run's digest from build for a deploy and from the gate for a drill-smoke, and runs only once ${deploy} set services_started`,
+      )
+    }
+    // The step that writes services_started (the one the deploy job's output reads, by its id) stands before
+    // every step from the Services deploy on, read here as written, never through JOB_STEPS, which moves with
+    // the workflow (round 12's second iteration): GitHub skips a step whose if: names no status function once
+    // an earlier one has failed, so the mark moved after the Probe was skipped when the Probe failed,
+    // services_started read '' and a release whose probe failed stayed live with no rollback.
+    const deploySteps = jobs.get(deploy)?.steps ?? []
+    const started = isMap(deployOutputs) ? deployOutputs.get('services_started') : undefined
+    const markId =
+      typeof started === 'string'
+        ? /^\$\{\{ steps\.([\w-]+)\.outputs\.services_started \}\}$/.exec(started)?.[1]
+        : undefined
+    const placesOf = (holds: (step: WorkflowStep) => boolean) =>
+      deploySteps.flatMap((step, index) => (holds(step) ? [index] : []))
+    const marks = placesOf(step => markId !== undefined && step.id === markId)
+    const later = [
+      'Deploy Services',
+      'Roll back to the target',
+      deploy === 'prod' ? 'Take the restore stage down' : 'drill-break',
+      'Probe',
+      'Read back what runs',
+    ]
+    if (
+      marks.length !== 1 ||
+      later.some(name => {
+        const places = placesOf(step => step.name === name)
+        return places.length === 0 || places.some(place => place < (marks[0] ?? 0))
+      })
+    ) {
+      add(
+        deploy,
+        `writes services_started (the step its output reads) before ${later.slice(0, -1).join(', ')} and ${later.at(-1)}, each there, so a failure from the Services deploy on starts ${rollback}`,
       )
     }
     // The gate's verdict on the automatic rollback (floor-crossed, say, refuses it) and the failure it
