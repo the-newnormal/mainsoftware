@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import ts from 'typescript'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   gitIsAncestor,
@@ -116,6 +117,7 @@ import {
   jqProgramIsHeld,
   jqUnreadLines,
   MAIN_CI,
+  MASK_LINE,
   MASK_RUN,
   MIGRATE_LINES,
   maskingFindings as maskingFindingsOf,
@@ -142,6 +144,7 @@ import {
   prodDiffStackFindings,
   prodPathFindings as prodPathFindingsOf,
   READ_BACK,
+  RELEASE_STEP,
   REPO_FOLDER,
   RESTORE_DOWN,
   RESTORE_DOWN_DIFF,
@@ -154,6 +157,7 @@ import {
   readShell,
   readsAsBash,
   recordRun,
+  regexTestLines,
   releaseFindings as releaseFindingsOf,
   SHELL_TABLE,
   SKOPEO_COPY,
@@ -2014,9 +2018,11 @@ describe('DPW-02: deploy.yml’s shared runs (round 13)', () => {
 // The harness's own proof: a rule that read deploy.yml's stored lines by job, where an aliased run sits in its
 // anchor's job alone, fails differential(), on the committed file and on a plant into a shared text at every step
 // that runs it (laid out shared, round 13); and every reader of deploy.yml in the guard takes it through the guard's
-// accessors and is listed with how it reads, as stored only under a reason a reviewer reads, so a new one is a
-// reviewed entry, every listed reader runs over both layouts in every case, and jobSpans() and jobsOf() take only
-// the expansion.
+// accessors, or names the map of workflows otherwise only as a listed reader with a stored reason a reviewer reads
+// (every use read from the syntax tree, and the map taken by no other name: round 13's second iteration), so a new
+// one is a reviewed entry, every listed reader runs over both layouts in every case that has two (a plant already
+// holding a shared run or its comment, or in no reader shape, has one), and jobSpans() and jobsOf() take only the
+// expansion.
 describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (round 13)', () => {
   it('fails a rule that reads the stored file’s lines by job', () => {
     // The jobs whose lines, as stored, run cli-fetch's text: its anchor's job alone once it is shared.
@@ -2133,20 +2139,91 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
   }
   // A declaration takes deploy.yml as stored when it takes it by its path (from the map of workflows, which only the
   // accessors may, or from any other map, as permissionFindings reads its shape problems), through deployStored(),
-  // or reads the map of workflows otherwise than for ci.yml alone: iterating it (for … of, a spread, forEach(), entries() or
-  // values()) or get() of another path. It reads deploy.yml when it does so or calls deployWritten() or
-  // workflowsWritten(). A reader listed as reading jobs calls jobsOf() (deploy.yml's) or workflowJobs() (any
-  // workflow's); one listed otherwise may still call workflowJobs(), which reads the expansion whatever the table
-  // says, as triggerFindings does for every workflow but deploy.yml.
-  const takesStored = (body: string): boolean =>
-    body.includes('.get(DEPLOY)') ||
-    body.includes('deployStored(') ||
-    /\bworkflows\.get\((?!CI\))|(?:\bof |\.\.\.)workflows\b|\bworkflows\.(?:forEach|entries|values)\(/.test(body)
-  const readsDeploy = (body: string): boolean =>
-    takesStored(body) || /\b(?:deployWritten|workflowsWritten)\(/.test(body)
+  // or names the map of workflows in any way but these (round 13's second iteration: Array.from(), new Map(),
+  // Object.fromEntries(), an alias or a helper handed the map took it unseen): as its own parameter, the argument of
+  // an accessor, get(CI), which reads ci.yml alone, and has(), which reads no text. So a walk (for … of, a spread,
+  // forEach(), entries(), values() or any other) or a get() of another path is such a reading, and so is handing
+  // the map on to a helper, whatever the helper names it. It reads deploy.yml when it does so or calls
+  // deployWritten() or workflowsWritten(). A reader listed as reading jobs calls jobsOf() (deploy.yml's) or
+  // workflowJobs() (any workflow's); one listed otherwise may still call workflowJobs(), which reads the expansion
+  // whatever the table says, as triggerFindings does for every workflow but deploy.yml. The map comes into the
+  // guard only as a parameter named workflows: a parameter typed as a map of texts is named workflows, environments
+  // or manifests (mapUses()), so no function takes the map under a name this doesn't read.
+  // Each declaration's uses of the map, read from the TypeScript syntax tree, so a message, a path or a comment that
+  // names workflows is no use of it: the declarations that name the map otherwise than as above, and each parameter
+  // typed as a map of texts (Texts, or a Map or ReadonlyMap of strings) named other than workflows, environments or
+  // manifests (but sameMap()'s, which compares a step's env: or with: map with a record).
+  const mapUses = (source: string): { otherwise: ReadonlySet<string>; named: readonly string[] } => {
+    const file = ts.createSourceFile('deploy-workflow.ts', source, ts.ScriptTarget.Latest, true)
+    const otherwise = new Set<string>()
+    const named: string[] = []
+    const allowed = (node: ts.Identifier): boolean => {
+      const parent = node.parent
+      if (ts.isParameter(parent) && parent.name === node) return true
+      if (
+        ts.isCallExpression(parent) &&
+        parent.arguments.length === 1 &&
+        parent.arguments[0] === node &&
+        ts.isIdentifier(parent.expression) &&
+        ACCESSORS.includes(parent.expression.text)
+      ) {
+        return true
+      }
+      if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) return false
+      const call = parent.parent
+      if (!ts.isCallExpression(call) || call.expression !== parent) return false
+      const [argument, ...more] = call.arguments
+      return (
+        parent.name.text === 'has' ||
+        (parent.name.text === 'get' &&
+          more.length === 0 &&
+          argument !== undefined &&
+          ts.isIdentifier(argument) &&
+          argument.text === 'CI')
+      )
+    }
+    let name = ''
+    for (const statement of file.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name !== undefined) name = statement.name.text
+      else if (ts.isVariableStatement(statement)) {
+        const first = statement.declarationList.declarations[0]
+        if (first !== undefined && ts.isIdentifier(first.name)) name = first.name.text
+      } else if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement))
+        name = statement.name.text
+      const visit = (node: ts.Node): void => {
+        if (ts.isIdentifier(node) && node.text === 'workflows') {
+          const parent = node.parent
+          const property =
+            (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+            ((ts.isPropertyAssignment(parent) || ts.isPropertySignature(parent)) && parent.name === node)
+          if (!property && !allowed(node)) otherwise.add(name)
+        }
+        if (ts.isParameter(node) && node.type !== undefined && ts.isIdentifier(node.name)) {
+          const parameter = node.name.text
+          if (
+            /^(?:Texts|(?:Readonly)?Map<string, string>)$/.test(node.type.getText(file)) &&
+            !['workflows', 'environments', 'manifests'].includes(parameter) &&
+            !(name === 'sameMap' && parameter === 'map')
+          ) {
+            named.push(`${name} takes a map of texts as ${parameter}`)
+          }
+        }
+        ts.forEachChild(node, visit)
+      }
+      visit(statement)
+    }
+    return { otherwise, named }
+  }
   const unlisted = (source: string): string[] => {
     const problems: string[] = []
-    const readers = [...declarations(source)].filter(([name, body]) => !ACCESSORS.includes(name) && readsDeploy(body))
+    const uses = mapUses(source)
+    const takesStored = (name: string, body: string): boolean =>
+      body.includes('.get(DEPLOY)') || body.includes('deployStored(') || uses.otherwise.has(name)
+    const readsDeploy = (name: string, body: string): boolean =>
+      takesStored(name, body) || /\b(?:deployWritten|workflowsWritten)\(/.test(body)
+    const readers = [...declarations(source)].filter(
+      ([name, body]) => !ACCESSORS.includes(name) && readsDeploy(name, body),
+    )
     for (const [name, body] of readers) {
       const listed = DEPLOY_TEXT_READERS[name]
       if (listed === undefined) problems.push(`${name} reads deploy.yml and isn't listed`)
@@ -2154,15 +2231,16 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
         problems.push(`${name} takes deploy.yml by its path, not through deployWritten() or deployStored()`)
       } else if (listed.jobs === true ? !/\b(?:jobsOf|workflowJobs)\(/.test(body) : body.includes('jobsOf(')) {
         problems.push(`${name} reads jobs otherwise`)
-      } else if (listed.stored === undefined && takesStored(body)) {
+      } else if (listed.stored === undefined && takesStored(name, body)) {
         problems.push(`${name} takes deploy.yml as stored, which its entry gives no reason for`)
-      } else if (listed.stored !== undefined && !takesStored(body)) {
+      } else if (listed.stored !== undefined && !takesStored(name, body)) {
         problems.push(`${name} is listed as reading deploy.yml as stored and reads it so no more`)
       }
     }
     for (const name of Object.keys(DEPLOY_TEXT_READERS)) {
       if (!readers.some(([each]) => each === name)) problems.push(`${name} is listed and reads deploy.yml no more`)
     }
+    problems.push(...uses.named)
     if (!/^function jobSpans\(text: RunsWrittenOut\)/m.test(source))
       problems.push('jobSpans takes more than the expansion')
     if (!/^function jobsOf\(text: RunsWrittenOut\)/m.test(source)) problems.push('jobsOf takes more than the expansion')
@@ -2193,9 +2271,33 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
       'for (const [, text] of workflows.entries()) found.push(...stepLines(text))',
       'for (const text of workflows.values()) found.push(...stepLines(text))',
       "found.push(...stepLines(workflows.get(path) ?? ''))",
+      // Round 13's second iteration (ALIASES-G2-01): every other way of taking the map, each an ordinary idiom.
+      'for (const [, text] of Array.from(workflows)) found.push(...stepLines(text))',
+      'for (const [, text] of new Map(workflows)) found.push(...stepLines(text))',
+      'for (const text of Object.values(Object.fromEntries(workflows))) found.push(...stepLines(text))',
+      "const texts = workflows\n  found.push(...stepLines(texts.get(path) ?? ''))",
+      'found.push(...plantedHelper(workflows))',
+      'found.push(String([...workflows].length))',
     ]) {
       expect(unlisted(planted(read)), read).toEqual(["plantedFindings reads deploy.yml and isn't listed"])
     }
+    // A helper that takes the map under another name, and a finding function that does.
+    expect(
+      unlisted(
+        `${source}\nfunction plantedHelper(texts: Texts): string[] {\n  return [...texts].map(([, text]) => text)\n}\n`,
+      ),
+    ).toEqual(['plantedHelper takes a map of texts as texts'])
+    expect(
+      unlisted(
+        `${source}\nexport function plantedFindings(wf: ReadonlyMap<string, string>): Finding[] {\n  return [...wf].map(([path]) => path)\n}\n`,
+      ),
+    ).toEqual(['plantedFindings takes a map of texts as wf'])
+    // A message or a path that names workflows reads nothing.
+    expect(
+      unlisted(
+        `${source}\nexport function plantedFindings(workflows: Texts): Finding[] {\n  return workflows.has(CI) ? [\`.github/workflows holds workflows \${'alone'}\`] : []\n}\n`,
+      ),
+    ).toEqual([])
     // ci.yml alone, and a check of which paths the map holds, read nothing of deploy.yml.
     expect(unlisted(planted("found.push(...stepLines(workflows.get(CI) ?? ''))"))).toEqual([])
     expect(unlisted(planted('if (workflows.has(DEPLOY)) found.push(DEPLOY)'))).toEqual([])
@@ -3615,6 +3717,45 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
       `tag sha-${commit}-11-1`,
       '',
     ])
+  })
+
+  // Round 13's second iteration (EXPAND-G2-01): a step inherits the runner's locale (actions/runner writes the
+  // machine's LANG into its .env), and in a UTF-8 locale GNU sed matches a byte that isn't valid UTF-8 with no
+  // bracket expression, so a run of twelve digits with such a byte beside it was printed whole. The filter's sed
+  // runs in the C locale, byte by byte, so it blanks the run whatever stands beside it and whatever the step's
+  // locale; the same line without LC_ALL=C, under C.UTF-8, is shown leaving it whole.
+  it('the filter blanks an account id beside a byte that isn’t UTF-8, in a UTF-8 locale (round 13)', () => {
+    const account = '4'.repeat(12)
+    const input = Buffer.concat([
+      Buffer.from('a'),
+      Buffer.from([0xff]),
+      Buffer.from(account),
+      Buffer.from([0xff]),
+      Buffer.from(`b\né${account}é\n`),
+    ])
+    const masked = Buffer.concat([
+      Buffer.from('a'),
+      Buffer.from([0xff]),
+      Buffer.from('***'),
+      Buffer.from([0xff]),
+      Buffer.from('b\né***é\n'),
+    ])
+    const filter = (text: string, locale: Record<string, string>) => {
+      const result = spawnSync('bash', ['-c', `${text}\nmask`], {
+        input,
+        env: { PATH: process.env.PATH ?? '', RUNNER_TEMP: '/nowhere', ...locale },
+      })
+      expect(result.status).toBe(0)
+      return result.stdout.subarray(result.stdout.indexOf(0x0a) + 1)
+    }
+    expect(MASK_LINE.startsWith('mask() { LC_ALL=C sed ')).toBe(true)
+    const locales: ReadonlyArray<Record<string, string>> = [{ LC_ALL: 'C.UTF-8' }, { LANG: 'C.UTF-8' }, { LC_ALL: 'C' }]
+    for (const locale of locales) {
+      expect(filter(PREAMBLE, locale).equals(masked), JSON.stringify(locale)).toBe(true)
+    }
+    const unset = PREAMBLE.replace(MASK_LINE, MASK_LINE.replace('LC_ALL=C sed', 'sed'))
+    expect(unset).not.toBe(PREAMBLE)
+    expect(filter(unset, { LC_ALL: 'C.UTF-8' }).includes(Buffer.from(account))).toBe(true)
   })
 
   // Round 5's fourth attack (EXPAND-A4-01, A4-02). The runner reads ##[name] anywhere in a line, and ::name::
@@ -6107,7 +6248,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const lock = JSON.parse(lockfile) as { packages: Record<string, Record<string, unknown>> }
     const entry = lock.packages['node_modules/aws-cdk'] ?? {}
     const LOCK =
-      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no dependency"
+      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind"
     const withEntry = (changed: Record<string, unknown>) =>
       credentialedCodeFindings(
         workflows,
@@ -6129,6 +6270,13 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(withEntry({ ...entry, dependencies: { 'some-runtime-dep': '^1.0.0' } })).toEqual([LOCK])
     expect(withEntry({ ...entry, bin: { cdk: 'bin/cdk.js' } })).toEqual([LOCK])
     expect(withEntry({ ...entry, bin: undefined })).toEqual([LOCK])
+    // Round 13's second iteration (FETCH-G2-01): npm writes, and npm ci installs, a peer dependency (by default
+    // since npm 7) and an optional one as well, and the entry holds no other key npm writes for another shape.
+    expect(withEntry({ ...entry, peerDependencies: { 'cdk-peer': '1.0.0' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, optionalDependencies: { 'cdk-optional': '1.0.0' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, hasInstallScript: true })).toEqual([LOCK])
+    const { license: _license, engines: _engines, dev: _dev, ...fewer } = entry
+    expect(withEntry(fewer)).toEqual([])
   }, 30_000)
 
   // Round 13: CLI_CHECK refuses, in every credentialed job, an aws-cdk whose manifest gained a dependency or names
@@ -6143,7 +6291,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       .filter(each => each.isSymbolicLink())
       .map(each => join(each.parentPath, each.name))
     const INSTALLED =
-      "node_modules/aws-cdk/package.json: DPW-10 the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency and no symbolic link"
+      "node_modules/aws-cdk/package.json: DPW-10 the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link"
     const pin = (JSON.parse(manifests.get('infra/package.json') ?? '{}') as { devDependencies: Record<string, string> })
       .devDependencies['aws-cdk']
     const predicate = /jq -e --arg pin "\$pin" '([^']*)'/.exec(CLI_CHECK)?.[1]
@@ -6156,6 +6304,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const manifest = JSON.parse(installed) as Record<string, unknown>
     for (const change of [
       { dependencies: { 'some-runtime-dep': '^1.0.0' } },
+      // Round 13's second iteration (FETCH-G2-01): npm ci installs these too, the deploy job never.
+      { peerDependencies: { 'cdk-peer': '1.0.0' } },
+      { optionalDependencies: { 'cdk-optional': '1.0.0' } },
+      { peerDependencies: [] },
       { bin: { cdk: 'bin/cdk.js' } },
       { bin: 'bin/cdk' },
       { bin: undefined },
@@ -6308,6 +6460,71 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(readShell('{\necho a').refused?.line).toBe(1)
     expect(readShell(`${PREAMBLE}\necho ok`).refused).toBeUndefined()
     expect(readShell(`echo ok\n${PREAMBLE}`).refused).toBeUndefined()
+  })
+
+  // Round 13's second iteration (COMMANDS-G2-01): bash's =~ succeeds when the expression matches any part of the
+  // word, so the release step's test with its ^ and $ dropped still read as "the release is <commit>:<digest>",
+  // passed every rule and the tests, and took a build digest that held a line break and a commit= line, which then
+  // wrote the job's commit output (GitHub keeps a key's last value), so the push tagged the image and Migrate
+  // recorded another commit. A run's own =~ (SHELL_TABLE.regex) and every canonical text's (regexTestLines()) is
+  // now anchored at both ends, with a | only inside parentheses, and the committed ones all are.
+  it('refuses a regular expression test that isn’t anchored at both ends, in a run and in a canonical text', () => {
+    const anchored = 'if ! [[ "$COMMIT:$DIGEST" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then'
+    expect(RELEASE_STEP).toContain(anchored)
+    expect(readShell(RELEASE_STEP).refused).toBeUndefined()
+    for (const unanchored of [
+      'if ! [[ "$COMMIT:$DIGEST" =~ [0-9a-f]{40}:sha256:[0-9a-f]{64} ]]; then',
+      'if ! [[ "$COMMIT:$DIGEST" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64} ]]; then',
+      'if ! [[ "$COMMIT:$DIGEST" =~ [0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; then',
+      'if ! [[ "$COMMIT:$DIGEST" =~ ^[0-9a-f]{40}|sha256:[0-9a-f]{64}$ ]]; then',
+    ]) {
+      const changed = RELEASE_STEP.replace(anchored, unanchored)
+      expect(readShell(changed).refused, unanchored).toBeDefined()
+      expect(canonicalTextFindings({ X: changed }), unanchored).toContain(
+        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses, so bash matches the whole value and never a part of it`,
+      )
+    }
+    // A canonical text's own: release_shape in AWS_CHECK, unanchored, quoted, or with a | outside parentheses.
+    const shape = 'release_shape() { [[ "$1" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]; }'
+    expect(AWS_CHECK).toContain(shape)
+    for (const regex of [
+      '[0-9a-f]{40}:sha256:[0-9a-f]{64}',
+      '"^[0-9a-f]{40}:sha256:[0-9a-f]{64}$"',
+      '^[0-9a-f]{40}|:sha256:[0-9a-f]{64}$',
+      '^[0-9a-f]{40}:sha256:[0-9a-f]{64}\\$',
+    ]) {
+      const changed = AWS_CHECK.replace(shape, `release_shape() { [[ "$1" =~ ${regex} ]]; }`)
+      expect(regexTestLines(changed), regex).toEqual([AWS_CHECK.split('\n').indexOf(shape)])
+    }
+    // Every committed text and run is anchored.
+    for (const [name, text] of Object.entries(CANONICAL_BY_NAME())) expect(regexTestLines(text), name).toEqual([])
+    // The release step as GitHub runs it (bash -e on the run), with a build digest that holds a line break and a
+    // commit= line: the anchored test refuses it and writes no output; the unanchored one passed it.
+    const run = (text: string) => {
+      const folder = mkdtempSync(join(tmpdir(), 'hearth-release-'))
+      const output = join(folder, 'output')
+      writeFileSync(output, '')
+      const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-c', text], {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          GITHUB_OUTPUT: output,
+          BUILD: 'true',
+          COMMIT: '1'.repeat(40),
+          GATE_DIGEST: `sha256:${'a'.repeat(64)}`,
+          BUILD_DIGEST: `sha256:${'a'.repeat(64)}\ncommit=${'2'.repeat(40)}`,
+        },
+      })
+      const written = readFileSync(output, 'utf8')
+      rmSync(folder, { recursive: true, force: true })
+      return { status: result.status, written }
+    }
+    expect(run(RELEASE_STEP)).toEqual({ status: 1, written: '' })
+    const passed = run(
+      RELEASE_STEP.replace(anchored, 'if ! [[ "$COMMIT:$DIGEST" =~ [0-9a-f]{40}:sha256:[0-9a-f]{64} ]]; then'),
+    )
+    expect(passed.status).toBe(0)
+    expect(passed.written).toContain(`commit=${'2'.repeat(40)}`)
   })
 
   // Round 4: each command a credentialed run's own lines read is held to the flags and arguments the
@@ -6828,6 +7045,8 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       { ...CLI, version: '0.0.1' },
       { ...CLI, bin: { cdk: 'bin/other' } },
       { ...CLI, dependencies: { other: '1.0.0' } },
+      { ...CLI, peerDependencies: { other: '1.0.0' } },
+      { ...CLI, optionalDependencies: { other: '1.0.0' } },
     ]) {
       const planted = tarball(manifest)
       expect(
@@ -6836,6 +7055,71 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       ).toMatchObject({ status: 1, said: PACKAGE })
     }
   })
+
+  // Round 13's second iteration (FETCH-G2-01). CI's synths run the CLI npm ci installed, while a deploy job runs
+  // the tarball CLI_FETCH unpacks with nothing beside it, and npm's install hides how the two differ: it installs a
+  // peer and an optional dependency, drops a link member, strips the top folder whatever its name and makes each
+  // bin executable. So CI runs CLI_FETCH and CLI_CHECK themselves on the very tarball npm ci installed (npm's
+  // cache keeps it under the lockfile's sha512, and a stand-in curl serves it for the registry's URL alone), in
+  // the repository's own checkout, then starts the CLI as a deploy step does (the preamble's CDK in CDK_FOLDER's
+  // fresh folder and HOME), asked only for its version. A release whose tarball would stop a deploy job at
+  // CLI_CHECK or at its first CLI call fails here, before merge.
+  it('runs the tarball npm ci installed through CLI_FETCH and CLI_CHECK, and its CLI starts at the pin (round 13)', () => {
+    const lock = JSON.parse(readRepoFile('package-lock.json')) as {
+      packages: Record<string, { integrity?: string }>
+    }
+    const integrity = lock.packages['node_modules/aws-cdk']?.integrity ?? ''
+    const pin = (JSON.parse(readRepoFile('infra/package.json')) as { devDependencies: Record<string, string> })
+      .devDependencies['aws-cdk']
+    expect(integrity).toMatch(/^sha512-[A-Za-z0-9+/]{86}==$/)
+    const hex = Buffer.from(integrity.slice('sha512-'.length), 'base64').toString('hex')
+    const cache = execFileSync('npm', ['config', 'get', 'cache'], { cwd: root, encoding: 'utf8' }).trim()
+    const cached = join(cache, '_cacache', 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4))
+    if (!existsSync(cached)) throw new Error(`npm's cache holds no ${integrity}: run npm ci first`)
+    const run = mkdtempSync(join(scratch, 'installed-'))
+    const temp = join(run, 'temp')
+    const bin = join(run, 'bin')
+    execFileSync('mkdir', ['-p', temp, bin])
+    const url = `https://registry.npmjs.org/aws-cdk/-/aws-cdk-${pin}.tgz`
+    writeFileSync(
+      join(bin, 'curl'),
+      [
+        '#!/usr/bin/env bash',
+        "out='' previous='' url=''",
+        'for word in "$@"; do',
+        '  if [ "$previous" = --output ]; then out=$word; fi',
+        '  previous=$word url=$word',
+        'done',
+        `[ "$url" = '${url}' ] || { echo "stand-in curl: no such URL" >&2; exit 22; }`,
+        `cp '${cached}' "$out"`,
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    )
+    const step = (text: string) =>
+      spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: run, RUNNER_TEMP: temp },
+      })
+    const fetch = step(CLI_FETCH)
+    expect({ status: fetch.status, said: spoken(fetch.stdout), errors: fetch.stderr }).toEqual({
+      status: 0,
+      said: [],
+      errors: '',
+    })
+    const check = step(CLI_CHECK)
+    expect({ status: check.status, said: spoken(check.stdout), errors: check.stderr }).toEqual({
+      status: 0,
+      said: [],
+      errors: '',
+    })
+    const version = step(`${PREAMBLE}\n${CDK_FOLDER}\nrun "$CDK" --version`)
+    expect(version.status).toBe(0)
+    expect(spoken(version.stdout)).toEqual([
+      expect.stringMatching(new RegExp(`^${pin?.replaceAll('.', '\\.')} \\(build [0-9a-f]+\\)$`)),
+    ])
+  }, 60_000)
 })
 
 describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives', () => {
@@ -8792,6 +9076,51 @@ describe('Round 12: the CLI pin’s own job (DPW-04)', () => {
       expect(actionPinFindings(planted), what).toContain(finding)
     }
     expect(actionPinFindings(workflows, files)).toEqual([])
+  })
+
+  // Round 13's second iteration (YAML-G2-01): the reader hands a block scalar's content without its last line
+  // break, so the cli-pin step's if: written as a block scalar over its expression read as the pinned expression,
+  // while GitHub reads the value, line break and all, as a string, always true: the step ran on every push to main,
+  // where github.base_ref is empty and the check fails, and with it check and every prod deploy. DPW-04 holds the
+  // two if: lines it pins by their raw line, and DPW-02 every workflow's if: to a plain ${{ … }} alone or a plain
+  // expression with no ${{.
+  it('refuses the pinned if: lines written as a block scalar or quoted, and any workflow’s if: GitHub reads as a string (round 13)', () => {
+    const IF_RULE = `${CI}: DPW-02 writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{: quoted, as a block scalar or with text beside a \${{ … }}, GitHub reads a string, always true`
+    const pinned = `      - if: \${{ github.event_name == 'pull_request' }}\n        working-directory: repo\n`
+    const first = `      - if: \${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}\n        run: exit 1\n`
+    expect(ci).toContain(pinned)
+    expect(ci).toContain(first)
+    for (const header of ['|', '>', '|-']) {
+      const blocked = inJob(
+        pinned,
+        `      - if: ${header}\n          \${{ github.event_name == 'pull_request' }}\n        working-directory: repo\n`,
+      )
+      expect(actionPinFindings(blocked), header).toContain(finding)
+      expect(permissionFindingsOf(blocked), header).toContain(IF_RULE)
+      const checked = plant(
+        first,
+        first.replace('      - if: ${{', `      - if: ${header}\n          \${{`),
+        '\n  check:\n',
+        CI,
+      )
+      expect(actionPinFindings(checked), header).toContain(`${CI}: DPW-04 ${PINS_JOB_FINDING}`)
+      expect(permissionFindingsOf(checked), header).toContain(IF_RULE)
+    }
+    for (const written of [
+      `"\${{ github.event_name == 'pull_request' }}"`,
+      `\${{ github.event_name == 'pull_request' }} || false`,
+      `\${{ github.ref == github.ref }} || false`,
+    ]) {
+      const changed = inJob(pinned, `      - if: ${written}\n        working-directory: repo\n`)
+      expect(permissionFindingsOf(changed), written).toContain(IF_RULE)
+    }
+    // A plain expression with no ${{, which GitHub evaluates and trims, as ci.yml's check and upload write it.
+    expect(permissionFindingsOf(plant('    if: always()\n', '    if: always() && true\n', '\n  check:\n', CI))).toEqual(
+      permissionFindingsOf(workflows),
+    )
+    expect(permissionFindingsOf(plant('    if: always()\n', "    if: 'always()'\n", '\n  check:\n', CI))).toContain(
+      IF_RULE,
+    )
   })
 })
 
@@ -11838,7 +12167,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
   // acts on to the synth's shape. Each plant below passed the check before (but the one whose earlier rule is
   // named), and each is refused by the rule named.
   const KEYS = refused(
-    'a resource holds a key, or writes a property in a form, that a workload synth never writes for its type',
+    'a resource holds a key or a deletion or replacement policy, or writes a property in a form, that a workload synth never writes for its type',
   )
   const NAMES = refused(
     "a template names something outside its stage: an ARN but its own account's, an account id, or a parameter or name of another stage",
@@ -11847,7 +12176,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a task definition, service or cluster isn't the workload's: its roles, image, log group, secret, tags, network, target groups, ECS Exec, names or containers of another shape, or a Services stack's services other than api, realtime and worker, each on its own family, or a task definition in a stack but its family's (api, realtime and worker in Services, migrate, probe and bastion in Tasks, none elsewhere)",
   )
   const NETWORK = refused(
-    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
+    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address or stands at a path but the synth's public and isolated subnets', or a template of subnets that doesn't write its stage's isolated-subnets parameter once, naming its isolated subnets exactly, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
   )
   const STORED = refused(
     "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape",
@@ -12879,6 +13208,151 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     30_000,
   )
 
+  // Round 13's second iteration (INPUTS-G2-01, INPUTS-G2-02). The check read each template alone, and took a
+  // resource's DeletionPolicy and UpdateReplacePolicy with any value. CloudFormation keeps a resource either
+  // retains outside its template, read by no rule here, while the diff prints a replaced one as replaced (its
+  // Security Group Changes table showing the old rule removed); and a release could drop or narrow its stage's
+  // isolated-subnets parameter, which the other stacks read by name and the route rule reads, so a route could
+  // leave the subnets the services run in. Each policy is now the synth's for its type or absent, and a template
+  // of subnets holds them at the synth's public and isolated paths and writes that parameter once, naming its
+  // isolated subnets exactly. Each plant passes the text without the conjunct that refuses it.
+  const withoutConjunct = (start: string, end: string) => {
+    const from = ASSET_CHECK.indexOf(start)
+    const to = ASSET_CHECK.indexOf(end, from)
+    if (from < 0 || to < 0 || ASSET_CHECK.indexOf(start, from + 1) >= 0) throw new Error(`no one ${start}`)
+    return ASSET_CHECK.slice(0, from) + ASSET_CHECK.slice(to + end.length)
+  }
+  const ANY_POLICY = withoutConjunct(' and (.Type as $t | [.DeletionPolicy, .UpdateReplacePolicy]', 'else null end))')
+  const ANY_SUBNETS = withoutConjunct(
+    '([$r | to_entries[] | select(.value.Type == "AWS::EC2::Subnet")] as $subnets',
+    '| .key] | sort)) and\n',
+  )
+  const isolatedEntry = (template: Record<string, unknown>) => {
+    const resources = template.Resources as Record<string, Planted>
+    const id = Object.keys(resources).find(key => key.startsWith('ParametersIsolatedSubnets'))
+    if (id === undefined) throw new Error('no isolated-subnets parameter')
+    return id
+  }
+  // A copy of isolated subnet 2 under another construct id, its logical id the label rule asks for.
+  const subnetAt = (id: string) => (resource: Planted, template: Record<string, unknown>) => {
+    const metadata = resource.Metadata as Record<string, string>
+    ;(template.Resources as Record<string, Planted>)[`NetworkVpc${id}SubnetABCDEF01`] = {
+      ...resource,
+      Metadata: { ...metadata, 'aws:cdk:path': `nonprod/Platform/Network/Vpc/${id}/Subnet` },
+    }
+  }
+  it.each([
+    [
+      'the isolated-subnets parameter kept by its deletion policy',
+      changed(
+        'AWS::SSM::Parameter',
+        resource => {
+          resource.DeletionPolicy = 'Retain'
+        },
+        'ParametersIsolatedSubnets',
+      ),
+      KEYS,
+    ],
+    [
+      "prod's rule into a group kept on replacement",
+      changed(
+        'AWS::EC2::SecurityGroupIngress',
+        resource => {
+          resource.UpdateReplacePolicy = 'Retain'
+        },
+        '',
+        prod,
+      ),
+      KEYS,
+    ],
+    [
+      "an isolated subnet's route table association kept on replacement",
+      changed(
+        'AWS::EC2::SubnetRouteTableAssociation',
+        resource => {
+          resource.UpdateReplacePolicy = 'Retain'
+        },
+        'NetworkVpcisolatedSubnet1RouteTableAssociation',
+      ),
+      KEYS,
+    ],
+    [
+      'the cache kept as a snapshot',
+      changed('AWS::ElastiCache::ReplicationGroup', resource => {
+        resource.DeletionPolicy = 'Snapshot'
+      }),
+      KEYS,
+    ],
+    [
+      "a log group's deletion policy without its replacement policy",
+      changed('AWS::Logs::LogGroup', resource => {
+        delete resource.UpdateReplacePolicy
+      }),
+      KEYS,
+    ],
+    [
+      "the synth's retention on a route",
+      changed('AWS::EC2::Route', resource => {
+        resource.DeletionPolicy = 'RetainExceptOnCreate'
+        resource.UpdateReplacePolicy = 'Retain'
+      }),
+      KEYS,
+    ],
+    [
+      'the isolated-subnets parameter dropped',
+      changed('AWS::SSM::Parameter', (_, template) => {
+        delete (template.Resources as Record<string, Planted>)[isolatedEntry(template)]
+      }),
+      NETWORK,
+    ],
+    [
+      "the isolated-subnets parameter dropped while a route leaves isolated subnet 1's table",
+      changed('AWS::SSM::Parameter', (_, template) => {
+        const resources = template.Resources as Record<string, Planted>
+        delete resources[isolatedEntry(template)]
+        const gateway = Object.keys(resources).find(key => resources[key]?.Type === 'AWS::EC2::InternetGateway')
+        const table = Object.keys(resources).find(key => key.startsWith('NetworkVpcisolatedSubnet1RouteTable'))
+        resources.NetworkVpcisolatedSubnet1DefaultRouteABCDEF01 = {
+          Type: 'AWS::EC2::Route',
+          Properties: { DestinationCidrBlock: '0.0.0.0/0', GatewayId: { Ref: gateway }, RouteTableId: { Ref: table } },
+          Metadata: { 'aws:cdk:path': 'nonprod/Platform/Network/Vpc/isolatedSubnet1/DefaultRoute' },
+        }
+      }),
+      NETWORK,
+    ],
+    [
+      'the isolated-subnets parameter naming one isolated subnet of two',
+      changed(
+        'AWS::SSM::Parameter',
+        resource => {
+          const join = (resource.Properties.Value as { 'Fn::Join': [string, unknown[]] })['Fn::Join']
+          join[1] = join[1].slice(0, 1)
+        },
+        'ParametersIsolatedSubnets',
+      ),
+      NETWORK,
+    ],
+    [
+      'an isolated subnet the isolated-subnets parameter leaves out',
+      changed('AWS::EC2::Subnet', subnetAt('isolatedSubnet3'), 'NetworkVpcisolatedSubnet2'),
+      NETWORK,
+    ],
+    [
+      "a subnet at a path but the synth's public and isolated subnets'",
+      changed('AWS::EC2::Subnet', subnetAt('privateSubnet3'), 'NetworkVpcisolatedSubnet2'),
+      NETWORK,
+    ],
+  ] as const)(
+    'refuses %s (round 13, iteration 2)',
+    (_, plant, expected) => {
+      expect(check(plant)).toBe(expected)
+      expect(check(plant, RELEASE, source, process.env.PATH, expected === KEYS ? ANY_POLICY : ANY_SUBNETS)).toBe(
+        'passed',
+      )
+    },
+    30_000,
+  )
+
   // What prod's profile turns on later passes there as it is now: an interface endpoint's resource statement with
   // its AWS-owned exception, and a task role's perimeter; and the Tasks output's revision of a definition passes
   // at its own family's.
@@ -13525,7 +13999,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     "a custom resource isn't CDK's one default security group handler, run by its own function as its own unnamed role trusted by Lambda alone, as CDK writes it, from the staging bucket in a Platform stack alone, or a value in its template reads its answer",
   )
   const FLOW_ROLE = refused(
-    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
+    "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address or stands at a path but the synth's public and isolated subnets', or a template of subnets that doesn't write its stage's isolated-subnets parameter once, naming its isolated subnets exactly, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer",
   )
   const NAMED_TRUST = refused(
     "a parameter, secret, log group, role, cache or tag isn't the workload's: a name, a stored value, a role's trust (a named role's ECS tasks' alone) or a task role's network perimeter of another shape",
@@ -13647,7 +14121,7 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ' and .Port == 443 and .Protocol == "HTTPS" and (.Certificates | type == "array" and length > 0 and all(.[]; .CertificateArn | ref("AWS::CertificateManager::Certificate")))',
       ' and all(.Certificates // [] | .[]; .CertificateArn | ref("AWS::CertificateManager::Certificate"))',
     ),
-    '; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"',
+    `; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address or stands at a path but the synth's public and isolated subnets', or a template of subnets that doesn't write its stage's isolated-subnets parameter once, naming its isolated subnets exactly, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"`,
     '"',
   )
   // prod's own resources whose logical ids start with one of the prefixes, renamed to the restore stage as a
@@ -13893,7 +14367,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
   const at = (rule: string, where: string, text: string) => `${DEPLOY}: ${rule} ${where}: ${text}`
   const credentialed = (planted: ReadonlyMap<string, string>) => credentialedCodeFindings(planted, manifests, lockfile)
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const tools = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
@@ -14279,7 +14753,7 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   // A canonical text with one line replaced, or added before one, and the 1-based line the change stands on.
   const replaced = (text: string, from: string, to: string) => {
@@ -14976,7 +15450,7 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
 
 describe('Round 8, attack 1: the ways past the allowlist (DPW-06, DPW-08, DPW-10)', () => {
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const evaluates = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${EVALUATES}`
@@ -15389,7 +15863,7 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const ENV =
     'hands no jq program env or $ENV, reads no /proc file and expands no AWS_ variable, any of which prints the credentials'
   const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
@@ -15535,7 +16009,7 @@ describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () =
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
   const plantAfter = (text: string, anchor: string, added: string) => {
     expect(text).toContain(`${anchor}\n`)
@@ -15659,7 +16133,7 @@ describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14
   const TOOLS =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const STEPS =
     'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
   const ENV =
@@ -16086,7 +16560,7 @@ describe('Round 9, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
   const TRACE =
     'runs no set -x, set -o xtrace, env, printenv, export -p or declare -p, and no set, declare, export, local or readonly given no name'
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const EXPANDS =
     "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const canonical = (name: string, line: number, rule: string, id = 'DPW-10') =>
@@ -17600,7 +18074,7 @@ describe('Round 12, iteration 3: the ways past the reader and the rules (DPW-07,
   const PROCESS_TOOL =
     'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS_RULE =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const anchor = "  local step=$1 PART answer status basis=''\n"
   const line = PLAN_BASIS.slice(0, PLAN_BASIS.indexOf(anchor) + anchor.length).split('\n').length
   const plantedBasis = (added: string) => {
@@ -18352,7 +18826,7 @@ describe('Round 12, iteration 3, its second pass: the ways past the reader and t
 // third iteration's second pass, each planted as they planted it and found at its root.
 describe('Round 12, iteration 4, its second pass: the ways past the reader and the rules (DPW-04, DPW-06, DPW-07, DPW-10, DPW-13)', () => {
   const COMMANDS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const EXPANDS =
     "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const VERDICT =
@@ -18810,7 +19284,7 @@ describe('Round 13, iteration 1: the ways past the reader and the rules (DPW-02,
   const CREDENTIALED_RUNS =
     'runs nothing but bash’s own, its functions, gh api, git merge-base, jq, the text tools, aws, skopeo, the pinned CLI, CLI_FETCH’s fetch, IMAGE_CHECK’s listing and unpacking and the preamble’s stop token, and names no npm, npx, node, shell, source, eval, docker, python, make, curl or wget but that fetch, or script: no tool is handed a program to run'
   const CANONICAL_RUNS =
-    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
+    "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
 
   // A word at a command's start that began with a digit was read as an operand (a redirection's 2) wherever it
   // stood, so a program whose name starts with one, as 7z, 7za and 7zr do (the runner image's archiver, which reads

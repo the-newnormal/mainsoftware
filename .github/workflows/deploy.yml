@@ -512,7 +512,9 @@ jobs:
           # or other key, so no other account's code runs before the handler), and no string in its template names
           # it, so no grant, output or other value reads its
           # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
-          # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
+          # properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies, each the
+          # synth's for its type or absent: CloudFormation keeps a resource either retains outside the template, where no
+          # rule here reads it, while the diff prints a replaced one as replaced and the old one as gone), and
           # every key and nested key of its properties, with each intrinsic function within them by its name, to its
           # type's list of paths below, each key of letters, digits, : and - alone. The diff prints an added resource as
           # one line and a changed one as its property tree, so otherwise a container's environment files, a log
@@ -548,8 +550,11 @@ jobs:
           # listener serves HTTPS on 443 with the template's certificates and a fixed response, a rule forwards to the
           # template's target groups, the record is an alias of the template's load balancer in its stage's zone, routes
           # reach the template's internet gateway from no route table of an isolated subnet (those its stage's
-          # isolated-subnets parameter names), no subnet gives a public address on launch, and flow logs the template's
-          # log group by their own unnamed role, trusted by VPC flow logs alone; the restore stage, sealed, holds no
+          # isolated-subnets parameter names, which a template of subnets writes once, naming exactly its subnets at the
+          # synth's isolated paths, every subnet at the synth's public or isolated path, so no release drops, narrows or
+          # moves the entry the other stacks place the services by), no subnet gives a public address on launch, and flow
+          # logs the template's log group by their own unnamed role, trusted by VPC flow logs alone; the restore stage,
+          # sealed, holds no
           # internet gateway, route, load balancer, listener, rule, target group, certificate or record, no group open
           # to any address and no service behind a load balancer (IAC-20 holds the same of CI's synth alone); and SSM
           # parameters, the secret, log groups, roles, the cache and tags are its stage's, each
@@ -860,8 +865,8 @@ jobs:
                     "Account_Ref", "DefaultSecurityGroupId_Fn::GetAtt_[]", "ServiceToken_Fn::GetAtt_[]"
                   ]
                 } as $held | def leaf: if type == "object" or type == "array" then length == 0 else true end;
-                  .Resources // {} | type == "object" and all(.[]; type == "object" and (keys - ["DeletionPolicy", "DependsOn", "Metadata", "Properties", "Type", "UpdateReplacePolicy"] | length == 0) and (.Metadata // {} | type == "object" and (keys - ["aws:asset:path", "aws:asset:property", "aws:cdk:path"] | length == 0)) and (.Properties | type == "object") and ([.Properties | .. | objects | keys[] | select(test("\\A[A-Za-z0-9:-]+\\z") | not)] | length == 0) and ($held[.Type] | type == "array") and ([.Properties | paths(leaf) | map(if type == "number" then "[]" else . end) | join("_")] - $held[.Type] | length == 0))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a resource holds a key, or writes a property in a form, that a workload synth never writes for its type"
+                  .Resources // {} | type == "object" and all(.[]; type == "object" and (keys - ["DeletionPolicy", "DependsOn", "Metadata", "Properties", "Type", "UpdateReplacePolicy"] | length == 0) and (.Type as $t | [.DeletionPolicy, .UpdateReplacePolicy] | . == [null, null] or . == (if $t | IN("AWS::CertificateManager::Certificate", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ReplicationGroup", "AWS::Logs::LogGroup", "AWS::SecretsManager::Secret") then ["RetainExceptOnCreate", "Retain"] elif $t == "Custom::VpcRestrictDefaultSG" then ["Delete", "Delete"] else null end)) and (.Metadata // {} | type == "object" and (keys - ["aws:asset:path", "aws:asset:property", "aws:cdk:path"] | length == 0)) and (.Properties | type == "object") and ([.Properties | .. | objects | keys[] | select(test("\\A[A-Za-z0-9:-]+\\z") | not)] | length == 0) and ($held[.Type] | type == "array") and ([.Properties | paths(leaf) | map(if type == "number" then "[]" else . end) | join("_")] - $held[.Type] | length == 0))' "$dir/$template" >/dev/null 2>&1 ||
+                  asset_refuse "a resource holds a key or a deletion or replacement policy, or writes a property in a form, that a workload synth never writes for its type"
                 jq -e --arg stack "$stack" '($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def rendered: if type == "string" then . elif type == "number" or type == "boolean" then tostring elif type == "object" and keys == ["Ref"] then (if .Ref == "AWS::AccountId" then "<account>" elif .Ref == "AWS::Partition" then "aws" else "<ref>" end) elif type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and (.[0] | type == "string") and (.[1] | type == "array")) then .["Fn::Join"][0] as $d | [.["Fn::Join"][1][] | rendered] | join($d) elif type == "object" and keys == ["Fn::Sub"] and (.["Fn::Sub"] | type == "string") then .["Fn::Sub"] | gsub("\\$\\{AWS::AccountId\\}"; "<account>") | gsub("\\$\\{AWS::Partition\\}"; "aws") | gsub("\\$\\{[^}]*\\}"; "<ref>") else "<ref>" end;
                   def renderings: if type == "object" and (keys == ["Ref"] or keys == ["Fn::Join"] or keys == ["Fn::Sub"]) then rendered elif type == "object" or type == "array" then .[] | renderings else rendered end;
@@ -896,6 +901,7 @@ jobs:
                   ([of("AWS::EC2::Route") | .RouteTableId | objects | .Ref]) as $routed |
                   ($s != "restore" or (all($r[]; .Type | IN("AWS::EC2::InternetGateway", "AWS::EC2::VPCGatewayAttachment", "AWS::EC2::Route", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::CertificateManager::Certificate", "AWS::Route53::RecordSet") | not) and all(of("AWS::EC2::SecurityGroup"); (.SecurityGroupIngress // []) == []) and all(of("AWS::ECS::Service"); (.LoadBalancers // []) == []))) and
                   all(of("AWS::EC2::Subnet"); (.MapPublicIpOnLaunch // false) == false) and
+                  ([$r | to_entries[] | select(.value.Type == "AWS::EC2::Subnet")] as $subnets | all($subnets[]; .value.Metadata["aws:cdk:path"] | type == "string" and test("\\A" + $s + "/Platform/Network/Vpc/(public|isolated)Subnet[1-9][0-9]*/Subnet\\z")) and ([of("AWS::SSM::Parameter") | select(.Name == "/hearth/" + $s + "/network/isolated-subnets")] | length) == (if ($subnets | length) > 0 then 1 else 0 end) and ($isolated | sort) == ([$subnets[] | select(.value.Metadata["aws:cdk:path"] | test("/isolatedSubnet[0-9]+/Subnet\\z")) | .key] | sort)) and
                   all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; . == {"CidrIp": "255.255.255.255/32", "Description": "Disallow all traffic", "FromPort": 252, "IpProtocol": "icmp", "ToPort": 86})) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
                   all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
                   all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
@@ -912,7 +918,7 @@ jobs:
                   all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
                   all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
                   all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"
+                  asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address or stands at a path but the synth's public and isolated subnets', or a template of subnets that doesn't write its stage's isolated-subnets parameter once, naming its isolated subnets exactly, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"
                 jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
                   def own($t): type == "string" and $r[.].Type == $t;
                   def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -1351,7 +1357,7 @@ jobs:
           # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
           # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
           # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
-          # reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+          # reads it. aws-cdk has no dependencies of any kind, so the tarball is the whole CLI. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
           integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
@@ -1376,12 +1382,12 @@ jobs:
           echo "::stop-commands::$stop_token"
           # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
           # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
-          # version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+          # version with its cdk bin and no dependency of any kind, nothing unpacked is a symbolic link, and its bin stays inside
           # it. One line names a failure.
           pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
           [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
           [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
-          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+          jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and all(.dependencies, .optionalDependencies, .peerDependencies; . == null or . == {})' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
             { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
           case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
             "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
@@ -1418,7 +1424,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1620,7 +1626,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1659,7 +1665,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1686,7 +1692,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1813,7 +1819,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1834,7 +1840,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1858,7 +1864,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1881,7 +1887,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -1936,7 +1942,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -2079,7 +2085,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -2392,7 +2398,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -2588,7 +2594,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -2611,7 +2617,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -2759,7 +2765,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3043,7 +3049,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3203,7 +3209,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3349,7 +3355,8 @@ jobs:
   # Prod (C11-D52, C11-D45): after its reviewer approves. A deploy of the image non-prod deployed in
   # this run, a rollback (Tasks and Services of the target), or the restore stage up (the forward order
   # and the probe) or down (Services, Data, Platform, no probe), the restore at prod's current release;
-  # then the read-back for the smoke. The fast re-check runs first, after the approval.
+  # then the read-back for the smoke. The fast re-check runs once the assembly and image are checked,
+  # after the approval and before the credentials.
   prod:
     needs: [gate, build, synth, synth-previous-prod, nonprod, prod-plan, prod-gate]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.synth.result == 'success' && needs.synth-previous-prod.result == 'success' && needs.prod-gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') }}
@@ -3528,7 +3535,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3783,7 +3790,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3829,7 +3836,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -3969,7 +3976,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -4051,7 +4058,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -4386,7 +4393,7 @@ jobs:
           echo "::stop-commands::$stop_token"
           # Every aws, cdk and skopeo command runs as `run …` (its output shown through the account-id filter)
           # or inside `$(get …)` (its output kept for use and never printed, its errors filtered) (C11-D61).
-          mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+          mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
           run() { "$@" 2>&1 | mask; }
           get() { "$@" 2> >(mask >&2); }
           CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"

@@ -118,7 +118,11 @@
 // target groups, a security group's egress, which must be there, and a rule's peer, a VPC endpoint's service and
 // each statement of its policy, held to the organisation's principals and, but in prod until its reviewed change,
 // its resources, the load balancer's attributes, a listener's and record's targets (a listener HTTPS on 443 with
-// a certificate), a route's table, never an isolated subnet's, no subnet giving a public address, and in the
+// a certificate), a route's table, never an isolated subnet's (a template of subnets at the synth's public and
+// isolated paths writing its stage's isolated-subnets entry once, naming exactly its isolated subnets, round 13's
+// second iteration), no subnet giving a public address, each resource's deletion and replacement policies (the
+// synth's for its type or none, since CloudFormation keeps a resource either retains outside the template, which
+// no rule reads, while the diff prints a replaced one as replaced), and in the
 // restore stage no internet gateway, route, load balancer, listener, rule, target group, certificate or record, no
 // group open to any address and no service behind a load balancer (round 12's fourth iteration, its second pass:
 // prod's way in, copied into the restore stage under its own names, passed, the restore stage holding no rule of
@@ -313,11 +317,11 @@
 // command it can't find and takes the status of (functionNameLines(): bash finds a function before a builtin, so
 // an exit() would make every later exit 1 carry on), with no environment of its own (canonicalCommandLines():
 // export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before
-// a command but IFS's before read, read only with -r after IFS= or IFS=$'\t' and mapfile only with -t, so no
+// a command but IFS's before read and the account-id filter's LC_ALL=C before its sed, read only with -r after IFS= or IFS=$'\t' and mapfile only with -t, so no
 // backslash in what a loop reads joins two lines or escapes a character (readerLines()), no assignment, in any
 // spelling, to one of bash's own variables
 // (SHELL_TABLE.bashVariables: EXECIGNORE, which hides a command from bash's lookup, GLOBIGNORE, PS4 and the rest)
-// but IFS's before read, no wrapper, and
+// but IFS's before read and that LC_ALL=C, no wrapper, and
 // no name read, mapfile, printf -v or a for loop sets that is PATH, HOME or another loader's, so no TAR_OPTIONS or
 // other variable a held tool reads reaches it, nor one a rule holds to its one line (HELD_NAMES: CDK, ASSEMBLY,
 // DIFF, STAGE) set in any spelling but the preamble's CDK line, nor an AWS_ name or ROLE_TO_ASSUME set in any
@@ -426,8 +430,10 @@
 // scalars, escapes, if: lines, top-level keys, triggers and words, the shared runs themselves, and its size,
 // which GitHub counts on the file as stored. Every rule takes deploy.yml through deployWritten(), deployStored()
 // or workflowsWritten() alone (round 13), and the test holds each to how its table says it reads, the file as
-// stored only under a reason named there, and runs each over both layouts in every case, a plant into a shared
-// text at every step that runs it included, so a rule that read the stored lines by job fails there.
+// stored only under a reason named there (it reads every use of the map of workflows from the syntax tree, and
+// holds every parameter typed as a map of texts to its three names, so no alias, helper or other walk takes the
+// map unseen: round 13's second iteration), and runs each over both layouts in every case that has two, a plant
+// into a shared text at every step that runs it included, so a rule that read the stored lines by job fails there.
 //
 // What holds a change to a pinned text. Every run in deploy.yml is pinned whole, its glue lines and the
 // canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
@@ -542,12 +548,14 @@ ${STOP_COMMANDS}`
 // The preamble (C11-D61): the first lines of every run step after the credentials action. It stops the
 // runner reading workflow commands for the step (STOP_HEAD); then every aws, cdk and skopeo command
 // runs as `run …`, its output shown through the account-id filter (a run of twelve digits with no digit
-// or lowercase hex letter beside it, so a commit or digest stays whole), or inside `$(get …)`, its output
-// kept and never printed and its errors filtered (DPW-07).
+// or lowercase hex letter beside it, so a commit or digest stays whole, read byte by byte in the C locale:
+// in the runner's UTF-8 locale a byte that isn't valid UTF-8 matches no bracket expression, so a run beside
+// one was printed whole), or inside `$(get …)`, its output kept and never printed and its errors filtered
+// (DPW-07).
 export const PREAMBLE = sh`${STOP_HEAD}
 # Every aws, cdk and skopeo command runs as \`run …\` (its output shown through the account-id filter)
 # or inside \`$(get …)\` (its output kept for use and never printed, its errors filtered) (C11-D61).
-mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
+mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }
 run() { "$@" 2>&1 | mask; }
 get() { "$@" 2> >(mask >&2); }
 CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
@@ -564,14 +572,15 @@ export const CDK_FOLDER = sh`cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export 
 // deploy.yml sees. Instead the registry's aws-cdk tarball at infra's pin is fetched by its fixed URL into a
 // folder of the runner's temp folder that CLI_FETCH makes itself (so nothing a download left can stand
 // there), checked against the lockfile's sha512 integrity for it and unpacked there; aws-cdk has no
-// dependencies, so the tarball is the whole CLI.
+// dependency of any kind (npm installs a peer and an optional one too, which CLI_CHECK and DPW-10 refuse), so the
+// tarball is the whole CLI.
 export const CLI_FETCH = sh`${STOP_HEAD}
 # The pinned CDK CLI (CLI_FETCH; C11-D48, C11-D76): the registry's aws-cdk tarball at infra's pin, fetched
 # and unpacked without npm, so nothing of the repository's (an .npmrc, a git dependency in the lockfile, a
 # package script) runs or steers a program in a job that holds the OIDC request token. The lockfile's
 # entry for it names that tarball with an integrity and no link; the tarball is fetched into a folder made
 # for it here, and its sha512 must be that integrity before it is unpacked there, where CLI_CHECK then
-# reads it. aws-cdk has no dependencies, so the tarball is the whole CLI. One line names a failure.
+# reads it. aws-cdk has no dependencies of any kind, so the tarball is the whole CLI. One line names a failure.
 pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
 [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-fetch: infra's aws-cdk isn't pinned to one version"; exit 1; }
 integrity=$(jq -er --arg pin "$pin" '.packages["node_modules/aws-cdk"] | select(type == "object" and .version == $pin and .resolved == "https://registry.npmjs.org/aws-cdk/-/aws-cdk-\($pin).tgz" and (has("link") | not)) | .integrity | select(type == "string" and test("\\Asha512-[A-Za-z0-9+/]{86}==\\z"))' package-lock.json) ||
@@ -588,12 +597,12 @@ tar -xzf "$RUNNER_TEMP/aws-cdk/aws-cdk.tgz" -C "$RUNNER_TEMP/aws-cdk" --no-same-
 export const CLI_CHECK = sh`${STOP_HEAD}
 # The CLI check (CLI_CHECK; C11-D48, C11-D76): the CDK CLI this job runs is the registry's aws-cdk at
 # infra's pin, as CLI_FETCH unpacked it, never a workspace's or a link: its manifest names aws-cdk at that
-# version with its cdk bin and no dependency, nothing unpacked is a symbolic link, and its bin stays inside
+# version with its cdk bin and no dependency of any kind, nothing unpacked is a symbolic link, and its bin stays inside
 # it. One line names a failure.
 pin=$(jq -r '.devDependencies["aws-cdk"]' infra/package.json)
 [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cli-check: infra's aws-cdk isn't pinned to one version"; exit 1; }
 [ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }
-jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and ((.dependencies // {}) | length == 0)' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
+jq -e --arg pin "$pin" '.name == "aws-cdk" and .version == $pin and .bin.cdk == "bin/cdk" and all(.dependencies, .optionalDependencies, .peerDependencies; . == null or . == {})' "$RUNNER_TEMP/aws-cdk/package/package.json" >/dev/null ||
   { echo "cli-check: the unpacked aws-cdk isn't the registry's package at infra's pin"; exit 1; }
 case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in
   "$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;
@@ -608,7 +617,8 @@ esac`
 // bootstrap version or termination protection, the asset manifests' shape, the outputs, and from review 10 each
 // resource type's property paths in its literal and each value it holds to the synth's shape, from round 11 a
 // task's one container, server, and the Services stack's three services, from round 13 each task definition in its
-// family's own stack) keeps accepting
+// family's own stack, each resource's deletion and replacement policies and the subnets' paths and isolated-subnets
+// entry) keeps accepting
 // each shape a release among ECR's newest 50 images wrote, or every run fails at a synth and every pipeline
 // rollback or restore to a release before the change is refused (T24 item 22). No case can plant an older shape
 // until one exists.
@@ -687,7 +697,9 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # or other key, so no other account's code runs before the handler), and no string in its template names
 # it, so no grant, output or other value reads its
 # answer. It holds every resource to the keys the workload synth writes for its type: its own keys (type,
-# properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies), and
+# properties, metadata of CDK's path and asset notes alone, DependsOn and its two deletion policies, each the
+# synth's for its type or absent: CloudFormation keeps a resource either retains outside the template, where no
+# rule here reads it, while the diff prints a replaced one as replaced and the old one as gone), and
 # every key and nested key of its properties, with each intrinsic function within them by its name, to its
 # type's list of paths below, each key of letters, digits, : and - alone. The diff prints an added resource as
 # one line and a changed one as its property tree, so otherwise a container's environment files, a log
@@ -723,8 +735,11 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # listener serves HTTPS on 443 with the template's certificates and a fixed response, a rule forwards to the
 # template's target groups, the record is an alias of the template's load balancer in its stage's zone, routes
 # reach the template's internet gateway from no route table of an isolated subnet (those its stage's
-# isolated-subnets parameter names), no subnet gives a public address on launch, and flow logs the template's
-# log group by their own unnamed role, trusted by VPC flow logs alone; the restore stage, sealed, holds no
+# isolated-subnets parameter names, which a template of subnets writes once, naming exactly its subnets at the
+# synth's isolated paths, every subnet at the synth's public or isolated path, so no release drops, narrows or
+# moves the entry the other stacks place the services by), no subnet gives a public address on launch, and flow
+# logs the template's log group by their own unnamed role, trusted by VPC flow logs alone; the restore stage,
+# sealed, holds no
 # internet gateway, route, load balancer, listener, rule, target group, certificate or record, no group open
 # to any address and no service behind a load balancer (IAC-20 holds the same of CI's synth alone); and SSM
 # parameters, the secret, log groups, roles, the cache and tags are its stage's, each
@@ -1035,8 +1050,8 @@ check_release_in() {
           "Account_Ref", "DefaultSecurityGroupId_Fn::GetAtt_[]", "ServiceToken_Fn::GetAtt_[]"
         ]
       } as $held | def leaf: if type == "object" or type == "array" then length == 0 else true end;
-        .Resources // {} | type == "object" and all(.[]; type == "object" and (keys - ["DeletionPolicy", "DependsOn", "Metadata", "Properties", "Type", "UpdateReplacePolicy"] | length == 0) and (.Metadata // {} | type == "object" and (keys - ["aws:asset:path", "aws:asset:property", "aws:cdk:path"] | length == 0)) and (.Properties | type == "object") and ([.Properties | .. | objects | keys[] | select(test("\\A[A-Za-z0-9:-]+\\z") | not)] | length == 0) and ($held[.Type] | type == "array") and ([.Properties | paths(leaf) | map(if type == "number" then "[]" else . end) | join("_")] - $held[.Type] | length == 0))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a resource holds a key, or writes a property in a form, that a workload synth never writes for its type"
+        .Resources // {} | type == "object" and all(.[]; type == "object" and (keys - ["DeletionPolicy", "DependsOn", "Metadata", "Properties", "Type", "UpdateReplacePolicy"] | length == 0) and (.Type as $t | [.DeletionPolicy, .UpdateReplacePolicy] | . == [null, null] or . == (if $t | IN("AWS::CertificateManager::Certificate", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ReplicationGroup", "AWS::Logs::LogGroup", "AWS::SecretsManager::Secret") then ["RetainExceptOnCreate", "Retain"] elif $t == "Custom::VpcRestrictDefaultSG" then ["Delete", "Delete"] else null end)) and (.Metadata // {} | type == "object" and (keys - ["aws:asset:path", "aws:asset:property", "aws:cdk:path"] | length == 0)) and (.Properties | type == "object") and ([.Properties | .. | objects | keys[] | select(test("\\A[A-Za-z0-9:-]+\\z") | not)] | length == 0) and ($held[.Type] | type == "array") and ([.Properties | paths(leaf) | map(if type == "number" then "[]" else . end) | join("_")] - $held[.Type] | length == 0))' "$dir/$template" >/dev/null 2>&1 ||
+        asset_refuse "a resource holds a key or a deletion or replacement policy, or writes a property in a form, that a workload synth never writes for its type"
       jq -e --arg stack "$stack" '($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def rendered: if type == "string" then . elif type == "number" or type == "boolean" then tostring elif type == "object" and keys == ["Ref"] then (if .Ref == "AWS::AccountId" then "<account>" elif .Ref == "AWS::Partition" then "aws" else "<ref>" end) elif type == "object" and keys == ["Fn::Join"] and (.["Fn::Join"] | type == "array" and length == 2 and (.[0] | type == "string") and (.[1] | type == "array")) then .["Fn::Join"][0] as $d | [.["Fn::Join"][1][] | rendered] | join($d) elif type == "object" and keys == ["Fn::Sub"] and (.["Fn::Sub"] | type == "string") then .["Fn::Sub"] | gsub("\\$\\{AWS::AccountId\\}"; "<account>") | gsub("\\$\\{AWS::Partition\\}"; "aws") | gsub("\\$\\{[^}]*\\}"; "<ref>") else "<ref>" end;
         def renderings: if type == "object" and (keys == ["Ref"] or keys == ["Fn::Join"] or keys == ["Fn::Sub"]) then rendered elif type == "object" or type == "array" then .[] | renderings else rendered end;
@@ -1071,6 +1086,7 @@ check_release_in() {
         ([of("AWS::EC2::Route") | .RouteTableId | objects | .Ref]) as $routed |
         ($s != "restore" or (all($r[]; .Type | IN("AWS::EC2::InternetGateway", "AWS::EC2::VPCGatewayAttachment", "AWS::EC2::Route", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::CertificateManager::Certificate", "AWS::Route53::RecordSet") | not) and all(of("AWS::EC2::SecurityGroup"); (.SecurityGroupIngress // []) == []) and all(of("AWS::ECS::Service"); (.LoadBalancers // []) == []))) and
         all(of("AWS::EC2::Subnet"); (.MapPublicIpOnLaunch // false) == false) and
+        ([$r | to_entries[] | select(.value.Type == "AWS::EC2::Subnet")] as $subnets | all($subnets[]; .value.Metadata["aws:cdk:path"] | type == "string" and test("\\A" + $s + "/Platform/Network/Vpc/(public|isolated)Subnet[1-9][0-9]*/Subnet\\z")) and ([of("AWS::SSM::Parameter") | select(.Name == "/hearth/" + $s + "/network/isolated-subnets")] | length) == (if ($subnets | length) > 0 then 1 else 0 end) and ($isolated | sort) == ([$subnets[] | select(.value.Metadata["aws:cdk:path"] | test("/isolatedSubnet[0-9]+/Subnet\\z")) | .key] | sort)) and
         all(of("AWS::EC2::SecurityGroup"); (.VpcId | ref("AWS::EC2::VPC")) and (.SecurityGroupEgress | type == "array" and length > 0 and all(.[]; . == {"CidrIp": "255.255.255.255/32", "Description": "Disallow all traffic", "FromPort": 252, "IpProtocol": "icmp", "ToPort": 86})) and all(.SecurityGroupIngress // [] | .[]; .CidrIp == "0.0.0.0/0" and .IpProtocol == "tcp" and .FromPort == 443 and .ToPort == 443)) and
         all(of("AWS::EC2::SecurityGroupEgress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (if has("DestinationPrefixListId") then .DestinationPrefixListId == "pl-6fa54006" else .DestinationSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId") end)) and
         all(of("AWS::EC2::SecurityGroupIngress"); (.GroupId | att("AWS::EC2::SecurityGroup"; "GroupId")) and (.SourceSecurityGroupId | att("AWS::EC2::SecurityGroup"; "GroupId"))) and
@@ -1087,7 +1103,7 @@ check_release_in() {
         all($r[] | .Properties | select(has("VpcId")); .VpcId | ref("AWS::EC2::VPC")) and
         all(of("AWS::EC2::FlowLog"); .LogDestinationType == "cloud-watch-logs" and (.LogGroupName | ref("AWS::Logs::LogGroup")) and (.DeliverLogsPermissionArn | att("AWS::IAM::Role"; "Arn") and ($r[.["Fn::GetAtt"][0]].Properties | (has("RoleName") | not) and (.AssumeRolePolicyDocument.Statement | type == "array" and length > 0 and all(.[]; .Principal.Service == "vpc-flow-logs.amazonaws.com")))) and (.ResourceId | ref("AWS::EC2::VPC"))) and
         all(of("Custom::VpcRestrictDefaultSG"); .Account == {"Ref": "AWS::AccountId"} and (.DefaultSecurityGroupId | att("AWS::EC2::VPC"; "DefaultSecurityGroup")))' "$dir/$template" >/dev/null 2>&1 ||
-        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"
+        asset_refuse "a network resource isn't the workload's: a security group rule, VPC endpoint or its policy, load balancer, target group, listener, record, route or flow log naming or opening something of another shape, or a flow log delivering as a role but its own unnamed one trusted by VPC flow logs alone; a listener other than HTTPS on 443 with a certificate; a subnet that gives a public address or stands at a path but the synth's public and isolated subnets', or a template of subnets that doesn't write its stage's isolated-subnets parameter once, naming its isolated subnets exactly, or the restore stage holding an internet gateway, a route, a load balancer, a listener, a target group, a certificate, a record, a group open to any address or a service behind a load balancer"
       jq -e --arg stack "$stack" '(.Resources // {}) as $r | (.Parameters // {}) as $p | ($stack | capture("\\AHearth-(?<s>(non)?prod|restore)-").s) as $s |
         def own($t): type == "string" and $r[.].Type == $t;
         def ref($t): type == "object" and keys == ["Ref"] and (.Ref | own($t));
@@ -3157,8 +3173,11 @@ function jobsOf(text: RunsWrittenOut): Map<string, Job> {
 // deployStored(): as stored, for what an alias can't change alone (its characters, shape, block scalars, escapes,
 // if: lines, top-level keys, triggers and words, the shared runs themselves, and its size). workflowsWritten():
 // every workflow, deploy.yml written out, for a rule that walks them all by job or line. No rule takes the file by
-// its path or walks the map of workflows otherwise but one that reads it as stored, and the test's
-// DEPLOY_TEXT_READERS names each of those with why, so a rule reading the stored lines by job is a reviewed entry.
+// its path or names the map of workflows but as its own parameter, an accessor's argument, get(CI) or has(), but one
+// that reads it as stored, and the test's DEPLOY_TEXT_READERS names each of those with why (reading every use from
+// the syntax tree, and holding every parameter typed as a map of texts to the names workflows, environments and
+// manifests, so no helper or alias takes the map unseen: round 13's second iteration), so a rule reading the stored
+// lines by job is a reviewed entry.
 export function deployWritten(workflows: Texts): RunsWrittenOut {
   return expandRunAliases(workflows.get(DEPLOY) ?? '')
 }
@@ -5360,6 +5379,9 @@ const CANONICAL_COMMANDS = [
 // its held line): export only on EXPORT_LINES (the preamble's CDK settings and CDK_FOLDER's fresh HOME),
 // local with no flag (no -x), set only as set -euo pipefail (no -a or -k, which export each assignment), no
 // assignment before a command's word but IFS's before read, a builtin, which hands no child an environment,
+// and the account-id filter's LC_ALL=C before its sed (MASK_LINE; round 13's second iteration: in the step's
+// UTF-8 locale a byte that isn't valid UTF-8 matches no bracket expression, so a run of twelve digits beside
+// one was printed whole),
 // no wrapper (env, command, …), and no assignment, anywhere, of a name that chooses what a program runs or
 // reads (LOADER_NAMES) but CDK_FOLDER's HOME, nor of one a rule holds to its one line (HELD_NAMES) but the
 // preamble's CDK, in any spelling. A held tool's line is held with its environment.
@@ -5403,7 +5425,9 @@ export function canonicalCommandLines(text: string, functions: ReadonlySet<strin
       (word === 'export' && !EXPORT_LINES().has(lineOf(command.line))) ||
       ((word === 'local' || word === 'export') && /(?:^|\s)[-+][A-Za-z]/.test(command.tail)) ||
       (word === 'set' && !/^\s+-euo\s+pipefail\s*$/.test(command.tail)) ||
-      (assigned.length > 0 && !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix)))) ||
+      (assigned.length > 0 &&
+        !(word === 'read' && assigned.every(prefix => IFS_PREFIXES.includes(prefix))) &&
+        !(word === 'sed' && lineOf(command.line) === MASK_LINE && assigned.join(' ') === 'LC_ALL=C')) ||
       wrapped.some(prefix => prefix !== 'run' && prefix !== 'get') ||
       builtinNames(command).some(
         name =>
@@ -5419,7 +5443,7 @@ export function canonicalCommandLines(text: string, functions: ReadonlySet<strin
     if (LOADER_ASSIGNMENT.test(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
     if (HELD_ASSIGNMENT.test(line) && lineOf(n) !== PREAMBLE_CDK) lines.add(n)
     if (AWS_ENV_SET.test(line)) lines.add(n)
-    if (bashVariableAssigned(line) && lineOf(n) !== CDK_FOLDER) lines.add(n)
+    if (bashVariableAssigned(line) && lineOf(n) !== CDK_FOLDER && lineOf(n) !== MASK_LINE) lines.add(n)
   }
   return [...lines].sort((a, b) => a - b)
 }
@@ -5676,13 +5700,47 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of verdictLines(text, exiting)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${VERDICT_RULE}`)
     }
+    for (const line of regexTestLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${REGEX_TEST_RULE}`)
+    }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
-        `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
       )
     }
   }
   return found
+}
+
+// A test of a value against a regular expression (round 13's second iteration, COMMANDS-G2-01): bash's [[ WORD
+// =~ REGEX ]] succeeds when the expression matches any part of the word, so a shape test written without ^ and $
+// holds only that the value contains the shape, and a value with a line break in it (a job output another job
+// wrote, an answer from AWS or GitHub) passes with whatever stands beside it, a line that then writes its own
+// output among them. Every =~ in a canonical text is anchored at both ends, ^ first and an unescaped $ last, its
+// word unquoted (a quoted one bash matches as a string) and a | only inside parentheses (^a|b$ is ^a or b$), as
+// SHELL_TABLE.regex holds a run's own lines; then bash matches the whole word. No committed text writes another.
+// A glob test ([[ WORD == PATTERN ]], which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and
+// which a run's own lines can't write) matches what its * says, in the open, so it stays the owner's read.
+const REGEX_TEST_RULE =
+  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses, so bash matches the whole value and never a part of it'
+export function regexTestLines(text: string): number[] {
+  const lines: number[] = []
+  for (const [n, line] of shellViews(text).code.split('\n').entries()) {
+    for (const match of line.matchAll(/(?:^|\s)=~(?:\s+(\S+))?/g)) {
+      const regex = match[1] ?? ''
+      let depth = 0
+      let alternativeOutside = false
+      for (const [at, c] of [...regex].entries()) {
+        if (regex[at - 1] === '\\') continue
+        if (c === '(') depth++
+        else if (c === ')') depth--
+        else if (c === '|' && depth <= 0) alternativeOutside = true
+      }
+      const anchored = /^\^/.test(regex) && /(?<!\\)\$$/.test(regex) && regex.length >= 2
+      if (!anchored || alternativeOutside || depth !== 0) lines.push(n)
+    }
+  }
+  return [...new Set(lines)]
 }
 
 // How a canonical text ends a step or a function (round 12's fourth iteration): exit and return only with a
@@ -5864,8 +5922,11 @@ export const SHELL_TABLE = {
   keywords: ['if', 'then', 'elif', 'else', 'fi', 'for', 'in', 'do', 'done', 'case', 'esac', '{', '}'],
   // A test, [[ "WORD" =~ REGEX ]], && joining more than one: bash matches the double-quoted word against
   // the regular expression, with no word splitting or glob, and evaluates nothing. The expression is of
-  // these characters, a $ only at its end and a | only inside parentheses.
-  regex: /^\^?(?:[A-Za-z0-9[\]{},:+-]|\((?:[A-Za-z0-9[\]{},:+|-])+\))+\$?$/,
+  // these characters, anchored at both ends, ^ first and $ last, and a | only inside parentheses: bash's =~
+  // succeeds when the expression matches any part of the word, so only an anchored one tests the whole of it
+  // (round 13's second iteration: an unanchored release test passed a build output that held a line break
+  // and a commit= line, which then wrote the job's commit output).
+  regex: /^\^(?:[A-Za-z0-9[\]{},:+-]|\((?:[A-Za-z0-9[\]{},:+|-])+\))+\$$/,
   // A case pattern: the word's characters, *, which bash matches against anything, and single-quoted
   // strings; | between alternatives, ) after the last.
   casePattern: /^(?:[A-Za-z0-9_./:=@-]|\*|'[\x20-\x26\x28-\x7e]*')+$/,
@@ -6980,6 +7041,10 @@ const CALLS_OWN =
 // aside), with no ${{ or }} inside it. Blanks after it are no part of it: YAML ends a plain scalar at its
 // last character that isn't a blank, so GitHub reads the expression alone, as the guard does.
 const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:[ \t]+#.*)?[ \t]*$/
+// An if: outside deploy.yml may also be a plain expression GitHub evaluates (if: always()): no ${{ anywhere on
+// its line, its first character no block scalar's, quote's or other YAML indicator's, and no quote or comment.
+const PLAIN_IF_LINE = /^\s*(?:-\s+)?if: (?!.*\$\{\{)[^\s|>'"&*!%@`{[\]#,?:-][^#'"]*$/
+const OTHER_IF_RULE = `writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{: quoted, as a block scalar or with text beside a \${{ … }}, GitHub reads a string, always true`
 
 const describePermissions = (record: Readonly<Record<string, string>>) =>
   Object.entries(record)
@@ -7018,8 +7083,9 @@ function unreadCharacter(text: string): string | undefined {
 // or flow mapping but {}, and no anchor or alias but a step's shared run), so none is read wrong in a shape it
 // names, and holds only newlines and printable text, no tab (unreadCharacter). Every other workflow holds the
 // id-token clause, spells nothing with an escape, names no environment, gives no block scalar an indentation
-// indicator (indicatorProblems), and has each job that calls a reusable workflow call another of this
-// repository's at this commit (CALLED_WORKFLOW), never deploy.yml, handing it no secret. Every workflow is on
+// indicator (indicatorProblems), writes every if: as IF_LINE's plain ${{ … }} or a plain expression with no ${{
+// (PLAIN_IF_LINE, round 13's second iteration), and has each job that calls a reusable workflow call another of
+// this repository's at this commit (CALLED_WORKFLOW), never deploy.yml, handing it no secret. Every workflow is on
 // the owner's-read list, so these holds are a second layer behind the owner's read of a changed line (the
 // header's last paragraph). ownRepository is this repository's owner/name, which the tests read from GitHub's
 // GITHUB_REPOSITORY in CI, or else the origin remote, since a step naming this repository's own action by its
@@ -7210,6 +7276,17 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
         `writes every if: as a plain \${{ … }} alone on its line: quoted, as a block scalar or with text beside it, GitHub reads a string, always true`,
       ),
     )
+  }
+  // Every other workflow's if: too (round 13's second iteration): IF_LINE's form, or a plain expression with no
+  // ${{ (GitHub evaluates a plain if: and trims it), never quoted, a block scalar or text beside a ${{ … }}, which
+  // GitHub reads as a string, always true. ci.yml's cli-pin step written if: | over its expression passed DPW-04,
+  // which read the expression alone, and ran on every push to main, where it fails.
+  for (const [path, text] of workflowsWritten(workflows)) {
+    if (path === DEPLOY) continue
+    const ifs = yamlLines(text).filter(({ text: line }) => /^\s*(?:-\s+)?if\s*:/.test(line))
+    if (ifs.some(({ text: line }) => !IF_LINE.test(line) && !PLAIN_IF_LINE.test(line))) {
+      found.push(at(path, 'DPW-02', OTHER_IF_RULE))
+    }
   }
   // A folded block scalar or an indentation indicator: GitHub hands bash another text than the guard read.
   if (literalProblems(deploy).length > 0) {
@@ -7505,6 +7582,13 @@ function atJobPin(step: WorkflowStep | undefined, action: string): boolean {
     step.lines.some(line => /^\s*(?:- )?uses: (.*)$/.exec(line)?.[1] === `${action}@${pin}`)
   )
 }
+// A step whose one if: line is written as IF_LINE's plain ${{ … }} alone (round 13's second iteration): the
+// reader hands the expression alone, whether the line holds it as GitHub evaluates it or as a block scalar, which
+// GitHub reads as a string, always true.
+function ifWritten(step: WorkflowStep | undefined): boolean {
+  const lines = step?.lines.filter(line => /^\s*(?:-\s+)?if\s*:/.test(line)) ?? []
+  return lines.length === 1 && IF_LINE.test(lines[0] ?? '')
+}
 function pinsJobHolds(ci: string): boolean {
   const jobs = workflowJobs(ci)
   const pins = jobs.filter(job => job.id === PINS_JOB)
@@ -7537,6 +7621,7 @@ function pinsJobHolds(ci: string): boolean {
     jobScalar(check, 'if') === 'always()' &&
     only(first, ['if', 'run']) &&
     first?.if === NEEDS_FAILED &&
+    ifWritten(first) &&
     first.run === 'exit 1'
   )
 }
@@ -7596,6 +7681,7 @@ function cliPinJobHolds(ci: string): boolean {
     sameMap(node?.with ?? new Map(), PINS_NODE_WITH) &&
     only(run, ['name', 'if', 'working-directory', 'env', 'run']) &&
     run?.if === expr("github.event_name == 'pull_request'") &&
+    ifWritten(run) &&
     run.keys.get('working-directory') === REPO_FOLDER &&
     sameMap(run.env, { BASE: `origin/${expr('github.base_ref')}` }) &&
     run.run === CLI_PIN_RUN &&
@@ -9363,7 +9449,7 @@ const TOOLS = [
 // what it reads, a tar that runs a program per member or per checkpoint, a find that copies a file) is
 // refused until the line here moves too; the tests hold each to standing whole in its text
 // (TOOL_LINE_TEXTS).
-export const MASK_LINE = String.raw`mask() { sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }`
+export const MASK_LINE = String.raw`mask() { LC_ALL=C sed -uE ':a; s/(^|[^0-9a-f])[0-9]{12}([^0-9a-f]|$)/\1***\2/; ta'; }`
 export const FIND_LINE = `[ -z "$(find "$root" -type l -print -quit)" ] || asset_refuse 'the assembly holds a symbolic link'`
 export const CLI_FIND_LINE = `[ -z "$(find "$RUNNER_TEMP/aws-cdk" -type l -print -quit)" ] || { echo 'cli-check: the unpacked CLI holds a symbolic link'; exit 1; }`
 export const KEY_HASH_LINE = sh`[ "$(sha256sum <"$dir/$path")" = "$\{key%.json}  -" ] || asset_refuse "a file asset's key isn't the sha256 of its bytes"`
@@ -11240,6 +11326,11 @@ function cliLineIsSafe(line: string): boolean {
   return CLI_NEEDS[command].every(flag => flags.includes(flag))
 }
 
+// The keys npm writes in the lockfile's entry for aws-cdk as it is today: any other (dependencies,
+// optionalDependencies, peerDependencies, hasInstallScript, os, cpu and the rest) is a change of the package's
+// shape a deploy job, which runs the tarball alone, would meet first.
+const CLI_LOCK_KEYS: readonly string[] = ['version', 'resolved', 'integrity', 'dev', 'license', 'bin', 'engines']
+
 // DPW-10 (C11-D48, C11-D76): a credentialed job runs no repository code. Its uses: are only checkout,
 // download-artifact and the credentials action; the CLI is fetched only by CLI_FETCH (mkdir, curl, openssl,
 // base64 and tar only on its own lines, in its run whole), never by npm, which would read the repository's
@@ -11259,7 +11350,8 @@ function cliLineIsSafe(line: string): boolean {
 // JOB_STEPS' and no run names GITHUB_ENV, GITHUB_PATH or GITHUB_STATE (shapeOfJobsFindings). Across the
 // repository no workspace is named aws-cdk or declares a cdk bin, and the lockfile's aws-cdk is the
 // registry's tarball at infra's pin, by its fixed URL, with a sha512 integrity and no link, its cdk bin at bin/cdk
-// and no dependency (installedCliFindings() holds the package npm ci installs from it).
+// and no key but those npm writes for today's package, so no dependency of any kind (installedCliFindings() holds
+// the package npm ci installs from it, and the test runs CLI_FETCH and CLI_CHECK on that very tarball).
 export function credentialedCodeFindings(workflows: Texts, manifests: Texts, lockfile: string): Finding[] {
   const found = new Set<Finding>(canonicalTextFindings())
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-10', `${where}: ${rule}`))
@@ -11441,8 +11533,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
   }
   // As CLI_FETCH reads it, so a lockfile it would refuse fails here first: the registry's tarball at infra's
   // pin, by its fixed URL, with a sha512 integrity and no link; and as npm writes the entry of a package
-  // CLI_CHECK accepts, its cdk bin at bin/cdk and no dependency (round 13: installedCliFindings() holds the
-  // package itself).
+  // CLI_CHECK accepts, its cdk bin at bin/cdk, holding no key but those npm writes for today's package (round
+  // 13's second iteration: npm writes, and npm ci installs, peerDependencies and optionalDependencies as well as
+  // dependencies, while a deploy job runs the tarball alone; installedCliFindings() holds the package itself).
   if (
     entry === undefined ||
     typeof pin !== 'string' ||
@@ -11452,13 +11545,13 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
     !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity) ||
     Object.hasOwn(entry, 'link') ||
     JSON.stringify(entry.bin) !== JSON.stringify({ cdk: 'bin/cdk' }) ||
-    Object.hasOwn(entry, 'dependencies')
+    Object.keys(entry).some(key => !CLI_LOCK_KEYS.includes(key))
   ) {
     found.add(
       at(
         'package-lock.json',
         'DPW-10',
-        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no dependency",
+        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind",
       ),
     )
   }
@@ -11466,15 +11559,19 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
 }
 
 // DPW-10, the installed CLI (round 13). CLI_CHECK refuses, in each credentialed job before its credentials, an
-// aws-cdk whose unpacked manifest isn't aws-cdk at infra's pin with its cdk bin at bin/cdk and no dependency, or
-// whose tree holds a symbolic link, since the job runs that one tarball with nothing installed beside it (T24
+// aws-cdk whose unpacked manifest isn't aws-cdk at infra's pin with its cdk bin at bin/cdk and no dependency,
+// optional dependency or peer dependency (npm installs all three, a peer by default since npm 7), or whose tree
+// holds a symbolic link, since the job runs that one tarball with nothing installed beside it (T24
 // item 20). The lockfile's entry is read above as CLI_FETCH reads it, which a release that gained a runtime
 // dependency or named its bin otherwise still passes (npm writes a string bin as an object in the lockfile, while
 // the package's own manifest keeps the string, which CLI_CHECK's .bin.cdk can't index). So CI holds the package npm ci installed from that entry, the
 // same tarball by its sha512, to CLI_CHECK's predicate, at least as strictly: a CDK group PR whose release changes
 // the package's shape fails CI before merge, where otherwise every deploy after it would stop at CLI_CHECK while
 // the CLI pin's floor refuses the PR's revert. installed is node_modules/aws-cdk/package.json's text (undefined
-// when npm installed none) and links the paths under node_modules/aws-cdk that are symbolic links.
+// when npm installed none) and links the paths under node_modules/aws-cdk that are symbolic links. npm's install
+// also normalises the tarball (it drops a link member, strips its top folder whatever its name and makes each bin
+// executable), which no reading of what it installed can see, so the test runs CLI_FETCH and CLI_CHECK on the
+// tarball npm ci installed, from npm's cache by the lockfile's sha512, and starts the CLI as a deploy step does.
 export function installedCliFindings(
   manifests: Texts,
   installed: string | undefined,
@@ -11497,7 +11594,10 @@ export function installedCliFindings(
     manifest = undefined
   }
   const bin = manifest?.bin
-  const dependencies = manifest?.dependencies
+  const none = (value: unknown) =>
+    value === undefined ||
+    value === null ||
+    (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0)
   const held =
     manifest !== undefined &&
     typeof pin === 'string' &&
@@ -11508,9 +11608,9 @@ export function installedCliFindings(
     bin !== null &&
     !Array.isArray(bin) &&
     (bin as Record<string, unknown>).cdk === 'bin/cdk' &&
-    (dependencies === undefined ||
-      dependencies === null ||
-      (typeof dependencies === 'object' && !Array.isArray(dependencies) && Object.keys(dependencies).length === 0)) &&
+    none(manifest.dependencies) &&
+    none(manifest.optionalDependencies) &&
+    none(manifest.peerDependencies) &&
     links.length === 0
   return held
     ? []
@@ -11518,7 +11618,7 @@ export function installedCliFindings(
         at(
           'node_modules/aws-cdk/package.json',
           'DPW-10',
-          "the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency and no symbolic link",
+          "the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link",
         ),
       ]
 }
