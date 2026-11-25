@@ -439,6 +439,7 @@ import {
   blockValue,
   commentLines,
   concurrencyOf,
+  expandRunAliases,
   indicatorProblems,
   jobConcurrency,
   jobEnvironment,
@@ -449,6 +450,9 @@ import {
   literalRun,
   parsedSteps,
   permissionsOf,
+  type RunAnchors,
+  type RunsWrittenOut,
+  runAnchors,
   shapeProblems,
   type WorkflowJob,
   type WorkflowStep,
@@ -2770,6 +2774,70 @@ export const PINNED_RUNS = (): Readonly<Record<string, Pinned>> => ({
   'record-prod': { 'Write the record': { run: recordRun('prod'), rule: 'DPW-13' } },
 })
 
+// DPW-02, the shared runs: the names deploy.yml may anchor a step's run under (run: &name | on the first step
+// that runs it, run: *name on each later one), each with the text it holds, built from the constants PINNED_RUNS
+// pins, so a name tells its reader the text an alias runs, and with the names of its steps' env: the text reads
+// beyond its job's, which its comments name. Each text is one that two or more steps run whole, of at least
+// ALIAS_MIN_BYTES, so the file stays under GitHub's 500 KB for a workflow file (WORKFLOW_BYTES); no name holds
+// uses, a word the pins proof refuses on any line of deploy.yml.
+export interface SharedRun {
+  text: string
+  reads?: readonly string[]
+}
+export const RUN_ANCHORS = (): Readonly<Record<string, SharedRun>> => ({
+  'read-back': { text: [PREAMBLE, READ_BACK].join('\n') },
+  'rollback-what-runs': { text: whatRunsText('rollback-nonprod') },
+  'cli-fetch': { text: CLI_FETCH },
+  'cli-check': { text: CLI_CHECK },
+  'image-unpack': { text: IMAGE_UNPACK_RUN },
+  'artifact-names': { text: artifactNamesRun('nonprod') },
+  'release-step': { text: RELEASE_STEP },
+  'forward-run': { text: FORWARD_RUN },
+  'manual-rollback-run': { text: MANUAL_ROLLBACK_RUN },
+  'rollback-run': { text: ROLLBACK_RUN },
+  'services-run': { text: SERVICES_RUN },
+  'previous-step': { text: PREVIOUS_STEP },
+  'mark-run': { text: MARK_RUN },
+  'done-run': { text: DONE_RUN },
+})
+// The fewest bytes a shared run's text holds, as the reader reads it: a shorter one saves too little to cost its
+// reader a look elsewhere.
+export const ALIAS_MIN_BYTES = 1_000
+// A step's place, as a shared-run comment names it: its job's id and its name.
+export interface StepPlace {
+  job: string
+  step: string | undefined
+}
+const namesInOrder = (names: readonly string[]) =>
+  names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+// The comment DPW-02 holds above a shared run's anchor (form 'anchor', places the steps that alias it, in file
+// order) or alias (form 'alias', places its anchor's step), as YAML comment lines at the step's keys' eight
+// spaces, wrapped at 120 columns, so a reader of either line sees where the text is written and every job that
+// runs it, prod's among them. workflow.ts's expandRunAliases() drops it, so the rules read each step as written out.
+export function sharedRunComment(
+  form: 'anchor' | 'alias',
+  name: string,
+  places: readonly StepPlace[],
+  reads: readonly string[] = RUN_ANCHORS()[name]?.reads ?? [],
+): string[] {
+  const named = namesInOrder(places.map(place => `${place.job} (${place.step ?? 'a step with no name'})`))
+  const text =
+    form === 'anchor'
+      ? `Shared run &${name}${reads.length > 0 ? `, reading each step's ${namesInOrder(reads)}` : ''}: written once here, and run as written by ${named}.`
+      : `Shared run *${name}${reads.length > 0 ? `, reading this step's ${namesInOrder(reads)}` : ''}: the text written in ${named}.`
+  const lines: string[] = []
+  let line = '        #'
+  for (const word of text.split(' ')) {
+    if (line.length + 1 + word.length > 120 && line !== '        #') {
+      lines.push(line)
+      line = '        #'
+    }
+    line += ` ${word}`
+  }
+  lines.push(line)
+  return lines
+}
+
 // --- The workflow's jobs, as the cases read them ------------------------------------------------------
 
 export type Finding = string
@@ -3072,8 +3140,10 @@ function unpinnedRuns(jobs: ReadonlyMap<string, Job>, rule: string): string[] {
 }
 
 // Each job's lines in the file, from its id's line to the next job's (a job's own comment, above its id,
-// falls in the job before it), and the lines before the first job.
-function jobSpans(text: string): Map<string, readonly [number, number]> {
+// falls in the job before it), and the lines before the first job. It reads only a file with every shared run
+// written out (expandRunAliases()), so a rule that reads lines by job reads a shared run's text in every job that
+// runs it, never in its anchor's job alone (DPW-02, the shared runs).
+function jobSpans(text: RunsWrittenOut): Map<string, readonly [number, number]> {
   const lines = text.split('\n')
   const start = lines.findIndex(line => /^jobs:\s*(?:#.*)?$/.test(line))
   const spans = new Map<string, readonly [number, number]>()
@@ -6853,19 +6923,20 @@ function unreadCharacter(text: string): string | undefined {
 
 // DPW-02 (C11-D55): deploy.yml's top-level permissions are contents: read alone; each job's are exactly
 // its own, an id-token in the five environment jobs alone and nowhere else in the file; no write-all,
-// read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, anchor,
-// alias or quoted key, which workflow.ts can't read), its block scalars literal (literalProblems) and only
-// a run: (blockScalarProblems, since GitHub keeps a block scalar's last line break in any other
-// value), every if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with an
-// escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag or flow
-// mapping but {}), so none is read wrong in a shape it names, and holds only newlines and printable text, no
-// tab (unreadCharacter). Every other workflow holds the id-token clause, spells nothing with an escape, names
-// no environment, gives no block scalar an indentation indicator (indicatorProblems), and has each job that
-// calls a reusable workflow call another of this repository's at this commit (CALLED_WORKFLOW), never
-// deploy.yml, handing it no secret. Every workflow is on the owner's-read list, so these holds are a second
-// layer behind the owner's read of a changed line (the header's last paragraph). ownRepository is this
-// repository's owner/name, which the tests read from GitHub's GITHUB_REPOSITORY in CI, or else the origin
-// remote, since a step naming this repository's own action by its full name runs a folder no rule reads.
+// read-all or {}; every environment: a literal name; the file is block mappings (no flow mapping, quoted
+// key, or anchor or alias but a step's shared run, which workflow.ts can't read), its block scalars literal
+// (literalProblems) and only a run: (blockScalarProblems, since GitHub keeps a block scalar's last line break
+// in any other value), every if: a plain ${{ … }} with nothing beside it (IF_LINE), and it spells nothing with
+// an escape. Every workflow is in the shape workflow.ts reads (shapeProblems: no anchor, alias, tag, merge key
+// or flow mapping but {}, and no anchor or alias but a step's shared run), so none is read wrong in a shape it
+// names, and holds only newlines and printable text, no tab (unreadCharacter). Every other workflow holds the
+// id-token clause, spells nothing with an escape, names no environment, gives no block scalar an indentation
+// indicator (indicatorProblems), and has each job that calls a reusable workflow call another of this
+// repository's at this commit (CALLED_WORKFLOW), never deploy.yml, handing it no secret. Every workflow is on
+// the owner's-read list, so these holds are a second layer behind the owner's read of a changed line (the
+// header's last paragraph). ownRepository is this repository's owner/name, which the tests read from GitHub's
+// GITHUB_REPOSITORY in CI, or else the origin remote, since a step naming this repository's own action by its
+// full name runs a folder no rule reads.
 // DPW-02, the size (round 11): GitHub starts no run of a workflow file over 500 KB ("A workflow file larger
 // than 500 KB will not start runs", its Actions limits), so every workflow is held to 500,000 bytes as
 // written, the stricter reading of 500 KB. deploy.yml is over it as committed, its canonical texts pasted into
@@ -6910,6 +6981,75 @@ export function gitAttributeFindings(attributes: ReadonlyMap<string, readonly st
       ),
     )
 }
+// DPW-02, the shared runs (round 13): deploy.yml holds each run several steps run whole once, anchored on the
+// first step that runs it (run: &name |) and aliased by each later one (run: *name), which GitHub reads as the
+// anchored text, as workflow.ts's runAnchors() and expandRunAliases() do: a name RUN_ANCHORS names over that
+// entry's text, of at least ALIAS_MIN_BYTES, defined once and before its aliases (shapeProblems() refuses a second
+// anchor of a name and an alias before its anchor or of none), aliased at least once, and each anchor and alias
+// under the comment sharedRunComment() writes for it, with no such comment anywhere else, so none goes stale or
+// names a step that doesn't share the text. No other workflow holds an anchor or alias of a step's run, and
+// every other anchor, alias, tag or merge key is a shapeProblems() line in every workflow (and in deploy.yml the
+// block-mapping rule's too). The expansion is itself in workflow.ts's shape whenever the file as stored is (the
+// shape rule asks that of every file), with no anchor, alias or shared-run comment left and every shared run a
+// literal block scalar, so every rule reads a file it would read written out.
+// The rules that read lines by job read the expansion (jobSpans() takes only it), every other rule reads jobs
+// and steps through workflowJobs(), which expands, and the file-shape rules (characters, blank ends, shape,
+// literal, block scalar, indicator, escapes, if: lines, top keys, triggers, forbidden words, the size and these)
+// read the file as stored: an alias adds no text, its anchor holding every word it runs.
+const BLOCK_MAPPINGS =
+  "is written in block mappings: no flow mapping or quoted key, and no anchor, alias or merge key but a step's shared run (run: &name | and run: *name)"
+const SHARED_RUNS = `shares a step's run only as RUN_ANCHORS names it: each anchor a RUN_ANCHORS name holding that entry's text, of at least ${ALIAS_MIN_BYTES} bytes, aliased by a later step at least once, and each anchor and alias under the comment sharedRunComment() writes for it, with no such comment elsewhere`
+const NO_SHARED_RUNS = "writes no anchor or alias: only deploy.yml shares a step's run so"
+const EXPANDED_SHAPE =
+  'reads, with every shared run written out, in the shape workflow.ts reads: no anchor, alias or shared-run comment left, and every shared run a literal block scalar (run: |)'
+// A comment line that reads as a shared run's, wherever it stands.
+const SHARED_RUN_COMMENT = /^\s*#\s*shared run\b/i
+// Whether deploy.yml's shared runs are as RUN_ANCHORS (or the table given) names them, with their comments.
+export function sharedRunsHold(
+  text: string,
+  table: Readonly<Record<string, SharedRun>> = RUN_ANCHORS(),
+  shared: RunAnchors = runAnchors(text),
+): boolean {
+  const lines = text.split('\n')
+  const commentOf = new Map(shared.comments.map(comment => [comment.of, comment.lines]))
+  const anchorAt = new Map(shared.anchors.map(anchor => [anchor.line, anchor]))
+  const commented = (line: number, want: readonly string[]) =>
+    (commentOf.get(line) ?? []).map(each => lines[each] ?? '').join('\n') === want.join('\n')
+  const anchorsHold = shared.anchors.every(anchor => {
+    const entry = Object.hasOwn(table, anchor.name) ? table[anchor.name] : undefined
+    const aliases = shared.aliases.filter(alias => alias.anchor === anchor.line)
+    return (
+      entry !== undefined &&
+      anchor.text === entry.text &&
+      Buffer.byteLength(anchor.text, 'utf8') >= ALIAS_MIN_BYTES &&
+      aliases.length > 0 &&
+      commented(anchor.line, sharedRunComment('anchor', anchor.name, aliases, entry.reads))
+    )
+  })
+  const aliasesHold = shared.aliases.every(alias => {
+    const anchor = alias.anchor === undefined ? undefined : anchorAt.get(alias.anchor)
+    const reads = Object.hasOwn(table, alias.name) ? table[alias.name]?.reads : undefined
+    return anchor !== undefined && commented(alias.line, sharedRunComment('alias', alias.name, [anchor], reads))
+  })
+  const held = new Set(shared.comments.flatMap(comment => comment.lines))
+  const stray = commentLines(text).some(each => !held.has(each) && SHARED_RUN_COMMENT.test(lines[each] ?? ''))
+  return anchorsHold && aliasesHold && !stray
+}
+// The expansion's shape is asked only of a file in the shape as stored, which the shape rule asks of every file:
+// so a file that shares no run, its own expansion, is never refused twice, and a file refused for its shape is
+// refused alike whichever layout its shared runs are in.
+function expandedShapeHolds(text: string, shared: RunAnchors, shape: readonly number[]): boolean {
+  if (shared.anchors.length + shared.aliases.length === 0) return true
+  const written = expandRunAliases(text)
+  const left = runAnchors(written)
+  const shapeLost = shape.length === 0 && shapeProblems(written).length > 0
+  if (shapeLost || left.anchors.length + left.aliases.length + left.comments.length > 0) return false
+  const jobs = jobsOf(written)
+  return [...shared.anchors, ...shared.aliases].every(place => {
+    const step = jobs.get(place.job)?.steps[place.index]
+    return step !== undefined && literalRun(step)
+  })
+}
 export function permissionFindings(workflows: Texts, ownRepository = ''): Finding[] {
   const found: Finding[] = []
   const deploy = workflows.get(DEPLOY) ?? ''
@@ -6929,8 +7069,10 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
       found.push(at(DEPLOY, 'DPW-02', `${id}: names its environment by a literal name`))
     }
   }
-  const lines = deploy.split('\n')
-  const spans = jobSpans(deploy)
+  // Read with every shared run written out, so a run an alias shares counts in every job that runs it.
+  const written = expandRunAliases(deploy)
+  const lines = written.split('\n')
+  const spans = jobSpans(written)
   const outside = lines.filter((_, index) =>
     CREDENTIALED.every(id => {
       const span = spans.get(id)
@@ -6942,7 +7084,12 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
       at(DEPLOY, 'DPW-02', 'only the five environment jobs ask for an id-token, and nothing asks for write-all'),
     )
   }
-  const yaml = yamlLines(deploy).map(line => line.text)
+  // A step's shared run, in the two forms runAnchors() reads, is the one anchor and alias the file may hold.
+  const shared = runAnchors(deploy)
+  const forms = new Set([...shared.anchors, ...shared.aliases].map(each => each.line))
+  const yaml = yamlLines(deploy)
+    .filter(line => !forms.has(line.index))
+    .map(line => line.text)
   if (
     yaml.some(
       line =>
@@ -6952,8 +7099,12 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
         /^\s*(?:-\s+)?(?:["']|<<\s*:)/.test(line),
     )
   ) {
-    found.push(at(DEPLOY, 'DPW-02', 'is written in block mappings: no flow mapping, anchor, alias or quoted key'))
+    found.push(at(DEPLOY, 'DPW-02', BLOCK_MAPPINGS))
   }
+  // Each workflow's shape problems, read once.
+  const shapes = new Map([...workflows].map(([path, text]) => [path, shapeProblems(text)]))
+  if (!sharedRunsHold(deploy, RUN_ANCHORS(), shared)) found.push(at(DEPLOY, 'DPW-02', SHARED_RUNS))
+  if (!expandedShapeHolds(deploy, shared, shapes.get(DEPLOY) ?? [])) found.push(at(DEPLOY, 'DPW-02', EXPANDED_SHAPE))
   if (escaped(deploy)) {
     found.push(
       at(DEPLOY, 'DPW-02', 'spells no key or value with an escape, which could name id-token or write-all unseen'),
@@ -6996,11 +7147,13 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
   }
   // Every workflow is in the shape workflow.ts reads, so no step, key or value is read wrong or passes
   // unread (a step's keys at another indent, a run continued on the next line, a key given twice).
-  for (const [path, text] of workflows) {
-    if (shapeProblems(text).length > 0) found.push(at(path, 'DPW-02', SHAPE))
+  for (const [path] of workflows) {
+    if ((shapes.get(path) ?? []).length > 0) found.push(at(path, 'DPW-02', SHAPE))
   }
   for (const [path, text] of workflows) {
     if (path === DEPLOY) continue
+    const shared = runAnchors(text)
+    if (shared.anchors.length + shared.aliases.length > 0) found.push(at(path, 'DPW-02', NO_SHARED_RUNS))
     if (ID_TOKEN.test(text)) found.push(at(path, 'DPW-02', 'no job may ask for an id-token'))
     if (escaped(text)) {
       found.push(
@@ -7152,7 +7305,7 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // run nothing and exit 0, the pins unproved and a broken release's smoke passed, while check, on 5, still
 // ran a Node new enough to pass.
 export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {
-  const text = workflows.get(DEPLOY) ?? ''
+  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
   const spans = jobSpans(text)
   const found = new Set<Finding>()
   for (const { index, text: line } of yamlLines(text)) {
@@ -7457,7 +7610,8 @@ const GROUP_OF: Readonly<Record<string, string>> = {
 // either (groups are the repository's and ignore case, so one there could hold or cancel a deploy).
 export function timeoutAndGroupFindings(workflows: Texts): Finding[] {
   const found: Finding[] = []
-  const text = workflows.get(DEPLOY) ?? ''
+  // Every shared run written out, so a group named in a shared run counts in every job that runs it.
+  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
   for (const { id, job } of jobsOf(text).values()) {
     const most = (TIMEOUTS as Readonly<Record<string, number>>)[id]
     const minutes = job.timeoutMinutes
@@ -8139,7 +8293,8 @@ export function appendsOnly(run: string): boolean {
 }
 export function maskingFindings(workflows: Texts): Finding[] {
   const found = new Set<Finding>()
-  const text = workflows.get(DEPLOY) ?? ''
+  // Every shared run written out, so a secret named in a shared run counts in every job that runs it.
+  const text = expandRunAliases(workflows.get(DEPLOY) ?? '')
   const add = (where: string, rule: string) => found.add(at(DEPLOY, 'DPW-07', `${where}: ${rule}`))
   const spans = jobSpans(text)
   text.split('\n').forEach((line, index) => {

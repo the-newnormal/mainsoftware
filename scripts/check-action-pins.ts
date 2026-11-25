@@ -91,11 +91,12 @@ export const DEPLOY_FILE = new URL('../.github/workflows/deploy.yml', import.met
 const USES_LINE = /^ +(?:- )?uses: ([^\s@]+)@([0-9a-f]{40} # v\d+\.\d+\.\d+)$/
 
 // Each problem with what deploy.yml runs, read from its own text: a line in none of the shapes the workflow
-// reader reads (a quoted key, which can spell uses with an escape, a flow mapping, an anchor or a tag), a
-// line holding the word uses in any other shape than a step's pinned uses:, or an action at another commit
-// or version than its ACTION_PINS entry, and no pinned uses: at all. Every line is read, comments and runs
-// included, so no uses: stands where a reader of the YAML would miss it; a line that only mentions the word
-// is refused too, and is reworded.
+// reader reads (a quoted key, which can spell uses with an escape, a flow mapping, a tag, or an anchor or
+// alias but a step's shared run, which holds no uses:), a line holding the word uses in any other shape than a
+// step's pinned uses:, or an action at another commit or version than its ACTION_PINS entry, and no pinned
+// uses: at all. Every line is read as stored, comments, runs and shared runs' anchors included, so no uses:
+// stands where a reader of the YAML would miss it; a line that only mentions the word is refused too, and is
+// reworded.
 export function deployPinProblems(text: string): string[] {
   const problems = shapeProblems(text).map(
     index => `line ${index + 1}: in none of the shapes the workflow reader reads`,

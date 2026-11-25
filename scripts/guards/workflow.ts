@@ -6,11 +6,25 @@
 // block mappings, block sequences, flow sequences of scalars, the empty flow mapping {} and block
 // scalars, so a test that uses it first checks it found the jobs and steps it expects, and a
 // reformatted file fails the test rather than passing unread. What it can't read: a flow mapping with
-// anything in it, an anchor, an alias or a tag (&, *, !), a quoted key, a value continued on the next
-// line (a plain or quoted scalar, or a flow sequence, over two lines), a key given twice, a plain value
-// YAML reads as structure (starting with -, ? or : and a blank), a flow item YAML reads otherwise than
-// split at its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other
-// indent; shapeProblems() names each line in none of the shapes it reads. It reads a block scalar's
+// anything in it, an anchor, an alias or a tag (&, *, !) but a step's shared run (below), a quoted key, a
+// value continued on the next line (a plain or quoted scalar, or a flow sequence, over two lines), a key
+// given twice, a plain value YAML reads as structure (starting with -, ? or : and a blank), a sequence
+// item's plain value YAML reads as a mapping (a : and a blank or at its end, as in a merge key's - <<: *s),
+// a flow item YAML reads otherwise than split at its commas (one holding a quoted comma, a : and a blank or
+// at its end, or a #), and any other indent; shapeProblems() names each line in none of the shapes it reads.
+// The one anchor and alias it reads is a step's run: shared whole, in exactly two forms on a step's run: key
+// at eight spaces in a job's steps: (runAnchors()): `run: &name |`, a literal block scalar with clip chomping
+// and nothing after it, anchoring the text, and `run: *name`, alone on its line with nothing deeper under it
+// before the next line at eight spaces or fewer, aliasing it, the name lower-case letters, digits and hyphens.
+// YAML reads an alias as the node the latest earlier anchor of its name holds, and so does
+// expandRunAliases(): it writes each alias out as that anchor's block, and drops the comment above each anchor
+// and alias that starts # Shared run (the deploy-workflow guard's sharedRunComment() writes it), so every rule
+// that reads jobs and steps (workflowJobs() reads the expansion) or reads lines by job (that guard's jobSpans(),
+// which takes only a RunsWrittenOut) reads the text GitHub runs, at every step that runs it, and a step's raw
+// lines read as they would written out. A second anchor of a name, an alias before its anchor's or of none, and
+// a line deeper than the step's keys under an alias are shapeProblems() too, so the latest earlier anchor is
+// the only one an alias can name. That guard admits the two forms in deploy.yml alone (DPW-02), and refuses any
+// other anchor, alias, tag or merge key in every workflow through shapeProblems(). It reads a block scalar's
 // lines as they stand, as a literal one (|, |- or |+) with no indentation indicator is, but a line of blanks
 // alone, which it reads as empty while YAML keeps its blanks past the block's indent (so the deploy-workflow
 // guard refuses a line ending in a blank in every workflow), and drops its last line break, so literalProblems() names each block scalar folded (>) or given an indentation
@@ -49,7 +63,10 @@ export interface WorkflowJob {
 
 const withoutComment = (value: string) => value.replace(/\s+#.*$/, '').trim()
 
-export function workflowJobs(text: string): WorkflowJob[] {
+// The jobs of a workflow as GitHub runs it: read from expandRunAliases(), so a shared run's alias is read as
+// the text its anchor holds.
+export function workflowJobs(given: string): WorkflowJob[] {
+  const text = expandRunAliases(given)
   const lines = text.split('\n')
   const start = lines.findIndex(line => /^jobs:\s*(?:#.*)?$/.test(line))
   if (start === -1) return []
@@ -140,6 +157,11 @@ const isBlankOrComment = (line: string) => line.trim() === '' || /^\s*#/.test(li
 const BLOCK_SCALAR = /^[|>](?:[+-][1-9]?|[1-9][+-]?)?\s*(?:#.*)?$/
 // The block scalars this reader reads as YAML does: literal, with no indentation indicator.
 const LITERAL_SCALAR = /^\|[+-]?\s*(?:#.*)?$/
+// A key's value read past its node properties (an anchor &name, a tag !t, each followed by a blank), as YAML
+// reads a block scalar's header after them: so the content of an anchored or tagged block scalar is content
+// to lineKinds(), never YAML or a comment, and literalProblems(), blockScalarProblems() and
+// indicatorProblems() read its header. An alias (*name) is a whole node, never a header.
+const headerOf = (value: string | undefined) => (value ?? '').trim().replace(/^(?:[&!]\S*\s+)*/, '')
 
 // A scalar as written after its key: a quoted one unquoted (a single-quoted '' read as ', a
 // double-quoted one's escapes left as written), a plain one with its comment cut off.
@@ -434,7 +456,7 @@ function lineKinds(text: string): LineKind[] {
     }
     kinds.push('yaml')
     const key = KEY_LINE.exec(line)
-    if (key && BLOCK_SCALAR.test((key[3] ?? '').trim())) {
+    if (key && BLOCK_SCALAR.test(headerOf(key[3]))) {
       blockKey = /^\s*-\s/.test(line) ? indentOf(line) + 2 : indentOf(line)
     }
   }
@@ -453,12 +475,207 @@ export function commentLines(text: string): number[] {
   return lineKinds(text).flatMap((kind, index) => (kind === 'comment' ? [index] : []))
 }
 
+// --- Shared runs: a step's run: anchored once and aliased by later steps -----------------------------------
+
+// The two forms a shared run is written in, each the whole of a step's run: line at eight spaces
+// (stepRunLines()): the anchor, a literal block scalar with clip chomping and nothing after its header (|-
+// and |+ chomp otherwise, and |+ would keep blank lines an alias's expansion drops), and the alias. A name is
+// lower-case letters, digits and hyphens, which every YAML reader reads alike as a name.
+const RUN_ANCHOR = /^ {8}run: &([a-z][a-z0-9-]*) \|$/
+const RUN_ALIAS = /^ {8}run: \*([a-z][a-z0-9-]*)$/
+// Whether a text may hold a line in either form, for runAnchors()' and expandRunAliases()' fast path: one
+// holding neither string holds no shared run.
+const mayShare = (text: string) => text.includes('        run: &') || text.includes('        run: *')
+
+// One shared run's place: its line (by index), its name, its step's job and name (scalarValue()'s reading of
+// its name:, or undefined) and the step's place among its job's steps (from 0).
+export interface SharedRunPlace {
+  line: number
+  name: string
+  job: string
+  step: string | undefined
+  index: number
+}
+// What runAnchors() finds: each anchor with the text it holds (its block scalar's content as parsedSteps()
+// reads a run) and the line after its last line of content (end), each alias with the line of the latest earlier anchor of its name (undefined when there is
+// none), each anchor's or alias's shared-run comment (its lines, and the line it is above), and the problems
+// that make a file one this reader would read otherwise than YAML does.
+export interface RunAnchors {
+  anchors: Array<SharedRunPlace & { text: string; end: number }>
+  aliases: Array<SharedRunPlace & { anchor: number | undefined }>
+  comments: Array<{ lines: number[]; of: number }>
+  problems: number[]
+}
+
+// The lines that are a step's run: key at eight spaces, read on YAML lines alone (lineKinds(), so never a
+// comment or a block scalar's content): after jobs:, under a job's id at two spaces, its steps: at four and a
+// step's item at six. A step's name is its first name: key, on its item's line or at eight spaces.
+function stepRunLines(lines: readonly string[], kinds: readonly LineKind[]): Omit<SharedRunPlace, 'name'>[] {
+  const found: Array<Omit<SharedRunPlace, 'name'>> = []
+  let inJobs = false
+  let job: string | undefined
+  let inSteps = false
+  let count = 0
+  let step: { index: number; name: string | undefined; named: boolean; runs: number[] } | undefined
+  const close = () => {
+    for (const line of step?.runs ?? []) {
+      found.push({ line, job: job ?? '', step: step?.name, index: step?.index ?? 0 })
+    }
+    step = undefined
+  }
+  lines.forEach((line, i) => {
+    if (kinds[i] !== 'yaml') return
+    if (/^\S/.test(line)) {
+      close()
+      inJobs = /^jobs:\s*(?:#.*)?$/.test(line)
+      job = undefined
+      inSteps = false
+      return
+    }
+    if (!inJobs) return
+    if (/^ {2}\S/.test(line)) {
+      close()
+      job = /^ {2}([\w-]+):\s*(?:#.*)?$/.exec(line)?.[1]
+      inSteps = false
+      count = 0
+      return
+    }
+    if (/^ {4}\S/.test(line)) {
+      close()
+      inSteps = job !== undefined && /^ {4}steps:\s*(?:#.*)?$/.test(line)
+      return
+    }
+    if (!inSteps) return
+    const item = /^ {6}- /.test(line)
+    if (item) {
+      close()
+      step = { index: count++, name: undefined, named: false, runs: [] }
+    }
+    if (step === undefined) return
+    const key = item ? /^ {6}- ([\w-]+):(?:\s+(.*))?$/.exec(line) : /^ {8}([\w-]+):(?:\s+(.*))?$/.exec(line)
+    if (key?.[1] === 'name' && !step.named) {
+      step.name = scalarValue(key[2] ?? '')
+      step.named = true
+    }
+    if (key?.[1] === 'run' && !item) step.runs.push(i)
+  })
+  close()
+  return found.sort((a, b) => a.line - b.line)
+}
+
+// The line after a block scalar's last line of content (lineKinds()), from its header's line: its content is
+// the lines between, blank ones kept but trailing ones.
+function contentEnd(kinds: readonly LineKind[], header: number): number {
+  let end = header + 1
+  for (let i = header + 1; i < kinds.length && (kinds[i] === 'content' || kinds[i] === 'blank'); i++) {
+    if (kinds[i] === 'content') end = i + 1
+  }
+  return end
+}
+
+function readRunAnchors(lines: readonly string[], kinds: readonly LineKind[]): RunAnchors {
+  const anchors: RunAnchors['anchors'] = []
+  const aliases: RunAnchors['aliases'] = []
+  const comments: RunAnchors['comments'] = []
+  const problems: number[] = []
+  const latest = new Map<string, number>()
+  for (const place of stepRunLines(lines, kinds)) {
+    const line = lines[place.line] ?? ''
+    const anchored = RUN_ANCHOR.exec(line)
+    const aliased = anchored === null ? RUN_ALIAS.exec(line) : null
+    const name = anchored?.[1] ?? aliased?.[1]
+    if (name === undefined) continue
+    // The comment above it: the comment lines at exactly eight spaces directly above it, from the first that
+    // starts # Shared run, its sigil and its name, then : or ,.
+    let top = place.line
+    while (top > 0 && kinds[top - 1] === 'comment' && /^ {8}#/.test(lines[top - 1] ?? '')) top--
+    const start = new RegExp(`^ {8}# Shared run \\${anchored ? '&' : '*'}${name}[:,]`)
+    const first = lines.slice(top, place.line).findIndex(each => start.test(each))
+    if (first >= 0) {
+      comments.push({
+        lines: Array.from({ length: place.line - top - first }, (_, i) => top + first + i),
+        of: place.line,
+      })
+    }
+    if (anchored) {
+      const end = contentEnd(kinds, place.line)
+      const content = lines.slice(place.line + 1, end)
+      const firstLine = content.find((_, i) => kinds[place.line + 1 + i] === 'content') ?? ''
+      const indent = indentOf(firstLine)
+      const text = content
+        .map((each, i) => (kinds[place.line + 1 + i] === 'content' ? each.slice(indent) : ''))
+        .join('\n')
+      if (latest.has(name)) problems.push(place.line)
+      latest.set(name, place.line)
+      anchors.push({ ...place, name, text, end })
+      continue
+    }
+    const anchor = latest.get(name)
+    if (anchor === undefined) problems.push(place.line)
+    // Nothing deeper than the step's keys under it, a comment included, before the next YAML line at eight
+    // spaces or fewer: YAML reads a deeper line as the alias's continuation (an error) or a comment, while
+    // its expansion would read it as the block's content.
+    for (let i = place.line + 1; i < lines.length; i++) {
+      if (kinds[i] === 'blank') continue
+      if (indentOf(lines[i] ?? '') > 8) {
+        problems.push(place.line)
+        break
+      }
+      if (kinds[i] !== 'comment') break
+    }
+    aliases.push({ ...place, name, anchor })
+  }
+  return { anchors, aliases, comments, problems }
+}
+
+// The shared runs of a workflow: every anchor and alias in the two forms on a step's run: line (anything else
+// starting with &, * or ! is a shapeProblems() line), with its comment, and the problems: a second anchor of a
+// name, an alias with no earlier anchor of its name (which YAML readers refuse, failing the file), and a line
+// deeper than the step's keys under an alias before the next YAML line at eight spaces or fewer.
+export function runAnchors(text: string): RunAnchors {
+  // A text with no line in either form holds no shared run, no comment of one and no problem of one.
+  if (!mayShare(text)) return { anchors: [], aliases: [], comments: [], problems: [] }
+  return readRunAnchors(text.split('\n'), lineKinds(text))
+}
+
+// A workflow's text with every shared run written out, as GitHub reads it: a type of its own, so a reader that
+// must read the expansion (the deploy-workflow guard's jobSpans()) can't be handed the stored text.
+export type RunsWrittenOut = string & { readonly runsWrittenOut: true }
+
+// The workflow as GitHub runs it: each anchor's header written run: |, each alias written run: | followed by
+// the latest earlier anchor's content lines as stored (to its last line of content), the comment above each
+// anchor and alias that runAnchors() reads as its shared-run comment dropped, and every other line as it is,
+// an alias with no earlier anchor among them (a problem shapeProblems() names). A text with no line in either
+// form is returned as it is. It is idempotent: the expansion holds no anchor, no comment it would drop, and
+// only the aliases it couldn't resolve.
+export function expandRunAliases(text: string): RunsWrittenOut {
+  if (!mayShare(text)) return text as RunsWrittenOut
+  const lines = text.split('\n')
+  const shared = readRunAnchors(lines, lineKinds(text))
+  const dropped = new Set(shared.comments.flatMap(comment => comment.lines))
+  const anchorAt = new Map(shared.anchors.map(anchor => [anchor.line, anchor]))
+  const aliasAt = new Map(shared.aliases.map(alias => [alias.line, alias]))
+  const out: string[] = []
+  lines.forEach((line, i) => {
+    if (dropped.has(i)) return
+    if (anchorAt.has(i)) {
+      out.push('        run: |')
+      return
+    }
+    const alias = aliasAt.get(i)
+    const anchor = alias?.anchor === undefined ? undefined : anchorAt.get(alias.anchor)
+    if (anchor === undefined) out.push(line)
+    else out.push('        run: |', ...lines.slice(anchor.line + 1, anchor.end))
+  })
+  return out.join('\n') as RunsWrittenOut
+}
+
 // The lines (by index) whose key's value is a block scalar other than a literal one with no indentation
 // indicator: folded (>), whose lines YAML joins, or with an indentation indicator, which sets an indent
 // this reader doesn't take (DPW-02 refuses each in deploy.yml, whose runs it reads as bash).
 export function literalProblems(text: string): number[] {
   return yamlLines(text).flatMap(({ index, text: line }) => {
-    const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
+    const value = headerOf(KEY_LINE.exec(line)?.[3])
     return BLOCK_SCALAR.test(value) && !LITERAL_SCALAR.test(value) ? [index] : []
   })
 }
@@ -472,7 +689,7 @@ export function literalProblems(text: string): number[] {
 export function blockScalarProblems(text: string): number[] {
   return yamlLines(text).flatMap(({ index, text: line }) => {
     const key = KEY_LINE.exec(line)
-    return BLOCK_SCALAR.test((key?.[3] ?? '').trim()) && key?.[2] !== 'run' ? [index] : []
+    return BLOCK_SCALAR.test(headerOf(key?.[3])) && key?.[2] !== 'run' ? [index] : []
   })
 }
 
@@ -483,7 +700,7 @@ export function blockScalarProblems(text: string): number[] {
 // pins check's and the CLI pin's, which literalRun() holds literal).
 export function indicatorProblems(text: string): number[] {
   return yamlLines(text).flatMap(({ index, text: line }) => {
-    const value = (KEY_LINE.exec(line)?.[3] ?? '').trim()
+    const value = headerOf(KEY_LINE.exec(line)?.[3])
     return BLOCK_SCALAR.test(value) && /^[|>][+-]?[1-9]/.test(value) ? [index] : []
   })
 }
@@ -494,6 +711,10 @@ const NODE_PROPERTY = /^[&*!]/
 // A plain value that starts with an indicator YAML reads as structure, not text: - and a blank (a nested
 // sequence), ? and a blank (a complex key) or : and a blank (an empty key).
 const STRUCTURE = /^[-?:](?:\s|$)/
+// A sequence item's plain value that YAML reads as a mapping, whose key isn't the plain word a key line
+// holds: a : followed by a blank or at its end before any comment (- <<: *s, a merge key, which GitHub's
+// readers refuse as an unknown key; - a.b: c; - x y: z).
+const ITEM_MAPPING = /^(?:(?!\s#).)*:(?:\s|$)/
 
 // Whether a flow sequence's items, between its brackets, are read here as YAML reads them: split at each
 // comma outside quotes (a comma inside a quoted item would split it here, so none may hold one), each item
@@ -538,7 +759,9 @@ function flowItemsRead(inner: string): boolean {
 // YAML reads them (flowItemsRead), or the empty flow mapping {}. Its indentation, and the blank after its
 // dash, are spaces alone (TAB_INDENT).
 export function shapeProblems(text: string): number[] {
-  const problems: number[] = []
+  const shared = runAnchors(text)
+  const forms = new Set([...shared.anchors, ...shared.aliases].map(each => each.line))
+  const problems: number[] = [...shared.problems]
   const open: Array<{ indent: number; kind: 'map' | 'list' | undefined; keys: Set<string> }> = [
     { indent: 0, kind: 'map', keys: new Set() },
   ]
@@ -576,19 +799,22 @@ export function shapeProblems(text: string): number[] {
       continue
     }
     const flow = /^\[([^[\]{}]*)\]\s*(?:#.*)?$/.exec(value)
+    // A step's shared run in either form is a whole value: the anchor opens a literal block scalar, and the
+    // alias is a scalar under which runAnchors() refuses anything deeper.
     const whole =
-      !NODE_PROPERTY.test(value) &&
-      (BLOCK_SCALAR.test(value) ||
-        (value.startsWith("'")
-          ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
-          : value.startsWith('"')
-            ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
-            : value.startsWith('[')
-              ? flow !== null && flowItemsRead(flow[1] ?? '')
-              : value.startsWith('{')
-                ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
-                : !STRUCTURE.test(value)))
+      forms.has(index) ||
+      (!NODE_PROPERTY.test(value) &&
+        (BLOCK_SCALAR.test(value) ||
+          (value.startsWith("'")
+            ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
+            : value.startsWith('"')
+              ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
+              : value.startsWith('[')
+                ? flow !== null && flowItemsRead(flow[1] ?? '')
+                : value.startsWith('{')
+                  ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
+                  : !STRUCTURE.test(value) && !(item && !key && ITEM_MAPPING.test(value)))))
     if (!whole) problems.push(index)
   }
-  return problems
+  return [...new Set(problems)].sort((a, b) => a - b)
 }

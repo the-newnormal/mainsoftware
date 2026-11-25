@@ -1,8 +1,10 @@
 // The deploy-workflow guard's cases (DPW-01 to DPW-14; C0.11, TECH-SPEC T24 items 20 to 23 and 28). The
 // reader first finds the seventeen jobs and their steps, and reads every canonical text back exactly, and
 // DPW-02 refuses any line in a shape it doesn't read, so a reformatted workflow fails rather than passing
-// unread. Then each case is proved on planted text, an exact edit of the real file that throws when its
-// anchor is gone, before it holds the repository.
+// unread. Then each case is proved on planted text, an exact edit of the real file as the rules read it, every
+// shared run written out, that throws when its anchor is gone, and run again in the shared layout (each run
+// RUN_ANCHORS names anchored on its first step and aliased at the rest), where it must find the same, before it
+// holds the repository.
 // AWS_CHECK runs with bash and jq against planted AWS answers and a real git, ASSET_CHECK against
 // planted copies of the workload's own assembly, protect-environments.sh check --from against planted
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
@@ -40,16 +42,17 @@ import { checkoutDrift } from '../checkout-blobs.ts'
 import { AGENT_MARKERS } from '../owner-bootstrap/target.ts'
 import { ACTION_PINS, ACTION_SHAPE, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
+  ALIAS_MIN_BYTES,
   ARTIFACT_CALLS,
   ARTIFACT_NAMES,
   ARTIFACTS_STEP,
   ASSET_CHECK,
   AWS_CHECK,
-  actionPinFindings,
+  actionPinFindings as actionPinFindingsOf,
   actionRepository,
   appendsOnly,
   artifactNamesRun,
-  assetCheckFindings,
+  assetCheckFindings as assetCheckFindingsOf,
   awsNameLines,
   BLOB_RESET,
   BOT_TEST,
@@ -70,30 +73,31 @@ import {
   canonicalCommandLines,
   canonicalTextFindings,
   canonicalToolLines,
-  checkoutFindings,
+  checkoutFindings as checkoutFindingsOf,
   cliStacksOf,
   codeLinesAsBash,
-  credentialedCodeFindings,
-  credentialJobFindings,
+  credentialedCodeFindings as credentialedCodeFindingsOf,
+  credentialJobFindings as credentialJobFindingsOf,
   DEPLOY,
   DEPLOY_WORDS,
   DIFF_CUT,
   DIFF_RUN,
   DUE_ENVS,
-  deployStepFindings,
+  deployStepFindings as deployStepFindingsOf,
   diffFormHolds,
   ENVIRONMENT_JOBS,
   evaluatedLines,
   evaluateIf,
   exitingFunctions,
+  type Finding,
   FORWARD_RUN,
-  forbiddenWordFindings,
+  forbiddenWordFindings as forbiddenWordFindingsOf,
   foreignExpansionLines,
   functionDefinitions,
   functionNameLines,
   GENERAL_WORDS,
   GUARD,
-  gateFindings,
+  gateFindings as gateFindingsOf,
   gitAttributeFindings,
   IMAGE_CHECK,
   IMAGE_LAYOUT,
@@ -109,7 +113,7 @@ import {
   MAIN_CI,
   MASK_RUN,
   MIGRATE_LINES,
-  maskingFindings,
+  maskingFindings as maskingFindingsOf,
   migrationRecord,
   NET_JQ,
   NEWEST_RELEASE,
@@ -127,24 +131,25 @@ import {
   PROTECT_ENVIRONMENTS_SHA256,
   PROTECT_ENVIRONMENTS_SHEBANG,
   PULL_CHECKS,
-  permissionFindings,
+  permissionFindings as permissionFindingsOf,
   pinnedScriptText,
   probeRun,
   prodDiffStackFindings,
-  prodPathFindings,
+  prodPathFindings as prodPathFindingsOf,
   READ_BACK,
   REPO_FOLDER,
   RESTORE_DOWN,
   RESTORE_DOWN_DIFF,
   ROLLBACK_DIFF_RUN,
   RULESET,
+  RUN_ANCHORS,
   RUN_TASK_MIGRATE,
   RUN_TASK_PROBE,
   readerLines,
   readShell,
   readsAsBash,
   recordRun,
-  releaseFindings,
+  releaseFindings as releaseFindingsOf,
   SHELL_TABLE,
   SKOPEO_COPY,
   SMOKE_ATTEMPT,
@@ -152,14 +157,18 @@ import {
   STEP_ENVS,
   STOP_COMMANDS,
   STOP_HEAD,
+  type StepPlace,
+  sharedRunComment,
+  sharedRunsHold,
   shellCommands,
   shellViews,
   smokeRun,
   TARGETS_QUERY,
   TASKS_OUTPUTS,
+  type Texts,
   TOOL_LINE_TEXTS,
-  timeoutAndGroupFindings,
-  triggerFindings,
+  timeoutAndGroupFindings as timeoutAndGroupFindingsOf,
+  triggerFindings as triggerFindingsOf,
   unheldRecordLines,
   verdictLines,
   WORKFLOW_BYTES,
@@ -171,22 +180,38 @@ import {
 import { moduleImports } from './imports.ts'
 import { gitAttributes, ownRepository, readRepoFile, repoFiles, root } from './repo-files.ts'
 import {
+  commentLines,
+  expandRunAliases,
+  indicatorProblems,
   jobConcurrency,
   jobEnvironment,
   jobNeeds,
   jobPermissions,
   jobScalar,
+  literalProblems,
   literalRun,
   parsedSteps,
+  runAnchors,
+  scalarValue,
+  shapeProblems,
   workflowJobs,
   workflowTop,
+  yamlLines,
 } from './workflow.ts'
+
+// differential() runs every finding function a second time, over deploy.yml's other layout, so a case that plants
+// many texts takes about twice and a half what it took: each has 30 seconds by default, as many here already set.
+vi.setConfig({ testTimeout: 30_000 })
 
 const files = repoFiles()
 const workflows: ReadonlyMap<string, string> = new Map(
   files.filter(path => /^\.github\/workflows\/[^/@]+\.ya?ml$/.test(path)).map(path => [path, readRepoFile(path)]),
 )
-const deployText = readRepoFile(DEPLOY)
+// deploy.yml as committed, and as GitHub and the rules read it, every shared run written out (expandRunAliases()):
+// every plant edits the second, so it is an edit of what GitHub runs, and differential() runs it again with the
+// shared runs aliased as the committed layout aliases them.
+const committedDeploy = readRepoFile(DEPLOY)
+const deployText: string = expandRunAliases(committedDeploy)
 const rulesetText = readRepoFile(RULESET)
 const environments: ReadonlyMap<string, string> = new Map(
   files.filter(path => path.startsWith('.github/environments/')).map(path => [path, readRepoFile(path)]),
@@ -222,9 +247,145 @@ function edited(text: string, from: string, to: string, after = ''): string {
 const withText = (path: string, text: string): ReadonlyMap<string, string> =>
   new Map([...workflows].map(([each, real]) => [each, each === path ? text : real]))
 
-// The workflows with one exact edit to one of them (deploy.yml unless named).
+// The workflows with one exact edit to one of them (deploy.yml, as the rules read it, unless named).
 const plant = (from: string, to: string, after = '', path = DEPLOY) =>
-  withText(path, edited(workflows.get(path) ?? '', from, to, after))
+  withText(path, edited(path === DEPLOY ? deployText : (workflows.get(path) ?? ''), from, to, after))
+
+// --- The shared runs' two layouts (DPW-02, round 13) -------------------------------------------------------
+
+// The steps of a workflow's jobs whose run is a block scalar written run: | at eight spaces, each with its job,
+// its name, its run line (by index) and the line after its last line of content (the last line deeper than the
+// key before one that isn't, blanks aside), read on YAML lines as workflow.ts's runAnchors() reads a step's run
+// line.
+function blockRuns(text: string): Array<{ line: number; end: number; place: StepPlace }> {
+  const lines = text.split('\n')
+  const yaml = new Set(yamlLines(text).map(line => line.index))
+  const runs: Array<{ line: number; end: number; place: StepPlace }> = []
+  let inJobs = false
+  let inSteps = false
+  let id: string | undefined
+  let step: (StepPlace & { named: boolean }) | undefined
+  lines.forEach((line, i) => {
+    if (!yaml.has(i)) return
+    if (/^\S/.test(line)) {
+      inJobs = /^jobs:\s*(?:#.*)?$/.test(line)
+      ;[id, inSteps, step] = [undefined, false, undefined]
+      return
+    }
+    if (!inJobs) return
+    if (/^ {2}\S/.test(line)) {
+      ;[id, inSteps, step] = [/^ {2}([\w-]+):\s*(?:#.*)?$/.exec(line)?.[1], false, undefined]
+      return
+    }
+    if (/^ {4}\S/.test(line)) {
+      ;[inSteps, step] = [id !== undefined && /^ {4}steps:\s*(?:#.*)?$/.test(line), undefined]
+      return
+    }
+    if (!inSteps || id === undefined) return
+    if (/^ {6}- /.test(line)) step = { job: id, step: undefined, named: false }
+    if (step === undefined) return
+    const name = /^(?: {6}- | {8})name:(?:\s+(.*))?$/.exec(line)
+    if (name && !step.named) [step.step, step.named] = [scalarValue(name[1] ?? ''), true]
+    if (line !== '        run: |') return
+    let end = i + 1
+    for (let j = i + 1; j < lines.length && /^(?: {9}|\s*$)/.test(lines[j] ?? ''); j++) {
+      if ((lines[j] ?? '').trim() !== '') end = j + 1
+    }
+    runs.push({ line: i, end, place: step })
+  })
+  return runs
+}
+
+// A written-out text (no anchor, alias or shared-run comment, else undefined) laid out as the committed file lays
+// out its shared runs: for each RUN_ANCHORS entry, the steps whose run is that text written whole at ten spaces,
+// where there are two or more, the first in file order anchored and the rest aliased, each under the comment
+// sharedRunComment() writes. Its expansion must be the text byte for byte, or it throws, unless the text is in
+// none of the reader's shapes (a plant of a shape the reader refuses, which needs no second layout).
+function realiased(text: string): string | undefined {
+  const shared = runAnchors(text)
+  if (shared.anchors.length + shared.aliases.length + shared.comments.length > 0) return undefined
+  if (/^\s*#\s*shared run\b/im.test(text)) return undefined
+  const lines = text.split('\n')
+  const runs = blockRuns(text).map(run => ({ ...run, block: lines.slice(run.line, run.end).join('\n') }))
+  const edits = new Map<number, { lines: string[]; end: number }>()
+  const place = ({ place: { job, step } }: (typeof runs)[number]): StepPlace => ({ job, step })
+  for (const [name, entry] of Object.entries(RUN_ANCHORS())) {
+    const written = `        run: |\n${indent(entry.text, 10)}`
+    const group = runs.filter(run => !edits.has(run.line) && run.block === written)
+    const [first, ...rest] = group
+    if (first === undefined || rest.length === 0) continue
+    edits.set(first.line, {
+      lines: [...sharedRunComment('anchor', name, rest.map(place)), `        run: &${name} |`],
+      end: first.line + 1,
+    })
+    for (const run of rest) {
+      edits.set(run.line, {
+        lines: [...sharedRunComment('alias', name, [place(first)]), `        run: *${name}`],
+        end: run.end,
+      })
+    }
+  }
+  const out: string[] = []
+  for (let i = 0; i < lines.length; ) {
+    const edit = edits.get(i)
+    out.push(...(edit?.lines ?? [lines[i] ?? '']))
+    i = edit?.end ?? i + 1
+  }
+  const result = out.join('\n')
+  if (expandRunAliases(result) === text) return result
+  if (shapeProblems(text).length > 0) return undefined
+  throw new Error('realiased: its expansion is not the text it was made from')
+}
+
+// deploy.yml's other layout: the committed file's expansion when it holds shared runs, or its shared runs aliased
+// when it holds none; a planted text's shared runs aliased, or none for a plant that already holds a shared run
+// or its comment (the reader's and DPW-02's own cases test those directly).
+let committedOther: { text: string | undefined } | undefined
+function otherLayout(text: string): string | undefined {
+  if (text !== committedDeploy) return realiased(text)
+  const shared = runAnchors(committedDeploy)
+  committedOther ??= {
+    text: shared.anchors.length + shared.aliases.length > 0 ? deployText : realiased(committedDeploy),
+  }
+  return committedOther.text
+}
+// A finding as either layout gives it: a line number (unreadCharacter's, deployPinProblems') read as any line.
+const layoutFree = (found: readonly string[]) =>
+  [...new Set(found.map(each => each.replace(/\bline \d+/g, 'line N')))].sort()
+// A finding function that reads the workflows by path, called as given and again with deploy.yml in its other
+// layout, which must find the same: a rule that read the stored file by job would see an aliased run in its
+// anchor's job alone, and fail this in every case that plants into such a run.
+function differential<A extends unknown[]>(
+  name: string,
+  find: (workflows: Texts, ...rest: A) => Finding[],
+): (workflows: Texts, ...rest: A) => Finding[] {
+  return (given: Texts, ...rest: A) => {
+    const found = find(given, ...rest)
+    const text = given.get(DEPLOY)
+    const other = text === undefined ? undefined : otherLayout(text)
+    if (other !== undefined && other !== text) {
+      const again = find(new Map([...given].map(([path, each]) => [path, path === DEPLOY ? other : each])), ...rest)
+      expect(layoutFree(again), `${name} over deploy.yml's other layout`).toEqual(layoutFree(found))
+    }
+    return found
+  }
+}
+// Every finding function that reads the workflows by path, wrapped, but the size's, which counts the file as
+// stored.
+const actionPinFindings = differential('actionPinFindings', actionPinFindingsOf)
+const assetCheckFindings = differential('assetCheckFindings', assetCheckFindingsOf)
+const checkoutFindings = differential('checkoutFindings', checkoutFindingsOf)
+const credentialedCodeFindings = differential('credentialedCodeFindings', credentialedCodeFindingsOf)
+const credentialJobFindings = differential('credentialJobFindings', credentialJobFindingsOf)
+const deployStepFindings = differential('deployStepFindings', deployStepFindingsOf)
+const forbiddenWordFindings = differential('forbiddenWordFindings', forbiddenWordFindingsOf)
+const gateFindings = differential('gateFindings', gateFindingsOf)
+const maskingFindings = differential('maskingFindings', maskingFindingsOf)
+const permissionFindings = differential('permissionFindings', permissionFindingsOf)
+const prodPathFindings = differential('prodPathFindings', prodPathFindingsOf)
+const releaseFindings = differential('releaseFindings', releaseFindingsOf)
+const timeoutAndGroupFindings = differential('timeoutAndGroupFindings', timeoutAndGroupFindingsOf)
+const triggerFindings = differential('triggerFindings', triggerFindingsOf)
 
 const job = (id: string) => `\n  ${id}:\n`
 
@@ -284,6 +445,13 @@ const spoken = (stdout: string): string[] =>
 // DPW-02's finding for a file workflow.ts would read wrong.
 const SHAPE =
   'is written in the shape workflow.ts reads: two-space block nesting, each key once in its mapping, each value whole on its line'
+// DPW-02's findings for deploy.yml's mappings and its shared runs, and for a shared run in another workflow.
+const BLOCK_MAPPINGS =
+  "is written in block mappings: no flow mapping or quoted key, and no anchor, alias or merge key but a step's shared run (run: &name | and run: *name)"
+const SHARED_RUNS = `${DEPLOY}: DPW-02 shares a step's run only as RUN_ANCHORS names it: each anchor a RUN_ANCHORS name holding that entry's text, of at least 1000 bytes, aliased by a later step at least once, and each anchor and alias under the comment sharedRunComment() writes for it, with no such comment elsewhere`
+const EXPANDED_SHAPE = `${DEPLOY}: DPW-02 reads, with every shared run written out, in the shape workflow.ts reads: no anchor, alias or shared-run comment left, and every shared run a literal block scalar (run: |)`
+const NO_SHARED_RUNS = (path: string) =>
+  `${path}: DPW-02 writes no anchor or alias: only deploy.yml shares a step's run so`
 
 // The findings for a run's own lines (every line outside a canonical text standing whole): one the table
 // doesn't name, at its line (DPW-07, DPW-10, DPW-13), and a command not held to its uses (DPW-10, DPW-13).
@@ -778,7 +946,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
     ).toEqual([`${DEPLOY}: DPW-02 nonprod: names its environment by a literal name`])
     expect(permissionFindings(plant(READ_ONLY, '    permissions: { contents: read }\n', job('build')))).toEqual([
       `${DEPLOY}: DPW-02 build: its permissions are exactly contents: read`,
-      `${DEPLOY}: DPW-02 is written in block mappings: no flow mapping, anchor, alias or quoted key`,
+      `${DEPLOY}: DPW-02 ${BLOCK_MAPPINGS}`,
       `${DEPLOY}: DPW-02 ${SHAPE}`,
     ])
     const check = '  check:\n    needs: [secrets, audit, action-pins, cli-pin]\n'
@@ -1193,6 +1361,652 @@ describe('DPW-02 (C11-D55): permissions', () => {
   })
 })
 
+// Round 13: GitHub starts no run of a workflow file over 500 KB, so deploy.yml may hold a run several steps run
+// whole once, anchored on the first (run: &name |), with each later step aliasing it (run: *name). workflow.ts
+// reads exactly those two forms on a step's run: line and resolves each alias as YAML does, to the latest earlier
+// anchor of its name, so every rule reads the text GitHub runs; every other node property stays a shape it
+// refuses (DPW-02).
+describe('workflow.ts reads a shared run as GitHub does (DPW-02, round 13)', () => {
+  const head = ['name: x', 'on: push', 'jobs:', '  a:', '    runs-on: ubuntu-24.04', '    steps:']
+  const lines = (...each: string[]) => `${each.join('\n')}\n`
+  const SHARED = lines(
+    ...head,
+    '      - name: First',
+    '        env:',
+    '          X: y',
+    '        # Shared run &one: written once here, and run as written by b (Second).',
+    '        run: &one |',
+    '          set -euo pipefail',
+    '          # a comment line of the run',
+    '',
+    '          echo "$X"',
+    '',
+    '',
+    '  b:',
+    '    runs-on: ubuntu-24.04',
+    '    steps:',
+    '      - name: Second',
+    '        # Shared run *one: the text written in a (First).',
+    '        run: *one',
+    '      - name: Third',
+    '        run: echo done',
+  )
+  const CONTENT = ['          set -euo pipefail', '          # a comment line of the run', '', '          echo "$X"']
+  const WRITTEN = lines(
+    ...head,
+    '      - name: First',
+    '        env:',
+    '          X: y',
+    '        run: |',
+    ...CONTENT,
+    '',
+    '',
+    '  b:',
+    '    runs-on: ubuntu-24.04',
+    '    steps:',
+    '      - name: Second',
+    '        run: |',
+    ...CONTENT,
+    '      - name: Third',
+    '        run: echo done',
+  )
+  const index = (text: string, line: string, from = 0) => {
+    const at = text.split('\n').indexOf(line, from)
+    if (at < 0) throw new Error(`no line ${line}`)
+    return at
+  }
+
+  it('reads an alias as its anchor’s text, at the aliasing step, with the shared-run comments dropped', () => {
+    const [a, b] = workflowJobs(SHARED).map(each => parsedSteps(each))
+    const first = a?.[0]
+    const second = b?.[0]
+    if (first === undefined || second === undefined) throw new Error('the planted workflow has both steps')
+    expect(first.run).toBe('set -euo pipefail\n# a comment line of the run\n\necho "$X"')
+    expect(second.run).toBe(first.run)
+    expect(second.lines).toEqual(['      - name: Second', '        run: |', ...CONTENT])
+    expect(first.lines).toEqual(['      - name: First', '        env:', '          X: y', '        run: |', ...CONTENT])
+    expect(literalRun(first) && literalRun(second)).toBe(true)
+    // The anchor's content is content, never a YAML line or a comment.
+    const content = SHARED.split('\n').flatMap((line, i) => (/^ {10}(?:set|#|echo)/.test(line) ? [i] : []))
+    expect(content).toHaveLength(3)
+    const yaml = new Set(yamlLines(SHARED).map(line => line.index))
+    expect(content.filter(i => yaml.has(i) || commentLines(SHARED).includes(i))).toEqual([])
+    expect(shapeProblems(SHARED)).toEqual([])
+    // The expansion is the hand-written-out file, is idempotent, and is the identity on a file with no shared run.
+    expect(expandRunAliases(SHARED)).toBe(WRITTEN)
+    expect(expandRunAliases(expandRunAliases(SHARED))).toBe(WRITTEN)
+    expect(expandRunAliases(WRITTEN)).toBe(WRITTEN)
+    const anchor = index(SHARED, '        run: &one |')
+    const alias = index(SHARED, '        run: *one')
+    const shared = runAnchors(SHARED)
+    expect(shared.anchors.map(({ line, name, job, step, index: at }) => ({ line, name, job, step, at }))).toEqual([
+      { line: anchor, name: 'one', job: 'a', step: 'First', at: 0 },
+    ])
+    expect(shared.anchors[0]?.text).toBe(first.run)
+    expect(shared.aliases).toEqual([{ line: alias, name: 'one', job: 'b', step: 'Second', index: 0, anchor }])
+    expect(shared.comments).toEqual([
+      { lines: [anchor - 1], of: anchor },
+      { lines: [alias - 1], of: alias },
+    ])
+    expect(shared.problems).toEqual([])
+  })
+
+  it('reads an anchor only as run: &name | (no |-, |+, > or |2), its block’s content still content', () => {
+    for (const header of ['|-', '|+', '>', '|2']) {
+      const text = lines(
+        ...head,
+        '      - name: First',
+        `        run: &one ${header}`,
+        '          # content',
+        '          echo one',
+      )
+      expect(shapeProblems(text), header).toEqual([7])
+      expect(commentLines(text), header).toEqual([])
+      expect(
+        yamlLines(text).map(line => line.index),
+        header,
+      ).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+      expect(literalProblems(text), header).toEqual(header === '>' || header === '|2' ? [7] : [])
+      expect(indicatorProblems(text), header).toEqual(header === '|2' ? [7] : [])
+      expect(runAnchors(text).anchors, header).toEqual([])
+    }
+  })
+
+  it('refuses a second anchor of a name, and reads a later alias as the latest', () => {
+    const text = lines(
+      ...head,
+      '      - name: First',
+      '        run: &one |',
+      '          echo one',
+      '      - name: Second',
+      '        run: &one |',
+      '          echo two',
+      '      - name: Third',
+      '        run: *one',
+    )
+    expect(shapeProblems(text)).toEqual([index(text, '        run: &one |', 9)])
+    const steps = parsedSteps(workflowJobs(text)[0] ?? ({} as never))
+    expect(steps.map(step => step.run)).toEqual(['echo one', 'echo two', 'echo two'])
+  })
+
+  it('refuses an alias before its anchor and an alias of no anchor, and reads each as written', () => {
+    const text = lines(
+      ...head,
+      '      - name: First',
+      '        run: *one',
+      '      - name: Second',
+      '        run: &one |',
+      '          echo one',
+      '      - name: Third',
+      '        run: *two',
+    )
+    expect(shapeProblems(text)).toEqual([index(text, '        run: *one'), index(text, '        run: *two')])
+    const steps = parsedSteps(workflowJobs(text)[0] ?? ({} as never))
+    expect(steps.map(step => step.run)).toEqual(['*one', 'echo one', '*two'])
+    expect(expandRunAliases(text)).toBe(text.replace('run: &one |', 'run: |'))
+  })
+
+  it('refuses every other spelling of either form, a comment, a tag or a dash form among them', () => {
+    const anchored = [...head, '      - name: First', '        run: &one |', '          echo one']
+    for (const variant of [
+      ['      - name: Second', '        run: *one # c'],
+      ['      - name: Second', '        run: &two | # c', '          echo two'],
+      ['      - name: Second', '        run: &two !!str |', '          echo two'],
+      ['      - name: Second', '        run: &Two |', '          echo two'],
+      ['      - name: Second', '        run: &t_o |', '          echo two'],
+      ['      - name: Second', '        run: &2o |', '          echo two'],
+      ['      - name: Second', '        run: &two: |', '          echo two'],
+      ['      - name: Second', '        run: &two  |', '          echo two'],
+      ['      - name: Second', '        run: *one ', `        if: \${{ true }}`],
+      ['      - run: &two |', '          echo two'],
+      ['      - run: *one'],
+    ]) {
+      const text = lines(...anchored, ...variant)
+      const at = anchored.length + variant.findIndex(line => /run: [&*]/.test(line))
+      expect(shapeProblems(text), variant.join('\n')).toContain(at)
+    }
+  })
+
+  it('refuses anything deeper than the step’s keys under an alias, a comment included', () => {
+    const anchored = [
+      ...head,
+      '      - name: First',
+      '        run: &one |',
+      '          echo one',
+      '      - name: Second',
+    ]
+    const alias = anchored.length
+    const below = (...rest: string[]) =>
+      shapeProblems(lines(...anchored, '        run: *one', ...rest, '      - name: Third', '        run: echo three'))
+    expect(below('        # at eight', '            # at twelve')).toEqual([alias])
+    expect(below('        # at eight', '            deeper: x')).toContain(alias)
+    expect(below('          # at ten')).toEqual([alias])
+    expect(below('      # at six')).toEqual([])
+    expect(below('        # at eight')).toEqual([])
+    expect(below('')).toEqual([])
+  })
+
+  it('refuses a node property anywhere but a step’s run, and a merge key or other mapping as a sequence item', () => {
+    const run = ['      - name: First', '        run: &one |', '          echo one']
+    for (const [planted, line] of [
+      [[...head, '      - name: First', '        env:', '          X: &e y', '        run: echo'], '          X: &e y'],
+      [[...head, '      - uses: actions/checkout@v5', '        with:', '          a: *e'], '          a: *e'],
+      [
+        [...head, '      - name: First', `        if: &i \${{ true }}`, '        run: echo'],
+        `        if: &i \${{ true }}`,
+      ],
+      [
+        [...head, '      - name: First', '        uses: &u actions/checkout@v5'],
+        '        uses: &u actions/checkout@v5',
+      ],
+      [['name: x', 'on: push', 'jobs:', '  a:', '    concurrency: *g', '    steps:', ...run], '    concurrency: *g'],
+      [[...head, '      - &s', '        name: x', '        run: echo x'], '      - &s'],
+      [[...head, ...run, '      - <<: *s'], '      - <<: *s'],
+      [[...head, ...run, '      - a.b: c'], '      - a.b: c'],
+      [[...head, ...run, '      - x y: z'], '      - x y: z'],
+      [
+        ['name: x', 'on: push', 'jobs:', '  a:', '    strategy:', '      matrix:', '        run: &m |', '          a'],
+        '        run: &m |',
+      ],
+      [
+        [...head, ...run, '      - name: Second', '        env:', '          X: &one two', '        run: *one'],
+        '          X: &one two',
+      ],
+    ] as const) {
+      const text = lines(...planted)
+      expect(shapeProblems(text), line).toContain(index(text, line))
+    }
+    // The non-run anchor of the same name is refused, so the alias after it can read only the run's anchor.
+    const between = lines(
+      ...head,
+      ...run,
+      '      - name: Second',
+      '        env:',
+      '          X: &one two',
+      '        run: echo',
+    )
+    expect(runAnchors(between).anchors.map(anchor => anchor.line)).toEqual([7])
+    // A plain item with a : that isn't followed by a blank, or after a comment, stays a scalar.
+    expect(shapeProblems(lines(...head, ...run, '      - https://x', '      - a # b: c'))).toEqual([])
+  })
+
+  it('finds no shared run in a comment or in a block scalar’s content', () => {
+    const text = lines(
+      'name: x',
+      'on: push',
+      'jobs:',
+      '  a:',
+      '    env:',
+      '      NOTE: |',
+      '        run: *one',
+      '    steps:',
+      '      - name: First',
+      '        # run: *one',
+      '        run: |',
+      '          run: *one',
+      '          echo one',
+    )
+    expect(runAnchors(text)).toEqual({ anchors: [], aliases: [], comments: [], problems: [] })
+    expect(expandRunAliases(text)).toBe(text)
+    expect(parsedSteps(workflowJobs(text)[0] ?? ({} as never))[0]?.run).toBe('run: *one\necho one')
+  })
+
+  it('drops only the comment directly above a shared run, at eight spaces, naming its own sigil and name', () => {
+    const text = lines(
+      ...head,
+      '      - name: First',
+      '        # A note of the step’s own, kept.',
+      '        # Shared run &one: written once here, and run as written by a (Second), a (Third) and a (Fourth).',
+      '        run: &one |',
+      '          echo one',
+      '      - name: Second',
+      '        # Shared run *two: the text written in a (First).',
+      '        # Shared run *one: the text written in a (First).',
+      '        run: *one',
+      '      - name: Third',
+      '        # Shared run *one: the text written in a (First).',
+      '        env:',
+      '          X: y',
+      '        run: *one',
+      '      - name: Fourth',
+      '      # Shared run *one: the text written in a (First).',
+      '        run: *one',
+    )
+    expect(expandRunAliases(text)).toBe(
+      lines(
+        ...head,
+        '      - name: First',
+        '        # A note of the step’s own, kept.',
+        '        run: |',
+        '          echo one',
+        '      - name: Second',
+        '        # Shared run *two: the text written in a (First).',
+        '        run: |',
+        '          echo one',
+        '      - name: Third',
+        '        # Shared run *one: the text written in a (First).',
+        '        env:',
+        '          X: y',
+        '        run: |',
+        '          echo one',
+        '      - name: Fourth',
+        '      # Shared run *one: the text written in a (First).',
+        '        run: |',
+        '          echo one',
+      ),
+    )
+    expect(runAnchors(text).comments).toEqual([
+      { lines: [8], of: 9 },
+      { lines: [13], of: 14 },
+    ])
+  })
+})
+
+// Round 13: deploy.yml's shared runs, as DPW-02 holds them, and the rules reading each shared run in every job
+// that runs it. The cases plant into deploy.yml laid out as realiased() lays it out (every RUN_ANCHORS text two or
+// more steps run anchored on the first and aliased at the rest), which is the committed file's own layout.
+describe('DPW-02: deploy.yml’s shared runs (round 13)', () => {
+  let aliasedCache: string | undefined
+  const aliased = (): string => {
+    aliasedCache ??= realiased(deployText)
+    if (aliasedCache === undefined) throw new Error('deploy.yml has a shared layout')
+    return aliasedCache
+  }
+  const ID_TOKEN = `${DEPLOY}: DPW-02 only the five environment jobs ask for an id-token, and nothing asks for write-all`
+  // A step's place, and the lines of an anchor's or an alias's shared run, its comment first.
+  const placeOf = (job: string, step: string): StepPlace => ({ job, step })
+  const anchorLines = (name: string, aliasedBy: readonly StepPlace[]) =>
+    [...sharedRunComment('anchor', name, aliasedBy), `        run: &${name} |`].join('\n')
+  const aliasLines = (name: string, anchor: StepPlace) =>
+    [...sharedRunComment('alias', name, [anchor]), `        run: *${name}`].join('\n')
+  const writtenOut = (name: string) => `        run: |\n${indent(RUN_ANCHORS()[name]?.text ?? '', 10)}`
+  // A smoke job's Smoke step's run, written whole.
+  const smokeWritten = (id: 'smoke-nonprod' | 'smoke-prod') => `        run: |\n${indent(smokeRun(id), 10)}\n`
+  // The aliased file with the alias of a name in a job written out again as the text it runs (one line of it
+  // changed, if asked).
+  function writtenAgain(text: string, name: string, job: string, change?: readonly [string, string]): string {
+    const shared = runAnchors(text)
+    const alias = shared.aliases.find(each => each.name === name && each.job === job)
+    if (alias === undefined) throw new Error(`no alias of ${name} in ${job}`)
+    const from = shared.comments.find(each => each.of === alias.line)?.lines[0] ?? alias.line
+    const lines = text.split('\n')
+    const run = change === undefined ? writtenOut(name) : edited(writtenOut(name), change[0], change[1])
+    return [...lines.slice(0, from), run, ...lines.slice(alias.line + 1)].join('\n')
+  }
+  const CLI_FETCH_ALIASED_BY = [
+    placeOf('rollback-nonprod', 'The pinned CDK CLI'),
+    placeOf('prod-plan', 'The pinned CDK CLI'),
+    placeOf('prod', 'The pinned CDK CLI'),
+    placeOf('rollback-prod', 'The pinned CDK CLI'),
+  ]
+  const CLI_FETCH_ANCHOR = anchorLines('cli-fetch', CLI_FETCH_ALIASED_BY)
+  // A line added at the top of cli-fetch's anchored text in nonprod, which every aliasing step then runs.
+  const atCliFetch = (line: string) =>
+    edited(aliased(), `${CLI_FETCH_ANCHOR}\n`, `${CLI_FETCH_ANCHOR}\n          ${line}\n`)
+
+  it('names each shared text by a name of its own, of at least 1,000 bytes, that two or more steps run whole', () => {
+    const runs = workflowJobs(deployText).flatMap(each => parsedSteps(each).map(step => step.run))
+    for (const [name, { text }] of Object.entries(RUN_ANCHORS())) {
+      expect(name, name).toMatch(/^[a-z][a-z0-9-]*$/)
+      expect(name, name).not.toMatch(/uses/i)
+      expect(Buffer.byteLength(text), name).toBeGreaterThanOrEqual(ALIAS_MIN_BYTES)
+      expect(runs.filter(run => run === text).length, name).toBeGreaterThanOrEqual(2)
+    }
+    expect(new Set(Object.values(RUN_ANCHORS()).map(entry => entry.text)).size).toBe(Object.keys(RUN_ANCHORS()).length)
+  })
+
+  it('holds deploy.yml laid out with its shared runs aliased, its expansion the file as the rules read it', () => {
+    const text = aliased()
+    expect(expandRunAliases(text)).toBe(deployText)
+    expect(Buffer.byteLength(text)).toBeLessThan(Buffer.byteLength(deployText))
+    const shared = runAnchors(text)
+    expect(shared.anchors.map(anchor => anchor.name).sort()).toEqual(Object.keys(RUN_ANCHORS()).sort())
+    expect(shared.problems).toEqual([])
+    const planted = withText(DEPLOY, text)
+    expect(permissionFindings(planted, ownRepository() ?? '')).toEqual([])
+    expect(credentialedCodeFindings(planted, manifests, lockfile)).toEqual([])
+    expect(deployStepFindings(planted)).toEqual([])
+    expect(maskingFindings(planted)).toEqual([])
+    expect(timeoutAndGroupFindings(planted)).toEqual([])
+    expect(actionPinFindings(planted)).toEqual([])
+    expect(deployPinProblems(text)).toEqual([])
+  }, 60_000)
+
+  it('refuses an anchor no step aliases', () => {
+    const unread = writtenAgain(aliased(), 'image-unpack', 'prod')
+    const name = placeOf('prod', 'Check and unpack the image')
+    const planted = edited(unread, anchorLines('image-unpack', [name]), anchorLines('image-unpack', []))
+    expect(runAnchors(planted).aliases.filter(alias => alias.name === 'image-unpack')).toEqual([])
+    expect(permissionFindings(withText(DEPLOY, planted))).toEqual([SHARED_RUNS])
+  })
+
+  it('refuses a shared text under 1,000 bytes, and a name RUN_ANCHORS doesn’t give that text', () => {
+    // Two Smoke steps share smoke-nonprod's text under a name of their own.
+    const smoke = smokeRun('smoke-nonprod')
+    expect(Buffer.byteLength(smoke)).toBeLessThan(ALIAS_MIN_BYTES)
+    const written = `        run: |\n${indent(smoke, 10)}\n`
+    const anchored = edited(
+      aliased(),
+      written,
+      `${anchorLines('smoke', [placeOf('smoke-prod', 'Smoke')])}\n${indent(smoke, 10)}\n`,
+      job('smoke-nonprod'),
+    )
+    const planted = edited(
+      anchored,
+      `        run: |\n${indent(smokeRun('smoke-prod'), 10)}\n`,
+      `${aliasLines('smoke', placeOf('smoke-nonprod', 'Smoke'))}\n`,
+      job('smoke-prod'),
+    )
+    expect(runAnchors(planted).aliases.filter(alias => alias.name === 'smoke')).toHaveLength(1)
+    expect(permissionFindings(withText(DEPLOY, planted))).toEqual([SHARED_RUNS])
+    // Named with that text, the size alone refuses it.
+    expect(sharedRunsHold(planted, { ...RUN_ANCHORS(), smoke: { text: smoke } })).toBe(false)
+    expect(sharedRunsHold(aliased(), { ...RUN_ANCHORS(), smoke: { text: smoke } })).toBe(true)
+  })
+
+  it('refuses a name over another entry’s text, which PINNED_RUNS alone would pass', () => {
+    const swapped = aliased().replace(/([&*])cli-(fetch|check)\b/g, (_, sigil: string, which: string) =>
+      which === 'fetch' ? `${sigil}cli-check` : `${sigil}cli-fetch`,
+    )
+    expect(runAnchors(swapped).anchors.find(anchor => anchor.name === 'cli-check')?.text).toBe(CLI_FETCH)
+    const planted = withText(DEPLOY, swapped)
+    expect(permissionFindings(planted)).toEqual([SHARED_RUNS])
+    expect(credentialedCodeFindings(planted, manifests, lockfile)).toEqual([])
+  })
+
+  it('refuses a shared-run comment missing, naming another step, gone stale or standing anywhere else', () => {
+    const imageAlias = aliasLines('image-unpack', placeOf('nonprod', 'Check and unpack the image'))
+    for (const planted of [
+      // Missing above an alias.
+      edited(aliased(), imageAlias, '        run: *image-unpack', job('prod')),
+      // Naming another step than the anchor's.
+      edited(aliased(), imageAlias, aliasLines('image-unpack', placeOf('nonprod', ARTIFACTS_STEP)), job('prod')),
+      // Stale: an aliasing step written out again, its anchor's comment still naming it.
+      writtenAgain(aliased(), 'cli-fetch', 'rollback-prod'),
+      // Above a step that shares no run.
+      edited(
+        aliased(),
+        '        run: |\n          set -euo pipefail\n',
+        '        # Shared run: a note.\n        run: |\n          set -euo pipefail\n',
+        job('smoke-nonprod'),
+      ),
+    ]) {
+      expect(permissionFindings(withText(DEPLOY, planted))).toEqual([SHARED_RUNS])
+    }
+  })
+
+  it('refuses a shared run in any other workflow, which DPW-04 still reads as written out', () => {
+    const ci = workflows.get(CI) ?? ''
+    const pins = PINS_STEP
+    expect(ci).toContain(pins)
+    const last = '      - run: scripts/check-schema-digest.sh\n'
+    const planted = withText(
+      CI,
+      edited(
+        edited(ci, pins, pins.replace('run: |', 'run: &pins |')),
+        last,
+        `${last}      - name: The pins again\n        run: *pins\n`,
+      ),
+    )
+    expect(permissionFindings(planted)).toEqual([NO_SHARED_RUNS(CI)])
+    expect(actionPinFindings(planted)).toEqual([])
+  })
+
+  it('refuses any other anchor, alias or merge key in deploy.yml as a block mapping it doesn’t read', () => {
+    const env = '    env:\n      STAGE: nonprod\n'
+    expect(permissionFindings(plant(env, `${env}      X: *x\n`, job('nonprod')))).toEqual([
+      `${DEPLOY}: DPW-02 ${BLOCK_MAPPINGS}`,
+      `${DEPLOY}: DPW-02 ${SHAPE}`,
+    ])
+    expect(
+      permissionFindings(plant('      - name: Smoke\n', '      - <<: *s\n      - name: Smoke\n', job('smoke-prod'))),
+    ).toEqual([`${DEPLOY}: DPW-02 ${BLOCK_MAPPINGS}`, `${DEPLOY}: DPW-02 ${SHAPE}`])
+    // In any other workflow, a merge key or another mapping written as a step is a shape the reader refuses.
+    const last = '      - run: scripts/check-schema-digest.sh\n'
+    for (const step of ['      - <<: *s\n', '      - a.b: c\n']) {
+      expect(permissionFindings(plant(last, `${last}${step}`, '', CI)), step).toEqual([`${CI}: DPW-02 ${SHAPE}`])
+    }
+  })
+
+  it('refuses an alias of no anchor, which the expansion keeps as written', () => {
+    const text = edited(aliased(), smokeWritten('smoke-prod'), '        run: *nothing\n', job('smoke-prod'))
+    expect(runAnchors(expandRunAliases(text)).aliases).toHaveLength(1)
+    expect(permissionFindings(withText(DEPLOY, text))).toEqual(
+      expect.arrayContaining([EXPANDED_SHAPE, SHARED_RUNS, `${DEPLOY}: DPW-02 ${SHAPE}`]),
+    )
+  })
+
+  // The rules that read lines by job read the expansion: a word in a shared run counts in every job that runs it.
+  it('reads a shared run’s words in every job that runs it: the id-token, a group and a secret', () => {
+    // cli-fetch's text, holding id-token, aliased in smoke-nonprod too.
+    const tokened = edited(
+      atCliFetch('# id-token'),
+      smokeWritten('smoke-nonprod'),
+      '        run: *cli-fetch\n',
+      job('smoke-nonprod'),
+    )
+    expect(runAnchors(tokened).aliases.filter(alias => alias.job === 'smoke-nonprod')).toHaveLength(1)
+    expect(permissionFindings(withText(DEPLOY, tokened))).toContain(ID_TOKEN)
+    // A group named in the anchored text: each of the five jobs that run it.
+    expect(timeoutAndGroupFindings(withText(DEPLOY, atCliFetch('# deploy-prod')))).toEqual(
+      ['nonprod', 'rollback-nonprod', 'prod-plan', 'prod', 'rollback-prod'].map(
+        id => `${DEPLOY}: DPW-05 ${id}: names deploy-nonprod or deploy-prod only as a deploy job's group`,
+      ),
+    )
+    // A secret named in it, which the rollback jobs may not name.
+    expect(maskingFindings(withText(DEPLOY, atCliFetch('# secrets.AWS_DIFF_ROLE')))).toEqual(
+      expect.arrayContaining([
+        `${DEPLOY}: DPW-07 rollback-nonprod: names no secret but AWS_DEPLOY_ROLE and AWS_ACCOUNT_ID, never GITHUB_TOKEN`,
+        `${DEPLOY}: DPW-07 rollback-prod: names no secret but AWS_DEPLOY_ROLE and AWS_ACCOUNT_ID, never GITHUB_TOKEN`,
+      ]),
+    )
+  })
+
+  it('finds an edit at an anchor at every step that runs it, and one aliasing step written out again alone', () => {
+    const pinned = (where: string) => `${DEPLOY}: DPW-10 ${where}: ${PINNED_10}`
+    const credentialed = (text: string) => credentialedCodeFindings(withText(DEPLOY, text), manifests, lockfile)
+    expect(credentialed(atCliFetch('true'))).toEqual(
+      expect.arrayContaining(
+        ['nonprod', 'rollback-nonprod', 'prod-plan', 'prod', 'rollback-prod'].map(id =>
+          pinned(`${id} (The pinned CDK CLI)`),
+        ),
+      ),
+    )
+    const changed = writtenAgain(aliased(), 'cli-fetch', 'prod', [
+      '          # The runner reads',
+      '          # The runner Reads',
+    ])
+    const found = credentialed(changed).filter(each => each.includes('(PINNED_RUNS)'))
+    expect(found).toEqual([pinned('prod (The pinned CDK CLI)')])
+  })
+
+  // The pins proof runs before any of the repository's code and reads deploy.yml as stored, so it reads the
+  // shared layout itself: an alias holds no uses:, and an anchored text is read line by line like any run.
+  it('proves the pins over the shared layout as stored', () => {
+    const text = aliased()
+    expect(deployPinProblems(text)).toEqual([])
+    const line = (planted: string, start: string) => planted.split('\n').findIndex(each => each.startsWith(start)) + 1
+    const orphan = edited(text, smokeWritten('smoke-prod'), '        run: *nothing\n', job('smoke-prod'))
+    expect(deployPinProblems(orphan)).toEqual([
+      `line ${line(orphan, '        run: *nothing')}: in none of the shapes the workflow reader reads`,
+    ])
+    const checkout = `        uses: ${pinOf('actions/checkout')}`
+    const anchoredUses = edited(text, `${checkout}\n`, checkout.replace('uses: ', 'uses: &co ').concat('\n'))
+    expect(deployPinProblems(anchoredUses)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/in none of the shapes/), expect.stringMatching(/another shape/)]),
+    )
+    const aliasedUses = edited(text, `${checkout}\n`, '        uses: *co\n', job('build'))
+    expect(deployPinProblems(aliasedUses)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/in none of the shapes/), expect.stringMatching(/another shape/)]),
+    )
+    const inAnchor = atCliFetch('# uses: x')
+    expect(deployPinProblems(inAnchor)).toEqual([
+      `line ${line(inAnchor, '          # uses: x')}: names uses in another shape than a step's pinned uses:`,
+    ])
+    const said = '        # Shared run &cli-fetch: written'
+    const inComment = edited(text, said, said.replace(': written', ', which uses: nothing: written'))
+    expect(deployPinProblems(inComment)).toEqual([
+      `line ${line(inComment, said.replace(': written', ', which uses: nothing: written'))}: names uses in another shape than a step's pinned uses:`,
+    ])
+  })
+})
+
+// The harness's own proof: a rule that read deploy.yml's stored lines by job, where an aliased run sits in its
+// anchor's job alone, fails differential(); and every reader of deploy.yml in the guard is listed with how it
+// reads, so a new one is a reviewed entry, and jobSpans() takes only the expansion.
+describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (round 13)', () => {
+  it('fails a rule that reads the stored file’s lines by job', () => {
+    // The jobs whose lines, as stored, run cli-fetch's text: its anchor's job alone once it is shared.
+    const runsCliFetch = (given: Texts): Finding[] => {
+      const text = given.get(DEPLOY) ?? ''
+      const head = /^ {10}# The pinned CDK CLI \(CLI_FETCH/
+      let id = ''
+      return text.split('\n').flatMap(line => {
+        id = /^ {2}([\w-]+):$/.exec(line)?.[1] ?? id
+        return head.test(line) ? [id] : []
+      })
+    }
+    expect(runsCliFetch(workflows)).toHaveLength(5)
+    expect(() => differential('runsCliFetch', runsCliFetch)(workflows)).toThrow(/other layout/)
+  })
+
+  // Each function of deploy-workflow.ts that reads deploy.yml by its path: through jobsOf() (workflowJobs(), which
+  // expands), through expandRunAliases(), and the file as stored only for what an alias can't change, with why.
+  const DEPLOY_TEXT_READERS: Readonly<Record<string, { jobs?: true; expanded?: true; stored?: string }>> = {
+    triggerFindings: { stored: 'its top-level on: (workflowTop()), where no alias can stand' },
+    permissionFindings: {
+      jobs: true,
+      expanded: true,
+      stored: 'its shape: top-level permissions, characters, escapes, if: lines, block mappings and the shared runs',
+    },
+    credentialJobFindings: { jobs: true },
+    actionPinFindings: { expanded: true },
+    timeoutAndGroupFindings: { jobs: true, expanded: true },
+    deployStepFindings: { jobs: true },
+    maskingFindings: { jobs: true, expanded: true },
+    prodPathFindings: { jobs: true },
+    gateFindings: { jobs: true },
+    credentialedCodeFindings: {
+      jobs: true,
+      stored: 'its top-level keys (shapeOfJobsFindings()), where no alias can stand',
+    },
+    releaseFindings: {
+      jobs: true,
+      stored: 'words anywhere in the file, which an alias adds none of, its anchor holding them',
+    },
+    assetCheckFindings: { jobs: true },
+  }
+  // Each top-level declaration of a source text, by name, with its text up to the next.
+  const declarations = (source: string): Map<string, string> => {
+    const found = new Map<string, string>()
+    let name: string | undefined
+    let body: string[] = []
+    for (const line of source.split('\n')) {
+      const declared = /^(?:export )?(?:function|const|let|type|interface) (\w+)/.exec(line)?.[1]
+      if (declared !== undefined) {
+        if (name !== undefined) found.set(name, body.join('\n'))
+        ;[name, body] = [declared, []]
+      }
+      if (!/^\s*\/\//.test(line)) body.push(line)
+    }
+    if (name !== undefined) found.set(name, body.join('\n'))
+    return found
+  }
+  const unlisted = (source: string): string[] => {
+    const problems: string[] = []
+    const readers = [...declarations(source)].filter(([, body]) => body.includes('.get(DEPLOY)'))
+    for (const [name, body] of readers) {
+      const listed = DEPLOY_TEXT_READERS[name]
+      if (listed === undefined) problems.push(`${name} reads deploy.yml and isn't listed`)
+      else if ((listed.jobs === true) !== body.includes('jobsOf(')) problems.push(`${name} reads jobs otherwise`)
+      else if ((listed.expanded === true) !== body.includes('expandRunAliases(')) {
+        problems.push(`${name} reads the expansion otherwise`)
+      }
+    }
+    for (const name of Object.keys(DEPLOY_TEXT_READERS)) {
+      if (!readers.some(([each]) => each === name)) problems.push(`${name} is listed and reads deploy.yml no more`)
+    }
+    if (!/^function jobSpans\(text: RunsWrittenOut\)/m.test(source))
+      problems.push('jobSpans takes more than the expansion')
+    return problems
+  }
+  const source = readRepoFile('scripts/guards/deploy-workflow.ts')
+
+  it('lists every reader of deploy.yml in the guard with how it reads, and jobSpans() takes only the expansion', () => {
+    expect(unlisted(source)).toEqual([])
+    const planted = `${source}\nexport function plantedFindings(workflows: Texts): Finding[] {\n  return [workflows.get(DEPLOY) ?? '']\n}\n`
+    expect(unlisted(planted)).toEqual(["plantedFindings reads deploy.yml and isn't listed"])
+    expect(
+      unlisted(
+        source.replace('const text = expandRunAliases(workflows.get(DEPLOY)', 'const text = (workflows.get(DEPLOY)'),
+      ),
+    ).toEqual(['actionPinFindings reads the expansion otherwise'])
+    expect(
+      unlisted(source.replace('function jobSpans(text: RunsWrittenOut)', 'function jobSpans(text: string)')),
+    ).toEqual(['jobSpans takes more than the expansion'])
+  })
+})
+
 describe('DPW-03 (C11-D55, C11-D56): only the five environment jobs hold AWS credentials', () => {
   it('finds each planted breakage', () => {
     expect(
@@ -1505,7 +2319,8 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
   // FETCH-A2-01 (round 6): the check reads deploy.yml's uses: itself, as Node reads the file and GitHub runs
   // it, so the commits it proves are the ones deploy.yml runs, whatever table a test run binds it to.
   it('holds every uses: in deploy.yml, read from the file, to its ACTION_PINS entry (FETCH-A2-01, round 6)', () => {
-    expect(deployPinProblems(deployText)).toEqual([])
+    // deploy.yml as stored, as the check reads it (the shared runs' layout has its own case, in round 13's DPW-02).
+    expect(deployPinProblems(committedDeploy)).toEqual([])
     const real = pinOf('actions/checkout')
     const shadow = atCommit(real, 'a81bbbf8298c0fa03ea29cdc473d45769f953675')
     const lines = deployText.split(real).length - 1
@@ -5023,7 +5838,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         ),
       ),
     ).toEqual([`${DEPLOY}: DPW-07 ${readBack('nonprod')}: runs every aws, CDK and skopeo command as run … or $(get …)`])
-  }, 30_000)
+  }, 60_000)
 
   it('finds a workspace that could stand in for the CLI, and a lockfile entry that isn’t the registry’s', () => {
     const planted = (path: string, manifest: unknown) =>
@@ -5171,7 +5986,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
         line.startsWith('cat') ? refused('nonprod') : refused('nonprod', PLANTED_AT + 1),
       )
     }
-  }, 30_000)
+  }, 120_000)
 
   // A stretch of a run's own lines closes all it opens before a canonical text or the run's end, so no
   // canonical text can stand inside a quote, a compound command, a continued line or a here-document.
@@ -5241,7 +6056,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     for (const line of ['echo a > x', 'echo a >> /tmp/x', 'echo a > "$RUNNER_TEMP/x"', 'echo a 2>x']) {
       expect(added('nonprod', line), line).toContain(refused('nonprod'))
     }
-  }, 30_000)
+  }, 60_000)
 
   // Round 4: a canonical text stands whole, so what it evaluates (arithmetic, a subscript, an offset, a name
   // or a prompt) is only what it sets itself, from a literal or arithmetic over such values; and it closes
