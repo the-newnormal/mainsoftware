@@ -37,7 +37,10 @@
 // whose regular files aren't HEAD's blobs byte for byte (CLI_PIN_DRIFT; round 12's third iteration, its second
 // pass: an ident in infra/.gitattributes passed the job after the reset); no package manager's own file stands in
 // the tree (MANAGER_FILE: a Yarn file, or an .npmrc or npm-shrinkwrap.json, through which npm ci installed another
-// aws-cdk than the registry's under the lockfile's sha512, round 14); and
+// aws-cdk than the registry's under the lockfile's sha512, round 14), and DPW-10's run test fetches the registry's
+// aws-cdk tarball through CLI_FETCH itself, as each deploy job does, so the lockfile's sha512 is held to the
+// registry's bytes, never to npm's cache, which a dependency the lockfile marks as bundling fills first (round 14's
+// second iteration); and
 // every deploy.yml job but the build's checks out below its setup-node too (DPW-11), the gate, prod-gate and the
 // smokes into REPO_FOLDER (round 12's fourth iteration: a .yarnrc decided both checks, the plan, prod-gate's
 // verdict and every smoke).
@@ -89,7 +92,9 @@
 // operand (appendsOnly(), its second pass: a > erased the gate's lines naming the records history.ts ignored; and
 // round 12's lenses: a name holding the path, or cp, mv, dd, truncate or sed -i onto it, erased them too)
 // (CLI_FETCH's and IMAGE_CHECK's tools write only their own folders, each on its own line: FETCH_TOOLS,
-// IMAGE_TOOLS); and ASSET_CHECK holds every template to the
+// IMAGE_TOOLS); and ASSET_CHECK refuses a template that gives a key twice in one object, of which jq and the diff
+// read the last value while AWS leaves undefined which one CloudFormation reads, by counting jq's stream events
+// against the values of its parse (round 14's second iteration), and holds every template to the
 // workload's stacks write, each named in it, so none hands CloudFormation another template or a handler by reference
 // (a nested stack, a stack set, a macro, a module, a registered type, a transform), which neither the CLI's diff nor
 // the release check reads, or a grant the diff never shows (a role, user or group policy, whose statements the diff's
@@ -172,7 +177,8 @@
 // set's, keywords, tests, case patterns, functions, assignments and builtins as it holds them: a ! only where an if
 // or elif condition is read and a test before && only there, since errexit reads neither a negated status nor an
 // && list's commands but its last, an echo whose first word, before others, starts with no expansion, which
-// could be a flag, and a regex's bracket expression one character, round 13's third iteration), so any form the
+// could be a flag, and a regex's bracket expression one character, round 13's third iteration, in a regex glibc
+// compiles, regexCompiles(), round 14's second iteration), so any form the
 // table doesn't name is refused at its line (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in
 // every other), whatever it is, while a form it names that bash or jq reads otherwise is a gap in it, behind the
 // owner's read of the changed line (the last paragraph); each command it reads in a credentialed or
@@ -292,7 +298,8 @@
 // canonical text is read whole, so it is held instead, behind the owner's read of any change to it (the last
 // paragraph says what that read holds), to bash's own reading of it (readsAsBash(), which refuses a backslash at a
 // line's end anywhere in the text, quoted or not, since in double quotes bash removes it with the line break and
-// joins a $ to the next line's (, { or ((, which the code view writes as quoted text, and an unquoted $ that ends a
+// joins a $ to the next line's (, { or ((, which the code view writes as quoted text, a here-string whose word
+// holds a substitution, whose status bash never reads (round 14's second iteration), and an unquoted $ that ends a
 // brace expansion's alternative, since bash makes {$,}NAME into $NAME before it expands it, and a # after more ((
 // or [[ than )) or ]], which bash reads as text inside an arithmetic command or a regex's group, running what
 // follows on its line, any unquoted (( but $((, and a $(( whose inner ( doesn't close with )), or any <(( or >((,
@@ -497,7 +504,10 @@
 // and a defect in these files as committed, keep their full claims. One such hold no rule reads apart from the
 // pins (round 14's first iteration): which deploy lines each mode runs is the CLI steps' if: alone (CLI_STEP_IF),
 // so an if: widened in both, prod's forward step run in a rollback as well, would take Platform and Data back to
-// a target's templates beyond the rollback diff its approver read.
+// a target's templates beyond the rollback diff its approver read. Nor does a rule read which command a
+// substitution's status comes from (its second iteration): one whose last command isn't the read it assigns
+// (x=$(read; true), or … || true, which the committed texts write only where what follows checks the value)
+// hides the read's failure, as local NAME=$( … ) and a here-string's word did, which the reader now refuses.
 import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
@@ -730,7 +740,10 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
 # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
 # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
-# could stand where the diff shows a Deny); any symbolic link.
+# could stand where the diff shows a Deny); a template that gives a key twice in one object, read as the
+# events jq's stream reads, one for each value it gives, against the values of its parse (jq and the diff
+# read a repeated key's last value, while AWS leaves undefined which one CloudFormation reads, so any
+# rule here could read another Resources than the one CloudFormation provisions); any symbolic link.
 # The release check then holds the one custom resource the workload writes, CDK's
 # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
 # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -863,6 +876,8 @@ check_assembly() {
     jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
       asset_refuse 'a manifest names a file that is not a plain name in its own folder'
     while IFS= read -r file; do
+      [ "$(jq -c --stream 'length' "$dir/$file" | wc -l)" = "$(jq '[..] | length' "$dir/$file")" ] ||
+        asset_refuse 'a template gives a key twice in one object, of which jq and the diff read the last value while AWS leaves undefined which one CloudFormation reads'
       jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
         asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
       jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
@@ -1238,8 +1253,10 @@ export const AWS_CHECK = sh`# What runs (AWS_CHECK; C11-D52, C11-D58, C11-D61; T
 #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
 #   no release, may find no image at all.
 # - Drift (services running a digest other than Release's, as after an incident rollback outside the
-#   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
-#   only to the release all three services run.
+#   pipeline) refuses a deploy and a drill, naming the rollback to what runs, allows a rollback only to
+#   the release all three services run, and has auto output rolled=false unless all three run PREVIOUS
+#   (whose rollback then realigns the stacks), so the pipeline's rollback never moves the services from
+#   the release a person rolled back to.
 # - Every recorded digest it deploys is in ECR under its own commit's tag (sha-<commit>-<run>-<attempt>).
 # It writes go=true, or go=false, to the step's outputs (deploy and drill also replaced=<the release
 # found running, or none>, for the rollback job's auto check), and one summary line through the filter.
@@ -1370,6 +1387,14 @@ aws_check() {
           deploy | drill)
             tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=$\{digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)
             aws_refuse "the services don't run Release's image (an incident rollback outside the pipeline): dispatch mode=rollback with release $\{tag:-the commit whose image they run} first (deploy-and-rollback.md)"
+            ;;
+          auto)
+            if [ "$running" != "$\{PREVIOUS#*:}" ]; then
+              printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
+              echo "aws-check: auto: the services run neither this run's release nor the previous one (an incident rollback outside the pipeline), so nothing is rolled back: dispatch mode=rollback with the release they run (deploy-and-rollback.md)" |
+                mask | tee -a "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
             ;;
         esac
       fi
@@ -4254,6 +4279,10 @@ function unreadTests(text: string, code: string): number[] {
 // errexit nor a || after it (round 14's first iteration: local records=$(gh api … | jq …) || return read on past a
 // failed read, with no records); a text declares the name, then assigns it on a line of its own.
 const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=(?!.*\$\().*)?)$/s
+// A here-string whose word holds a substitution, quoted or not: bash reads no status from it, so jq … <<<"$(gh api
+// …)" read on past a failed read with an empty input, as local NAME=$( … ) did (round 14's second iteration). The
+// glue's table names none either. In the code view quoted text holds no blank, so the word runs to the first one.
+const HERE_STRING_SUBSTITUTION = /<<<[ \t]*(?:"[^"\s]*"|'[^'\s]*'|[^\s"';|&<>()])*(?:"[^"\s]*)?\$\(/
 // A command's words in the code view, split at the blanks outside its parentheses.
 function words(text: string): string[] {
   const found: string[] = []
@@ -4281,9 +4310,10 @@ export function evaluatedLines(run: string): number[] {
 // Whether a canonical text is written in the shell shellViews() and shellCommands() read, so the rules read its
 // commands as bash runs them: no unquoted backslash before a blank, a #, a ( or ), or a line's end, no case inside a
 // substitution, no command whose word is a substitution's output, none of what shellViews() names odd, no
-// backtick substitution, no here-document, no local or export of a name it builds, no & that runs what comes
-// before it in the background (BACKGROUND), no command started where COMMAND_START reads none (UNREAD_START,
-// FOR_NAME_DO, a function whose body isn't a { … } group), and, outside a canonical text standing whole in it,
+// backtick substitution, no here-document, no here-string holding a substitution, no local or export of a name it
+// builds, no & that runs what comes before it in the background (BACKGROUND), no command started where
+// COMMAND_START reads none (UNREAD_START, FOR_NAME_DO, a function whose body isn't a { … } group), and, outside a
+// canonical text standing whole in it,
 // nothing EVALUATED names (a canonical text's own are held by outsideEvaluations()).
 export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = shellViews(run)): boolean {
   if (views.nestedCase || views.odd.size > 0 || BACKGROUND.test(views.code)) return false
@@ -4291,6 +4321,7 @@ export function readsAsBash(run: string, views: ReturnType<typeof shellViews> = 
   if (ESCAPED_BREAK.test(views.code) || LINE_JOIN.test(run) || SUBSTITUTED_WORD.test(views.code)) return false
   if (OUTER_SUBSTITUTED_WORD.test(outerCode(views.code, views.quotedLines))) return false
   if (views.code.includes('`') || HERE_DOCUMENT.test(views.code)) return false
+  if (HERE_STRING_SUBSTITUTION.test(views.code)) return false
   if (/(?<![\w-])case\s/.test(views.code) && commandCode(views.code).includes(PATTERN_TEST)) return false
   // (Only a text whose code names local or export has one to read.)
   const names = /\b(?:local|export)\b/.test(views.code)
@@ -4640,7 +4671,9 @@ function withoutRedirections(words: readonly string[]): string[] {
 }
 // What a canonical text hands jq and gh, which could take a program from a file, read a file or the
 // environment, or send a file (DPW-10): jq only -e, -r, -c, -n and -s (in any mix) and --arg and --argjson
-// with a name and a value, each written plainly, then its program written on the line (one single-quoted
+// with a name and a value, or --stream with -c alone (one line for each event it reads, which neither -e,
+// reading the last, nor -s or -n, which jq 1.7 reads otherwise, may change), each written plainly, then its
+// program written on the line (one single-quoted
 // string, or a .field path), then only data: one of JQ_FILE_WORDS (an assembly's manifest, file or template,
 // ASSET_CHECK's list of asset manifests, "${stackfiles[@]}", the one array, whose words could otherwise be jq's
 // options after its program, and the CLI's unpacked manifest), whose names only ASSET_CHECK's own lines set
@@ -4747,11 +4780,13 @@ function jqHeld(words: readonly string[]): boolean {
   let i = 0
   for (; i < words.length; i++) {
     const word = words[i] ?? ''
-    if (JQ_FLAG.test(word)) continue
+    if (JQ_FLAG.test(word) || word === '--stream') continue
     if (word !== '--arg' && word !== '--argjson') break
     if (!/^[A-Za-z_]\w*$/.test(words[i + 1] ?? '') || words[i + 2] === undefined) return false
     i += 2
   }
+  const flags = words.slice(0, i)
+  if (flags.includes('--stream') && !flags.every(word => word === '--stream' || word === '-c')) return false
   if (!programHeld(words[i])) return false
   return words.slice(i + 1).every(jqFileHeld)
 }
@@ -5210,6 +5245,7 @@ function jqCalls(text: string): JqCall[] {
           noInput ||= word.includes('n')
           slurp ||= word.includes('s')
         } else if (word === '--arg' || word === '--argjson') i += 2
+        else if (word === '--stream') continue
         else break
       }
       const program = words[i] ?? ''
@@ -5895,9 +5931,49 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
 // holding a line break and a key= line that its echo then wrote as an output of its own; nor any character but
 // printable ASCII, so no range runs through a line break. No committed text writes another. A glob test
 // ([[ WORD == PATTERN ]], which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and which a run's
-// own lines can't write) matches what its * says, in the open, so it stays the owner's read.
+// own lines can't write) matches what its * says, in the open, so it stays the owner's read. And a regex bash
+// compiles (round 14's second iteration): bash's [[ … =~ … ]] returns 2 for one glibc refuses, which an if reads as
+// no match, so a refusal written if [[ "$status" =~ ^[A-Z]{64,1}_IN_PROGRESS$ ]]; then … fi never ran; and POSIX
+// reads a backslash in a bracket as a literal, so [0-9\].*] is [0-9\] and then .*, never one bracket (regexCompiles()).
+// Each holds a run's own lines too (SHELL_TABLE.regex).
+// The twelve classes POSIX names, the only ones glibc compiles.
+const POSIX_CLASSES = 'alnum alpha blank cntrl digit graph lower print punct space upper xdigit'.split(' ')
+// Whether glibc compiles a regex the readers admit: every { outside a bracket opens an interval {m}, {m,} or {m,n}
+// after something it repeats, with no bound past glibc's RE_DUP_MAX, 32767, and n no less than m; every range in a
+// bracket runs forwards, as its characters' codes do; and every [:class:] is one of POSIX's twelve.
+function regexCompiles(regex: string): boolean {
+  let bracket = false
+  for (let at = 0; at < regex.length; at++) {
+    const c = regex[at] ?? ''
+    if (bracket) {
+      const named = /^\[:([a-z]+):\]/.exec(regex.slice(at))
+      const end = regex[at + 2] ?? ']'
+      if (named !== null) {
+        if (!POSIX_CLASSES.includes(named[1] ?? '')) return false
+        at += named[0].length - 1
+      } else if (c === ']') bracket = false
+      else if (regex[at + 1] === '-' && end !== ']') {
+        if (end < c) return false
+        at += 2
+      }
+    } else if (c === '\\') at++
+    else if (c === '[') {
+      bracket = true
+      if (regex[at + 1] === '^') at++
+      if (regex[at + 1] === ']') at++
+    } else if (c === '{') {
+      const interval = /^\{(\d+)(?:,(\d*))?\}/.exec(regex.slice(at))
+      if (interval === null || at === 0 || '^(|'.includes(regex[at - 1] ?? '')) return false
+      const low = Number(interval[1])
+      const high = interval[2] === undefined || interval[2] === '' ? low : Number(interval[2])
+      if (low > 32767 || high > 32767 || high < low) return false
+      at += interval[0].length - 1
+    }
+  }
+  return true
+}
 const REGEX_TEST_RULE =
-  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break'
+  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break, and one bash compiles, with no backslash in a bracket, no range that runs backwards, no class POSIX doesn’t name and no interval past 32767 or whose bounds run downwards, since an if reads the status 2 bash gives one it can’t as no match'
 export function regexTestLines(text: string): number[] {
   const lines: number[] = []
   for (const [n, line] of shellViews(text).code.split('\n').entries()) {
@@ -5908,10 +5984,11 @@ export function regexTestLines(text: string): number[] {
       let bracket = false
       // A form that matches a line break leaves depth NaN, as an unbalanced one does.
       if (/[^\x20-\x7e]/.test(regex)) depth = Number.NaN
+      if (!regexCompiles(regex)) depth = Number.NaN
       for (let at = 0; at < regex.length; at++) {
         const c = regex[at] ?? ''
         if (c === '\\') {
-          if ('WsS'.includes(regex[at + 1] ?? '-')) depth = Number.NaN
+          if (bracket || 'WsS'.includes(regex[at + 1] ?? '-')) depth = Number.NaN
           at++
           continue
         }
@@ -6819,7 +6896,9 @@ class ShellReader {
         const start = this.i
         while (this.i < this.s.length && !/[ \t\n]/.test(this.peek())) this.i++
         const regex = this.s.slice(start, this.i)
-        if (!SHELL_TABLE.regex.test(regex)) this.refuse('a regular expression the table does not name', start)
+        if (!SHELL_TABLE.regex.test(regex) || !regexCompiles(regex)) {
+          this.refuse('a regular expression the table does not name', start)
+        }
         this.blanks()
         if (this.starts(']]')) {
           this.i += 2
@@ -8249,9 +8328,10 @@ const SCRIPTS = 'scripts'
 // from the folder it runs in and every one above it, and runs the program its yarn-path names (a file under .yarn/,
 // as yarn policies set-version writes it) before it reads an argument. Every job that runs only owner's-read code
 // checks out into a folder below setup-node's (DPW-04's job holds, DPW-11), which is the control there; this is a
-// second layer, since neither file is on the owner's-read list. And an npm one (round 14): CI holds the aws-cdk
-// tarball npm ci installed, which is the registry's at the lockfile's sha512 only while npm ci fetches it from the
-// registry with npm's defaults, while each deploy job's CLI_FETCH fetches the registry's own. A committed .npmrc
+// second layer, since neither file is on the owner's-read list. And an npm one (round 14): each deploy job's
+// CLI_FETCH fetches the registry's own aws-cdk tarball, and so does DPW-10's run test, which binds the lockfile's
+// sha512 to it (round 14's second iteration: npm ci's own fetch didn't, since a dependency the lockfile marks as
+// bundling fills npm's cache first, with no file of npm's own at all). A committed .npmrc
 // naming a cache folder the pull request also committed (cache=, or a registry=, offline or prefer-offline beside
 // it) let npm ci install, with no request at all, a tarball whose sha512 a one-line lockfile change named, so CI
 // passed a CLI every deploy job's CLI_FETCH then refused, before its credentials, for as long as that commit was
@@ -9985,7 +10065,7 @@ export const STOP_TOKEN_LINE = 'stop_token=$(openssl rand -hex 16)'
 const STOP_TOKEN_AT = STOP_HEAD.split('\n').indexOf(STOP_TOKEN_LINE)
 // The lines on which the canonical texts run their plain tools, or read a file by a redirection outside a line
 // above (the seventh review's third attack): grep and wc count the image's listing and its unpacked entries
-// and keep a one-off's log lines that match its pattern, readlink and realpath resolve the CLI's paths and a
+// and keep a one-off's log lines that match its pattern, wc counts a template's stream events, readlink and realpath resolve the CLI's paths and a
 // file asset's, git asks whether one commit is an ancestor of another, node runs prod-gate's history.ts,
 // sort sorts the running digests, sleep waits for main's CI, mktemp and cd make and enter CDK_FOLDER's folder (its HOME too),
 // cd and pwd find an assembly's root, and tee reads prod-gate's ignored lines into the summary. Each runs only
@@ -10008,6 +10088,7 @@ export const TEXT_TOOL_LINES = (): ReadonlyArray<readonly [string, string]> => [
   ['case "$(readlink -f "$RUNNER_TEMP/aws-cdk/package/bin/cdk")" in', CLI_CHECK],
   ['"$(readlink -f "$RUNNER_TEMP/aws-cdk/package")"/*) ;;', CLI_CHECK],
   ['case "$(realpath -m -- "$dir/$path")" in', ASSET_CHECK],
+  [`[ "$(jq -c --stream 'length' "$dir/$file" | wc -l)" = "$(jq '[..] | length' "$dir/$file")" ] ||`, ASSET_CHECK],
   ['root=$(cd "$1" && pwd -P)', ASSET_CHECK],
   ['is_ancestor() { git merge-base --is-ancestor "$1" "$2" 2>/dev/null; }', AWS_CHECK],
   [
@@ -12090,8 +12171,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
   }
   // As CLI_FETCH reads it, so a lockfile it would refuse fails here first: the registry's tarball at infra's
   // pin, by its fixed URL, with a sha512 integrity and no link (that the sha512 is the registry's own tarball's,
-  // CI's npm ci holds, fetching from the registry with npm's defaults, since DPW-04 refuses an .npmrc or
-  // npm-shrinkwrap.json anywhere in the tree: MANAGER_FILE, round 14); and as npm writes the entry of a package
+  // the run test holds, running CLI_FETCH as a deploy job does, against the registry: npm ci's fetch didn't, since
+  // a dependency the lockfile marks as bundling fills npm's cache first, round 14's second iteration); and as npm
+  // writes the entry of a package
   // CLI_CHECK accepts, its cdk bin at bin/cdk, holding no key but those npm writes for today's package (round
   // 13's second iteration: npm writes, and npm ci installs, peerDependencies and optionalDependencies as well as
   // dependencies, while a deploy job runs the tarball alone; installedCliFindings() holds the package itself).

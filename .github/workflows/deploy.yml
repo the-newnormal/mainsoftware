@@ -500,7 +500,10 @@ jobs:
           # policy by its ARN, whose grant the diff names by that ARN alone and never prints (the account's own
           # boundary attached as a policy would grant everything it bounds), or two inline policies whose names are
           # one name but for case (IAM keeps one document to a name, while the diff's IAM table shows both, so a grant
-          # could stand where the diff shows a Deny); any symbolic link.
+          # could stand where the diff shows a Deny); a template that gives a key twice in one object, read as the
+          # events jq's stream reads, one for each value it gives, against the values of its parse (jq and the diff
+          # read a repeated key's last value, while AWS leaves undefined which one CloudFormation reads, so any
+          # rule here could read another Resources than the one CloudFormation provisions); any symbolic link.
           # The release check then holds the one custom resource the workload writes, CDK's
           # Custom::VpcRestrictDefaultSG, whose answer its handler decides at deploy time and no diff shows: it
           # and its handler's function, one of each or neither, stand in a Platform stack alone, its ServiceToken
@@ -633,6 +636,8 @@ jobs:
               jq -e '[(.artifacts // {})[] | (.additionalMetadataFile // empty), (if .type == "aws:cloudformation:stack" then .properties.templateFile elif .type == "cdk:cloud-assembly" then .properties.directoryName elif .type == "cdk:asset-manifest" or .type == "cdk:tree" then .properties.file else empty end)] | all(.[]; type == "string" and test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") and (contains("..") | not))' "$dir/manifest.json" >/dev/null 2>&1 ||
                 asset_refuse 'a manifest names a file that is not a plain name in its own folder'
               while IFS= read -r file; do
+                [ "$(jq -c --stream 'length' "$dir/$file" | wc -l)" = "$(jq '[..] | length' "$dir/$file")" ] ||
+                  asset_refuse 'a template gives a key twice in one object, of which jq and the diff read the last value while AWS leaves undefined which one CloudFormation reads'
                 jq -e 'type == "object" and (keys - ["AWSTemplateFormatVersion", "Description", "Metadata", "Outputs", "Parameters", "Resources", "Rules"] | length == 0) and ([.. | objects | select(has("Fn::Transform"))] | length == 0) and (.Resources | type == "object" and all(.[]; type == "object" and (.Type | type == "string" and IN("AWS::CertificateManager::Certificate", "AWS::EC2::FlowLog", "AWS::EC2::InternetGateway", "AWS::EC2::Route", "AWS::EC2::RouteTable", "AWS::EC2::SecurityGroup", "AWS::EC2::SecurityGroupEgress", "AWS::EC2::SecurityGroupIngress", "AWS::EC2::Subnet", "AWS::EC2::SubnetRouteTableAssociation", "AWS::EC2::VPC", "AWS::EC2::VPCEndpoint", "AWS::EC2::VPCGatewayAttachment", "AWS::ECS::Cluster", "AWS::ECS::Service", "AWS::ECS::TaskDefinition", "AWS::ElastiCache::ParameterGroup", "AWS::ElastiCache::ReplicationGroup", "AWS::ElastiCache::SubnetGroup", "AWS::ElasticLoadBalancingV2::Listener", "AWS::ElasticLoadBalancingV2::ListenerRule", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::IAM::Role", "AWS::Lambda::Function", "AWS::Logs::LogGroup", "AWS::Route53::RecordSet", "AWS::SSM::Parameter", "AWS::SecretsManager::Secret", "Custom::VpcRestrictDefaultSG"))))' "$dir/$file" >/dev/null 2>&1 ||
                   asset_refuse 'a template holds a section, a transform or a resource type a workload synth never writes, which hands CloudFormation a template, a handler or a grant that neither the diff nor the release check shows'
                 jq -e '(.Parameters // {} | type == "object" and all(.[]; type == "object" and (keys - ["Default", "Description", "Type"] | length == 0) and (.Type | IN("AWS::SSM::Parameter::Value<String>", "AWS::SSM::Parameter::Value<List<String>>")) and (.Default | type == "string" and test("\\A/(cdk-bootstrap/hearthapp/version|hearth/organisation/id|hearth/((non)?prod|restore)/(network/isolated-subnets|zone/app|valkey/endpoint|auth-secret/arn|target-group/(api|realtime)|security-group/(api|realtime|worker|migrate|probe|valkey)))\\z")))) and ([.. | objects | keys[] | gsub("\\{\\}"; "") | test("[{}]")] | any | not) and ([paths(type == "string") as $p | getpath($p) | if ($p[-1] == "Fn::Sub") or ($p | length > 1 and .[-2] == "Fn::Sub" and .[-1] == 0) then gsub("\\$\\{[A-Za-z0-9_:.]+\\}"; "_") else . end | gsub("\\{\\}"; "") | test("[{}]")] | any | not)' "$dir/$file" >/dev/null 2>&1 ||
@@ -1459,8 +1464,10 @@ jobs:
           #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
           #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
-          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
-          #   only to the release all three services run.
+          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, allows a rollback only to
+          #   the release all three services run, and has auto output rolled=false unless all three run PREVIOUS
+          #   (whose rollback then realigns the stacks), so the pipeline's rollback never moves the services from
+          #   the release a person rolled back to.
           # - Every recorded digest it deploys is in ECR under its own commit's tag (sha-<commit>-<run>-<attempt>).
           # It writes go=true, or go=false, to the step's outputs (deploy and drill also replaced=<the release
           # found running, or none>, for the rollback job's auto check), and one summary line through the filter.
@@ -1591,6 +1598,14 @@ jobs:
                     deploy | drill)
                       tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)
                       aws_refuse "the services don't run Release's image (an incident rollback outside the pipeline): dispatch mode=rollback with release ${tag:-the commit whose image they run} first (deploy-and-rollback.md)"
+                      ;;
+                    auto)
+                      if [ "$running" != "${PREVIOUS#*:}" ]; then
+                        printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
+                        echo "aws-check: auto: the services run neither this run's release nor the previous one (an incident rollback outside the pipeline), so nothing is rolled back: dispatch mode=rollback with the release they run (deploy-and-rollback.md)" |
+                          mask | tee -a "$GITHUB_STEP_SUMMARY"
+                        return 0
+                      fi
                       ;;
                   esac
                 fi
@@ -2433,8 +2448,10 @@ jobs:
           #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
           #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
-          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
-          #   only to the release all three services run.
+          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, allows a rollback only to
+          #   the release all three services run, and has auto output rolled=false unless all three run PREVIOUS
+          #   (whose rollback then realigns the stacks), so the pipeline's rollback never moves the services from
+          #   the release a person rolled back to.
           # - Every recorded digest it deploys is in ECR under its own commit's tag (sha-<commit>-<run>-<attempt>).
           # It writes go=true, or go=false, to the step's outputs (deploy and drill also replaced=<the release
           # found running, or none>, for the rollback job's auto check), and one summary line through the filter.
@@ -2565,6 +2582,14 @@ jobs:
                     deploy | drill)
                       tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)
                       aws_refuse "the services don't run Release's image (an incident rollback outside the pipeline): dispatch mode=rollback with release ${tag:-the commit whose image they run} first (deploy-and-rollback.md)"
+                      ;;
+                    auto)
+                      if [ "$running" != "${PREVIOUS#*:}" ]; then
+                        printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
+                        echo "aws-check: auto: the services run neither this run's release nor the previous one (an incident rollback outside the pipeline), so nothing is rolled back: dispatch mode=rollback with the release they run (deploy-and-rollback.md)" |
+                          mask | tee -a "$GITHUB_STEP_SUMMARY"
+                        return 0
+                      fi
                       ;;
                   esac
                 fi
@@ -3574,8 +3599,10 @@ jobs:
           #   outputs rolled=false and every other mode refuses, naming that commit. Only a first deploy, finding
           #   no release, may find no image at all.
           # - Drift (services running a digest other than Release's, as after an incident rollback outside the
-          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, and allows a rollback
-          #   only to the release all three services run.
+          #   pipeline) refuses a deploy and a drill, naming the rollback to what runs, allows a rollback only to
+          #   the release all three services run, and has auto output rolled=false unless all three run PREVIOUS
+          #   (whose rollback then realigns the stacks), so the pipeline's rollback never moves the services from
+          #   the release a person rolled back to.
           # - Every recorded digest it deploys is in ECR under its own commit's tag (sha-<commit>-<run>-<attempt>).
           # It writes go=true, or go=false, to the step's outputs (deploy and drill also replaced=<the release
           # found running, or none>, for the rollback job's auto check), and one summary line through the filter.
@@ -3706,6 +3733,14 @@ jobs:
                     deploy | drill)
                       tag=$(get aws ecr describe-images --repository-name hearth-server --image-ids "imageDigest=${digests[0]}" --query 'imageDetails[0].imageTags' --output json 2>/dev/null | jq -r 'first(.[]? | capture("^sha-(?<c>[0-9a-f]{40})-").c) // ""' || true)
                       aws_refuse "the services don't run Release's image (an incident rollback outside the pipeline): dispatch mode=rollback with release ${tag:-the commit whose image they run} first (deploy-and-rollback.md)"
+                      ;;
+                    auto)
+                      if [ "$running" != "${PREVIOUS#*:}" ]; then
+                        printf 'go=false\nrolled=false\n' >>"$GITHUB_OUTPUT"
+                        echo "aws-check: auto: the services run neither this run's release nor the previous one (an incident rollback outside the pipeline), so nothing is rolled back: dispatch mode=rollback with the release they run (deploy-and-rollback.md)" |
+                          mask | tee -a "$GITHUB_STEP_SUMMARY"
+                        return 0
+                      fi
                       ;;
                   esac
                 fi

@@ -6813,7 +6813,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       const changed = RELEASE_STEP.replace(anchored, unanchored)
       expect(readShell(changed).refused, unanchored).toBeDefined()
       expect(canonicalTextFindings({ X: changed }), unanchored).toContain(
-        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break`,
+        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break, and one bash compiles, with no backslash in a bracket, no range that runs backwards, no class POSIX doesn’t name and no interval past 32767 or whose bounds run downwards, since an if reads the status 2 bash gives one it can’t as no match`,
       )
     }
     // A canonical text's own: release_shape in AWS_CHECK, unanchored, quoted, or with a | outside parentheses.
@@ -7027,6 +7027,10 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       ["x=$(jq -r '.a' \"$f\")\ny=$(jq -nr 'env.AWS_SECRET_ACCESS_KEY')", 1],
       ["x=$(jq -nr '$ENV.HOME')", 0],
       ['x=$(jq -r \'input_filename\' "$f")', 0],
+      // Round 14: --stream only with -c, so no -e reads the last of its events and no -s or -n reads them otherwise.
+      [`x=$(jq -e --stream 'length > 0' "$dir/$file")`, 0],
+      [`x=$(jq -c -s --stream 'length' "$dir/$file")`, 0],
+      [`x=$(jq --stream -n '.' "$dir/$file")`, 0],
       ['x=$(gh api "repos/$REPO/issues" --input /proc/self/environ)', 0],
       ['x=$(gh api "repos/$REPO/issues" -F "body=@/proc/self/environ")', 0],
       ['x=$(gh api "repos/$REPO/runs" --jq \'env\')', 0],
@@ -7502,57 +7506,44 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
   // Round 13's second iteration (FETCH-G2-01). CI's synths run the CLI npm ci installed, while a deploy job runs
   // the tarball CLI_FETCH unpacks with nothing beside it, and npm's install hides how the two differ: it installs a
   // peer and an optional dependency, drops a link member, strips the top folder whatever its name and makes each
-  // bin executable. So CI runs CLI_FETCH and CLI_CHECK themselves on the very tarball npm ci installed (npm's
-  // cache keeps it under the lockfile's sha512, and a stand-in curl serves it for the registry's URL alone), in
-  // the repository's own checkout, then starts the CLI as a deploy step does (the preamble's CDK in CDK_FOLDER's
-  // fresh folder and HOME, under the runner image's own node), asked only for its version. A release whose tarball
-  // would stop a deploy job at CLI_CHECK or at its first CLI call fails here, before merge.
-  it('runs the tarball npm ci installed through CLI_FETCH and CLI_CHECK, and its CLI starts at the pin (round 13)', () => {
-    const lock = JSON.parse(readRepoFile('package-lock.json')) as {
-      packages: Record<string, { integrity?: string }>
-    }
-    const integrity = lock.packages['node_modules/aws-cdk']?.integrity ?? ''
+  // bin executable. So CI runs CLI_FETCH and CLI_CHECK themselves, in the repository's own checkout, then starts the
+  // CLI as a deploy step does (the preamble's CDK in CDK_FOLDER's fresh folder and HOME, under the runner image's own
+  // node), asked only for its version. A release whose tarball would stop a deploy job at CLI_CHECK or at its first
+  // CLI call fails here, before merge. CLI_FETCH runs as each deploy job runs it, with the real curl, fetching the
+  // registry's tarball at the pin and requiring its sha512 to be the lockfile's integrity (round 14's second
+  // iteration: the test once read the tarball npm ci installed from npm's cache by that sha512, which a dependency
+  // the lockfile marks as bundling fills first, so npm ci installed, and this case passed, a planted tarball under
+  // an integrity the registry's bytes don't have, which every deploy job's fetch then refused). The network this
+  // process has passes through (a proxy's settings, where one is set), and a failure curl names is tried again in a
+  // fresh folder, up to three times.
+  it('runs the registry’s tarball at the pin through CLI_FETCH and CLI_CHECK, and its CLI starts at the pin (round 13)', () => {
     const pin = (JSON.parse(readRepoFile('infra/package.json')) as { devDependencies: Record<string, string> })
       .devDependencies['aws-cdk']
-    expect(integrity).toMatch(/^sha512-[A-Za-z0-9+/]{86}==$/)
-    const hex = Buffer.from(integrity.slice('sha512-'.length), 'base64').toString('hex')
-    const cache = execFileSync('npm', ['config', 'get', 'cache'], { cwd: root, encoding: 'utf8' }).trim()
-    const cached = join(cache, '_cacache', 'content-v2', 'sha512', hex.slice(0, 2), hex.slice(2, 4), hex.slice(4))
-    if (!existsSync(cached)) throw new Error(`npm's cache holds no ${integrity}: run npm ci first`)
     const run = mkdtempSync(join(scratch, 'installed-'))
-    const temp = join(run, 'temp')
-    const bin = join(run, 'bin')
-    execFileSync('mkdir', ['-p', temp, bin])
-    const url = `https://registry.npmjs.org/aws-cdk/-/aws-cdk-${pin}.tgz`
-    writeFileSync(
-      join(bin, 'curl'),
-      [
-        '#!/usr/bin/env bash',
-        "out='' previous='' url=''",
-        'for word in "$@"; do',
-        '  if [ "$previous" = --output ]; then out=$word; fi',
-        '  previous=$word url=$word',
-        'done',
-        `[ "$url" = '${url}' ] || { echo "stand-in curl: no such URL" >&2; exit 22; }`,
-        `cp '${cached}' "$out"`,
-        '',
-      ].join('\n'),
-      { mode: 0o755 },
-    )
     // The PATH a credentialed job's step has, and the node it finds (deployPathOf(), deployNode()): the image's own,
     // which in CI is held to IMAGE_NODE_MAJOR.
     const toolCache = process.env.RUNNER_TOOL_CACHE
     const deployPath = deployPathOf(process.env.PATH ?? '', toolCache)
     const node = deployNode(deployPath, toolCache)
     expect(node.problems, `the deploy jobs' node, ${node.path} ${node.version}`).toEqual([])
-    const step = (text: string) =>
+    const network = Object.fromEntries(
+      ['HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy', 'CURL_CA_BUNDLE', 'SSL_CERT_FILE', 'SSL_CERT_DIR'].flatMap(
+        name => (process.env[name] === undefined ? [] : [[name, process.env[name] ?? '']]),
+      ),
+    )
+    let temp = ''
+    const step = (text: string, more: Readonly<Record<string, string>> = {}, cwd = root) =>
       spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
-        cwd: root,
+        cwd,
         encoding: 'utf8',
-        env: { PATH: `${bin}:${deployPath}`, HOME: run, RUNNER_TEMP: temp },
+        env: { PATH: deployPath, HOME: run, RUNNER_TEMP: temp, ...more },
       })
-    const fetch = step(CLI_FETCH)
-    expect({ status: fetch.status, said: spoken(fetch.stdout), errors: fetch.stderr }).toEqual({
+    let fetch: ReturnType<typeof step> | undefined
+    for (let attempt = 1; attempt <= 3 && (fetch === undefined || fetch.stderr.startsWith('curl: ')); attempt++) {
+      temp = mkdtempSync(join(run, 'temp-'))
+      fetch = step(CLI_FETCH, network)
+    }
+    expect({ status: fetch?.status, said: spoken(fetch?.stdout ?? ''), errors: fetch?.stderr }).toEqual({
       status: 0,
       said: [],
       errors: '',
@@ -7569,7 +7560,30 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
     expect(spoken(version.stdout), under).toEqual([
       expect.stringMatching(new RegExp(`^${pin?.replaceAll('.', '\\.')} \\(build [0-9a-f]+\\)$`)),
     ])
-  }, 60_000)
+    // The plant the cache's reading passed: a dependency the lockfile marks as bundling, which npm unpacks first and
+    // whose tarball fills its cache, and aws-cdk's integrity that tarball's sha512, which no rule of DPW-10 can tell
+    // from the registry's. The registry's bytes at the pin are refused.
+    const planted = mkdtempSync(join(run, 'planted-'))
+    execFileSync('mkdir', [join(planted, 'infra')])
+    writeFileSync(join(planted, 'infra', 'package.json'), readRepoFile('infra/package.json'))
+    const lock = JSON.parse(readRepoFile('package-lock.json')) as { packages: Record<string, Record<string, unknown>> }
+    const other = `sha512-${createHash('sha512').update('another tarball').digest('base64')}`
+    lock.packages['node_modules/aws-cdk'] = { ...lock.packages['node_modules/aws-cdk'], integrity: other }
+    lock.packages['node_modules/zz-plant'] = {
+      version: '1.0.0',
+      resolved: 'file:vendor/zz-plant.tgz',
+      integrity: other,
+      dev: true,
+      bundleDependencies: ['none'],
+    }
+    writeFileSync(join(planted, 'package-lock.json'), JSON.stringify(lock))
+    temp = mkdtempSync(join(run, 'temp-'))
+    const refused = step(CLI_FETCH, network, planted)
+    expect({ status: refused.status, said: spoken(refused.stdout).at(-1) }).toEqual({
+      status: 1,
+      said: "cli-fetch: the tarball's sha512 isn't the lockfile's integrity",
+    })
+  }, 120_000)
 })
 
 describe('DPW-13 (C11-D50, C11-D79): IMAGE_CHECK against planted image archives', () => {
@@ -10293,6 +10307,39 @@ describe('DPW-06 (C11-D52, C11-D58, C11-D61): AWS_CHECK against planted AWS answ
     )
   }, 30_000)
 
+  // Round 14's second iteration: the pipeline's own rollback read the services' images and then ignored them, so
+  // after an incident rollback outside the pipeline to an older release (A) it moved the services forward to the
+  // gate's previous release (B). It now rolls nothing back unless all three run this run's release or the previous
+  // one, whose rollback realigns the stacks.
+  it('rolls nothing back over drift unless the services run the previous release (round 14)', () => {
+    const live = { stack: stack('UPDATE_COMPLETE', release('C', D.C)), services: ONE }
+    const auto = (running: string, drift?: string) =>
+      awsCheck({
+        mode: 'auto',
+        release: release('C', D.C),
+        previous: release('B', D.B),
+        ...live,
+        running,
+        drift,
+        ecr: all(),
+      })
+    for (const [running, drift] of [
+      [D.A, undefined],
+      [D.C, D.A],
+      [D.B, D.A],
+      [D.D, undefined],
+    ] as const) {
+      const stopped = auto(running, drift)
+      expect(stopped.verdict, `${running} ${drift}`).toBe('rolled-false')
+      expect(stopped.said).toContain(
+        "aws-check: auto: the services run neither this run's release nor the previous one (an incident rollback outside the pipeline), so nothing is rolled back",
+      )
+      expect(readFileSync(join(scratch, 'output'), 'utf8')).toBe('go=false\nrolled=false\n')
+    }
+    expect(auto(D.B).verdict).toBe('pass')
+    expect(auto(D.C).verdict).toBe('pass')
+  }, 30_000)
+
   // The tenth review's first attack (FLOW-A1-01): a service's task definition reached aws as a value no text held
   // to its shape, so a refactor that read it from the Services stack's outputs, which a release writes, handed
   // aws-cli a file:// value to load and send to ECS. Each is now one of its stage's own families' before ECS is
@@ -11595,6 +11642,61 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ],
     ] as const) {
       expect(check(plant), label).toBe(HANDS)
+    }
+  }, 120_000)
+
+  // Round 14's second iteration: a template that gives Resources twice, the first holding anything
+  // (here a public api service on a public registry's image, under the synth's ids and under ids of its own) and
+  // the last the synth's, re-keyed from the file's bytes. jq and the CLI's diff read the last key alone, while AWS
+  // leaves undefined which one CloudFormation reads, so every other rule passed it. The check reads the file as jq's
+  // stream events, one for each value given, and refuses it when its parse holds fewer values.
+  it('refuses a template that gives a key twice in one object (round 14)', () => {
+    const TWICE = refused(
+      'a template gives a key twice in one object, of which jq and the diff read the last value while AWS leaves undefined which one CloudFormation reads',
+    )
+    type Resources = Record<string, Record<string, unknown>>
+    // Nonprod's Services template written again from its own text, with a first value for Resources (top) or for
+    // its first resource's id (inner) written ahead of the rest when one is given, and its asset re-keyed from the
+    // new bytes, as a release's code would write it.
+    const written = (where: 'top' | 'inner', first?: (resources: Resources) => unknown) => (dir: string) => {
+      const path = named(nonprod(dir), 'Services', '.template.json')
+      const template = JSON.parse(readFileSync(path, 'utf8')) as { Resources: Resources }
+      const text = JSON.stringify(template)
+      const id = Object.keys(template.Resources)[0] ?? ''
+      const at = where === 'top' ? 1 : text.indexOf('"Resources":{') + '"Resources":{'.length
+      const key = where === 'top' ? 'Resources' : id
+      const extra = first === undefined ? '' : `${JSON.stringify(key)}:${JSON.stringify(first(template.Resources))},`
+      writeFileSync(path, `${text.slice(0, at)}${extra}${text.slice(at)}`)
+      rekey(nonprod(dir), 'Services')
+    }
+    const opened = (resources: Resources) =>
+      Object.fromEntries(
+        Object.entries(resources).map(([id, resource]) => {
+          const properties = { ...(resource.Properties as Record<string, unknown>) }
+          if (resource.Type === 'AWS::ECS::Service') properties.EnableExecuteCommand = true
+          if (resource.Type === 'AWS::ECS::TaskDefinition') {
+            properties.ContainerDefinitions = [
+              { Name: 'server', Image: 'public.ecr.aws/docker/library/busybox:latest' },
+            ]
+          }
+          return [id, { ...resource, Properties: properties }]
+        }),
+      )
+    // The template written once and re-keyed passes, so each refusal below is its plant's.
+    expect(check(written('top'))).toBe('passed')
+    for (const [plant, label] of [
+      [written('top', opened), 'a first Resources opening every service, under the synth’s ids'],
+      [
+        written('top', () => ({
+          Planted: { Type: 'AWS::SSM::Parameter', Properties: { Type: 'String', Value: 'x' } },
+        })),
+        'a first Resources of an id the last doesn’t give, which a stream rebuilt key by key would merge',
+      ],
+      [written('top', resources => resources), 'the same Resources given twice'],
+      [written('inner', resources => Object.values(resources)[0]), 'a resource given twice inside Resources'],
+      [written('inner', () => null), 'a resource given first as null'],
+    ] as const) {
+      expect(check(plant), label).toBe(TWICE)
     }
   }, 120_000)
 
@@ -20159,7 +20261,7 @@ describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02,
   const PATTERN_EXPANSION = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: expands nothing outside double quotes in a [[ … ]] test or a case pattern, where bash reads an unquoted value as pattern text, its | or * deciding what matches`
   const REGEX_TEST = (name: string, line: number) =>
-    `${GUARD}: DPW-10 ${name}, line ${line}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break`
+    `${GUARD}: DPW-10 ${name}, line ${line}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break, and one bash compiles, with no backslash in a bracket, no range that runs backwards, no class POSIX doesn’t name and no interval past 32767 or whose bounds run downwards, since an if reads the status 2 bash gives one it can’t as no match`
   const TEST_CHAIN = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: tests only where its failure is read: outside an if, elif, while or until condition no ! starts a command and a test ([, [[, test or jq -e) is followed by || in its and-or list, never by && alone (but a choice ending in an assignment of a literal), since errexit reads only the last command of an && list and no negated status; and no test is one word, the operator glued to its operands`
   const bash = (text: string, env: Record<string, string> = {}) =>
@@ -20308,9 +20410,34 @@ describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02,
       ['^a\\Sb$', true],
       ['^[\x01-z]+$', true],
       ['^[0-9]+\\.[0-9]+\\.[0-9]+$', false],
+      // Round 14's second iteration: a backslash in a bracket, which POSIX reads as a literal, so the bracket ends at
+      // the first ] and .* stands outside it; and a regex glibc can't compile, for which bash's [[ … ]] returns 2,
+      // which an if reads as no match.
+      ['^current_prod_id=[0-9\\].*]$', true],
+      ['^[A-Z]{64,1}_IN_PROGRESS$', true],
+      ['^[0-9]{1,65536}$', true],
+      ['^[0-9]{32768}$', true],
+      ['^{2}a$', true],
+      ['^a{x}$', true],
+      ['^[Z-A]+$', true],
+      ['^[a-Z]+$', true],
+      ['^[[:caps:]]+$', true],
+      ['^[[:hex:]]+$', true],
+      ['^[0-9]{1,32767}$', false],
+      ['^[A-z]+$', false],
+      ['^[A-Za-z0-9/+=_-]{0,511}$', false],
     ] as const) {
       expect(regexTestLines(`if [[ "$x" =~ ${regex} ]]; then :; fi`).length > 0, regex).toBe(found)
     }
+    // A run's own lines are held the same way, and bash gives each such regex status 2, the valid ones 0 or 1.
+    for (const regex of ['^[A-Z]{64,1}$', '^[z-a]+$', '^[0-9]{1,65536}$']) {
+      expect(readShell(`if [[ "$X" =~ ${regex} ]]; then\n  exit 1\nfi`).refused?.what, regex).toBe(
+        'a regular expression the table does not name',
+      )
+      expect(bash(`[[ "$D" =~ ${regex} ]]`, { D: 'A' }).status, regex).toBe(2)
+    }
+    expect(bash('[[ "$D" =~ ^[0-9]{1,32767}$ ]]', { D: '1' }).status).toBe(0)
+    expect(bash('[[ "$D" =~ ^[0-9\\].*]$ ]]', { D: '1\nmode=x]' }).status).toBe(0)
     // What bash does with the first: a value with a line break and a line of its own passes, which the committed
     // shape refuses.
     const broken = `${'e'.repeat(40)}:sha256:\nservices_started=false${'x'.repeat(41)}`
@@ -20847,6 +20974,27 @@ describe('Round 14, iteration 1: the reader’s ways past a refusal (DPW-10)', (
     expect(readsAsBash('f() {\n  local x\n  x=$(false) || return 1\n}')).toBe(true)
     expect(bash('f() { local x=$(false) || return 1; echo on; }; f').stdout).toBe('on\n')
     expect(bash('f() { local x; x=$(false) || return 1; echo on; }; f').status).toBe(1)
+    // Round 14's second iteration: bash reads no status from a substitution in a here-string's word either, so the
+    // records read written jq … <<<"$(gh api …)" went on with no records past a failed read.
+    const call = 'gh api "repos/$REPO/deployments?environment=$1&task=hearth-release&per_page=100"'
+    const end = "sort_by(.revision, .id) | last)}') || return"
+    const herestring = swapped(
+      swapped(NEWEST_RELEASE, `records=$(${call} | jq -c`, 'records=$(jq -c'),
+      end,
+      end.replace("') || return", `' <<<"$(${call})") || return`),
+    )
+    expect(canonicalTextFindings({ NEWEST_RELEASE: herestring })).toContain(
+      `${GUARD}: DPW-10 NEWEST_RELEASE: is written in the shell shellViews() reads`,
+    )
+    for (const text of [
+      'x=$(jq . <<<"$(false)") || exit 1',
+      'x=$(jq . <<< $(false)) || exit 1',
+      "jq . <<<'a'$(false)",
+    ]) {
+      expect(readsAsBash(text), text).toBe(false)
+    }
+    expect(readsAsBash('x=$(jq . <<<"$v") || exit 1')).toBe(true)
+    expect(bash('x=$(jq . <<<"$(false)") || exit 1; echo on').stdout).toBe('on\n')
   })
 
   // EXPAND-G1-03: printf reuses its format for each word left over, and splits and globs an unquoted one.
