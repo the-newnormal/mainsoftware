@@ -50,9 +50,12 @@
 // branch pushed back to that commit. ci.yml runs on a pull request's edited activity too, a change of its base
 // among them, so the newest run tests the merge into the base it merges into (DPW-04 holds its triggers: round
 // 12's third iteration, its second pass, where a retarget started no run and the gate read a run that tested the
-// merge into the old base). .nvmrc, which chooses that job's Node and every deploy job's, is
-// 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one job a
-// Node on which a script's entry runs nothing and exits 0.
+// merge into the old base). .nvmrc, which chooses that job's Node and that of every deploy job that runs
+// setup-node, is 24 alone (NVMRC), which every setup-node reads the same way, so no manifest read apart gives one
+// job a Node on which a script's entry runs nothing and exits 0. The five credentialed jobs run no setup-node, so
+// their CLI runs under the runner image's own Node (22 on ubuntu-24.04): the aws-cdk package's engines is held to
+// a floor that Node meets (IMAGE_NODE_MAJOR), and the test that starts the CLI does so under that Node (round 13's
+// third iteration, where a CLI needing Node 23 passed every CI start under Node 24).
 // Every run of a job that holds the deploy role, or the OIDC request token that gets it, but the account
 // id's mask starts by stopping the runner reading workflow commands for the rest of its step (STOP_HEAD,
 // the preamble's first lines), before the credentials action as after it, so no ##[add-mask] or other
@@ -102,13 +105,14 @@
 // handler of a release's own or another account's answers into a grant the diff shows only by an attribute's name
 // (the handler's code itself is the release's own, as the image is: ASSET_CHECK holds a zip asset's key to 64 hex
 // digits and .zip, never to the zip's bytes, which it doesn't read, and the CLI uploads nothing to a key already
-// in the bucket, so the first release to upload a key decides what every later one naming it runs; what that
-// code can do is its role's grant, which the diff's IAM table shows, so the function runs as its own unnamed role,
-// trusted by Lambda alone, as a flow log delivers as its own, trusted by VPC flow logs alone, and a named role is
-// trusted by ECS tasks alone: round 12's fourth iteration, where the handler run as the api's execution role
-// printed, on a first create, as an honest release's function line beside that role's own grants), refuses a
-// file asset whose id, which
-// the CLI joins to the path it writes a packaged zip to or uploads one from, isn't its key's digits, and holds
+// holding more than 22 bytes, an empty zip's size, over which it uploads again (a zip of 22 bytes or fewer holds
+// no file, so no function runs from it), so the first release to upload more than that to a key decides what
+// every later one naming it runs; what that code can do is its role's grant, which the diff's IAM table shows, so
+// the function runs as its own unnamed role, trusted by Lambda alone, as a flow log delivers as its own, trusted by
+// VPC flow logs alone, and a named role is trusted by ECS tasks alone: round 12's fourth iteration, where the
+// handler run as the api's execution role printed, on a first create, as an honest release's function line beside
+// that role's own grants), refuses a file asset whose id, which the CLI joins to the path it writes a packaged zip
+// to or uploads one from, isn't its key's digits, and holds
 // every resource to the property paths and forms the workload synth writes for its type (one jq object literal
 // in its text), every ARN, account id and stage name in a template to the account and the stack's own stage, and
 // each value a service acts on (a task's roles, image, logs, secret and tags and its one container, named server,
@@ -163,7 +167,10 @@
 // through SHELL_TABLE, an allowlist of the shell forms the workflow uses (blanks, word characters, quoting,
 // expansions of names bash neither sets nor reads for itself, so never $_, which holds the last word of the command
 // before, substitutions, operators, redirections after a command's word alone, since bash takes 2>/dev/null set as
-// set's, keywords, tests, case patterns, functions, assignments and builtins as it holds them), so any form the
+// set's, keywords, tests, case patterns, functions, assignments and builtins as it holds them: a ! only where an if
+// or elif condition is read and a test before && only there, since errexit reads neither a negated status nor an
+// && list's commands but its last, an echo whose first word, before others, starts with no expansion, which
+// could be a flag, and a regex's bracket expression one character, round 13's third iteration), so any form the
 // table doesn't name is refused at its line (DPW-10 in a credentialed job, DPW-13 in a record job, DPW-07 in
 // every other), whatever it is, while a form it names that bash or jq reads otherwise is a gap in it, behind the
 // owner's read of the changed line (the last paragraph); each command it reads in a credentialed or
@@ -288,8 +295,12 @@
 // function whose body isn't a { … } group, each where bash starts a command the reader reads none: round 12's
 // fourth iteration; and an append before a command's word, NAME+=, or redirections written with no blank between
 // them, read as no prefix, and a function's body counted to a } that was an argument or escaped, each hiding a
-// command or an exit: its second pass), to ending a step or a function only by a literal status, opening no
-// subshell where a
+// command or an exit: its second pass), to testing only where a failure is read (testChainLines(): outside a
+// condition no ! starts a command and a test before && is followed by ||, and no test is one word, an operator
+// glued to its operands, round 13's third iteration), to expanding nothing outside double quotes in a [[ … ]]
+// test or a case pattern, where bash reads the value as pattern text (patternLines(), the same iteration: a
+// family read from a stack output, written ^$family:…$, took x|.* and passed the api's definition as the
+// migrate one), to ending a step or a function only by a literal status, opening no subshell where a
 // command starts and refusing inside no substitution (verdictLines(): a refusal's bare exit after echo … | mask,
 // and ( … ) || echo around PROBE's call, each ended the step with 0: round 12's fourth iteration; and an exit, or
 // a call of a function that exits, in a $( … ), <( … ) or >( … ) ends that subshell alone, so : "$( … ||
@@ -431,9 +442,12 @@
 // which GitHub counts on the file as stored. Every rule takes deploy.yml through deployWritten(), deployStored()
 // or workflowsWritten() alone (round 13), and the test holds each to how its table says it reads, the file as
 // stored only under a reason named there (it reads every use of the map of workflows from the syntax tree, and
-// holds every parameter typed as a map of texts to its three names, so no alias, helper or other walk takes the
-// map unseen: round 13's second iteration), and runs each over both layouts in every case that has two, a plant
-// into a shared text at every step that runs it included, so a rule that read the stored lines by job fails there.
+// holds every parameter whose type is written as a map of texts to its three names: round 13's second iteration;
+// and since that reads spellings, which an options object, a type written as what it walks or a generic got past,
+// every exported rule stands in that table or in the table of rules that read no workflow, each of those pinned to
+// its parameters, and CI is bound once: its third iteration), and runs each over both layouts in every case that
+// has two, a plant into a shared text at every step that runs it included, so a rule that read the stored lines by
+// job fails there.
 //
 // What holds a change to a pinned text. Every run in deploy.yml is pinned whole, its glue lines and the
 // canonical texts inside it alike, and so are its jobs' if: and needs:, their steps, env:, with: and outputs:,
@@ -561,9 +575,15 @@ get() { "$@" 2> >(mask >&2); }
 CDK="$RUNNER_TEMP/aws-cdk/package/bin/cdk"
 export CDK_DISABLE_CLI_TELEMETRY=true CDK_DISABLE_VERSION_CHECK=true`
 
-// The CLI's folder (C11-D76, DPW-10, DPW-14): before any CDK line, an empty folder made for the run and a
-// fresh HOME, so no cdk.json (which could name a plugin or a build command) and no ~/.cdk.json waits there.
-export const CDK_FOLDER = sh`cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME`
+// The CLI's folder (C11-D76, DPW-10, DPW-14): before any CDK line, an empty folder made for the run, which is
+// its HOME too, so no cdk.json (which could name a plugin or a build command) and no ~/.cdk.json waits there.
+// Three commands, each one errexit reads (round 13's third iteration): written cd "$(mktemp -d)" && HOME=… &&
+// export HOME, a mktemp that failed (no space or inode left) changed no folder (a failed substitution in an
+// argument trips nothing, and cd "" succeeds), and the failed assignment, not the last of its && list, ended
+// nothing either, so the CLI started in the checkout of the run's commit with HOME empty, where a cdk.json's
+// build command runs and an empty HOME reads ./.cdk.json and ./.aws/config. Assigned alone, a substitution's
+// failure ends the step.
+export const CDK_FOLDER = sh`HOME="$(mktemp -d)"; cd "$HOME"; export HOME`
 
 // The CLI's fetch (C11-D48, C11-D76, DPW-10): the whole run of the step that installs the CLI, before the
 // credentials action. No npm runs in a job that holds the OIDC request token: npm would read the repository's
@@ -639,7 +659,8 @@ export const ASSET_CHECK = sh`# The asset and release checks (ASSET_CHECK; C11-D
 # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
 # isn't the synth's shape (a file's the sha256 of its bytes and .json, read from a plain name in its own
 # folder, a zip's 64 hex digits and .zip, which ties it to no bytes): the CLI uploads nothing to a key
-# that already holds an object, so whatever an earlier call or run put at a key is what CloudFormation
+# that already holds an object of more than 22 bytes (it uploads again over one of 22 or fewer, an
+# empty zip's size), so whatever an earlier call or run put at a key is what CloudFormation
 # gets, at a template's key, held to its bytes, the template itself, and at a zip's the bytes its first
 # upload carried, which this check never reads (a zip is the release's own, as the image is); a file
 # asset whose id, its key in the manifest's files, isn't its key's 64 hex digits (the CLI writes the zip
@@ -1305,7 +1326,7 @@ aws_check() {
       jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null ||
         aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
       while IFS= read -r td; do
-        [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-$stage-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
+        [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-"$stage"-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
           aws_refuse "a service's task definition isn't one of its stage's"
         image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)
         [[ "$\{image##*@}" =~ ^sha256:[0-9a-f]{64}$ ]] || aws_refuse "a service's image isn't named by its digest"
@@ -1360,7 +1381,7 @@ tasks_outputs() {
   fi
   for kind in migrate probe; do
     definition=$(output "$\{kind^}TaskDefinition")
-    if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "$\{definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+    if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "$\{definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
       echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
       exit 1
     fi
@@ -3590,17 +3611,23 @@ const PATTERN_TEST = '\uE001'
 // the next unmatched ) anywhere, and every command bash ran in between, lines after the esac among them, was
 // seen by no rule. A pattern that holds the word [[ (bash reads it there as a pattern, never a test) is marked
 // with PATTERN_TEST, and readsAsBash() refuses the text.
-function commandCode(code: string): string {
+// The spans it blanks, by offset (from, to), are added to spans when one is given.
+function commandCode(code: string, spans?: Array<readonly [number, number]>): string {
   const raw = code.split('\n')
   const continued = raw.map((_, n) => n > 0 && code.includes('\\') && /(?:^|[^\\])(?:\\\\)*\\$/.test(raw[n - 1] ?? ''))
   const startsCommand = (line: string, n: number, at: number) =>
     !(continued[n] && line.slice(0, at).trim() === '') && ENDS_AT_COMMAND_START.test(line.slice(0, at))
+  let lineStart = 0
   const text = raw
-    .map((line, n) =>
-      line.replace(/\[\[(?=[ \t(])([^\n]*?)\]\]/g, (whole, inner: string, at: number) =>
-        startsCommand(line, n, at) ? `[[${keepSubstitutions(inner)}]]` : whole,
-      ),
-    )
+    .map((line, n) => {
+      const replaced = line.replace(/\[\[(?=[ \t(])([^\n]*?)\]\]/g, (whole, inner: string, at: number) => {
+        if (!startsCommand(line, n, at)) return whole
+        spans?.push([lineStart + at + 2, lineStart + at + 2 + inner.length])
+        return `[[${keepSubstitutions(inner)}]]`
+      })
+      lineStart += line.length + 1
+      return replaced
+    })
     .join('\n')
   // (A text with no case word has nothing more to blank.)
   if (!/(?<![\w-])case\s/.test(text)) return text
@@ -3671,6 +3698,7 @@ function commandCode(code: string): string {
       }
       const blanked = keepSubstitutions(text.slice(i, end))
       for (let at = 0; at < blanked.length; at++) out[i + at] = blanked[at] ?? ''
+      spans?.push([i, end])
       if (PATTERN_WORD_TEST.test(text.slice(i, end))) out[i] = PATTERN_TEST
       if (end < text.length) out[end] = ';'
       top.in = 'body'
@@ -5703,6 +5731,12 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     for (const line of regexTestLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${REGEX_TEST_RULE}`)
     }
+    for (const line of patternLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${PATTERN_EXPANSION_RULE}`)
+    }
+    for (const line of testChainLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${TEST_CHAIN_RULE}`)
+    }
     for (const line of canonicalCommandLines(text, functions)) {
       found.push(
         `${GUARD}: DPW-10 ${name}, line ${line + 1}: runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line`,
@@ -5718,11 +5752,15 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
 // wrote, an answer from AWS or GitHub) passes with whatever stands beside it, a line that then writes its own
 // output among them. Every =~ in a canonical text is anchored at both ends, ^ first and an unescaped $ last, its
 // word unquoted (a quoted one bash matches as a string) and a | only inside parentheses (^a|b$ is ^a or b$), as
-// SHELL_TABLE.regex holds a run's own lines; then bash matches the whole word. No committed text writes another.
-// A glob test ([[ WORD == PATTERN ]], which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and
-// which a run's own lines can't write) matches what its * says, in the open, so it stays the owner's read.
+// SHELL_TABLE.regex holds a run's own lines. A bracket expression is read as one character, which no parenthesis
+// or | inside counts for (round 13's third iteration: ^[(]A|B[)]$ read as a group to both readers, while POSIX
+// reads [(] and [)] as literals and so ^(A or B)$, two half-anchored branches); one holding a (, ), | or [ but a
+// [:class:], or left open, is refused. And no expansion stands in the regex, but in double quotes (patternLines()
+// below). Then bash matches the whole word. No committed text writes another. A glob test ([[ WORD == PATTERN ]],
+// which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and which a run's own lines can't write)
+// matches what its * says, in the open, so it stays the owner's read.
 const REGEX_TEST_RULE =
-  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses, so bash matches the whole value and never a part of it'
+  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it'
 export function regexTestLines(text: string): number[] {
   const lines: number[] = []
   for (const [n, line] of shellViews(text).code.split('\n').entries()) {
@@ -5730,17 +5768,75 @@ export function regexTestLines(text: string): number[] {
       const regex = match[1] ?? ''
       let depth = 0
       let alternativeOutside = false
-      for (const [at, c] of [...regex].entries()) {
-        if (regex[at - 1] === '\\') continue
-        if (c === '(') depth++
+      let bracket = false
+      for (let at = 0; at < regex.length; at++) {
+        const c = regex[at] ?? ''
+        if (c === '\\') {
+          at++
+          continue
+        }
+        if (bracket) {
+          // A [:class:] is the bracket's own; any other (, ), | or [ in it is a literal bash reads, never a group.
+          const named = /^\[:[a-z]+:\]/.exec(regex.slice(at))?.[0]
+          if (named !== undefined) at += named.length - 1
+          else if (c === ']') bracket = false
+          else if ('()|['.includes(c)) depth = Number.NaN
+          continue
+        }
+        if (c === '[') {
+          bracket = true
+          // A ] first in the bracket, or after its ^, is a literal of the bracket.
+          if (regex[at + 1] === '^') at++
+          if (regex[at + 1] === ']') at++
+        } else if (c === '(') depth++
         else if (c === ')') depth--
         else if (c === '|' && depth <= 0) alternativeOutside = true
       }
       const anchored = /^\^/.test(regex) && /(?<!\\)\$$/.test(regex) && regex.length >= 2
-      if (!anchored || alternativeOutside || depth !== 0) lines.push(n)
+      if (!anchored || alternativeOutside || bracket || depth !== 0) lines.push(n)
     }
   }
   return [...new Set(lines)]
+}
+
+// An expansion bash reads as pattern text (round 13's third iteration): in [[ … =~ REGEX ]], in the right side of
+// [[ … == PATTERN ]], = or !=, and in a case pattern, bash expands an unquoted $name, ${…} or $( … ) first and
+// then reads its value as part of the pattern, so a | or * in a value (a family read from a stack output,
+// written ^$family:[1-9][0-9]{0,5}$ as the committed texts once wrote $STAGE and $kind) decided what matched:
+// family x|.* turned the anchored test into ^x or a part-match anywhere, and an api's definition passed as the
+// migrate one. A double-quoted expansion is matched as its literal text, so every expansion in a [[ … ]] test's
+// operands or a case pattern stands in double quotes (a regex's final $, its anchor, is no expansion).
+const PATTERN_EXPANSION_RULE =
+  'expands nothing outside double quotes in a [[ … ]] test or a case pattern, where bash reads an unquoted value as pattern text, its | or * deciding what matches'
+export function patternLines(text: string): number[] {
+  const view = shellViews(text).code
+  // The spans commandCode() blanks, a [[ … ]] test's operands and a case's patterns, each read from its start
+  // outside quotes, a substitution's text among them.
+  const spans: Array<readonly [number, number]> = []
+  commandCode(view, spans)
+  const lines = new Set<number>()
+  for (const [from, to] of spans) {
+    // The quotes and substitutions open at each offset: only an expansion with none open is pattern text (one in a
+    // substitution is its command's word, whose output the substitution's own quoting decides).
+    const open: Array<'"' | ')'> = []
+    for (let at = from; at < to; at++) {
+      const c = view[at] ?? ''
+      const top = open.at(-1)
+      if (c === '\\') at++
+      else if (c === '"') {
+        if (top === '"') open.pop()
+        else open.push('"')
+      } else if (c === '$' && /[A-Za-z_0-9{(@*#?!$-]/.test(view[at + 1] ?? '')) {
+        if (open.length === 0) lines.add(view.slice(0, at).split('\n').length - 1)
+        if (view[at + 1] === '(') {
+          open.push(')')
+          at++
+        }
+      } else if (c === '(' && top === ')') open.push(')')
+      else if (c === ')' && top === ')') open.pop()
+    }
+  }
+  return [...lines].sort((a, b) => a - b)
 }
 
 // How a canonical text ends a step or a function (round 12's fourth iteration): exit and return only with a
@@ -5852,6 +5948,111 @@ export function verdictLines(text: string, exiting: ReadonlySet<string> = exitin
   return [...lines].sort((a, b) => a - b)
 }
 
+// How a canonical text tests (round 13's third iteration). bash's errexit reads neither a negated pipeline's
+// status nor that of any command of an && or || list but the last, so a check written as a statement ! jq -e …,
+// or [[ A ]] && [[ B ]] for if ! [[ … ]], ended nothing when it failed, and [[ "$a"!="$b" ]] or [ "$a"="$b" ],
+// the operator glued, is a test of one non-empty word, always true. Outside an if, elif, while or until
+// condition, where errexit reads no status, a ! starts no command, and a test ([, [[, test or a jq -e) before
+// && is followed, in its and-or list or a group around it, by a ||, whose command runs on its failure; the one
+// exception is a test whose list ends, after its &&, in an assignment of a literal (AWS_CHECK's
+// [ "$stage" = restore ] && stage=prod), a choice rather than a check. And no [, [[ or test is one word.
+const TEST_CHAIN_RULE =
+  'tests only where its failure is read: outside an if, elif, while or until condition no ! starts a command and a test ([, [[, test or jq -e) is followed by || in its and-or list, never by && alone (but a choice ending in an assignment of a literal), since errexit reads only the last command of an && list and no negated status; and no test is one word, the operator glued to its operands'
+export function testChainLines(text: string): number[] {
+  const view = shellViews(text).code
+  const code = commandCode(view)
+  const lineOf = (at: number) => code.slice(0, at).split('\n').length - 1
+  const startsAt = (at: number) => ENDS_AT_COMMAND_START.test(code.slice(code.lastIndexOf('\n', at - 1) + 1, at))
+  // Whether each offset is inside a condition: from an if, elif, while or until where a command starts to its
+  // then or do.
+  const condition: boolean[] = []
+  const open: string[] = []
+  let last = 0
+  for (const match of code.matchAll(/(?<![\w$./-])(if|elif|while|until|then|do)(?![\w-])/g)) {
+    if (!startsAt(match.index)) continue
+    for (; last < match.index; last++) condition[last] = open.length > 0
+    const word = match[1] ?? ''
+    if (word === 'then' && (open.at(-1) === 'if' || open.at(-1) === 'elif')) open.pop()
+    else if (word === 'do' && (open.at(-1) === 'while' || open.at(-1) === 'until')) open.pop()
+    else if (word !== 'then' && word !== 'do') open.push(word)
+  }
+  for (; last <= code.length; last++) condition[last] = open.length > 0
+  const lines = new Set<number>()
+  for (const match of code.matchAll(/!(?=[ \t])/g)) {
+    if (!condition[match.index] && startsAt(match.index)) lines.add(lineOf(match.index))
+  }
+  // Where a list ends after an offset: whether a || follows first (through && and the ends of the groups around
+  // it), and the list's text from the offset.
+  const continued = (at: number) => /(?:&&|\|\||\|)[ \t]*$/.test(code.slice(code.lastIndexOf('\n', at - 1) + 1, at))
+  const followedByOr = (from: number): { or: boolean; tail: string } => {
+    let depth = 0
+    for (let at = from; at < code.length; at++) {
+      const c = code[at] ?? ''
+      if (c === '\\') {
+        at++
+        continue
+      }
+      const groupOpen = c === '(' || (c === '{' && startsAt(at) && /[ \t\n]/.test(code[at + 1] ?? ''))
+      const groupClose = c === ')' || (c === '}' && startsAt(at))
+      if (groupOpen) depth++
+      else if (groupClose && depth > 0) depth--
+      else if (depth === 0 && code.startsWith('||', at)) return { or: true, tail: code.slice(from, at) }
+      else if (depth === 0 && code.startsWith('&&', at)) at++
+      else if (depth === 0 && (c === ';' || (c === '\n' && !continued(at)))) {
+        // The list ends, unless the next word closes a group around it, whose own list goes on.
+        const next = /^[\s;]*/.exec(code.slice(at))?.[0].length ?? 0
+        const after = code[at + next] ?? ''
+        if (after === ')' || (after === '}' && startsAt(at + next))) {
+          at += next - 1
+          continue
+        }
+        return { or: false, tail: code.slice(from, at) }
+      }
+    }
+    return { or: false, tail: code.slice(from) }
+  }
+  for (const match of code.matchAll(/(?<![\w$./=-])(\[\[|\[|test|jq)(?=[ \t])/g)) {
+    if (!startsAt(match.index)) continue
+    const word = match[1] ?? ''
+    const from = match.index + word.length
+    let end: number
+    if (word === '[[') {
+      end = code.indexOf(']]', from)
+      if (end < 0) continue
+      // Its terms, read in the code view, where its operands stand: none of them one word (a !, ( or ) standing
+      // alone is no operand).
+      const terms = view
+        .slice(from, end)
+        .split(/&&|\|\|/)
+        .map(term =>
+          term
+            .trim()
+            .split(/[ \t]+/)
+            .filter(each => each !== '' && !/^[()!]+$/.test(each)),
+        )
+      if (terms.some(term => term.length === 1)) lines.add(lineOf(match.index))
+      end += 2
+    } else {
+      const rest = /^(?:[^;&|)\n]|[<>]&|&>|>\|)*/.exec(code.slice(from))?.[0] ?? ''
+      end = from + rest.length
+      if (word === 'jq' && !/(?:^|[ \t])(?:-[A-Za-z]*e[A-Za-z]*|--exit-status)(?=[ \t]|$)/.test(rest)) continue
+      if (word !== 'jq') {
+        const operands = rest
+          .trim()
+          .replace(/\]$/, '')
+          .trim()
+          .split(/[ \t]+/)
+          .filter(Boolean)
+        if ((operands[0] === '!' ? operands.slice(1) : operands).length === 1) lines.add(lineOf(match.index))
+      }
+    }
+    if (condition[match.index] || !code.slice(end).trimStart().startsWith('&&')) continue
+    const { or, tail } = followedByOr(end + code.slice(end).indexOf('&&') + 2)
+    if (!or && !/^\s*[A-Za-z_]\w*=[\w./:-]*\s*$/.test(tail)) lines.add(lineOf(match.index))
+  }
+  return [...lines].sort((a, b) => a - b)
+}
+
 // --- Reading a run's own lines through a table (DPW-07, DPW-10, DPW-13) ------------------------------------
 
 // The shell a run of deploy.yml may hold outside its canonical texts, entry by entry, each with what bash
@@ -5925,8 +6126,10 @@ export const SHELL_TABLE = {
   // these characters, anchored at both ends, ^ first and $ last, and a | only inside parentheses: bash's =~
   // succeeds when the expression matches any part of the word, so only an anchored one tests the whole of it
   // (round 13's second iteration: an unanchored release test passed a build output that held a line break
-  // and a commit= line, which then wrote the job's commit output).
-  regex: /^\^(?:[A-Za-z0-9[\]{},:+-]|\((?:[A-Za-z0-9[\]{},:+|-])+\))+\$$/,
+  // and a commit= line, which then wrote the job's commit output). A bracket expression is one character, of
+  // letters, digits and - alone (round 13's third iteration: a group's body that could hold [ and ] read
+  // ^[(]A|B[)]$ as a group in brackets, while bash reads [(] and [)] as literals, so ^(A or B)$).
+  regex: /^\^(?:[A-Za-z0-9{},:+-]|\[[A-Za-z0-9-]+\]|\((?:[A-Za-z0-9{},:+|-]|\[[A-Za-z0-9-]+\])+\))+\$$/,
   // A case pattern: the word's characters, *, which bash matches against anything, and single-quoted
   // strings; | between alternatives, ) after the last.
   casePattern: /^(?:[A-Za-z0-9_./:=@-]|\*|'[\x20-\x26\x28-\x7e]*')+$/,
@@ -5947,8 +6150,14 @@ export const SHELL_TABLE = {
     /^(?:_|BASH\w*|COMP_\w+|LC_\w+|HIST\w*|READLINE_\w+|PS[0-4]|MAIL\w*|LD_\w+|IFS|PATH|HOME|ENV|CDPATH|SHELLOPTS|POSIXLY_CORRECT|GLOBIGNORE|GLOBSORT|EXECIGNORE|FIGNORE|FUNCNEST|PROMPT_COMMAND|PROMPT_DIRTRIM|TMPDIR|TIMEFORMAT|TMOUT|LANG|LANGUAGE|SECONDS|RANDOM|SRANDOM|LINENO|OPTIND|OPTARG|OPTERR|REPLY|MAPFILE|PIPESTATUS|FUNCNAME|DIRSTACK|GROUPS|EUID|UID|PPID|PWD|OLDPWD|SHELL|SHLVL|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|IGNOREEOF|INPUTRC|INSIDE_EMACS|EMACS|COLUMNS|LINES|CHILD_MAX|COPROC|EPOCHREALTIME|EPOCHSECONDS|HOSTFILE|FCEDIT|BASHOPTS)$/,
   // The builtins a run's own lines may run, each held to what they give it; bash runs these itself.
   builtins: {
-    // echo prints its words; never a first word that reads as a flag.
-    echo: (args: readonly ShellWord[]) => args.length > 0 && !(args[0]?.value ?? '').startsWith('-'),
+    // echo prints its words; never a first word that reads as a flag, nor, before other words, one that starts
+    // with an expansion, whose value could be one (round 13's third iteration: echo "$FLAG" "$VALUE" with FLAG -e
+    // wrote VALUE's \n as a line break, two lines from one echo). Alone, a flag's value only empties the line, and
+    // a word that expands to several reaches no echo (GLUE_USES hands one to aws alone).
+    echo: (args: readonly ShellWord[]) =>
+      args.length > 0 &&
+      !(args[0]?.value ?? '').startsWith('-') &&
+      !(args.length > 1 && /^"?\$/.test(args[0]?.raw ?? '')),
     // exit ends the step with a status: a number, or one expansion's value.
     exit: (args: readonly ShellWord[]) =>
       args.length === 1 && (/^[0-9]+$/.test(args[0]?.value ?? '') || /^"\$[A-Za-z_]\w*"$/.test(args[0]?.raw ?? '')),
@@ -6112,6 +6321,13 @@ class Refusal extends Error {
 }
 
 const NAME_AT = /^[A-Za-z_][A-Za-z0-9_]*/
+// Whether a pipeline's commands are one test: a [ or [[, or a jq -e, whose status is its verdict.
+const isTest = (commands: readonly GlueCommand[]) =>
+  commands.length === 1 &&
+  (commands[0]?.name === '[' ||
+    commands[0]?.name === '[[' ||
+    (commands[0]?.name === 'jq' &&
+      (commands[0]?.args ?? []).some(arg => /^-[A-Za-z]*e[A-Za-z]*$/.test(arg.raw) || arg.raw === '--exit-status')))
 const RESERVED_END = /^(?:then|elif|else|fi|do|done|esac|\})(?=[ \t\n;|&<>)]|$)/
 const COMPOUND = /^(?:if|for|case|\{|\[\[)(?=[ \t\n]|$)/
 
@@ -6119,6 +6335,8 @@ class ShellReader {
   readonly commands: GlueCommand[] = []
   readonly functions: Array<{ name: string; line: number }> = []
   private i = 0
+  // How deep the reader is in an if or elif condition, where bash's errexit reads no command's status.
+  private condition = 0
   private readonly breaks: number[] = []
   private readonly s: string
   private readonly offset: number
@@ -6212,14 +6430,22 @@ class ShellReader {
     }
   }
 
+  // An and-or list. errexit ends the step on a failure of its last command alone (round 13's third iteration):
+  // outside a condition, a test written before && ([[ A ]] && [[ B ]] for if ! [[ … ]], or jq -e … && …) stood
+  // as a check whose failure ended nothing, so a test there is followed by || or by nothing.
   private andOr(): void {
     const start = this.commands.length
+    let from = start
     this.pipeline()
     for (;;) {
       this.blanks()
       if (this.starts('&&') || this.starts('||')) {
+        if (this.starts('&&') && this.condition === 0 && isTest(this.commands.slice(from))) {
+          this.refuse('a test before && outside an if or elif condition, whose failure errexit never reads')
+        }
         this.i += 2
         this.linebreak()
+        from = this.commands.length
         this.pipeline()
         this.together(start)
         continue
@@ -6233,6 +6459,10 @@ class ShellReader {
     this.blanks()
     const negated = this.peek() === '!' && SHELL_TABLE.blank.test(this.peek(1))
     if (negated) {
+      // errexit never reads a negated pipeline's status, so a ! only where an if or elif condition is read
+      // (round 13's third iteration: ! jq -e … as a statement, in place of if ! jq -e …; then exit 1; fi,
+      // ended nothing when the read-back held an ARN).
+      if (this.condition === 0) this.refuse('a ! outside an if or elif condition, whose status errexit never reads')
       this.i++
       this.blanks()
     }
@@ -6279,13 +6509,17 @@ class ShellReader {
     if (keyword === 'if') {
       this.i += 2
       const condition = this.commands.length
+      this.condition++
       this.expect(this.list(['then']), 'then')
+      this.condition--
       this.together(condition)
       let end = this.list(['elif', 'else', 'fi'])
       while (end === 'elif') {
         this.i += 4
         const next = this.commands.length
+        this.condition++
         this.expect(this.list(['then']), 'then')
+        this.condition--
         this.together(next)
         end = this.list(['elif', 'else', 'fi'])
       }
@@ -7044,7 +7278,7 @@ const IF_LINE = /^\s*(?:-\s+)?if: \$\{\{(?:(?!\}\}|\$\{\{).)*\}\}(?:[ \t]+#.*)?[
 // An if: outside deploy.yml may also be a plain expression GitHub evaluates (if: always()): no ${{ anywhere on
 // its line, its first character no block scalar's, quote's or other YAML indicator's, and no quote or comment.
 const PLAIN_IF_LINE = /^\s*(?:-\s+)?if: (?!.*\$\{\{)[^\s|>'"&*!%@`{[\]#,?:-][^#'"]*$/
-const OTHER_IF_RULE = `writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{: quoted, as a block scalar or with text beside a \${{ … }}, GitHub reads a string, always true`
+const OTHER_IF_RULE = `writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{, quote or #, the forms the guard reads as GitHub does: with text beside the expression (a blank inside its quotes, a block scalar's line break) GitHub reads a string, always true, and a quoted or block-scalar if: is a shape the guard doesn't read`
 
 const describePermissions = (record: Readonly<Record<string, string>>) =>
   Object.entries(record)
@@ -7267,19 +7501,22 @@ export function permissionFindings(workflows: Texts, ownRepository = ''): Findin
   }
   // Every if: a plain ${{ … }} and nothing beside it: GitHub reads anything else around the expression (a
   // space inside quotes, a block scalar's newline) as a string, always true, while the guard would read
-  // the expression alone.
+  // the expression alone. A quoted if: with nothing beside its expression GitHub reads as the plain line (YAML's
+  // quoting doesn't change the value), but it is a shape the guard doesn't read, so it is refused all the same
+  // (round 13's third iteration: the message once said GitHub read it as a string).
   if (yaml.some(line => /^\s*(?:-\s+)?if\s*:/.test(line) && !IF_LINE.test(line))) {
     found.push(
       at(
         DEPLOY,
         'DPW-02',
-        `writes every if: as a plain \${{ … }} alone on its line: quoted, as a block scalar or with text beside it, GitHub reads a string, always true`,
+        `writes every if: as a plain \${{ … }} alone on its line, the one form the guard reads as GitHub does: with text beside the expression (a blank inside its quotes, a block scalar's line break) GitHub reads a string, always true, and a quoted or block-scalar if: is a shape the guard doesn't read`,
       ),
     )
   }
   // Every other workflow's if: too (round 13's second iteration): IF_LINE's form, or a plain expression with no
-  // ${{ (GitHub evaluates a plain if: and trims it), never quoted, a block scalar or text beside a ${{ … }}, which
-  // GitHub reads as a string, always true. ci.yml's cli-pin step written if: | over its expression passed DPW-04,
+  // ${{, quote or # (GitHub evaluates a plain if: and trims it), never a block scalar or text beside a ${{ … }},
+  // which GitHub reads as a string, always true, nor quoted, which GitHub reads as the plain line but the guard
+  // doesn't read. ci.yml's cli-pin step written if: | over its expression passed DPW-04,
   // which read the expression alone, and ran on every push to main, where it fails.
   for (const [path, text] of workflowsWritten(workflows)) {
     if (path === DEPLOY) continue
@@ -7464,12 +7701,13 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // checkout without credentials, Node from .nvmrc with no cache and the check, and check needs it, so no
 // test, install script or build that runs in check can leave a git configuration (a url.<base>.insteadOf
 // that sends the read to a fork), a file or a variable behind for the check to read, or change the check.
-// And .nvmrc, which chooses that job's Node and every deploy.yml job's, is 24 alone (NVMRC): setup-node
-// reads a JSON .nvmrc as a manifest, and its versions read one apart (7.1 takes devEngines.runtime, which 5
-// doesn't know, before engines.node), so a .nvmrc no rule held could give the pins job, and every deploy
-// job, a Node older than 24.2, which has no import.meta.main: the check, history.ts and smoke.ts would then
-// run nothing and exit 0, the pins unproved and a broken release's smoke passed, while check, on 5, still
-// ran a Node new enough to pass.
+// And .nvmrc, which chooses that job's Node and that of every deploy.yml job that runs setup-node (the five
+// credentialed jobs run none, so their CLI runs under the runner image's own Node: IMAGE_NODE_MAJOR), is 24 alone
+// (NVMRC): setup-node reads a JSON .nvmrc as a manifest, and its versions read one apart (7.1 takes
+// devEngines.runtime, which 5 doesn't know, before engines.node), so a .nvmrc no rule held could give the pins job,
+// and every deploy job that runs setup-node, a Node without import.meta.main (a 24 before 24.2, a 22 before 22.18,
+// or an older line): the check, history.ts and smoke.ts would then run nothing and exit 0, the pins unproved and a
+// broken release's smoke passed, while check, on 5, still ran a Node new enough to pass.
 export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {
   const text = deployWritten(workflows)
   const spans = jobSpans(text)
@@ -7514,7 +7752,7 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
 // Node stays on 24): with check-latest unset, as in every step here, the newest Node 24 in the runner's tool
 // cache, or the newest in actions/node-versions' manifest when the cache holds none. GitHub's ubuntu-24.04
 // image caches a Node 24 well past 24.2, so no manifest, range or older release chooses an older Node in some
-// jobs; the deploy scripts and the pins check refuse one older than 24.2 all the same.
+// jobs; the deploy scripts and the pins check refuse a Node without import.meta.main all the same.
 export const NVMRC_FILE = '.nvmrc'
 export const NVMRC = '24\n'
 const NVMRC_RULE =
@@ -9491,7 +9729,7 @@ const STOP_TOKEN_AT = STOP_HEAD.split('\n').indexOf(STOP_TOKEN_LINE)
 // above (the seventh review's third attack): grep and wc count the image's listing and its unpacked entries
 // and keep a one-off's log lines that match its pattern, readlink and realpath resolve the CLI's paths and a
 // file asset's, git asks whether one commit is an ancestor of another, node runs prod-gate's history.ts,
-// sort sorts the running digests, sleep waits for main's CI, mktemp and cd make and enter CDK_FOLDER's folder,
+// sort sorts the running digests, sleep waits for main's CI, mktemp and cd make and enter CDK_FOLDER's folder (its HOME too),
 // cd and pwd find an assembly's root, and tee reads prod-gate's ignored lines into the summary. Each runs only
 // the program it names (node only history.ts, which the owner's read holds), writes only the summary or
 // prod-gate's own file of ignored lines, and reads only the file it names.
@@ -9529,7 +9767,7 @@ export const TEXT_TOOL_LINES = (): ReadonlyArray<readonly [string, string]> => [
     PROD_GATE_CALL,
   ],
   ['tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/prod-gate-ignored.txt" >&2', PROD_GATE_CALL],
-  ['cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME', CDK_FOLDER],
+  ['HOME="$(mktemp -d)"; cd "$HOME"; export HOME', CDK_FOLDER],
 ]
 // Where the tests find each line above standing whole, trimmed, in its canonical text.
 export const TOOL_LINE_TEXTS = (): ReadonlyArray<readonly [string, string]> => [
@@ -11330,6 +11568,21 @@ function cliLineIsSafe(line: string): boolean {
 // optionalDependencies, peerDependencies, hasInstallScript, os, cpu and the rest) is a change of the package's
 // shape a deploy job, which runs the tarball alone, would meet first.
 const CLI_LOCK_KEYS: readonly string[] = ['version', 'resolved', 'integrity', 'dev', 'license', 'bin', 'engines']
+// The Node a credentialed job runs the CLI under (round 13's third iteration): those jobs run no setup-node, so the
+// tarball's #!/usr/bin/env node runs the runner image's own node, which ubuntu-24.04 installs as Node 22 (setup-node's
+// Node 24 is only in its tool cache), while CI runs every CLI start under .nvmrc's Node 24. So the package's engines
+// is node alone, a floor (>= and a version) whose major is at most this one: a release that raises it, as a CLI
+// that needs Node 23 or later would, fails CI until an owner's read decides, where otherwise every deploy, rollback
+// and restore after its merge stopped at its first CLI call. The DPW-10 run test starts the CLI under the image's
+// own node as well, for a release that needs a newer Node without saying so.
+export const IMAGE_NODE_MAJOR = 22
+export const cliEnginesHeld = (engines: unknown): boolean => {
+  if (engines === undefined) return true
+  if (typeof engines !== 'object' || engines === null || Array.isArray(engines)) return false
+  const keys = Object.keys(engines)
+  const floor = /^>= ?([0-9]+)(?:\.[0-9]+){0,2}$/.exec(String((engines as Record<string, unknown>).node))
+  return keys.length === 1 && keys[0] === 'node' && floor !== null && Number(floor[1]) <= IMAGE_NODE_MAJOR
+}
 
 // DPW-10 (C11-D48, C11-D76): a credentialed job runs no repository code. Its uses: are only checkout,
 // download-artifact and the credentials action; the CLI is fetched only by CLI_FETCH (mkdir, curl, openssl,
@@ -11545,13 +11798,14 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
     !/^sha512-[A-Za-z0-9+/]{86}==$/.test(entry.integrity) ||
     Object.hasOwn(entry, 'link') ||
     JSON.stringify(entry.bin) !== JSON.stringify({ cdk: 'bin/cdk' }) ||
-    Object.keys(entry).some(key => !CLI_LOCK_KEYS.includes(key))
+    Object.keys(entry).some(key => !CLI_LOCK_KEYS.includes(key)) ||
+    !cliEnginesHeld(entry.engines)
   ) {
     found.add(
       at(
         'package-lock.json',
         'DPW-10',
-        "node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind",
+        `node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind, and engines a Node floor no higher than ${IMAGE_NODE_MAJOR}, the runner image's own Node, which the deploy jobs run the CLI under`,
       ),
     )
   }
@@ -11571,7 +11825,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
 // when npm installed none) and links the paths under node_modules/aws-cdk that are symbolic links. npm's install
 // also normalises the tarball (it drops a link member, strips its top folder whatever its name and makes each bin
 // executable), which no reading of what it installed can see, so the test runs CLI_FETCH and CLI_CHECK on the
-// tarball npm ci installed, from npm's cache by the lockfile's sha512, and starts the CLI as a deploy step does.
+// tarball npm ci installed, from npm's cache by the lockfile's sha512, and starts the CLI as a deploy step does,
+// under the runner image's own node (CI's setup-node folders taken off PATH). Its engines is held to a Node floor
+// the image's Node meets (IMAGE_NODE_MAJOR).
 export function installedCliFindings(
   manifests: Texts,
   installed: string | undefined,
@@ -11611,6 +11867,7 @@ export function installedCliFindings(
     none(manifest.dependencies) &&
     none(manifest.optionalDependencies) &&
     none(manifest.peerDependencies) &&
+    cliEnginesHeld(manifest.engines) &&
     links.length === 0
   return held
     ? []
@@ -11618,7 +11875,7 @@ export function installedCliFindings(
         at(
           'node_modules/aws-cdk/package.json',
           'DPW-10',
-          "the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link",
+          `the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link, and engines a Node floor no higher than ${IMAGE_NODE_MAJOR}, the runner image's own Node`,
         ),
       ]
 }

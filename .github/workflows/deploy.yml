@@ -454,7 +454,8 @@ jobs:
           # placeholder before it publishes, so another spelling would name the same object unseen), or whose key
           # isn't the synth's shape (a file's the sha256 of its bytes and .json, read from a plain name in its own
           # folder, a zip's 64 hex digits and .zip, which ties it to no bytes): the CLI uploads nothing to a key
-          # that already holds an object, so whatever an earlier call or run put at a key is what CloudFormation
+          # that already holds an object of more than 22 bytes (it uploads again over one of 22 or fewer, an
+          # empty zip's size), so whatever an earlier call or run put at a key is what CloudFormation
           # gets, at a template's key, held to its bytes, the template itself, and at a zip's the bytes its first
           # upload carried, which this check never reads (a zip is the release's own, as the image is); a file
           # asset whose id, its key in the manifest's files, isn't its key's 64 hex digits (the CLI writes the zip
@@ -1571,7 +1572,7 @@ jobs:
                 jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null ||
                   aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
                 while IFS= read -r td; do
-                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-$stage-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
+                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-"$stage"-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
                     aws_refuse "a service's task definition isn't one of its stage's"
                   image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)
                   [[ "${image##*@}" =~ ^sha256:[0-9a-f]{64}$ ]] || aws_refuse "a service's image isn't named by its digest"
@@ -1673,7 +1674,7 @@ jobs:
           # A forward deploy's first call (C11-D52; TECH-SPEC T24 item 11): the stacks the services stand on,
           # by their stage ids, each change set from the downloaded assembly alone.
           ASSEMBLY="$RUNNER_TEMP/assembly"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Platform" "$STAGE/Data" "$STAGE/Tasks" --exclusively --concurrency 2 --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Migrate
         if: ${{ needs.gate.outputs.mode == 'deploy' }}
@@ -1716,7 +1717,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
@@ -1848,7 +1849,7 @@ jobs:
           # Services (C11-D52; TECH-SPEC T24 item 11): the release's services alone, after the stacks they stand
           # on (and after migrate, from C0.12).
           ASSEMBLY="$RUNNER_TEMP/assembly"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Roll back to the target
         if: ${{ needs.gate.outputs.mode == 'rollback' }}
@@ -1872,7 +1873,7 @@ jobs:
           # A rollback a person dispatched (C11-D52, C11-D58): the target's Tasks and Services alone, over the
           # Platform and Data that run; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: drill-break
         if: ${{ needs.gate.outputs.mode == 'drill-break' }}
@@ -1913,7 +1914,7 @@ jobs:
             exit 1
           fi
           ASSEMBLY="$RUNNER_TEMP/assembly"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           if run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events; then
             echo 'drill-break: the broken Services deploy succeeded, so the drill proved nothing' | mask
             exit 1
@@ -1967,7 +1968,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
@@ -2545,7 +2546,7 @@ jobs:
                 jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null ||
                   aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
                 while IFS= read -r td; do
-                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-$stage-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
+                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-"$stage"-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
                     aws_refuse "a service's task definition isn't one of its stage's"
                   image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)
                   [[ "${image##*@}" =~ ^sha256:[0-9a-f]{64}$ ]] || aws_refuse "a service's image isn't named by its digest"
@@ -2602,7 +2603,7 @@ jobs:
           # The pipeline's rollback (C11-D52, C11-D58): the previous release's Tasks and Services, from its own
           # assembly; never a push and never migrate.
           ASSEMBLY="$RUNNER_TEMP/assembly-previous"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           run "$CDK" deploy --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --no-previous-parameters --require-approval never --no-lookups --no-notices --ci --progress events
       - name: Probe
         if: ${{ steps.aws.outputs.go == 'true' }}
@@ -2642,7 +2643,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
@@ -3115,7 +3116,7 @@ jobs:
           ASSEMBLY="$RUNNER_TEMP/assembly"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           plan_basis plan
           if [ "$MODE" = rollback ]; then
             {
@@ -3223,7 +3224,7 @@ jobs:
           ASSEMBLY="$RUNNER_TEMP/assembly-previous"
           DIFF="$RUNNER_TEMP/diff.txt"
           STATUS=0
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           {
             run "$CDK" diff --app "$ASSEMBLY" "$STAGE/Tasks" "$STAGE/Services" --exclusively --method template --no-lookups --no-notices --no-color --fail-on never
           } >"$DIFF" || STATUS=$?
@@ -3682,7 +3683,7 @@ jobs:
                 jq -e 'all(.counts[]; . == 1)' <<<"$out" >/dev/null ||
                   aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'
                 while IFS= read -r td; do
-                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-$stage-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
+                  [[ "$td" =~ ^arn:[a-z-]+:ecs:ap-southeast-1:[0-9]{12}:task-definition/hearth-"$stage"-(api|realtime|worker):[1-9][0-9]{0,5}$ ]] ||
                     aws_refuse "a service's task definition isn't one of its stage's"
                   image=$(get aws ecs describe-task-definition --task-definition "$td" --query "taskDefinition.containerDefinitions[?name=='server'].image | [0]" --output text)
                   [[ "${image##*@}" =~ ^sha256:[0-9a-f]{64}$ ]] || aws_refuse "a service's image isn't named by its digest"
@@ -3860,7 +3861,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
@@ -3990,7 +3991,7 @@ jobs:
           # are still taken down, and the step then fails, since that stack waits for tier 2. Nothing is taken down
           # unless every stack reads as prod-plan read it (PLANNED), so down deploys only what the approved diff showed.
           ASSEMBLY="$RUNNER_TEMP/assembly"
-          cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME
+          HOME="$(mktemp -d)"; cd "$HOME"; export HOME
           SEEN=''
           for PART in Services Data Platform; do
             if ! STATUS=$(get aws cloudformation describe-stacks --stack-name "Hearth-$STAGE-$PART" --query 'Stacks[0].StackStatus' --output text 2>&1); then
@@ -4083,7 +4084,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi
@@ -4418,7 +4419,7 @@ jobs:
             fi
             for kind in migrate probe; do
               definition=$(output "${kind^}TaskDefinition")
-              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-$STAGE-$kind:[1-9][0-9]{0,5}$ ]]; then
+              if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then
                 echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask
                 exit 1
               fi

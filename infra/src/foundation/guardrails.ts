@@ -536,8 +536,9 @@ function workloadFenceStatements(): IamStatement[] {
     },
     { Sid: 'DbNoOtherLogin', Effect: 'Deny', Action: 'rds-db:connect', NotResource: logins },
     // CloudFormation runs each Baseline's template from hearthbase's staging bucket as the hearthbase
-    // execution role, and the CLI uploads a template only when no object holds its key (the template's
-    // hash), so whoever else could write the bucket would choose what the next lz:pr- deploy runs. Only
+    // execution role, and the CLI uploads a template only when no object of more than 22 bytes (an empty
+    // zip's size) holds its key (the template's hash), so whoever else could write the bucket would choose
+    // what the next lz:pr- deploy runs. Only
     // hearthbase's file-publishing role, which break-glass alone may assume, writes the bucket or its
     // objects, and nobody changes its configuration or policy (that role's own policy can't). A
     // bootstrap upgrade runs as tier 2, in Recovery, where this doesn't bind.

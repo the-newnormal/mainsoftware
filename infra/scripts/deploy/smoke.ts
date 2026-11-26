@@ -715,11 +715,12 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
   }
 }
 
-// Node 24.2 added import.meta.main. On an older Node it is undefined, so main would never run and the
-// script would exit 0 having judged nothing: it refuses such a Node instead. floors-check.ts, which this file
+// Node 22.18 and 24.2 added import.meta.main (a TypeScript entry's in 22.18 and 24.3, by Node's changelogs). On a
+// Node without it, it is undefined, so main would never run and the script would exit 0 having judged nothing:
+// it refuses such a Node instead. floors-check.ts, which this file
 // loads, makes the same check first, so on such a Node its line is the one printed, and the exit is 1.
 if (typeof import.meta.main !== 'boolean') {
-  process.stderr.write('smoke: Node 24.2 or later is needed (import.meta.main), so nothing was judged\n')
+  process.stderr.write('smoke: this Node lacks import.meta.main (Node 22.18+, 24.2+), so nothing was judged\n')
   process.exit(1)
 }
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2))

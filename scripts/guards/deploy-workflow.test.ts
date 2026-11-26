@@ -138,6 +138,7 @@ import {
   PROTECT_ENVIRONMENTS_SHA256,
   PROTECT_ENVIRONMENTS_SHEBANG,
   PULL_CHECKS,
+  patternLines,
   permissionFindings as permissionFindingsOf,
   pinnedScriptText,
   probeRun,
@@ -176,6 +177,7 @@ import {
   TASKS_OUTPUTS,
   type Texts,
   TOOL_LINE_TEXTS,
+  testChainLines,
   timeoutAndGroupFindings as timeoutAndGroupFindingsOf,
   triggerFindings as triggerFindingsOf,
   unheldRecordLines,
@@ -1317,7 +1319,7 @@ describe('DPW-02 (C11-D55): permissions', () => {
   // Round 2's GUARDS-04: an if: with anything beside its expression is a string GitHub reads as true, though
   // the guard's reader takes the expression alone (a block scalar's newline dropped, a quoted space trimmed).
   it('finds an if: in deploy.yml that isn’t a plain expression alone', () => {
-    const IF = `writes every if: as a plain \${{ … }} alone on its line: quoted, as a block scalar or with text beside it, GitHub reads a string, always true`
+    const IF = `writes every if: as a plain \${{ … }} alone on its line, the one form the guard reads as GitHub does: with text beside the expression (a blank inside its quotes, a block scalar's line break) GitHub reads a string, always true, and a quoted or block-scalar if: is a shape the guard doesn't read`
     const prodIf = /\n {4}if: (\$\{\{.*\}\})\n/.exec(
       (workflows.get(DEPLOY) ?? '').slice((workflows.get(DEPLOY) ?? '').indexOf(job('prod'))),
     )?.[1]
@@ -2119,6 +2121,71 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     },
     assetCheckFindings: { jobs: true },
   }
+  // The rules that read no workflow at all, each by its parameters as written (round 13's third iteration): with
+  // DEPLOY_TEXT_READERS, every exported rule of the guard (a function named …Findings, or one declared to return
+  // Finding[]) is in one table or the other, so no rule stands outside differential() whatever way it takes the map
+  // (an options object's workflows, a parameter typed as what it walks, a generic, or a map of string | undefined,
+  // which mapUses() reads no more than by its spelling), and one listed here changes its parameters only with this
+  // table.
+  const NOT_DEPLOY_READERS: Readonly<Record<string, string>> = {
+    canonicalTextFindings: '(texts?: Readonly<Record<string, string>>)',
+    gitAttributeFindings: '(attributes: ReadonlyMap<string, readonly string[]>)',
+    installedCliFindings: '(manifests: Texts, installed: string | undefined, links: readonly string[])',
+    prodDiffStackFindings: '(given: Readonly<Record<string, string>> = {})',
+  }
+  // Each exported rule of a source text, by name, with its parameters as written: a function, or a const holding
+  // one, named …Findings or declared to return Finding[] (readonly or not).
+  const exportedRules = (source: string): Map<string, string> => {
+    const file = ts.createSourceFile('deploy-workflow.ts', source, ts.ScriptTarget.Latest, true)
+    const rules = new Map<string, string>()
+    const exported = (node: ts.Node) =>
+      ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.ExportKeyword)
+    const isRule = (name: string, type: ts.TypeNode | undefined) =>
+      /Findings$/.test(name) ||
+      /^(?:readonly\s+)?Finding\[\]$|^(?:Readonly)?Array<Finding>$/.test(type?.getText(file) ?? '')
+    const parameters = (node: ts.SignatureDeclarationBase) =>
+      `(${node.parameters.map(each => each.getText(file)).join(', ')})`
+    for (const statement of file.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name !== undefined && exported(statement)) {
+        if (isRule(statement.name.text, statement.type)) rules.set(statement.name.text, parameters(statement))
+      } else if (ts.isVariableStatement(statement) && exported(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          const value = declaration.initializer
+          if (!ts.isIdentifier(declaration.name) || value === undefined) continue
+          if (
+            (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) &&
+            isRule(declaration.name.text, value.type)
+          )
+            rules.set(declaration.name.text, parameters(value))
+        }
+      } else if (ts.isExportDeclaration(statement) && statement.exportClause !== undefined) {
+        // A re-export under a rule's name is a rule too, of parameters this can't read.
+        if (ts.isNamedExports(statement.exportClause)) {
+          for (const element of statement.exportClause.elements) {
+            if (/Findings$/.test(element.name.text)) rules.set(element.name.text, '(re-exported)')
+          }
+        }
+      }
+    }
+    return rules
+  }
+  // How many bindings of a name a source text declares (a variable, a parameter, a function or a destructured name).
+  const bindings = (source: string, name: string): number => {
+    const file = ts.createSourceFile('deploy-workflow.ts', source, ts.ScriptTarget.Latest, true)
+    let count = 0
+    const visit = (node: ts.Node): void => {
+      if (
+        (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === name
+      )
+        count++
+      if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name?.text === name) count++
+      ts.forEachChild(node, visit)
+    }
+    visit(file)
+    return count
+  }
   // The accessors themselves (deploy-workflow.ts, beside jobsOf()).
   const ACCESSORS = ['deployWritten', 'deployStored', 'workflowsWritten']
   // Each top-level declaration of a source text, by name, with its text up to the next.
@@ -2127,7 +2194,7 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     let name: string | undefined
     let body: string[] = []
     for (const line of source.split('\n')) {
-      const declared = /^(?:export )?(?:function|const|let|type|interface) (\w+)/.exec(line)?.[1]
+      const declared = /^(?:export )?(?:async )?(?:function|const|let|type|interface) (\w+)/.exec(line)?.[1]
       if (declared !== undefined) {
         if (name !== undefined) found.set(name, body.join('\n'))
         ;[name, body] = [declared, []]
@@ -2241,6 +2308,16 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
       if (!readers.some(([each]) => each === name)) problems.push(`${name} is listed and reads deploy.yml no more`)
     }
     problems.push(...uses.named)
+    for (const [name, parameters] of exportedRules(source)) {
+      if (DEPLOY_TEXT_READERS[name] !== undefined || readers.some(([each]) => each === name)) continue
+      const pinned = NOT_DEPLOY_READERS[name]
+      if (pinned === undefined)
+        problems.push(`${name} is an exported rule listed neither as reading deploy.yml nor as reading none`)
+      else if (pinned !== parameters)
+        problems.push(`${name} reads no workflow by its listed parameters, and takes ${parameters}`)
+    }
+    // get(CI) reads ci.yml only while CI is the guard's own constant: no other binding of that name.
+    if (bindings(source, 'CI') !== 1) problems.push('CI is bound otherwise than as the guard’s constant')
     if (!/^function jobSpans\(text: RunsWrittenOut\)/m.test(source))
       problems.push('jobSpans takes more than the expansion')
     if (!/^function jobsOf\(text: RunsWrittenOut\)/m.test(source)) problems.push('jobsOf takes more than the expansion')
@@ -2257,8 +2334,10 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
         .filter(name => name !== 'workflowSizeFindings')
         .sort(),
     )
+    // (Each plant below is a function the guard keeps to itself, so the case reads the map's uses alone; an exported
+    // rule must also stand in one table or the other, a case further down.)
     const planted = (read: string) =>
-      `${source}\nexport function plantedFindings(workflows: Texts, path = DEPLOY): Finding[] {\n  const found: Finding[] = []\n  ${read}\n  return found\n}\n`
+      `${source}\nfunction plantedFindings(workflows: Texts, path = DEPLOY): Finding[] {\n  const found: Finding[] = []\n  ${read}\n  return found\n}\n`
     // A reader by its path, and one through the map, in each way a function can walk it or take another path.
     for (const read of [
       "found.push(workflows.get(DEPLOY) ?? '')",
@@ -2289,15 +2368,54 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     ).toEqual(['plantedHelper takes a map of texts as texts'])
     expect(
       unlisted(
-        `${source}\nexport function plantedFindings(wf: ReadonlyMap<string, string>): Finding[] {\n  return [...wf].map(([path]) => path)\n}\n`,
+        `${source}\nfunction plantedFindings(wf: ReadonlyMap<string, string>): Finding[] {\n  return [...wf].map(([path]) => path)\n}\n`,
       ),
     ).toEqual(['plantedFindings takes a map of texts as wf'])
     // A message or a path that names workflows reads nothing.
     expect(
       unlisted(
-        `${source}\nexport function plantedFindings(workflows: Texts): Finding[] {\n  return workflows.has(CI) ? [\`.github/workflows holds workflows \${'alone'}\`] : []\n}\n`,
+        `${source}\nfunction plantedFindings(workflows: Texts): Finding[] {\n  return workflows.has(CI) ? [\`.github/workflows holds workflows \${'alone'}\`] : []\n}\n`,
       ),
     ).toEqual([])
+    // Round 13's third iteration: a rule that takes the map in a way mapUses() doesn't read (an options object's
+    // workflows, a parameter typed as what it walks, a generic, a map of string | undefined, an async rule) is an
+    // exported rule all the same, listed neither as reading deploy.yml nor as reading none, so it can't stand
+    // outside differential(); and a rule named otherwise but declared to return Finding[] is one too.
+    const rule = (head: string, walk: string) =>
+      `${source}\n${head} {\n  const found: Finding[] = []\n  for (const [, text] of ${walk}) found.push(...stepLines(text))\n  return found\n}\n`
+    for (const [head, walk] of [
+      [
+        'interface PlantedInputs {\n  workflows: Texts\n}\nexport function plantedOptionsFindings(given: PlantedInputs): Finding[]',
+        'given.workflows',
+      ],
+      ['export function plantedEntriesFindings(entries: Iterable<readonly [string, string]>): Finding[]', 'entries'],
+      ['export function plantedGenericFindings<T extends Texts>(texts: T): Finding[]', 'texts'],
+      ['export function plantedOptionalFindings(texts: ReadonlyMap<string, string | undefined>): Finding[]', 'texts'],
+      [
+        'export async function plantedAsyncFindings(given: { workflows: Texts }): Promise<Finding[]>',
+        'given.workflows',
+      ],
+      ['export function plantedRule(given: { workflows: Texts }): Finding[]', 'given.workflows'],
+      ['export const plantedArrowFindings = (given: { workflows: Texts }): Finding[] =>', 'given.workflows'],
+    ] as const) {
+      const name = /(planted\w+)/.exec(head)?.[1] ?? ''
+      const text = head.includes('=>')
+        ? `${source}\n${head} [...given.workflows].flatMap(([, text]) => stepLines(text))\n`
+        : rule(head, walk)
+      expect(unlisted(text), name).toContain(
+        `${name} is an exported rule listed neither as reading deploy.yml nor as reading none`,
+      )
+    }
+    // A rule listed as reading none changes its parameters only with its entry, and get(CI) reads ci.yml only while
+    // CI is the guard's own constant.
+    const gitHead = 'export function gitAttributeFindings(attributes: ReadonlyMap<string, readonly string[]>)'
+    expect(source).toContain(gitHead)
+    expect(unlisted(source.replace(gitHead, `${gitHead.slice(0, -1)}, workflows?: Texts)`))).toEqual([
+      'gitAttributeFindings reads no workflow by its listed parameters, and takes (attributes: ReadonlyMap<string, readonly string[]>, workflows?: Texts)',
+    ])
+    expect(unlisted(planted("const CI = DEPLOY\n  found.push(...stepLines(workflows.get(CI) ?? ''))"))).toEqual([
+      'CI is bound otherwise than as the guard’s constant',
+    ])
     // ci.yml alone, and a check of which paths the map holds, read nothing of deploy.yml.
     expect(unlisted(planted("found.push(...stepLines(workflows.get(CI) ?? ''))"))).toEqual([])
     expect(unlisted(planted('if (workflows.has(DEPLOY)) found.push(DEPLOY)'))).toEqual([])
@@ -2542,7 +2660,8 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     }
   })
 
-  // FETCH-A6-01 (round 6). .nvmrc chooses the pins job's Node and every deploy job's. A JSON .nvmrc that
+  // FETCH-A6-01 (round 6). .nvmrc chooses the pins job's Node and that of every deploy job that runs setup-node
+  // (the credentialed jobs run none: IMAGE_NODE_MAJOR). A JSON .nvmrc that
   // setup-node 7.1 (the pins job's and deploy.yml's) reads by devEngines.runtime, 24.1.0, and setup-node 5
   // (check's) by engines.node, 24, gave the pins job a Node without import.meta.main, on which the check
   // ran nothing and exited 0, while check ran a Node new enough to pass: a pin moved with its table entry to
@@ -2576,7 +2695,7 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
       const code = readRepoFile(`infra/scripts/deploy/${script}.ts`).trimEnd().split('\n')
       const refusal = [
         "if (typeof import.meta.main !== 'boolean') {",
-        `  process.stderr.write('${script}: Node 24.2 or later is needed (import.meta.main), so ${said}\\n')`,
+        `  process.stderr.write('${script}: this Node lacks import.meta.main (Node 22.18+, 24.2+), so ${said}\\n')`,
         '  process.exit(1)',
         '}',
         'if (import.meta.main) process.exitCode = await main(process.argv.slice(2))',
@@ -2592,7 +2711,9 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
         { encoding: 'utf8' },
       )
       expect(older.status, script).toBe(1)
-      expect(older.stderr, script).toBe(`${script}: Node 24.2 or later is needed (import.meta.main), so ${said}\n`)
+      expect(older.stderr, script).toBe(
+        `${script}: this Node lacks import.meta.main (Node 22.18+, 24.2+), so ${said}\n`,
+      )
     }
   })
 
@@ -2784,8 +2905,9 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
       }
       // The script's last line exits with main's answer, the checkout's drift and then run's over lsRemote, so
       // neither a skipped exit nor another reader stands in for it; and before it, a Node without
-      // import.meta.main (older than 24.2), on which that line would never call main and the script would exit
-      // 0 having read nothing, exits 1 (FETCH-A6-01, round 6; the drift from round 12's third iteration).
+      // import.meta.main (a 24 before 24.2, a 22 before 22.18), on which that line would never call main and the
+      // script would exit 0 having read nothing, exits 1 (FETCH-A6-01, round 6; the drift from round 12's third
+      // iteration).
       const source = readRepoFile('scripts/check-action-pins.ts')
       const code = source.trimEnd().split('\n')
       const mainAt = code.indexOf('export function main(): number {')
@@ -2801,7 +2923,7 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
       ])
       const refusal = [
         "if (typeof import.meta.main !== 'boolean') {",
-        "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
+        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')",
         '  process.exit(1)',
         '}',
         'if (import.meta.main) process.exit(main())',
@@ -2814,11 +2936,11 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         ),
       ).toEqual([
         "if (typeof import.meta.main !== 'boolean') {",
-        "  console.error('check-action-pins: Node 24.2 or later is needed (import.meta.main), so no pin was read')",
+        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')",
         '  process.exit(1)',
         'if (import.meta.main) process.exit(main())',
       ])
-      // Run as a Node older than 24.2 runs it, import.meta.main undefined: it says so and exits 1.
+      // Run as a Node without import.meta.main runs it, undefined there: it says so and exits 1.
       const older = spawnSync(
         process.execPath,
         [
@@ -3503,7 +3625,9 @@ describe('DPW-07 (C11-D61): what a log, a summary or an output can show', () => 
     expect(added('echo ok | mask | tee -a "$GITHUB_STEP_SUMMARY"; echo "$COMMIT" >> "$GITHUB_STEP_SUMMARY"')).toEqual([
       at(readBack, 'writes the job summary only through mask'),
     ])
-    expect(added('echo "$COMMIT" mask >>"$GITHUB_STEP_SUMMARY"')).toEqual([
+    // (Its first word starts with text: one that starts with an expansion, before other words, the table refuses
+    // whole, round 13's third iteration.)
+    expect(added('echo "x$COMMIT" mask >>"$GITHUB_STEP_SUMMARY"')).toEqual([
       at(readBack, OWN),
       at(readBack, 'writes the job summary only through mask'),
     ])
@@ -6248,7 +6372,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     const lock = JSON.parse(lockfile) as { packages: Record<string, Record<string, unknown>> }
     const entry = lock.packages['node_modules/aws-cdk'] ?? {}
     const LOCK =
-      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind"
+      "package-lock.json: DPW-10 node_modules/aws-cdk is the registry's tarball at infra's pin, with a sha512 integrity and no link, its cdk bin at bin/cdk and no key but version, resolved, integrity, dev, license, bin and engines, so no dependency of any kind, and engines a Node floor no higher than 22, the runner image's own Node, which the deploy jobs run the CLI under"
     const withEntry = (changed: Record<string, unknown>) =>
       credentialedCodeFindings(
         workflows,
@@ -6275,6 +6399,15 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
     expect(withEntry({ ...entry, peerDependencies: { 'cdk-peer': '1.0.0' } })).toEqual([LOCK])
     expect(withEntry({ ...entry, optionalDependencies: { 'cdk-optional': '1.0.0' } })).toEqual([LOCK])
     expect(withEntry({ ...entry, hasInstallScript: true })).toEqual([LOCK])
+    // Round 13's third iteration: the deploy jobs run no setup-node, so the CLI runs under the runner image's own
+    // Node 22, and engines is a floor that Node meets: a release that raises it fails here, before merge.
+    expect(withEntry({ ...entry, engines: { node: '>= 24.0.0' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, engines: { node: '>=23' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, engines: { node: '^22.12.0 || >= 24' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, engines: { node: '>= 18.0.0', npm: '>= 10' } })).toEqual([LOCK])
+    expect(withEntry({ ...entry, engines: 'node >= 18' })).toEqual([LOCK])
+    expect(withEntry({ ...entry, engines: { node: '>= 22.0.0' } })).toEqual([])
+    expect(withEntry({ ...entry, engines: { node: '>=20' } })).toEqual([])
     const { license: _license, engines: _engines, dev: _dev, ...fewer } = entry
     expect(withEntry(fewer)).toEqual([])
   }, 30_000)
@@ -6291,7 +6424,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       .filter(each => each.isSymbolicLink())
       .map(each => join(each.parentPath, each.name))
     const INSTALLED =
-      "node_modules/aws-cdk/package.json: DPW-10 the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link"
+      "node_modules/aws-cdk/package.json: DPW-10 the aws-cdk npm ci installs is the package CLI_CHECK accepts: aws-cdk at infra's pin, its cdk bin at bin/cdk, no dependency, optional dependency or peer dependency and no symbolic link, and engines a Node floor no higher than 22, the runner image's own Node"
     const pin = (JSON.parse(manifests.get('infra/package.json') ?? '{}') as { devDependencies: Record<string, string> })
       .devDependencies['aws-cdk']
     const predicate = /jq -e --arg pin "\$pin" '([^']*)'/.exec(CLI_CHECK)?.[1]
@@ -6318,6 +6451,15 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       expect(cliCheckPasses(text), JSON.stringify(change)).toBe(false)
       expect(installedCliFindings(manifests, text, []), JSON.stringify(change)).toEqual([INSTALLED])
     }
+    // Round 13's third iteration: engines a Node floor the runner image's own Node 22 meets, which CLI_CHECK
+    // doesn't read (the deploy job runs whatever Node the image has), so CI holds it here.
+    for (const engines of [{ node: '>= 24.0.0' }, { node: '>=23.0.0' }, { node: '>= 18', npm: '>= 9' }, ['node']]) {
+      const text = JSON.stringify({ ...manifest, engines })
+      expect(installedCliFindings(manifests, text, []), JSON.stringify(engines)).toEqual([INSTALLED])
+    }
+    expect(
+      installedCliFindings(manifests, JSON.stringify({ ...manifest, engines: { node: '>= 22.0.0' } }), []),
+    ).toEqual([])
     expect(installedCliFindings(manifests, installed, [join(folder, 'lib', 'index.js')])).toEqual([INSTALLED])
     expect(installedCliFindings(manifests, undefined, [])).toEqual([INSTALLED])
     expect(installedCliFindings(manifests, '[]', [])).toEqual([INSTALLED])
@@ -6481,7 +6623,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       const changed = RELEASE_STEP.replace(anchored, unanchored)
       expect(readShell(changed).refused, unanchored).toBeDefined()
       expect(canonicalTextFindings({ X: changed }), unanchored).toContain(
-        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses, so bash matches the whole value and never a part of it`,
+        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it`,
       )
     }
     // A canonical text's own: release_shape in AWS_CHECK, unanchored, quoted, or with a | outside parentheses.
@@ -7062,8 +7204,8 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
   // bin executable. So CI runs CLI_FETCH and CLI_CHECK themselves on the very tarball npm ci installed (npm's
   // cache keeps it under the lockfile's sha512, and a stand-in curl serves it for the registry's URL alone), in
   // the repository's own checkout, then starts the CLI as a deploy step does (the preamble's CDK in CDK_FOLDER's
-  // fresh folder and HOME), asked only for its version. A release whose tarball would stop a deploy job at
-  // CLI_CHECK or at its first CLI call fails here, before merge.
+  // fresh folder and HOME, under the runner image's own node), asked only for its version. A release whose tarball
+  // would stop a deploy job at CLI_CHECK or at its first CLI call fails here, before merge.
   it('runs the tarball npm ci installed through CLI_FETCH and CLI_CHECK, and its CLI starts at the pin (round 13)', () => {
     const lock = JSON.parse(readRepoFile('package-lock.json')) as {
       packages: Record<string, { integrity?: string }>
@@ -7096,11 +7238,22 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       ].join('\n'),
       { mode: 0o755 },
     )
+    // The PATH a credentialed job's step has (round 13's third iteration): those jobs run no setup-node, so the
+    // CLI's #!/usr/bin/env node runs the runner image's own node, while check's setup-node put .nvmrc's Node 24
+    // first, from the runner's tool cache. With the tool cache's folders taken off, check's runner (ubuntu-24.04,
+    // the deploy jobs' image too) starts the CLI under the image's Node, as a deploy step does; elsewhere no tool
+    // cache is named and the local node runs.
+    const toolCache = process.env.RUNNER_TOOL_CACHE
+    const deployPath = (process.env.PATH ?? '')
+      .split(':')
+      .filter(folder => !(toolCache && (folder === toolCache || folder.startsWith(`${toolCache}/`))))
+      .join(':')
+    const node = spawnSync('bash', ['-c', 'node --version'], { encoding: 'utf8', env: { PATH: deployPath } })
     const step = (text: string) =>
       spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
         cwd: root,
         encoding: 'utf8',
-        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: run, RUNNER_TEMP: temp },
+        env: { PATH: `${bin}:${deployPath}`, HOME: run, RUNNER_TEMP: temp },
       })
     const fetch = step(CLI_FETCH)
     expect({ status: fetch.status, said: spoken(fetch.stdout), errors: fetch.stderr }).toEqual({
@@ -7115,8 +7268,9 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       errors: '',
     })
     const version = step(`${PREAMBLE}\n${CDK_FOLDER}\nrun "$CDK" --version`)
-    expect(version.status).toBe(0)
-    expect(spoken(version.stdout)).toEqual([
+    const under = `the CLI under the deploy jobs' node, ${node.stdout.trim() || 'none found'}`
+    expect(version.status, `${under}: ${version.stderr}`).toBe(0)
+    expect(spoken(version.stdout), under).toEqual([
       expect.stringMatching(new RegExp(`^${pin?.replaceAll('.', '\\.')} \\(build [0-9a-f]+\\)$`)),
     ])
   }, 60_000)
@@ -9085,7 +9239,7 @@ describe('Round 12: the CLI pin’s own job (DPW-04)', () => {
   // two if: lines it pins by their raw line, and DPW-02 every workflow's if: to a plain ${{ … }} alone or a plain
   // expression with no ${{.
   it('refuses the pinned if: lines written as a block scalar or quoted, and any workflow’s if: GitHub reads as a string (round 13)', () => {
-    const IF_RULE = `${CI}: DPW-02 writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{: quoted, as a block scalar or with text beside a \${{ … }}, GitHub reads a string, always true`
+    const IF_RULE = `${CI}: DPW-02 writes every if: as a plain \${{ … }} alone on its line or a plain expression with no \${{, quote or #, the forms the guard reads as GitHub does: with text beside the expression (a blank inside its quotes, a block scalar's line break) GitHub reads a string, always true, and a quoted or block-scalar if: is a shape the guard doesn't read`
     const pinned = `      - if: \${{ github.event_name == 'pull_request' }}\n        working-directory: repo\n`
     const first = `      - if: \${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}\n        run: exit 1\n`
     expect(ci).toContain(pinned)
@@ -14480,7 +14634,6 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     for (const call of [
       'CHECKED=$(check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER") || echo "$CHECKED"',
       'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER" | tee -a "$GITHUB_STEP_SUMMARY"',
-      '! check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
       'check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER" || echo x',
       'echo x && check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"',
       'if check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"; then echo x; fi',
@@ -14491,6 +14644,15 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
         at('DPW-10', 'nonprod (Check the assembly)', HELD),
       )
     }
+    // After a !, outside a condition, the table refuses the line itself (round 13's third iteration).
+    const negated = credentialed(
+      plant(assembly, '          ! check_assembly "$RUNNER_TEMP/$ASSEMBLY_FOLDER"\n', job('nonprod')),
+    )
+    expect(
+      negated.some(
+        each => each.startsWith(`${DEPLOY}: DPW-10 nonprod (Check the assembly), line `) && each.endsWith(AS_BASH),
+      ),
+    ).toBe(true)
     expect(
       credentialed(
         plant(
@@ -14546,20 +14708,24 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     ).toContain(at('DPW-14', 'nonprod (What runs)', STANDS_ALONE))
     // The reader says which commands stand alone.
     const alone = (run: string) => readShell(run).commands.map(each => [each.name ?? '=', each.alone])
-    expect(alone('a x\nb x | c\n! d\ne || f\nif g; then h; fi\n{ i; } && j')).toEqual([
+    // (A ! stands only in a condition since round 13's third iteration, where the table refuses it elsewhere.)
+    expect(alone('a x\nb x | c\nif ! d; then e; fi\nf || g\nif h; then i; fi\n{ j; } && k')).toEqual([
       ['a', true],
       ['b', false],
       ['c', false],
       ['d', false],
-      ['e', false],
+      ['e', true],
+      ['if', true],
       ['f', false],
       ['g', false],
-      ['h', true],
+      ['h', false],
+      ['i', true],
       ['if', true],
-      ['i', false],
-      ['{', false],
       ['j', false],
+      ['{', false],
+      ['k', false],
     ])
+    expect(readShell('! d').refused?.what).toBe('a ! outside an if or elif condition, whose status errexit never reads')
   }, 60_000)
 
   // YAML-A2-01: a step group (parallel:) holds steps GitHub runs as background steps, which workflow.ts reads
@@ -19352,4 +19518,267 @@ describe('Round 13, iteration 1: the ways past the reader and the rules (DPW-02,
     }
     expect(Object.entries(differing).filter(([, names]) => names.length > 0).length).toBe(5)
   })
+})
+
+describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02, DPW-07, DPW-10)', () => {
+  const PATTERN_EXPANSION = (name: string, line: number) =>
+    `${GUARD}: DPW-10 ${name}, line ${line}: expands nothing outside double quotes in a [[ … ]] test or a case pattern, where bash reads an unquoted value as pattern text, its | or * deciding what matches`
+  const REGEX_TEST = (name: string, line: number) =>
+    `${GUARD}: DPW-10 ${name}, line ${line}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it`
+  const TEST_CHAIN = (name: string, line: number) =>
+    `${GUARD}: DPW-10 ${name}, line ${line}: tests only where its failure is read: outside an if, elif, while or until condition no ! starts a command and a test ([, [[, test or jq -e) is followed by || in its and-or list, never by && alone (but a choice ending in an assignment of a literal), since errexit reads only the last command of an && list and no negated status; and no test is one word, the operator glued to its operands`
+  const bash = (text: string, env: Record<string, string> = {}) =>
+    spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', ...env },
+    })
+
+  // CDK_FOLDER was written cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME. When mktemp failed (no space or
+  // inode left), cd "" succeeded and the failed assignment, not the last of its && list, ended nothing, so the
+  // CLI started in the step's working folder, the checkout of the run's commit, with HOME empty: a cdk.json there
+  // has its build command run, and an empty HOME reads ./.cdk.json and ./.aws/config. Each of its three commands now
+  // stands alone, so a failed mktemp ends the step before the CLI, and the CLI's folder is its HOME.
+  it('starts the CLI only in a fresh folder that is its HOME, and a failed mktemp ends the step first', () => {
+    const forward = workflowJobs(deployText)
+      .filter(each => ['nonprod', 'prod'].includes(each.id))
+      .flatMap(each => parsedSteps(each).filter(step => step.name === 'Deploy Platform, Data and Tasks'))
+    expect(forward.length).toBe(2)
+    for (const step of forward) expect(step.run).toBe(FORWARD_RUN)
+    expect(FORWARD_RUN).toContain(`\n${CDK_FOLDER}\n`)
+    const scratch = mkdtempSync(join(tmpdir(), 'hearth-cdk-folder-'))
+    try {
+      const checkout = join(scratch, 'checkout')
+      const failing = join(scratch, 'failing')
+      const temp = join(scratch, 'temp')
+      const cli = join(temp, 'aws-cdk', 'package', 'bin')
+      execFileSync('mkdir', ['-p', checkout, failing, cli])
+      writeFileSync(join(checkout, 'cdk.json'), '{"build": "touch built"}\n')
+      const record = join(scratch, 'started')
+      writeFileSync(join(cli, 'cdk'), `#!/usr/bin/env bash\n{ pwd; printf '%s\\n' "$HOME"; ls -A; } >'${record}'\n`, {
+        mode: 0o755,
+      })
+      writeFileSync(
+        join(failing, 'mktemp'),
+        '#!/usr/bin/env bash\necho "mktemp: No space left on device" >&2\nexit 1\n',
+        {
+          mode: 0o755,
+        },
+      )
+      const step = (text: string, mktempFails: boolean) => {
+        rmSync(record, { force: true })
+        const ran = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
+          cwd: checkout,
+          encoding: 'utf8',
+          env: {
+            PATH: mktempFails ? `${failing}:${process.env.PATH ?? ''}` : (process.env.PATH ?? ''),
+            HOME: join(scratch, 'home'),
+            RUNNER_TEMP: temp,
+            STAGE: 'nonprod',
+          },
+        })
+        return { status: ran.status, started: existsSync(record) ? readFileSync(record, 'utf8').split('\n') : [] }
+      }
+      // A failed mktemp ends the step before the CLI starts.
+      const refused = step(FORWARD_RUN, true)
+      expect(refused.status).not.toBe(0)
+      expect(refused.started).toEqual([])
+      // With mktemp working, the CLI starts in an empty folder made for it, which is its HOME.
+      const started = step(FORWARD_RUN, false)
+      expect(started.status).toBe(0)
+      expect(started.started[0]).toBe(started.started[1])
+      expect(started.started[0]).not.toBe(checkout)
+      expect(started.started.slice(2)).toEqual([''])
+      // The old text went on past the failure, into the checkout with HOME empty.
+      const OLD = 'cd "$(mktemp -d)" && HOME="$(mktemp -d)" && export HOME'
+      const old = step(FORWARD_RUN.replace(CDK_FOLDER, OLD), true)
+      expect(old.status).toBe(0)
+      expect(old.started.slice(0, 2)).toEqual([checkout, ''])
+      // And the guard refuses the old text wherever a deploy step runs the CLI.
+      expect(assetCheckFindings(plant(`          ${CDK_FOLDER}\n`, `          ${OLD}\n`, job('nonprod')))).toContain(
+        `${DEPLOY}: DPW-14 nonprod (Deploy Platform, Data and Tasks): starts the CLI in CDK_FOLDER’s fresh folder`,
+      )
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  // An expansion in a pattern is read by bash as pattern text: TASKS_OUTPUTS refactored to read each definition's
+  // family from the Tasks stack's outputs and write it as it wrote $STAGE and $kind, ^$family:[1-9][0-9]{0,5}$,
+  // passed every rule, and a family of x|.* let the api's definition through as the migrate one. Every expansion
+  // in a [[ … ]] test's operands or a case pattern stands in double quotes, which bash matches as text.
+  it('refuses an expansion outside double quotes in a test or a case pattern, which bash reads as pattern text', () => {
+    const line = `    if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "\${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then\n`
+    expect(TASKS_OUTPUTS).toContain(line)
+    const at = TASKS_OUTPUTS.slice(0, TASKS_OUTPUTS.indexOf(line)).split('\n').length
+    const refactor = (pattern: string) =>
+      TASKS_OUTPUTS.replace(
+        line,
+        `    family=$(output "\${kind^}Family")\n${line.replace('^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$', pattern)}`,
+      )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: refactor('^$family:[1-9][0-9]{0,5}$') })).toContain(
+      PATTERN_EXPANSION('TASKS_OUTPUTS', at + 1),
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: refactor(`^\${family}:[1-9][0-9]{0,5}$`) })).toContain(
+      PATTERN_EXPANSION('TASKS_OUTPUTS', at + 1),
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: refactor('^"$family":[1-9][0-9]{0,5}$') })).toEqual([])
+    for (const [text, found] of [
+      [`if [[ "\${d##*/}" != $family:[1-9]* ]]; then :; fi`, true],
+      [`if [[ "\${d##*/}" != "$family":[1-9]* ]]; then :; fi`, false],
+      ['if [[ "$d" =~ ^$(cat f):[1-9]$ ]]; then :; fi', true],
+      ['if [[ $d == x ]]; then :; fi', true],
+      ['case "$k" in\n  $p) echo a ;;\n  *) echo b ;;\nesac', true],
+      ['case "$k" in\n  "$p") echo a ;;\n  *) echo b ;;\nesac', false],
+      ['case "$(readlink -f "$R/x")" in\n  "$(readlink -f "$R")"/*) ;;\n  *) exit 1 ;;\nesac', false],
+    ] as const) {
+      expect(patternLines(text).length > 0, text).toBe(found)
+    }
+    // What bash does with each: the family's | reads as the regex's, so the api's definition passes; quoted, never.
+    const family = 'x|.*'
+    const definition = 'hearth-nonprod-api:3'
+    expect(bash('[[ "$D" =~ ^$F:[1-9][0-9]{0,5}$ ]]', { D: definition, F: family }).status).toBe(0)
+    expect(bash('[[ "$D" =~ ^"$F":[1-9][0-9]{0,5}$ ]]', { D: definition, F: family }).status).toBe(1)
+    expect(
+      bash('[[ "$D" =~ ^"$F":[1-9][0-9]{0,5}$ ]]', { D: 'hearth-nonprod-migrate:3', F: 'hearth-nonprod-migrate' })
+        .status,
+    ).toBe(0)
+    expect(canonicalTextFindings()).toEqual([])
+  })
+
+  // A bracket expression holding a parenthesis read to both regex readers as a group around an alternation, while
+  // POSIX reads [(] and [)] as literals: ^[(]A|B[)]$ is ^(A or B)$, so the release step's test so written passed a
+  // build digest with a line break and a commit= line beside it.
+  it('reads a bracket expression as one character, so no parenthesis in one hides an alternation', () => {
+    const bracketed = '^[(][0-9a-f]{40}:sha256:|[0-9a-f]{64}[)]$'
+    expect(SHELL_TABLE.regex.test(bracketed)).toBe(false)
+    expect(SHELL_TABLE.regex.test('^[0-9a-f]{40}:sha256:[0-9a-f]{64}$')).toBe(true)
+    expect(readShell(`if ! [[ "$X" =~ ${bracketed} ]]; then\n  exit 1\nfi`).refused?.what).toBe(
+      'a regular expression the table does not name',
+    )
+    for (const [regex, found] of [
+      [bracketed, true],
+      ['^[a|b]$', true],
+      ['^[a-z$', true],
+      ['^[[:alnum:]_-]+$', false],
+      ['^[]a]+$', false],
+      ['^subnet-[0-9a-f]{8,17}(,subnet-[0-9a-f]{8,17}){0,15}$', false],
+    ] as const) {
+      expect(regexTestLines(`if [[ "$x" =~ ${regex} ]]; then :; fi`).length > 0, regex).toBe(found)
+    }
+    expect(
+      canonicalTextFindings({
+        FAST_RECHECK_PROD: `${STOP_HEAD}\n[[ "$D" =~ ^[(]sha256:|[0-9a-f]{64}[)]$ ]] || exit 1`,
+      }),
+    ).toContain(REGEX_TEST('FAST_RECHECK_PROD', STOP_HEAD.split('\n').length + 1))
+    // What bash does: the bracketed form matches a value with a line break and a line of its own, ending in a
+    // digest and a ), which the anchored form refuses.
+    const value = `sha256:${'a'.repeat(64)}\ncommit=${'e'.repeat(40)}\nnote=${'b'.repeat(64)})`
+    expect(bash(`[[ "$D" =~ ${bracketed} ]]`, { D: value }).status).toBe(0)
+    expect(bash('[[ "$D" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]', { D: value }).status).toBe(1)
+  })
+
+  // errexit reads neither a negated pipeline's status nor any command of an && list but the last: the read-back's
+  // ARN refusal written as the statement ! jq -e … ended nothing, and so did [[ A ]] && [[ B ]] for if ! [[ … ]].
+  // A run's own lines take a ! only in an if or elif condition and a test before && only there, and a canonical
+  // text the same (testChainLines()), whose tests are never one word ([[ "$a"!="$b" ]], always true).
+  it('refuses a test whose failure errexit never reads, and a test of one word', () => {
+    const arn = `jq -e 'tostring | ascii_downcase | contains("arn:")' <<<"$READBACK" >/dev/null`
+    expect(readShell(`! ${arn}`).refused?.what).toBe(
+      'a ! outside an if or elif condition, whose status errexit never reads',
+    )
+    expect(readShell(`[[ "$C" =~ ^[0-9a-f]{40}$ ]] && [[ "$D" =~ ^sha256:[0-9a-f]{64}$ ]]`).refused?.what).toBe(
+      'a test before && outside an if or elif condition, whose failure errexit never reads',
+    )
+    expect(readShell(`${arn} && echo held`).refused?.what).toBe(
+      'a test before && outside an if or elif condition, whose failure errexit never reads',
+    )
+    expect(readShell(`if ! ${arn.replace('")', '") | not')}; then\n  exit 1\nfi`).refused).toBeUndefined()
+    expect(readShell(`[[ "$C" =~ ^[0-9a-f]{40}$ ]] || exit 1`).refused).toBeUndefined()
+    // In a run, as deploy.yml writes the read-back: the negated statement in place of its if.
+    const held = `if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then\n  echo 'read-back: it would hold an ARN' | mask\n  exit 1\nfi`
+    expect(READ_BACK).toContain(held)
+    expect(readShell(READ_BACK.replace(held, `# The read-back holds no ARN.\n! ${arn}`)).refused).toBeDefined()
+    expect(bash('! false\necho went on').stdout).toBe('went on\n')
+    expect(bash('false && true\necho went on').stdout).toBe('went on\n')
+    // The canonical texts.
+    for (const [text, found] of [
+      [`! ${arn}`, true],
+      [`if ! ${arn}; then\n  exit 1\nfi`, false],
+      ['[[ "$C" =~ ^a$ ]] && [[ "$D" =~ ^b$ ]]', true],
+      ['[[ "$C" =~ ^a$ ]] && [[ "$D" =~ ^b$ ]] || exit 1', false],
+      ['[ "$stage" = restore ] && stage=prod', false],
+      ['[ "$stage" = restore ] && stage="$x"', true],
+      ['{ [ "$a" != "$b" ] && is_ancestor "$a"; } ||\n  exit 1', false],
+      ['{ [ "$a" != "$b" ] && is_ancestor "$a"; true; } || exit 1', true],
+      ['[[ "$status"!=*_IN_PROGRESS ]] || exit 1', true],
+      ['[ "$a"="$b" ] || exit 1', true],
+      ['[ ! -L "$a" ] || exit 1', false],
+    ] as const) {
+      expect(testChainLines(text).length > 0, text).toBe(found)
+    }
+    const settled = `  [[ "$status" != *_IN_PROGRESS ]] || aws_refuse 'a deployment is in progress: wait for it to settle, then dispatch again'\n`
+    expect(AWS_CHECK).toContain(settled)
+    const at = AWS_CHECK.slice(0, AWS_CHECK.indexOf(settled)).split('\n').length
+    expect(canonicalTextFindings({ AWS_CHECK: AWS_CHECK.replace(settled, settled.replace(' != ', '!=')) })).toContain(
+      TEST_CHAIN('AWS_CHECK', at),
+    )
+    expect(bash('x=garbage; [[ "$x"=~^[0-9]+$ ]] && echo passed').stdout).toBe('passed\n')
+  })
+
+  // echo's entry refused a first word whose value starts with -, but a word that expands has no value, so
+  // echo "$FLAG" "$VALUE" passed, and with FLAG -e bash's echo wrote VALUE's \n as a line break: two output lines.
+  // Before other words, a first word that starts with an expansion is refused.
+  it('refuses an echo whose first word, before others, starts with an expansion, whose value could be a flag', () => {
+    expect(readShell('echo "$FLAG" "$VALUE" >>"$GITHUB_OUTPUT"').refused?.what).toBe(
+      'a builtin given what the table does not name',
+    )
+    expect(readShell('echo "$(jq -r .a <<<"$X")" x').refused?.what).toBe('a builtin given what the table does not name')
+    expect(readShell('echo "release: $RELEASE"').refused).toBeUndefined()
+    // Alone, a flag's value only empties the line it writes.
+    expect(readShell('echo "$X"').refused).toBeUndefined()
+    expect(bash('echo "$FLAG"', { FLAG: '-e' }).stdout).toBe('\n')
+    expect(bash('echo "$FLAG" "$VALUE"', { FLAG: '-e', VALUE: 'digest=sha256:aa\\ncommit=2222' }).stdout).toBe(
+      'digest=sha256:aa\ncommit=2222\n',
+    )
+  })
+
+  // shapeProblems() refused a sequence item's plain value holding a : and a blank, but not a key's, nor a plain value
+  // starting with an indicator YAML reads as no plain scalar: every rule passed a dispatch input's description
+  // written (format: 40 hex) while YAML, and so GitHub, reads no file of it and starts no run.
+  it('refuses a plain value YAML reads as a mapping or as no plain scalar, in every workflow', () => {
+    const from = '        description: up or down for target restore; none otherwise\n'
+    expect(deployText).toContain(from)
+    const line = deployText.slice(0, deployText.indexOf(from)).split('\n').length - 1
+    for (const value of [
+      'up or down for target restore: none otherwise',
+      'up or down, one of:',
+      '@owner reads it',
+      '`up` or `down`',
+      '%s for target restore',
+      '> up or down',
+      '| up or down',
+      ', up or down',
+      '] up or down',
+      '} up or down',
+    ]) {
+      const planted = deployText.replace(from, `        description: ${value}\n`)
+      expect(shapeProblems(planted), value).toEqual([line])
+      expect(permissionFindings(withText(DEPLOY, planted), ownRepository() ?? ''), value).toContain(
+        `${DEPLOY}: DPW-02 ${SHAPE}`,
+      )
+    }
+    for (const value of [
+      'up or down {for} restore',
+      'up or down [for] restore',
+      'https://example.invalid/a:b',
+      'a #: b',
+    ]) {
+      expect(shapeProblems(deployText.replace(from, `        description: ${value}\n`)), value).toEqual([])
+    }
+    const ci = workflows.get(CI) ?? ''
+    expect(ci.startsWith('name: ci\n')).toBe(true)
+    expect(
+      permissionFindings(withText(CI, ci.replace('name: ci\n', 'name: ci: checks\n')), ownRepository() ?? ''),
+    ).toContain(`${CI}: DPW-02 ${SHAPE}`)
+  }, 60_000)
 })

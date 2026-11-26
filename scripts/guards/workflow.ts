@@ -8,10 +8,12 @@
 // reformatted file fails the test rather than passing unread. What it can't read: a flow mapping with
 // anything in it, an anchor, an alias or a tag (&, *, !) but a step's shared run (below), a quoted key, a
 // value continued on the next line (a plain or quoted scalar, or a flow sequence, over two lines), a key
-// given twice, a plain value YAML reads as structure (starting with -, ? or : and a blank), a sequence
-// item's plain value YAML reads as a mapping (a : and a blank or at its end, as in a merge key's - <<: *s),
-// a flow item YAML reads otherwise than split at its commas (one holding a quoted comma, a : and a blank or
-// at its end, or a #), and any other indent; shapeProblems() names each line in none of the shapes it reads.
+// given twice, a plain value YAML reads as structure (starting with -, ? or : and a blank) or as no plain
+// scalar at all (starting with , ] } % @, a backquote, or | or > with more than a block scalar's header), a
+// plain value, a key's or a sequence item's, that YAML reads as a mapping (a : and a blank or at its end, as in
+// a merge key's - <<: *s, or a description's `format: 40 hex`), a flow item YAML reads otherwise than split at
+// its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other indent;
+// shapeProblems() names each line in none of the shapes it reads.
 // The one anchor and alias it reads is a step's run: shared whole, in exactly two forms on a step's run: key
 // at eight spaces in a job's steps: (runAnchors()): `run: &name |`, a literal block scalar with clip chomping
 // and nothing after it, anchoring the text, and `run: *name`, alone on its line with nothing deeper under it
@@ -717,6 +719,11 @@ const STRUCTURE = /^[-?:](?:\s|$)/
 // holds: a : followed by a blank or at its end before any comment (- <<: *s, a merge key, which GitHub's
 // readers refuse as an unknown key; - a.b: c; - x y: z).
 const ITEM_MAPPING = /^(?:(?!\s#).)*:(?:\s|$)/
+// A plain value that starts with an indicator YAML reads as no plain scalar, which this reader doesn't model: a
+// flow indicator that closes or separates (, ] }), the directive indicator %, a reserved one (@ and the backquote),
+// or a block scalar's | or > followed by anything but its header and a comment (BLOCK_SCALAR reads those first).
+// YAML refuses each, and so does GitHub, which then starts no run of the file (round 13's third iteration).
+const UNREAD_INDICATOR = /^[,\]}%@`|>]/
 
 // Whether a flow sequence's items, between its brackets, are read here as YAML reads them: split at each
 // comma outside quotes (a comma inside a quoted item would split it here, so none may hold one), each item
@@ -756,10 +763,13 @@ function flowItemsRead(inner: string): boolean {
 // name a plain word, given once in its mapping) or a sequence item (`- value`, or `- name:` starting a
 // mapping whose keys sit two spaces in). A value after its key is whole on its line, and starts with
 // no anchor, alias or tag: a block scalar's indicator, a plain scalar no line below continues (anything
-// deeper under it is refused) and that starts with no indicator YAML reads as structure (STRUCTURE), a
-// quoted scalar closed on the line, a flow sequence closed on the line whose items are scalars read as
-// YAML reads them (flowItemsRead), or the empty flow mapping {}. Its indentation, and the blank after its
-// dash, are spaces alone (TAB_INDENT).
+// deeper under it is refused) that starts with no indicator YAML reads as structure (STRUCTURE) or as no plain
+// scalar (UNREAD_INDICATOR) and holds no : followed by a blank or at its end before a comment (ITEM_MAPPING),
+// which YAML reads as a nested mapping and refuses after a key (round 13's third iteration: a dispatch input's
+// description written `(format: 40 hex)`, or a workflow's `name: ci: checks`, passed every rule while GitHub,
+// reading no YAML, started no run of the file), a quoted scalar closed on the line, a flow sequence closed on the
+// line whose items are scalars read as YAML reads them (flowItemsRead), or the empty flow mapping {}. Its
+// indentation, and the blank after its dash, are spaces alone (TAB_INDENT).
 export function shapeProblems(text: string): number[] {
   const shared = runAnchors(text)
   const forms = new Set([...shared.anchors, ...shared.aliases].map(each => each.line))
@@ -815,7 +825,7 @@ export function shapeProblems(text: string): number[] {
                 ? flow !== null && flowItemsRead(flow[1] ?? '')
                 : value.startsWith('{')
                   ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
-                  : !STRUCTURE.test(value) && !(item && !key && ITEM_MAPPING.test(value)))))
+                  : !STRUCTURE.test(value) && !ITEM_MAPPING.test(value) && !UNREAD_INDICATOR.test(value))))
     if (!whole) problems.push(index)
   }
   return [...new Set(problems)].sort((a, b) => a - b)
