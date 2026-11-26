@@ -67,8 +67,9 @@ jobs:
   # through it, and protect-environments.sh check). It refuses a bot's run, a ref other than main, any
   # input combination but those deploy-and-rollback.md lists, a DOMAINS placeholder, a deploy whose
   # commit isn't its merged pull request's tree with that request's checks green, a commit off main,
-  # main's ruleset or the environments not live as written, and a rollback the records and floors don't
-  # allow.
+  # main's rules lacking any of a deletion, a non-fast-forward, a pull request and a required-checks rule
+  # naming check and migrations (it reads nothing else of the ruleset, so a rule loosened in GitHub's UI
+  # still passes), the environments not live as written, and a rollback the records and floors don't allow.
   gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -2889,6 +2890,8 @@ jobs:
           if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
             if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
               echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+            elif [ "$SMOKE" = success ]; then
+              echo "record: drill-smoke's smoke passed (SMK-05 itself failed, so its inversion passed), so nothing rolled back and the drill proved nothing: the run ends red"
             else
               echo "record: the release's own smoke didn't pass, so the run ends red"
             fi
@@ -3245,8 +3248,10 @@ jobs:
   # waits for main's own CI on its commit; a rollback or a restore doesn't (T24 item 20), but each is
   # checked again against prod's records, read afresh. Then the environments are checked live as written
   # again, as the gate checks them (C11-D49): a re-run of prod-plan re-runs this job and prod but never the
-  # gate, and GitHub applies prod's protection as it stands when prod queues, so every path into prod, a
-  # fresh run's or a re-run's, reads them here, just before it.
+  # gate, and GitHub applies prod's protection as it stands when prod queues, so every path into the prod
+  # job, a fresh run's or a re-run's, reads them here, just before it. rollback-prod has no such read: a
+  # fresh run's queues after prod's approval wait, its deploy and smoke-prod, so it rests on this job's
+  # read from before that wait, and a re-run of it alone on prod's protection as it then stands.
   prod-gate:
     needs: [gate, build, nonprod, smoke-nonprod, prod-plan]
     if: ${{ !endsWith(github.triggering_actor, '[bot]') && !endsWith(github.actor, '[bot]') && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'rollback') && (needs.gate.outputs.target == 'prod' || needs.gate.outputs.target == 'restore') && needs.prod-plan.result == 'success' }}
@@ -4665,6 +4670,8 @@ jobs:
           if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
             if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
               echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+            elif [ "$SMOKE" = success ]; then
+              echo "record: drill-smoke's smoke passed (SMK-05 itself failed, so its inversion passed), so nothing rolled back and the drill proved nothing: the run ends red"
             else
               echo "record: the release's own smoke didn't pass, so the run ends red"
             fi

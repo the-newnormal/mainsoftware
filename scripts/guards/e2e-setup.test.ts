@@ -464,9 +464,11 @@ describe('T21: the web e2e set-up (apps/web/playwright.config.ts, e2e/support)',
     expect(config.globalTimeout).toBe(process.env.CI ? minutes * 60_000 : undefined)
     const jobMinutes = checkJob().timeoutMinutes ?? Number.NaN
     expect(jobMinutes, "the check job's timeout-minutes").toBeGreaterThan(0)
-    // The steps before the suite took 4 to 5.5 minutes on CI in October 2026: the job leaves them
-    // four times that, and the suite's teardown and the upload after it 5 more.
-    const beforeSuite = 20
+    // The steps before the suite took 4 to 5.5 minutes on CI in October 2026; from C0.11 PR 4 the
+    // test step holds the deploy-workflow guard, which took about 13 to 16 minutes locally, so they
+    // came to about 20 to 25 there (GitHub's runner unmeasured until the branch's first run). The
+    // job leaves them 40, 1.6 to 2 times that, and the suite's teardown and the upload after it 5.
+    const beforeSuite = 40
     const afterSuite = 5
     expect(beforeSuite + minutes + afterSuite).toBeLessThanOrEqual(jobMinutes)
   })

@@ -229,12 +229,15 @@ export function main(): number {
   return run(lsRemote)
 }
 
-// Node 22.18 and 24.2 added import.meta.main (a TypeScript entry's in 22.18 and 24.3, by Node's changelogs; the
-// runner image's own Node 22 has it). On a Node without it, it is undefined, so main would never be called and the
-// script would exit 0 having read no tag: it refuses such a Node instead (CI's comes from .nvmrc, which DPW-04
-// holds to 24 alone, and a person runs it on Node 24).
-if (typeof import.meta.main !== 'boolean') {
-  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')
+// Node 22.18 and 24.2 added import.meta.main, but 24.2 left it false on a TypeScript entry, which 24.3 set (by
+// Node's changelogs, and a run of 22.18.0, 24.2.0 and 24.3.0; the runner image's own Node 22 has it). On a Node
+// without it it is undefined, and on 24.2 false, so main would never be called and the script would exit 0 having
+// read no tag: it refuses such a Node instead, by its version as well as by the value (CI's comes from .nvmrc,
+// which DPW-04 holds to 24 alone, and a person runs it on Node 24).
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)
+const nodeSetsMain = nodeMajor === 22 ? nodeMinor >= 18 : nodeMajor === 24 ? nodeMinor >= 3 : nodeMajor > 24
+if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {
+  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.3+), so no pin was read')
   process.exit(1)
 }
 if (import.meta.main) process.exit(main())

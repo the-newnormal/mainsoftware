@@ -204,10 +204,14 @@ function run(base: string): number {
   return problems.length === 0 ? 0 : 1
 }
 
-// Node 22.18 and 24.2 added import.meta.main (a TypeScript entry's in 22.18 and 24.3, by Node's changelogs); on a
-// Node without it, it is undefined and nothing would be checked, so such a Node is refused (CI's comes from .nvmrc).
-if (typeof import.meta.main !== 'boolean') {
-  console.error('check-cli-pin: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')
+// Node 22.18 and 24.2 added import.meta.main, but 24.2 left it false on a TypeScript entry, which 24.3 set (by
+// Node's changelogs, and a run of 22.18.0, 24.2.0 and 24.3.0); on a Node without it it is undefined, and on 24.2
+// false, and nothing would be checked, so such a Node is refused, by its version as well as by the value (CI's
+// comes from .nvmrc).
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)
+const nodeSetsMain = nodeMajor === 22 ? nodeMinor >= 18 : nodeMajor === 24 ? nodeMinor >= 3 : nodeMajor > 24
+if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {
+  console.error('check-cli-pin: this Node lacks import.meta.main (Node 22.18+, 24.3+), so no pin was read')
   process.exit(1)
 }
 if (import.meta.main) process.exit(run(process.argv[2] ?? MAIN))

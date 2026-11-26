@@ -401,7 +401,11 @@
 // after the one file, and < <( … ) after the here-string, each fed jq a value its line didn't show). And a jq given
 // -n is handed no data at all, no file, here-string, input redirection or pipe (JQ_UNREAD_RULE, jqIsHeld()), since
 // it reads none and checks null: jq -ne '…' "$dir/$file" passed whatever the template held (round 12's fourth
-// iteration, its second pass). A here-string
+// iteration, its second pass). And a jq whose output its own redirections throw away (to /dev/null) is given -e,
+// in a canonical text and on a run's own lines (JQ_DISCARDED_RULE, standardOutputOf(); round 13's guards lens),
+// since its status alone is then read and without -e says only whether its program ran: ASSET_CHECK's inline
+// logical-id check with its -e dropped refused nothing, and DPW-14 now plants that check's breakages in a stack
+// artifact's own metadata too. A jq without -e whose output a line reads instead is the owner's read's. A here-string
 // holding several JSON texts is read the same
 // way, which no rule reads: the texts' here-strings hand jq a value read whole from AWS, GitHub or an earlier jq, a
 // variable built of several (by += or from jq -c '.[]') being the owner's read's to catch; each file is an
@@ -2551,6 +2555,8 @@ else`
 const RECORD_TAIL = sh`if [ "$SMOKE" != success ] || [ "$MODE" = drill-smoke ]; then
   if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then
     echo "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+  elif [ "$SMOKE" = success ]; then
+    echo "record: drill-smoke's smoke passed (SMK-05 itself failed, so its inversion passed), so nothing rolled back and the drill proved nothing: the run ends red"
   else
     echo "record: the release's own smoke didn't pass, so the run ends red"
   fi
@@ -5078,6 +5084,69 @@ const JQ_UNREAD_RULE =
 export function jqUnreadLines(text: string): number[] {
   return lineNumbers(jqCalls(text).filter(call => call.noInput && call.fed))
 }
+// Without -e, jq's status says only whether its program ran, never what it printed: jq '… == $release' t.json
+// exits 0 whether the program prints true or false. So a jq whose output its own redirections throw away (its
+// standard output last set to /dev/null, by >, >>, >|, 1>, &>, 1<> or a duplicate of a descriptor that is), whose
+// status alone is then all a line can read, is given -e (round 13's guards lens: ASSET_CHECK's manifest-level
+// logical-id check with its -e dropped refused nothing, and passed every rule and DPW-14 case). A jq whose output
+// a line reads instead (captured, or piped on) is the owner's read's to catch, as every jq -e's program is.
+const JQ_DISCARDED_RULE =
+  "hands jq -e whenever its own redirections throw its output away (to /dev/null), since without -e jq's status says only whether its program ran, never what it printed"
+export function jqDiscardedLines(text: string): number[] {
+  return lineNumbers(jqCalls(text).filter(call => call.discarded && !call.status))
+}
+// Where a command's standard output ends up once bash has applied its redirections, left to right: a file's path
+// as written (its quotes taken off), 'out' for the output it was handed, or undefined for a descriptor closed or
+// a target the reader can't read. Each redirection is [operator with its descriptor, target]; a duplicate (>&N,
+// <&N) copies descriptor N, &> and >& with a word set both 1 and 2, and N< or N<> with N 1 set 1 too.
+export function standardOutputOf(
+  redirections: ReadonlyArray<readonly [string, string | undefined]>,
+): string | undefined {
+  const fds = new Map<string, string | undefined>([
+    ['1', 'out'],
+    ['2', 'err'],
+  ])
+  for (const [written, given] of redirections) {
+    // A duplicate written whole (2>&1, >&2, as the glue's table reads one) is its operator and its descriptor.
+    const whole = given === undefined ? /^(\d*[<>]&)(\d+|-)$/.exec(written) : null
+    const op = whole === null ? written : (whole[1] ?? '')
+    const target = whole === null ? given : whole[2]
+    const parts = /^(\d*)(<<<|<<-?|<>|>>|>&|<&|>\||<|>|&>>?)$/.exec(op)
+    if (parts === null) return undefined
+    const fd = parts[1] ?? ''
+    const kind = parts[2] ?? ''
+    const path = target === undefined ? undefined : wordAsRead(target)
+    if (kind.startsWith('&>')) {
+      fds.set('1', path)
+      fds.set('2', path)
+    } else if (kind === '>&' || kind === '<&') {
+      const into = fd === '' ? (kind === '>&' ? '1' : '0') : fd
+      if (path !== undefined && /^\d+$/.test(path)) fds.set(into, fds.get(path))
+      else if (path === '-') fds.set(into, undefined)
+      else if (fd === '' && kind === '>&') {
+        fds.set('1', path)
+        fds.set('2', path)
+      } else fds.set(into, path)
+    } else if (kind.startsWith('<<')) continue
+    else fds.set(fd === '' ? (kind.startsWith('<') ? '0' : '1') : fd, path)
+  }
+  return fds.get('1')
+}
+// A canonical text's redirection words as [operator, target] pairs: the target joined to its operator or the next
+// word, a process substitution being an argument.
+function redirectionPairs(words: readonly string[]): Array<[string, string | undefined]> {
+  const pairs: Array<[string, string | undefined]> = []
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] ?? ''
+    const operator = PROCESS_SUBSTITUTION.test(word) ? undefined : REDIRECTING.exec(word)?.[0]
+    if (operator === undefined) continue
+    if (operator === word) {
+      pairs.push([operator, words[i + 1]])
+      i++
+    } else pairs.push([operator, word.slice(operator.length)])
+  }
+  return pairs
+}
 const lineNumbers = (calls: ReadonlyArray<{ line: number }>) =>
   [...new Set(calls.map(call => call.line))].sort((a, b) => a - b)
 // Whether the code before a command ends with a pipe that feeds it: a | or |& (never || or >|), then only blanks,
@@ -5092,6 +5161,7 @@ const INPUT_REDIRECTION = /^0?(?:<<<|<>|<&|<(?![<(]))/
 type JqCall = {
   line: number
   status: boolean
+  discarded: boolean
   oneInput: boolean
   noInput: boolean
   fed: boolean
@@ -5134,7 +5204,8 @@ function jqCalls(text: string): JqCall[] {
       // JQ_PIPED_RULE still reads -n as reading no stream).
       const fed = files > 0 || inputs.length > 0 || piped
       const oneInput = slurp || noInput
-      calls.push({ line: n, status, oneInput, noInput, fed, piped, files, hereString, program: body })
+      const discarded = standardOutputOf(redirectionPairs(written)) === '/dev/null'
+      calls.push({ line: n, status, discarded, oneInput, noInput, fed, piped, files, hereString, program: body })
     }
     offset += line.length + 1
   }
@@ -5752,6 +5823,9 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of jqUnreadLines(text)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_UNREAD_RULE}`)
+    }
+    for (const line of jqDiscardedLines(text)) {
+      found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${JQ_DISCARDED_RULE}`)
     }
     for (const line of fileNameLines(text, name)) {
       found.push(`${GUARD}: DPW-10 ${name}, line ${line + 1}: ${FILE_NAME_RULE}`)
@@ -7806,8 +7880,9 @@ export function credentialJobFindings(workflows: Texts): Finding[] {
 // credentialed jobs run none, so their CLI runs under the runner image's own Node: IMAGE_NODE_MAJOR), is 24 alone
 // (NVMRC): setup-node reads a JSON .nvmrc as a manifest, and its versions read one apart (7.1 takes
 // devEngines.runtime, which 5 doesn't know, before engines.node), so a .nvmrc no rule held could give the pins job,
-// and every deploy job that runs setup-node, a Node without import.meta.main (a 24 before 24.2, a 22 before 22.18,
-// or an older line): the check, history.ts and smoke.ts would then run nothing and exit 0, the pins unproved and a
+// and every deploy job that runs setup-node, a Node that never runs a TypeScript entry's main (one without
+// import.meta.main, a 24 before 24.2, a 22 before 22.18 or an older line, or 24.2, which leaves it false on a
+// TypeScript entry): the check, history.ts and smoke.ts would then run nothing and exit 0, the pins unproved and a
 // broken release's smoke passed, while check, on 5, still ran a Node new enough to pass.
 export function actionPinFindings(workflows: Texts, folder?: readonly string[], nvmrc?: string): Finding[] {
   const text = deployWritten(workflows)
@@ -7852,8 +7927,9 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
 // own): the major version alone, which each version of setup-node reads the same way, as a Node 24 (CLAUDE.md:
 // Node stays on 24): with check-latest unset, as in every step here, the newest Node 24 in the runner's tool
 // cache, or the newest in actions/node-versions' manifest when the cache holds none. GitHub's ubuntu-24.04
-// image caches a Node 24 well past 24.2, so no manifest, range or older release chooses an older Node in some
-// jobs; the deploy scripts and the pins check refuse a Node without import.meta.main all the same.
+// image caches a Node 24 well past 24.3, so no manifest, range or older release chooses an older Node in some
+// jobs; the deploy scripts and both pins checks refuse a Node without import.meta.main all the same, and from
+// round 13 a Node by its version too, 24.2 among them (which has it, but false on a TypeScript entry).
 export const NVMRC_FILE = '.nvmrc'
 export const NVMRC = '24\n'
 const NVMRC_RULE =
@@ -10033,8 +10109,10 @@ const programOf = (word: ShellWord | undefined): string | undefined =>
 // expands to several ("${NAME[@]}" as an --arg's value hands jq each element as a word, a program among them;
 // the ninth review's second attack); and, given -e, a program that prints one value, fed by no pipe unless it is
 // also given -n (JQ_PIPED_RULE, round 12); and, given -n, fed nothing at all, by a pipe, a here-string or a
-// redirection, which it would never read (JQ_UNREAD_RULE, round 12's fourth iteration, its second pass).
-export function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false): boolean {
+// redirection, which it would never read (JQ_UNREAD_RULE, round 12's fourth iteration, its second pass); and,
+// with its output thrown away by its own redirections, given -e, since its status alone is then read
+// (JQ_DISCARDED_RULE, round 13).
+export function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false, discarded = false): boolean {
   if (args.some(manyWords)) return false
   const given: string[] = []
   let i = 0
@@ -10053,6 +10131,7 @@ export function jqIsHeld(args: readonly ShellWord[], piped = false, fed = false)
   const status = flags.some(arg => arg.raw.includes('e'))
   const noInput = flags.some(arg => arg.raw.includes('n'))
   if (noInput && fed) return false
+  if (discarded && !status) return false
   return jqProgramIsHeld(program, given) && (!status || (jqPrintsOne(program) && (!piped || noInput)))
 }
 // gh api only as the records' calls: a deployment made from the body on its input, its status, or the newest
@@ -10311,6 +10390,7 @@ const GLUE_USES: Readonly<Record<string, (command: GlueCommand) => boolean>> = {
       args,
       previous !== undefined || !redirections.some(each => each.op === '<<<'),
       previous !== undefined || redirections.some(each => each.op.startsWith('<')),
+      standardOutputOf(redirections.map(each => [each.op, each.target?.raw])) === '/dev/null',
     ),
   gh: ({ args }) => ghIsHeld(args),
   // The step's own files: the pushed digest and prod-plan's diff.

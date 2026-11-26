@@ -10,7 +10,7 @@
 // configuration files, a global hook or signed tags, for every git command the test runs itself); every
 // ARN, account id and address is built from parts at run time (IG-01). It holds what the history must
 // decide, so it is on the owner's-read list (C11-D74).
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -45,6 +45,7 @@ import {
 
 const EMAIL = ['test', 'example.invalid'].join('@')
 const ACCOUNT = '1'.repeat(12)
+const SCRIPT = fileURLToPath(new URL('./history.ts', import.meta.url))
 const STAGE_SOURCE = fileURLToPath(new URL('../../src/workload/stage.ts', import.meta.url))
 const RUNBOOK = fileURLToPath(new URL('../../../docs/runbooks/deploy-and-rollback.md', import.meta.url))
 
@@ -562,6 +563,18 @@ describe('C11-D58, T24 item 22: checking a target against the records', () => {
     expect(validateTarget(h, { commit: at(3), digest: D.c }, at(5), isAncestor)).toEqual({
       ok: false,
       reason: 'not-recorded',
+    })
+    // A forged record naming the current digest (m3 live as D.f) under another commit counts as the current
+    // release's first: m2, first recorded after it, is refused though no record names m3.
+    const forged = records(
+      'prod',
+      deployment(1, 'prod', at(1), D.a, 1),
+      deployment(2, 'prod', at(5), D.f, 2),
+      deployment(3, 'prod', at(2), D.b, 3),
+    )
+    expect(validateTarget(forged, { commit: at(3), digest: D.f }, at(2), isAncestor)).toEqual({
+      ok: false,
+      reason: 'recorded-after-current',
     })
   })
 
@@ -1103,6 +1116,7 @@ describe('C11-D49, C11-D58, T24 item 20: the gate’s plan, mode by mode', () =>
       [planInput({ actor: '' }), 'bad-input'],
       [planInput({ ref: 'refs/heads/side' }), 'not-main'],
       [planInput({ ref: 'refs/tags/main' }), 'not-main'],
+      [planInput({ ref: 'refs/heads/main-x' }), 'not-main'],
       [planInput({ event: 'pull_request_target' }), 'bad-event'],
       [planInput({ event: 'workflow_run' }), 'bad-event'],
       [planInput({ sha: 'main' }), 'bad-input'],
@@ -1829,6 +1843,23 @@ describe('C11-D58, C11-D61: the command line', () => {
       code: 2,
       out: ["history: --records can't be read"],
     })
+    // A records file that isn't JSON (a page cut short) is input it can't use, never read as no records,
+    // which would plan a first deploy with no rollback.
+    const notJson = join(scratch, 'not-json')
+    mkdirSync(notJson, { recursive: true })
+    writeFileSync(join(notJson, 'release-nonprod.json'), '[{')
+    writeJson(join(notJson, 'release-prod.json'), [deployment(202, 'prod', at(4), D.d, 2)])
+    const cutShort = join(notJson, 'release-nonprod.json')
+    expect(await cli(['choose', '--env', 'nonprod', '--records', cutShort, '--current', `${at(5)}:${D.e}`])).toEqual({
+      code: 2,
+      out: ['history: --records is not JSON'],
+      err: [],
+    })
+    expect(await cli(push.map((arg, i) => (push[i - 1] === '--records' ? notJson : arg)))).toEqual({
+      code: 2,
+      out: ['history: --records is not JSON'],
+      err: [],
+    })
     expect(await cli(['plan', '--records', join(scratch, 'nowhere')])).toMatchObject({
       code: 2,
       out: ['history: --event is missing'],
@@ -1859,6 +1890,31 @@ describe('C11-D58, C11-D61: the command line', () => {
       err: [],
     })
   })
+
+  // The entry line as Node runs it: main's lines and its code reach the process, 0, 1 and 2 alike.
+  it('C11-D58: runs as a script under Node, with the same lines and exit codes', () => {
+    const node = (args: readonly string[]) => {
+      const run = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: repo, encoding: 'utf8', timeout: 30_000 })
+      return [run.status, run.stdout, run.stderr]
+    }
+    const empty = writeJson(join(scratch, 'script', 'empty.json'), [])
+    expect(node(['migrated', '--records', empty])).toEqual([0, 'none\n', ''])
+    const file = writeJson(join(scratch, 'script', 'release-nonprod.json'), [
+      deployment(101, 'nonprod', at(4), D.d, 1),
+      deployment(102, 'nonprod', at(5), D.e, 2),
+    ])
+    const validate = ['validate', '--env', 'nonprod', '--records', file, '--current', `${at(4)}:${D.d}`]
+    expect(node([...validate, '--target', at(5)])).toEqual([
+      1,
+      `history: refused recorded-after-current: ${REFUSALS['recorded-after-current']}\n`,
+      '',
+    ])
+    expect(node(['nope'])).toEqual([
+      2,
+      'history: the command is not plan, prod-gate, choose, choose-ecs, validate or migrated\n',
+      '',
+    ])
+  }, 60_000)
 
   it('C11-D58: a failure it didn’t expect is one line, `history: failed`, and exit 1, never the error’s message', async () => {
     const empty = writeJson(join(scratch, 'failed', 'empty.json'), [])

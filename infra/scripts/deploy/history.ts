@@ -1062,12 +1062,16 @@ export async function main(argv: readonly string[], io: Io = defaultIo): Promise
   }
 }
 
-// Node 22.18 and 24.2 added import.meta.main (a TypeScript entry's in 22.18 and 24.3, by Node's changelogs). On a
-// Node without it, it is undefined, so main would never run and the script would exit 0 having decided nothing:
-// it refuses such a Node instead. floors-check.ts, which this file
-// loads, makes the same check first, so on such a Node its line is the one printed, and the exit is 1.
-if (typeof import.meta.main !== 'boolean') {
-  process.stderr.write('history: this Node lacks import.meta.main (Node 22.18+, 24.2+), so nothing was decided\n')
+// Node 22.18 and 24.2 added import.meta.main, but 24.2 left it false on a TypeScript entry, which 24.3 set (by
+// Node's changelogs, and a run of 22.18.0, 24.2.0 and 24.3.0). On a Node without it (before 22.18, a 23, a 24
+// before 24.2) it is undefined, and on 24.2 false, so main would never run and the script would exit 0 having
+// decided nothing: it refuses such a Node instead, by its version as well as by the value. floors-check.ts,
+// which this file loads, makes the same check first, so on such a Node its line is the one printed, and the
+// exit is 1.
+const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)
+const nodeSetsMain = nodeMajor === 22 ? nodeMinor >= 18 : nodeMajor === 24 ? nodeMinor >= 3 : nodeMajor > 24
+if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {
+  process.stderr.write('history: this Node lacks import.meta.main (Node 22.18+, 24.3+), so nothing was decided\n')
   process.exit(1)
 }
 if (import.meta.main) process.exitCode = await main(process.argv.slice(2))

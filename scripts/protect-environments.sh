@@ -20,10 +20,13 @@
 #   PROD_REVIEWERS=<login>[,<login>...] scripts/protect-environments.sh apply [owner/repo]
 #
 # check only reads: the deploy workflow's gate runs it on every run, and prod-gate runs it again just
-# before every prod job, a re-run's included, and each refuses the run unless every environment is live
-# exactly as written (C11-D49). For each environment it reads the environment, its
-# deployment branch policies and its custom deployment protection rules, and then the repository's
-# OIDC subject template, and compares them field by field: required_reviewers 0 means no
+# before the prod job, a re-run's included, and each refuses the run unless every environment is live
+# exactly as written (C11-D49). rollback-prod has no prod-gate after the prod job: a fresh run's approval
+# of it comes long after prod-gate's check, and a re-run of it alone runs no check at all, so it rests on
+# prod's environment as it stands, which a repo admin checks before anyone re-runs a job (TECH-SPEC T24
+# item 20, docs/runbooks/deploy-and-rollback.md's Re-running a failed job). For each environment it
+# reads the environment, its deployment branch policies and its custom deployment protection rules, and
+# then the repository's OIDC subject template, and compares them field by field: required_reviewers 0 means no
 # required-reviewers rule at all and n a rule listing exactly n reviewers, each of type User (GitHub
 # lets any one listed reviewer approve, so a further user or a team beside them is a loosening),
 # prevent_self_review as written where that rule exists, no wait timer (or 0), the branch policy

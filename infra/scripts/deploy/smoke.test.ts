@@ -382,6 +382,11 @@ describe('SMK-T06 (SMK-06, C11-D54): what runs is the run’s own release', () =
     const counts = PROFILES.restore.services
     const restoreUp = restoreUpReadBack()
     expect(verdictOf(restoreUp, 'restore', 'up')).toEqual({ pass: true })
+    // The restore stage on another image fails on the digest as a deploy does, though it skips the AZ,
+    // health and target checks.
+    const otherImage = structuredClone(restoreUp)
+    for (const task of service(otherImage, 'api').tasks) task.digest = EARLIER
+    expect(verdictOf(otherImage, 'restore', 'up')).toEqual({ pass: false, code: 'readback-api-digest' })
     // The api one above the profile's count in every field, every task running on the digest: the
     // restore stage runs at the profile's counts, not at whatever its service asks for.
     const tooMany = structuredClone(restoreUp)

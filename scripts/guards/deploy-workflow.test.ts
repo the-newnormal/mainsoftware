@@ -11,7 +11,8 @@
 // answers, and history.ts's plan is driven for the gate's refusals. Every commit is made in a scratch
 // repository, and nothing names an account, a login or an address. Last, `.claude/settings.json`'s deny
 // rules are read for a `:*` anywhere but at a Bash rule's end (C11-D77), which Claude Code reads literally,
-// and `.claude/` is held to carry no plugin and its settings to enable none and name no marketplace.
+// and `.claude/` is held to carry no plugin and its settings to enable none and name no marketplace, with no
+// `.claude/` folder tracked anywhere but the root.
 // This file and deploy-workflow.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -122,6 +123,7 @@ import {
   JOB_IDS,
   JOB_IFS,
   JOB_OUTPUTS,
+  jqDiscardedLines,
   jqIsHeld,
   jqPipedLines,
   jqPrintsOne,
@@ -185,6 +187,7 @@ import {
   shellCommands,
   shellViews,
   smokeRun,
+  standardOutputOf,
   TARGETS_QUERY,
   TASKS_OUTPUTS,
   type Texts,
@@ -2855,7 +2858,8 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     expect(actionPinFindings(workflows, undefined, NVMRC)).toEqual([])
     expect(NVMRC).toBe('24\n')
     // And each script the pipeline runs whose answer a gate, a smoke or a person rests on refuses a Node
-    // without import.meta.main, on which it would otherwise run nothing and exit 0 (a smoke passed, say).
+    // without import.meta.main, on which it would otherwise run nothing and exit 0 (a smoke passed, say), and
+    // 24.2, which has it but leaves it false on a TypeScript entry (round 13's scripts lens).
     for (const [script, said] of [
       ['history', 'nothing was decided'],
       ['smoke', 'nothing was judged'],
@@ -2863,26 +2867,31 @@ describe('DPW-04 (C11-D48, C11-D79): action pins', () => {
     ] as const) {
       const code = readRepoFile(`infra/scripts/deploy/${script}.ts`).trimEnd().split('\n')
       const refusal = [
-        "if (typeof import.meta.main !== 'boolean') {",
-        `  process.stderr.write('${script}: this Node lacks import.meta.main (Node 22.18+, 24.2+), so ${said}\\n')`,
+        "const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)",
+        'const nodeSetsMain = nodeMajor === 22 ? nodeMinor >= 18 : nodeMajor === 24 ? nodeMinor >= 3 : nodeMajor > 24',
+        "if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {",
+        `  process.stderr.write('${script}: this Node lacks import.meta.main (Node 22.18+, 24.3+), so ${said}\\n')`,
         '  process.exit(1)',
         '}',
         'if (import.meta.main) process.exitCode = await main(process.argv.slice(2))',
       ]
       expect(code.slice(-refusal.length), script).toEqual(refusal)
-      const older = spawnSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          refusal.slice(0, 4).join('\n').replace('typeof import.meta.main', 'typeof undefined'),
-        ],
-        { encoding: 'utf8' },
-      )
-      expect(older.status, script).toBe(1)
-      expect(older.stderr, script).toBe(
-        `${script}: this Node lacks import.meta.main (Node 22.18+, 24.2+), so ${said}\n`,
-      )
+      const check = refusal.slice(0, 6).join('\n')
+      for (const older of [
+        check.replace('typeof import.meta.main', 'typeof undefined'),
+        check.replace('process.versions.node', "'24.2.0'").replace('typeof import.meta.main', 'typeof false'),
+      ]) {
+        const ran = spawnSync(process.execPath, ['--input-type=module', '-e', older], { encoding: 'utf8' })
+        expect(ran.status, script).toBe(1)
+        expect(ran.stderr, script).toBe(
+          `${script}: this Node lacks import.meta.main (Node 22.18+, 24.3+), so ${said}\n`,
+        )
+      }
+      // A Node that sets it passes the check.
+      const current = check
+        .replace('process.versions.node', "'24.3.0'")
+        .replace('typeof import.meta.main', 'typeof true')
+      expect(spawnSync(process.execPath, ['--input-type=module', '-e', current], { encoding: 'utf8' }).status).toBe(0)
     }
   })
 
@@ -3073,10 +3082,10 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         expect(asked).toEqual([`https://github.com/${action}.git ${version}`])
       }
       // The script's last line exits with main's answer, the checkout's drift and then run's over lsRemote, so
-      // neither a skipped exit nor another reader stands in for it; and before it, a Node without
-      // import.meta.main (a 24 before 24.2, a 22 before 22.18), on which that line would never call main and the
-      // script would exit 0 having read nothing, exits 1 (FETCH-A6-01, round 6; the drift from round 12's third
-      // iteration).
+      // neither a skipped exit nor another reader stands in for it; and before it, a Node that never runs its
+      // main (one without import.meta.main, a 24 before 24.2 or a 22 before 22.18, or 24.2, which leaves it false
+      // on a TypeScript entry), on which that line would never call main and the script would exit 0 having read
+      // nothing, exits 1 (FETCH-A6-01, round 6; the drift from round 12's third iteration).
       const source = readRepoFile('scripts/check-action-pins.ts')
       const code = source.trimEnd().split('\n')
       const mainAt = code.indexOf('export function main(): number {')
@@ -3091,8 +3100,10 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
         '}',
       ])
       const refusal = [
-        "if (typeof import.meta.main !== 'boolean') {",
-        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')",
+        "const [nodeMajor = 0, nodeMinor = 0] = process.versions.node.split('.').map(Number)",
+        'const nodeSetsMain = nodeMajor === 22 ? nodeMinor >= 18 : nodeMajor === 24 ? nodeMinor >= 3 : nodeMajor > 24',
+        "if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {",
+        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.3+), so no pin was read')",
         '  process.exit(1)',
         '}',
         'if (import.meta.main) process.exit(main())',
@@ -3104,23 +3115,33 @@ describe('scripts/check-action-pins.ts (DPW-04): each pin against its action’s
             !line.trimStart().startsWith('//') && /\bimport\.meta\.main\b|process\.(?:exit|exitCode)\b/.test(line),
         ),
       ).toEqual([
-        "if (typeof import.meta.main !== 'boolean') {",
-        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.2+), so no pin was read')",
+        "if (typeof import.meta.main !== 'boolean' || !nodeSetsMain) {",
+        "  console.error('check-action-pins: this Node lacks import.meta.main (Node 22.18+, 24.3+), so no pin was read')",
         '  process.exit(1)',
         'if (import.meta.main) process.exit(main())',
       ])
-      // Run as a Node without import.meta.main runs it, undefined there: it says so and exits 1.
-      const older = spawnSync(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          refusal.slice(0, 4).join('\n').replace('typeof import.meta.main', 'typeof undefined'),
-        ],
-        { encoding: 'utf8' },
-      )
-      expect(older.status).toBe(1)
-      expect(older.stderr).toContain('no pin was read')
+      // Run as 24.2 runs it (false there) and as a Node without import.meta.main runs it (undefined there): it
+      // says so and exits 1.
+      for (const [version, value] of [
+        ['24.2.0', 'false'],
+        ['25.0.0', 'undefined'],
+      ] as const) {
+        const older = spawnSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            refusal
+              .slice(0, -1)
+              .join('\n')
+              .replaceAll('process.versions.node', JSON.stringify(version))
+              .replace('typeof import.meta.main', `typeof ${value}`),
+          ],
+          { encoding: 'utf8' },
+        )
+        expect(older.status, version).toBe(1)
+        expect(older.stderr, version).toContain('no pin was read')
+      }
     })
   })
 
@@ -14003,6 +14024,24 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
       ]),
     )
   }
+  // Writes one logical id entry into prod's Platform stack artifact's own metadata, before a copy of a valid entry
+  // list from its metadata file, so a check that held its last entry alone would pass it; Platform's stack is not
+  // its manifest's last artifact either.
+  const inlineEntry = (path: string, data: string) => (dir: string) => {
+    const file = read(named(prod(dir), 'Platform', '.metadata.json'))
+    const valid = Object.entries(file).find(([, list]) =>
+      ((list ?? []) as { type?: string }[]).some(entry => entry.type === 'aws:cdk:logicalId'),
+    )
+    if (valid === undefined) throw new Error('no logical id entry in the metadata file')
+    edit(join(prod(dir), 'manifest.json'), json => {
+      const all = Object.values(artifacts(json))
+      const platform = all.find(
+        each => each.type === 'aws:cloudformation:stack' && String(each.properties?.stackName).endsWith('-Platform'),
+      )
+      if (platform === undefined || platform === all.at(-1)) throw new Error('no Platform stack before the last')
+      platform.metadata = { [path]: [{ type: 'aws:cdk:logicalId', data }], [valid[0]]: valid[1] }
+    })
+  }
   // Moves the logical id entry for an id to another path in a stage's metadata file of one part.
   const entryMoved = (stage: (dir: string) => string, part: string, id: string, to: string) => (dir: string) =>
     edit(named(stage(dir), part, '.metadata.json'), json => {
@@ -14117,6 +14156,44 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     },
     30_000,
   )
+  // The same in a stack artifact's own metadata in its manifest, which the CLI merges with its metadata file's and
+  // labels the diff by too (round 13's guards lens: ASSET_CHECK's inline check with its -e dropped refused none of
+  // these, and no case planted one).
+  it.each([
+    ["an artifact's own logical id entry's path holding line breaks", inlineEntry('/prod/Platform/X\nY', 'Planted')],
+    [
+      "an artifact's own logical id entry's path outside the stages",
+      inlineEntry('/elsewhere/Roles/ApiTask', 'Planted'),
+    ],
+    [
+      "an artifact's own logical id entry naming an id that is not letters and digits",
+      inlineEntry('/prod/Platform/Planted', 'Planted\n[+] AWS::IAM::Role Roles/ApiTask'),
+    ],
+  ] as const)(
+    'refuses %s (round 13)',
+    (_, plant) => {
+      expect(check(plant)).toBe(LOGICAL_ID)
+    },
+    30_000,
+  )
+  it("passes a stack artifact's own valid logical id entries, and refuses its metadata when it is not an object of entry lists (round 13)", () => {
+    expect(check(inlineEntry('/prod/Platform/Planted', 'Planted'))).toBe('passed')
+    for (const metadata of ['x', ['x'], { '/prod/Platform': 'x' }, { '/prod/Platform': ['x'] }]) {
+      expect(
+        check(dir =>
+          edit(join(prod(dir), 'manifest.json'), json => {
+            for (const artifact of Object.values(artifacts(json)))
+              if (
+                artifact.type === 'aws:cloudformation:stack' &&
+                String(artifact.properties?.stackName).endsWith('-Platform')
+              )
+                artifact.metadata = metadata
+          }),
+        ),
+        JSON.stringify(metadata),
+      ).toBe(refused("an artifact's metadata is not a JSON object of entry lists"))
+    }
+  }, 60_000)
   it('passes the same grant on the migrate task role itself, in prod and in the restore stage (round 12)', () => {
     expect(
       check(inPart(prod, 'Platform', resources => withGrant(resources[idOfPrefix(resources, 'RolesMigrateTask')]))),
@@ -14762,10 +14839,16 @@ describe('C11-D77: the deny rules in .claude/settings.json', () => {
 // tool.check can approve a call a deny rule refuses; a settings file there that enables a plugin or names
 // a marketplace brings one in from outside. So no file under .claude/ is a plugin's manifest (any
 // .claude-plugin/ folder) or a plugin's hooks file (hooks/hooks.json), and no settings file there, the
-// local one included should it be committed, holds enabledPlugins or extraKnownMarketplaces.
+// local one included should it be committed, holds enabledPlugins or extraKnownMarketplaces. And the repository
+// tracks no .claude/ folder but the root's (round 13's security lens): Claude Code loads a nested folder's skills
+// into a root session once Claude works on files there, each skill's frontmatter hooks with it, and a session
+// started in that folder reads its plugins and settings instead of the root's, none of which the owner's read of
+// the root's .claude/ covers and none of which the rules above read.
 describe('C11-D77: the repository carries and enables no plugin', () => {
   const pluginFindings = (texts: ReadonlyArray<readonly [string, string]>) =>
     texts.flatMap(([path, text]) => {
+      if (/(?:^|\/)\.claude\//.test(path) && !path.startsWith('.claude/'))
+        return [`${path}: a .claude folder below the repository's root`]
       if (!path.startsWith('.claude/')) return []
       if (/(?:^|\/)\.claude-plugin(?:\/|$)/.test(path)) return [`${path}: a plugin's manifest`]
       if (/(?:^|\/)hooks\/hooks\.json$/.test(path)) return [`${path}: a plugin's hooks file`]
@@ -14798,6 +14881,11 @@ describe('C11-D77: the repository carries and enables no plugin', () => {
         ['.claude/settings.local.json', JSON.stringify({ enabledPlugins: {} })],
         ['.claude/settings.json', '{'],
         ['docs/.claude-plugin/plugin.json', '{}'],
+        ['apps/web/.claude/skills/tidy/SKILL.md', '---\nname: tidy\nhooks:\n  PostToolUse: []\n---\nA skill.'],
+        ['apps/web/.claude/skills/tidy/.claude-plugin/plugin.json', '{"name":"tidy"}'],
+        ['infra/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'tidy@market': true } })],
+        ['infra/.claude/agents/fmt.md', 'An agent.'],
+        ['apps/.claude-notes', 'not a folder'],
       ]),
     ).toEqual([
       ".claude/skills/tidy/.claude-plugin/plugin.json: a plugin's manifest",
@@ -14806,11 +14894,15 @@ describe('C11-D77: the repository carries and enables no plugin', () => {
       '.claude/settings.json: names extraKnownMarketplaces',
       '.claude/settings.local.json: names enabledPlugins',
       ".claude/settings.json: isn't JSON",
+      "apps/web/.claude/skills/tidy/SKILL.md: a .claude folder below the repository's root",
+      "apps/web/.claude/skills/tidy/.claude-plugin/plugin.json: a .claude folder below the repository's root",
+      "infra/.claude/settings.json: a .claude folder below the repository's root",
+      "infra/.claude/agents/fmt.md: a .claude folder below the repository's root",
     ])
   })
 
   it('holds the repository', () => {
-    const claude = files.filter(path => path.startsWith('.claude/'))
+    const claude = files.filter(path => /(?:^|\/)\.claude\//.test(path))
     expect(claude).toContain('.claude/settings.json')
     expect(pluginFindings(claude.map(path => [path, readRepoFile(path)] as const))).toEqual([])
   })
@@ -15579,6 +15671,174 @@ describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10
     expect(releaseFindings(plant(body, rewrites[0] ?? '', job('record-nonprod')))).toContain(
       `${DEPLOY}: DPW-13 record-nonprod (Write the record): ${RECORD_LINES}`,
     )
+  })
+
+  // FIXES-01 and ROLLBACK-02 (round 13): what each record job writes, and the line it ends a red run on, by its
+  // smoke's result, were held only as text, so a split reverted or a test inverted passed every case. Each stage's
+  // run now runs under bash with a stand-in gh that logs every deployment it is asked to write: the release's own
+  // smoke passed writes its record, a rollback that passed its second smoke writes the pipeline's, a smoke that
+  // never ran or never finished says so, and a drill-smoke whose inverted smoke passed says the drill proved
+  // nothing, every one but the first two ending red.
+  it("writes each record, and names why a run ends red, by its smoke's result (FIXES-01, ROLLBACK-02)", () => {
+    const commit = 'a'.repeat(40)
+    const previous = 'c'.repeat(40)
+    const digest = `sha256:${'b'.repeat(64)}`
+    type RecordStage = 'nonprod' | 'prod'
+    const services = (stage: RecordStage, revision: number) =>
+      JSON.stringify({
+        api: `hearth-${stage}-api:${revision}`,
+        realtime: `hearth-${stage}-realtime:${revision}`,
+        worker: `hearth-${stage}-worker:${revision}`,
+      })
+    // gh as the record step calls it: the migrated read answers no record, a deployment's write answers its id
+    // and logs its body, a status's write answers nothing.
+    const gh = [
+      'gh() {',
+      '  local answer=[] program= previous=',
+      '  for word in "$@"; do',
+      '    if [ "$previous" = --jq ]; then program=$word; fi',
+      '    previous=$word',
+      '  done',
+      '  case "$*" in',
+      `    'api -X POST repos/example/hearth/deployments --input - --jq .id') answer='{"id":41}'; jq -c . >>"$RECORD_LOG" ;;`,
+      `    'api -X POST repos/example/hearth/deployments/41/statuses --input - --silent') cat >/dev/null; return 0 ;;`,
+      '  esac',
+      `  if [ -n "$program" ]; then jq -r "$program" <<<"$answer"; else printf '%s\\n' "$answer"; fi`,
+      '}',
+    ].join('\n')
+    const ran = (
+      stage: RecordStage,
+      run: string,
+      { mode = 'deploy', target = stage as string, smoke, resmoke = 'skipped' }: Record<string, string>,
+    ) => {
+      const temp = mkdtempSync(join(tmpdir(), 'hearth-record-'))
+      try {
+        const log = join(temp, 'records')
+        writeFileSync(log, '')
+        const result = spawnSync('bash', ['--noprofile', '--norc', '-c', `${gh}\n${run}`], {
+          encoding: 'utf8',
+          input: '',
+          env: {
+            PATH: process.env.PATH ?? '',
+            RECORD_LOG: log,
+            GITHUB_STEP_SUMMARY: join(temp, 'summary'),
+            GITHUB_SERVER_URL: 'https://github.com',
+            GITHUB_REPOSITORY: 'example/hearth',
+            GITHUB_RUN_ID: '7',
+            REPO: 'example/hearth',
+            ENVIRONMENT: stage,
+            MODE: mode,
+            TARGET: target,
+            RESTORE: target === 'restore' ? 'up' : 'none',
+            COMMIT: commit,
+            DIGEST: digest,
+            SERVICES: services(stage, 9),
+            SMOKE: smoke ?? '',
+            RESMOKE: resmoke,
+            PREVIOUS_COMMIT: previous,
+            PREVIOUS_DIGEST: digest,
+            ROLLBACK_SERVICES: services(stage, 8),
+          },
+        })
+        const records = readFileSync(log, 'utf8')
+          .split('\n')
+          .filter(line => line !== '')
+          .map(line => {
+            const body = JSON.parse(line) as { task: string; payload: { kind: string; commit: string } }
+            return `${body.task} ${body.payload.kind} ${body.payload.commit === commit ? 'this' : 'previous'}`
+          })
+        return { status: result.status, records, said: result.stdout.trim().split('\n').at(-1) ?? '' }
+      } finally {
+        rmSync(temp, { recursive: true, force: true })
+      }
+    }
+    const NOT_RUN =
+      "record: the release's smoke didn't run or didn't finish (its deploy job was rejected, refused or failed, or the smoke was cancelled), so the run ends red"
+    const FAILED = "record: the release's own smoke didn't pass, so the run ends red"
+    const DRILL =
+      "record: drill-smoke's smoke passed (SMK-05 itself failed, so its inversion passed), so nothing rolled back and the drill proved nothing: the run ends red"
+    type Case = [Record<string, string>, { status: number; records: string[]; said: string }]
+    const common: Case[] = [
+      [{ smoke: 'success' }, { status: 0, records: ['hearth-release deploy this'], said: '' }],
+      [
+        { mode: 'rollback', smoke: 'success' },
+        { status: 0, records: ['hearth-release rollback this'], said: '' },
+      ],
+      [
+        { smoke: 'failure', resmoke: 'success' },
+        { status: 1, records: ['hearth-release pipeline-rollback previous'], said: FAILED },
+      ],
+      [
+        { smoke: 'failure', resmoke: 'failure' },
+        { status: 1, records: [], said: FAILED },
+      ],
+      [{ smoke: 'failure' }, { status: 1, records: [], said: FAILED }],
+      [{ smoke: 'skipped' }, { status: 1, records: [], said: NOT_RUN }],
+      [{ smoke: 'cancelled' }, { status: 1, records: [], said: NOT_RUN }],
+      [
+        { mode: 'rollback', smoke: 'skipped' },
+        { status: 1, records: [], said: NOT_RUN },
+      ],
+      // Only non-prod runs a drill (record-prod's if: admits only deploy and rollback), but both runs end on the
+      // same lines, so each is held to them.
+      [
+        { mode: 'drill-smoke', smoke: 'failure', resmoke: 'success' },
+        { status: 1, records: ['hearth-release pipeline-rollback previous'], said: FAILED },
+      ],
+      [
+        { mode: 'drill-smoke', smoke: 'success' },
+        { status: 1, records: [], said: DRILL },
+      ],
+      [
+        { mode: 'drill-smoke', smoke: 'skipped' },
+        { status: 1, records: [], said: NOT_RUN },
+      ],
+    ]
+    const cases: Record<RecordStage, Case[]> = {
+      nonprod: common,
+      prod: [
+        ...common,
+        [
+          { target: 'restore', smoke: 'success' },
+          { status: 0, records: ['hearth-restore up this'], said: '' },
+        ],
+        [
+          { target: 'restore', smoke: 'failure' },
+          { status: 1, records: [], said: FAILED },
+        ],
+        [
+          { target: 'restore', smoke: 'skipped' },
+          { status: 1, records: [], said: NOT_RUN },
+        ],
+      ],
+    }
+    for (const stage of ['nonprod', 'prod'] as const) {
+      const run = recordRun(stage)
+      // The run the guard writes is deploy.yml's own, as GitHub reads it.
+      const record = workflowJobs(deployText).find(each => each.id === `record-${stage}`)
+      const step = parsedSteps(record ?? ({} as never)).find(each => each.name === 'Write the record')
+      expect(step?.run, stage).toBe(run)
+      for (const [inputs, expected] of cases[stage]) {
+        expect(ran(stage, run, inputs), `${stage} ${JSON.stringify(inputs)}`).toEqual(expected)
+      }
+      // The split reverted, the test inverted or the drill's branch dropped each changes what some case says.
+      const split = `if [ "$SMOKE" = skipped ] || [ "$SMOKE" = cancelled ]; then`
+      const drill = `  elif [ "$SMOKE" = success ]; then\n    echo "${DRILL}"\n`
+      expect(run).toContain(split)
+      expect(run).toContain(drill)
+      for (const planted of [
+        run.replace(split, 'if false; then'),
+        run.replace(split, 'if [ "$SMOKE" = failure ]; then'),
+        run.replace(drill, ''),
+      ]) {
+        expect(
+          cases[stage].some(
+            ([inputs, expected]) => JSON.stringify(ran(stage, planted, inputs)) !== JSON.stringify(expected),
+          ),
+          stage,
+        ).toBe(true)
+      }
+    }
   })
 
   // COMMANDS-A4-02: an echo added to AWS_CHECK printed the OIDC request token spaced out, which no mask matches,
@@ -20345,4 +20605,119 @@ describe('Round 13, iteration 4: the ways past the reader and the rules (DPW-02,
     const plantedCi = `${ci.slice(0, ciRun)}        run: |# x\n${ci.slice(ciRun + '        run: |\n'.length)}`
     expect(permissionFindings(withText(CI, plantedCi), ownRepository() ?? '')).toContain(`${CI}: DPW-02 ${SHAPE}`)
   }, 120_000)
+})
+
+// Round 13's guards lens: no rule held a jq not given -e whose output its own redirections throw away, though its
+// status alone then decides the line, and without -e that status says only whether its program ran: ASSET_CHECK's
+// inline logical-id check with its -e dropped refused nothing and passed every rule and DPW-14 case. A jq whose
+// output goes to /dev/null is now given -e, in a canonical text and on a run's own lines alike.
+describe("Round 13's lenses: a jq whose output is thrown away (DPW-10)", () => {
+  const DISCARDED =
+    "hands jq -e whenever its own redirections throw its output away (to /dev/null), since without -e jq's status says only whether its program ran, never what it printed"
+  const bash = (script: string) => spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8' })
+  it("reads where a command's standard output ends up, as bash applies its redirections left to right", () => {
+    for (const [redirections, out] of [
+      [[], 'out'],
+      [[['>', '/dev/null']], '/dev/null'],
+      [[['>', '"/dev/null"']], '/dev/null'],
+      [[['>>', '/dev/null']], '/dev/null'],
+      [[['>|', '/dev/null']], '/dev/null'],
+      [[['1>', '/dev/null']], '/dev/null'],
+      [[['&>', '/dev/null']], '/dev/null'],
+      [[['&>>', '/dev/null']], '/dev/null'],
+      [[['>&', '/dev/null']], '/dev/null'],
+      [[['1<>', '/dev/null']], '/dev/null'],
+      [
+        [
+          ['>', '/dev/null'],
+          ['2>&', '1'],
+        ],
+        '/dev/null',
+      ],
+      [
+        [
+          ['2>&1', undefined],
+          ['>', '/dev/null'],
+        ],
+        '/dev/null',
+      ],
+      [
+        [
+          ['2>', '/dev/null'],
+          ['1>&', '2'],
+        ],
+        '/dev/null',
+      ],
+      [[['2>', '/dev/null']], 'out'],
+      [
+        [
+          ['>', '/dev/null'],
+          ['>&2', undefined],
+        ],
+        'err',
+      ],
+      [
+        [
+          ['>', '/dev/null'],
+          ['>', '"$OUT"'],
+        ],
+        '\0',
+      ],
+      [
+        [
+          ['<<<', '"$X"'],
+          ['<', '"$F"'],
+        ],
+        'out',
+      ],
+      [[['>&', '-']], undefined],
+    ] as const) {
+      expect(standardOutputOf(redirections), JSON.stringify(redirections)).toBe(out)
+    }
+    // bash agrees on the descriptor duplicates: 2>/dev/null 1>&2 throws the output away, >/dev/null >&2 doesn't.
+    expect(bash('echo out 2>/dev/null 1>&2').stdout).toBe('')
+    expect(bash('echo out >/dev/null >&2').stderr).toBe('out\n')
+  })
+  it("refuses a jq not given -e whose output its own redirections throw away, in a canonical text and on a run's own lines", () => {
+    for (const [line, lines] of [
+      ['jq \'.a == 1\' <<<"$X" >/dev/null || refuse', [0]],
+      ['jq \'.a == 1\' "$dir/manifest.json" >/dev/null 2>&1 || refuse', [0]],
+      ['jq \'.a == 1\' "$dir/manifest.json" 2>/dev/null 1>&2 || refuse', [0]],
+      ['jq -r \'.a\' <<<"$X" &>/dev/null || refuse', [0]],
+      ['if ! jq -c \'.a\' <<<"$X" >/dev/null; then refuse; fi', [0]],
+      ['jq -e \'.a == 1\' <<<"$X" >/dev/null || refuse', []],
+      ['jq -re \'.a == 1\' "$dir/manifest.json" >/dev/null 2>&1 || refuse', []],
+      ['A=$(jq -r \'.a\' <<<"$X" 2>/dev/null) || refuse', []],
+      ['jq \'.a\' <<<"$X" >/dev/null >&2', []],
+      ['jq \'.features.x = true\' <<<"$X" | sudo tee /etc/docker/daemon.json >/dev/null', []],
+    ] as const) {
+      expect(jqDiscardedLines(line), line).toEqual(lines)
+    }
+    // jq: without -e, a program that prints false exits 0; with -e, 1.
+    expect(bash(`jq '. == 2' <<<'1' >/dev/null`).status).toBe(0)
+    expect(bash(`jq -e '. == 2' <<<'1' >/dev/null`).status).toBe(1)
+    // ASSET_CHECK's inline logical-id check and its release check, each with its -e dropped.
+    for (const start of [
+      'jq -e \'[(.artifacts // {})[] | (.metadata // {}) | to_entries[] | select(any(.value[]; .type == "aws:cdk:logicalId"))]',
+      'jq -e --arg release',
+    ]) {
+      const line = ASSET_CHECK.split('\n').find(each => each.trimStart().startsWith(start))
+      if (line === undefined) throw new Error(`no line ${start}`)
+      const dropped = line.replace('jq -e ', 'jq ')
+      const planted = ASSET_CHECK.replace(line, dropped)
+      expect(planted).not.toBe(ASSET_CHECK)
+      const at = planted.split('\n').indexOf(dropped) + 1
+      expect(canonicalTextFindings({ ASSET_CHECK: planted }), start).toContain(
+        `${GUARD}: DPW-10 ASSET_CHECK, line ${at}: ${DISCARDED}`,
+      )
+    }
+    // The read-back's ARN check, on nonprod's own lines, with its -e dropped.
+    const arn = `if ! jq -e 'tostring | ascii_downcase | contains("arn:") | not' <<<"$READBACK" >/dev/null; then`
+    expect(deployText).toContain(arn)
+    expect(
+      credentialedCodeFindings(plant(arn, arn.replace('jq -e ', 'jq '), job('nonprod')), manifests, lockfile),
+    ).toContain(`${DEPLOY}: DPW-10 nonprod (Read back what runs): ${HELD}`)
+    expect(canonicalTextFindings()).toEqual([])
+    expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
 })

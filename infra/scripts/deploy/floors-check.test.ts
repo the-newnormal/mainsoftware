@@ -2,16 +2,17 @@
 // floors' shape, a floor naming a file its commit lacks, the forward deploy's expansion check, and the
 // command line in a scratch git repository with fictional migrations and a floors.ts of its own in the
 // real one's shape, whose origin/main is c4, as a pulled clone's is, and a branch commit off it that
-// main never merged. CI's runner gives git no identity, so every commit here names its own (an address
+// main never merged, where every deploy script also shows it refuses a Node that never runs its main.
+// CI's runner gives git no identity, so every commit here names its own (an address
 // built from parts, IG-01), and a developer's own git settings are set aside: git's own environment
 // variables for the whole file (a hook's GIT_INDEX_FILE among them), and the system and global
 // configuration files (a global hook, signed tags) for every git command the test runs itself. It holds
 // what the floors check must decide, so it is on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { FLOORS } from '../../src/release/floors.ts'
 import { checkExpansions, checkFloors, crossedFloors, FloorsError, main, parseFloors } from './floors-check.ts'
@@ -214,6 +215,83 @@ describe('C11-D58: the rollback floors check', () => {
     const bad = node([])
     expect([bad.status, bad.stdout, bad.stderr]).toEqual([2, 'floors-check: --target is missing\n', ''])
   }, 60_000)
+
+  // Node 22.18 and 24.2 added import.meta.main, but 24.2 left it false on a TypeScript entry (24.3 set it),
+  // so there an `if (import.meta.main)` entry runs nothing and exits 0. Each deploy script refuses such a
+  // Node by its version as well as by the value. The Node running this test is newer, so a preload stands in
+  // for an older one by its version; and as history.ts and smoke.ts load this file, whose check refuses
+  // first, each script's own check is also run alone, with the value stood in as well.
+  it('C11-D58: each deploy script refuses a Node that never runs its main, 24.2 among them, in one line and exit 1', () => {
+    const folder = mkdtempSync(join(tmpdir(), 'hearth-floors-node-'))
+    const refusal = (script: string, said: string) =>
+      `${script}: this Node lacks import.meta.main (Node 22.18+, 24.3+), so ${said}\n`
+    const floorsRefused = [1, '', refusal('floors-check', 'no floor was checked')]
+    try {
+      const empty = join(folder, 'empty.json')
+      writeFileSync(empty, '[]\n')
+      const under = (version: string, script: string, args: readonly string[]) => {
+        const preload = join(folder, `node-${version}.mjs`)
+        writeFileSync(
+          preload,
+          `Object.defineProperty(process.versions, 'node', { value: ${JSON.stringify(version)} })\n`,
+        )
+        const path = join(ROOT, 'infra/scripts/deploy', `${script}.ts`)
+        const node = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, path, ...args], {
+          cwd: repo,
+          encoding: 'utf8',
+          timeout: 30_000,
+        })
+        return [node.status, node.stdout, node.stderr]
+      }
+      const floors = ['--target', c.c3, '--floors-at', c.c3]
+      for (const version of ['24.2.0', '24.1.0', '23.11.1', '22.17.1', '20.19.5', 'nonsense']) {
+        expect(under(version, 'floors-check', floors), version).toEqual(floorsRefused)
+      }
+      for (const version of ['24.3.0', '22.18.0', '25.0.0']) {
+        expect(under(version, 'floors-check', floors), version).toEqual([0, 'floors-check: allowed\n', ''])
+      }
+      expect(under('24.2.0', 'history', ['migrated', '--records', empty])).toEqual(floorsRefused)
+      expect(under('24.3.0', 'history', ['migrated', '--records', empty])).toEqual([0, 'none\n', ''])
+      expect(under('24.2.0', 'smoke', ['--env', 'nonprod'])).toEqual(floorsRefused)
+      expect(under('24.3.0', 'smoke', ['--env', 'nonprod'])).toEqual([2, 'smoke: --release is missing\n', ''])
+      // Each script's own check, from its first line to the entry's, run alone.
+      for (const [script, said] of [
+        ['floors-check', 'no floor was checked'],
+        ['history', 'nothing was decided'],
+        ['smoke', 'nothing was judged'],
+      ] as const) {
+        const lines = readFileSync(join(ROOT, 'infra/scripts/deploy', `${script}.ts`), 'utf8')
+          .trimEnd()
+          .split('\n')
+        const from = lines.findIndex(line => line.startsWith('const [nodeMajor = 0, nodeMinor = 0] = '))
+        expect(from, script).toBeGreaterThan(0)
+        expect(lines.at(-1), script).toBe('if (import.meta.main) process.exitCode = await main(process.argv.slice(2))')
+        const check = lines.slice(from, -1).join('\n')
+        // By its version alone (each but 24.2 lacks the value, undefined there), and by the value alone.
+        for (const [version, value, refused] of [
+          ['24.2.0', 'false', true],
+          ['24.1.0', 'false', true],
+          ['23.11.1', 'false', true],
+          ['22.17.1', 'false', true],
+          ['24.1.0', 'undefined', true],
+          ['25.0.0', 'undefined', true],
+          ['24.3.0', 'true', false],
+          ['22.18.0', 'true', false],
+          ['25.0.0', 'true', false],
+        ] as const) {
+          const code = check
+            .replaceAll('process.versions.node', JSON.stringify(version))
+            .replace('typeof import.meta.main', `typeof ${value}`)
+          const alone = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8' })
+          expect([alone.status, alone.stderr], `${script} ${version} ${value}`).toEqual(
+            refused ? [1, refusal(script, said)] : [0, ''],
+          )
+        }
+      }
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  }, 120_000)
 
   // importData writes floors.ts into a folder under the system's temporary folder (TMPDIR), and Node
   // takes a .ts file's module type from the nearest package.json above it: with none of the folder's

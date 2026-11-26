@@ -146,11 +146,15 @@ jobs:
     # newer one is a deliberate PR that re-adopts them (T21, D-07).
     runs-on: ubuntu-24.04
     # A server that hangs instead of failing would otherwise hold the runner for six hours. The
-    # steps before the e2e suite take about 5 minutes (4 to 5.5 in October 2026's runs), and the
-    # suite stops itself at 15 (globalTimeout in apps/web/playwright.config.ts), so this leaves the
-    # steps before it four times their time and the upload after it room: a stuck run fails, and its
-    # report uploads, before GitHub cancels the job (ES-13).
-    timeout-minutes: 45
+    # steps before the e2e suite took 4 to 5.5 minutes in October 2026's runs; from C0.11 PR 4 the
+    # test step holds scripts/guards/deploy-workflow.test.ts, one file Vitest runs in one worker,
+    # which alone took about 13 minutes on a 4-core machine in November 2026, so the steps before the
+    # suite came to about 20 to 25 there (GitHub's runner unmeasured until this branch's first run).
+    # The suite stops itself at 15 (globalTimeout in apps/web/playwright.config.ts), so this leaves the
+    # steps before it 40 minutes, 1.6 to 2 times that figure, and the upload after it 5: a stuck run
+    # fails, and its report uploads, before GitHub cancels the job (ES-13). Read the job's time from
+    # its runs when a guard grows, and raise this with ES-13's figure when the margin thins.
+    timeout-minutes: 60
     steps:
       # A failed, cancelled or skipped dependency would skip this job, and GitHub counts a skipped
       # required check as passed.
