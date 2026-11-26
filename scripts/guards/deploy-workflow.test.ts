@@ -555,7 +555,7 @@ const CLI_PIN_JOB_FINDING =
   "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs, and BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
 // DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
 const PINS_JOB_FINDING =
-  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), uses no action but actions/checkout, actions/setup-node, actions/upload-artifact (none of which has a pre:, which GitHub runs before a job's first step), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
+  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), uses no action but actions/checkout, actions/setup-node, actions/upload-artifact, each by that name at a version tag (none of which has a pre:, which GitHub runs before a job's first step), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
 // ci.yml's two checks as their steps write them (round 12's fourth iteration): in the checkout's folder, after
 // the working tree is reset to its blobs.
 const RESET_LINES = `          printf '* -text -eol -ident -filter -working-tree-encoding\\n' >.git/info/attributes
@@ -6813,7 +6813,7 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
       const changed = RELEASE_STEP.replace(anchored, unanchored)
       expect(readShell(changed).refused, unanchored).toBeDefined()
       expect(canonicalTextFindings({ X: changed }), unanchored).toContain(
-        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it`,
+        `${GUARD}: DPW-10 X, line ${RELEASE_STEP.split('\n').indexOf(anchored) + 1}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break`,
       )
     }
     // A canonical text's own: release_shape in AWS_CHECK, unanchored, quoted, or with a | outside parentheses.
@@ -9670,9 +9670,13 @@ describe('Round 12, iteration 4: setup-node’s workspace holds none of the repo
     }
   })
 
-  it('refuses a Yarn file anywhere in the tree', () => {
-    const YARN =
-      'is a Yarn file (.yarnrc, .yarnrc.yml or under .yarn/): the repository uses npm alone, and Yarn 1, which setup-node runs in its job’s workspace, runs the program a .yarnrc’s yarn-path names'
+  // Round 14's first iteration (FETCH-G1-01): a root .npmrc naming a committed cache folder let npm ci install, with
+  // no request, a tarball whose sha512 a one-line lockfile change named, which every DPW-10 hold over the CLI passed
+  // while each deploy job's CLI_FETCH refused the registry's bytes; npm ci reads an npm-shrinkwrap.json in the
+  // lockfile's place.
+  it('refuses a package manager’s own file anywhere in the tree (a Yarn file, an .npmrc, a shrinkwrap)', () => {
+    const MANAGER =
+      'is a package manager’s own file (.npmrc, npm-shrinkwrap.json, .yarnrc, .yarnrc.yml or under .yarn/): the repository uses npm alone, with its defaults and package-lock.json, so npm ci fetches every tarball from the registry and refuses one whose sha512 isn’t the lockfile’s (an .npmrc’s cache or registry gave CI another aws-cdk than the one CLI_FETCH fetches), and Yarn 1, which setup-node runs in its job’s workspace, runs the program a .yarnrc’s yarn-path names'
     const real = [...workflows.keys()]
     expect(actionPinFindings(workflows, files)).toEqual([])
     for (const path of [
@@ -9682,12 +9686,25 @@ describe('Round 12, iteration 4: setup-node’s workspace holds none of the repo
       'infra/.yarnrc',
       '.yarn/releases/yarn-1.22.22.cjs',
       'apps/web/.yarn/plugins/x.cjs',
+      '.npmrc',
+      'infra/.npmrc',
+      'npm-shrinkwrap.json',
+      'apps/server/npm-shrinkwrap.json',
     ]) {
-      expect(actionPinFindings(workflows, [...real, path]), path).toEqual([`${path}: DPW-04 ${YARN}`])
+      expect(actionPinFindings(workflows, [...real, path]), path).toEqual([`${path}: DPW-04 ${MANAGER}`])
     }
-    for (const path of ['docs/yarnrc.md', 'docs/.yarnrc-notes.md', 'scripts/yarn.sh', 'apps/web/yarn']) {
+    for (const path of [
+      'docs/yarnrc.md',
+      'docs/.yarnrc-notes.md',
+      'scripts/yarn.sh',
+      'apps/web/yarn',
+      'docs/npmrc.md',
+      '.npmrc.example',
+      'npm-shrinkwrap.json.md',
+      'planted-cache/_cacache/index-v5/00/00/x',
+    ]) {
       expect(
-        actionPinFindings(workflows, [...real, path]).filter(each => each.endsWith(YARN)),
+        actionPinFindings(workflows, [...real, path]).filter(each => each.endsWith(MANAGER)),
         path,
       ).toEqual([])
     }
@@ -9811,7 +9828,7 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
   // holds. Each previous release has a job of its own now, and no job checks out twice.
   it('checks out one commit at most in each job, so no runner making an assembly runs a second commit', () => {
     const ONE =
-      "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code"
+      "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code, and a synth the very commit its synth step labels the assembly with (its checkout's ref COMMIT's expression)"
     const one = (texts: ReadonlyMap<string, string>) =>
       credentialedCodeFindings(texts, manifests, lockfile).filter(each => each.endsWith(ONE))
     expect(one(workflows)).toEqual([])
@@ -9831,6 +9848,22 @@ describe('Round 5 review: every action’s inputs, whole (DPW-10)', () => {
       job('nonprod'),
     )
     expect(one(withText(DEPLOY, deploying))).toEqual([`${DEPLOY}: DPW-10 nonprod: ${ONE}`])
+    // Round 14's first iteration (FLOW-G1-01): a synth's checkout at another commit than the one its synth step
+    // labels the assembly with, which ASSET_CHECK and AWS_CHECK read as the release while another's code ran.
+    const ref = `          ref: \${{ needs.gate.outputs.commit }}\n`
+    expect(one(plant(ref, `          ref: \${{ github.sha }}\n`, job('synth')))).toEqual([
+      `${DEPLOY}: DPW-10 synth: ${ONE}`,
+    ])
+    const previousRef = `          ref: \${{ needs.gate.outputs.previous_nonprod_commit }}\n`
+    expect(
+      one(
+        plant(
+          previousRef,
+          `          ref: \${{ needs.gate.outputs.previous_prod_commit }}\n`,
+          job('synth-previous-nonprod'),
+        ),
+      ),
+    ).toEqual([`${DEPLOY}: DPW-10 synth-previous-nonprod: ${ONE}`])
   })
 
   it('holds every download, upload, Node and credentials input to its value', () => {
@@ -9943,6 +9976,15 @@ describe('DPW-14 (C11-D76): the asset and release checks', () => {
     expect(assetCheckFindings(removedStep('synth', "Check the release's assembly"))).toEqual([
       at("synth (Upload the release's assembly)", UPLOADED),
     ])
+    // Round 14's first iteration (ALIASES-G1-02): a check before its download, and synth's under an if: its upload
+    // lacks, which no case planted.
+    expect(assetCheckFindings(movedStep('nonprod', 'Check the assembly', 'Download the assembly'))).toContain(
+      at('nonprod', CHECKED),
+    )
+    const named = "      - name: Check the release's assembly\n"
+    expect(
+      assetCheckFindings(plant(named, `${named}        if: \${{ github.run_attempt == '1' }}\n`, job('synth'))),
+    ).toContain(at("synth (Upload the release's assembly)", UPLOADED))
   })
 
   // Round 13: the nine steps that check an assembly run one text, ASSET_CHECK_RUN, whose two calls read the folder
@@ -14921,7 +14963,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const commands = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${COMMANDS}`
   const tools = (name: string, line: number) =>
-    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
+    `${GUARD}: DPW-10 ${name}, line ${line}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`
 
   // FETCH-A2-01: a held tool's line is held with its environment. An export before CLI_FETCH's tar (or
   // IMAGE_CHECK's) handed tar options from TAR_OPTIONS, a checkpoint action among them, on a line the guard
@@ -15313,7 +15355,7 @@ describe('Round 7, attack 2: the ways past the allowlist (DPW-02, DPW-10, DPW-11
 
 describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () => {
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
@@ -15503,7 +15545,7 @@ describe('Round 7, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
 describe('Round 7, attack 4: the ways past the allowlist (DPW-07, DPW-08, DPW-10, DPW-13)', () => {
   const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const tools = (name: string, line: number) => `${GUARD}: DPW-10 ${name}, line ${line}: ${TOOLS}`
   const EXPANDS =
     "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
@@ -16334,7 +16376,7 @@ describe('Round 8, attack 2: the ways past the allowlist (DPW-07, DPW-10)', () =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const FILE_NAMES =
     "sets a name jq's data words build a path from (dir, file, template, stackfiles, queue, name, root) only on ASSET_CHECK's own lines, and reads one only in a loop fed by its own done line, so jq reads no file a line doesn't show"
   const STOP =
@@ -16592,7 +16634,7 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
   const at07 = (where: string, rule: string) => `${DEPLOY}: DPW-07 ${where}: ${rule}`
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const ENV =
@@ -16738,7 +16780,7 @@ describe('Round 8, attack 3: the ways past the allowlist (DPW-07, DPW-10)', () =
 describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () => {
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const canonical = (name: string, line: number, rule: string) => `${GUARD}: DPW-10 ${name}, line ${line}: ${rule}`
@@ -16862,7 +16904,7 @@ describe('Round 8, attack 4: the ways past the allowlist (DPW-10, DPW-11)', () =
 
 describe('Round 9, attack 1: the ways past the allowlist (DPW-07, DPW-10, DPW-14)', () => {
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const STEPS =
@@ -18042,7 +18084,7 @@ describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DP
   const SHELL = (name: string) => `${GUARD}: DPW-10 ${name}: is written in the shell shellViews() reads`
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const TOOLS =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const CLI =
     'runs the CLI only as deploy or diff, with --app "$ASSEMBLY" (set once to the folder it downloaded), after CDK_FOLDER and no other change of folder, with --no-lookups --no-notices, a deploy with --require-approval never --ci --exclusively --no-previous-parameters and a diff with --method template, and no word but its stacks, one of the sets CLI_STACKS writes for its command (a deploy never every stack), and the flags the canonical lines write, so no short alias or other option the CLI reads'
   const CDK_ENV =
@@ -18220,7 +18262,7 @@ describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DP
   // stand-in named migrations that always succeeded passed for the real job named otherwise.
   it('names the required checks only by their ids (round 11)', () => {
     const RULE =
-      "names check and migrations only by their ids: neither has a name:, and no other job's name: is either's, in any letter case, or an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
+      "names check and migrations only by their ids, in ci.yml alone: neither has a name:, and no other job's id or name: anywhere is either's, in any letter case, nor a name: an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
     const finding = `${CI}: DPW-04 ${RULE}`
     const ci = readRepoFile(CI)
     const migrations = '  migrations:\n'
@@ -18239,6 +18281,34 @@ describe('Round 11, iteration 2: the ways past the allowlist (DPW-02, DPW-04, DP
     expect(actionPinFindings(plant(migrations, `${standIn}    name: Report\n${migrations}`, '', CI))).not.toContain(
       finding,
     )
+    // Round 14's first iteration (YAML-G1-02): the ruleset reads any check run at the commit by its name, so no job
+    // of another workflow, secrets.yml's own push run's among them, is either by its id or its name:.
+    const SECRETS = '.github/workflows/secrets.yml'
+    const lint = 'name: Lint\non: pull_request\npermissions: {}\njobs:\n'
+    const other = (path: string, text: string) => actionPinFindings(new Map([...workflows, [path, text]]))
+    for (const [path, text] of [
+      ['.github/workflows/lint.yml', `${lint}  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n`],
+      [
+        '.github/workflows/lint.yml',
+        `${lint}  lint:\n    name: Migrations\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n`,
+      ],
+      [
+        '.github/workflows/lint.yml',
+        `${lint}  lint:\n    name: \${{ 'check' }}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n`,
+      ],
+      [
+        SECRETS,
+        `${workflows.get(SECRETS) ?? ''}  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n`,
+      ],
+    ] as const) {
+      expect(other(path, text), text).toContain(`${path}: DPW-04 ${RULE}`)
+    }
+    expect(
+      other(
+        '.github/workflows/lint.yml',
+        `${lint}  lint:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: "true"\n`,
+      ),
+    ).toEqual([])
   })
 })
 
@@ -18436,7 +18506,7 @@ describe('Round 11, iteration 3: the ways past the allowlist (DPW-06, DPW-08, DP
 // planted it and found at its root.
 describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02, DPW-10)', () => {
   const PROCESS_TOOL =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const anchor = "  local step=$1 PART answer status basis=''\n"
   const lineAfter = (text: string, at: string) => text.slice(0, text.indexOf(at) + at.length).split('\n').length
   const plantedBasis = (at: string, added: string) => {
@@ -18667,7 +18737,7 @@ describe('Round 12, iteration 1: the ways past the reader and the rules (DPW-02,
 // fixes, each planted as they planted it and found at its root.
 describe('Round 12, iteration 2: the ways past the reader and the rules (DPW-07, DPW-10)', () => {
   const PROCESS_TOOL =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const SHELL = `${GUARD}: DPW-10 PLAN_BASIS: is written in the shell shellViews() reads`
   const anchor = "  local step=$1 PART answer status basis=''\n"
   const line = PLAN_BASIS.slice(0, PLAN_BASIS.indexOf(anchor) + anchor.length).split('\n').length
@@ -18803,7 +18873,7 @@ describe('Round 12, iteration 2: the ways past the reader and the rules (DPW-07,
 // fixes, each planted as they planted it and found at its root.
 describe('Round 12, iteration 3: the ways past the reader and the rules (DPW-07, DPW-10)', () => {
   const PROCESS_TOOL =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const COMMANDS_RULE =
     "runs only the commands CANONICAL_COMMANDS names and the canonical texts' functions, each by a plain word, and hands them no environment of its own: export only on its listed lines, no flag to local or export, set only as -euo pipefail, no assignment before a command but IFS's before read and the account-id filter's LC_ALL=C, no wrapper and no variable that chooses what runs or that a rule holds to its one line"
   const anchor = "  local step=$1 PART answer status basis=''\n"
@@ -19031,10 +19101,10 @@ describe('Round 12, iteration 3: the ways past the reader and the rules (DPW-07,
 // fixes, each planted as they planted it and found at its root.
 describe('Round 12, iteration 4: the ways past the reader and the rules (DPW-06, DPW-08, DPW-10, DPW-13)', () => {
   const PROCESS_TOOL =
-    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
+    'hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line'
   const EVALUATES = 'evaluates as arithmetic, a subscript, an offset, a name or a prompt only what it sets itself'
   const VERDICT_RULE =
-    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+    'exits or returns only with a literal status, 0 or 1 (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts, refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )) and continues or breaks only in a loop of its own function or text, so no refusal ends its step with status 0 or a subshell alone'
   const VERDICT_ALONE =
     'runs each deploy of the CLI and smoke.ts standing alone, outside any substitution, pipeline, negation, and-or list (a group’s or subshell’s included) or condition but the drill’s if, so its failure ends the step'
   const grep = 'grep -o . "$RUNNER_TEMP/aws-cdk/package/package.json" >&2'
@@ -19429,7 +19499,7 @@ describe('Round 12, iteration 3, its second pass: the ways past the reader and t
   const lineOf = (text: string, line: string) => text.split('\n').indexOf(line) + 1
   const atLine = (name: string, text: string, line: string) => `${GUARD}: DPW-10 ${name}, line ${lineOf(text, line)}: `
   const VERDICT =
-    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+    'exits or returns only with a literal status, 0 or 1 (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts, refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )) and continues or breaks only in a loop of its own function or text, so no refusal ends its step with status 0 or a subshell alone'
   const STREAM =
     "hands jq -e no stream of values: it reads one file or a here-string on its own command, unless it is given -n or -s, and never its standard input otherwise (a pipe, a group, a function's caller, < <( … )) or more than one file, since -e reads the last value it reads alone"
 
@@ -19561,7 +19631,7 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
   const EXPANDS =
     "expands only a name a canonical text sets, one its step's or job's env: gives from no secret or token (but ASSEMBLY_FOLDER, which only an asset check's own calls read), the one-offs' TOKEN, the assembly's folder, prod-plan's diff file, or the runner's outputs, summary, folder, run ids, address and commit, so no canonical text prints the OIDC request token or another credential its job holds"
   const VERDICT =
-    'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+    'exits or returns only with a literal status, 0 or 1 (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts, refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )) and continues or breaks only in a loop of its own function or text, so no refusal ends its step with status 0 or a subshell alone'
   const WRITES = "writes no file but its outputs, its summary, prod-plan's diff and /dev/null"
   const DIFF_FORM =
     'ends each diff run with exit "$STATUS" standing alone, its only exit, wraps each diff line in { … } >"$DIFF" || STATUS=$? (a down diff’s in { … } >>"$DIFF" || { DOWN_STATUS=$?; break; }), and sets STATUS and DOWN_STATUS only as the diff runs do, so a failed diff fails prod-plan'
@@ -20089,7 +20159,7 @@ describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02,
   const PATTERN_EXPANSION = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: expands nothing outside double quotes in a [[ … ]] test or a case pattern, where bash reads an unquoted value as pattern text, its | or * deciding what matches`
   const REGEX_TEST = (name: string, line: number) =>
-    `${GUARD}: DPW-10 ${name}, line ${line}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it`
+    `${GUARD}: DPW-10 ${name}, line ${line}: tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break`
   const TEST_CHAIN = (name: string, line: number) =>
     `${GUARD}: DPW-10 ${name}, line ${line}: tests only where its failure is read: outside an if, elif, while or until condition no ! starts a command and a test ([, [[, test or jq -e) is followed by || in its and-or list, never by && alone (but a choice ending in an assignment of a literal), since errexit reads only the last command of an && list and no negated status; and no test is one word, the operator glued to its operands`
   const bash = (text: string, env: Record<string, string> = {}) =>
@@ -20227,9 +20297,25 @@ describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02,
       ['^[[:alnum:]_-]+$', false],
       ['^[]a]+$', false],
       ['^subnet-[0-9a-f]{8,17}(,subnet-[0-9a-f]{8,17}){0,15}$', false],
+      // Round 14's first iteration (EXPAND-G1-01): each form that matches a line break, which bash's =~ compiles
+      // without REG_NEWLINE.
+      ['^[0-9a-f]{40}:sha256:.{64}$', true],
+      ['^[0-9a-f]{40}:sha256:[^:]{64}$', true],
+      ['^[[:xdigit:][:space:]]{64}$', true],
+      ['^[[:print:]]+$', true],
+      ['^[0-9a-f\\W]{64}$', true],
+      ['^a\\sb$', true],
+      ['^a\\Sb$', true],
+      ['^[\x01-z]+$', true],
+      ['^[0-9]+\\.[0-9]+\\.[0-9]+$', false],
     ] as const) {
       expect(regexTestLines(`if [[ "$x" =~ ${regex} ]]; then :; fi`).length > 0, regex).toBe(found)
     }
+    // What bash does with the first: a value with a line break and a line of its own passes, which the committed
+    // shape refuses.
+    const broken = `${'e'.repeat(40)}:sha256:\nservices_started=false${'x'.repeat(41)}`
+    expect(bash('[[ "$D" =~ ^[0-9a-f]{40}:sha256:.{64}$ ]]', { D: broken }).status).toBe(0)
+    expect(bash('[[ "$D" =~ ^[0-9a-f]{40}:sha256:[0-9a-f]{64}$ ]]', { D: broken }).status).toBe(1)
     expect(
       canonicalTextFindings({
         FAST_RECHECK_PROD: `${STOP_HEAD}\n[[ "$D" =~ ^[(]sha256:|[0-9a-f]{64}[)]$ ]] || exit 1`,
@@ -20566,6 +20652,22 @@ describe('Round 13, iteration 4: the ways past the reader and the rules (DPW-02,
     expect(actionPinFindings(withText(CI, planted), repoFiles(), readRepoFile('.nvmrc'))).toContain(
       `${CI}: DPW-04 ${PINS_JOB_FINDING}`,
     )
+    // Round 14's first iteration (YAML-G1-01): one of the three by a commit, which GitHub resolves across the fork
+    // network, by a folder inside its repository or in another letter case names an action no rule read.
+    const checkout = '      - uses: actions/checkout@v5\n'
+    const at = ci.indexOf(checkout, ci.indexOf('\n  check:\n'))
+    expect(at).toBeGreaterThan(0)
+    for (const uses of [
+      'actions/checkout@0123456789abcdef0123456789abcdef01234567',
+      'actions/checkout/.github-not/pre@v5',
+      'Actions/Checkout@v5',
+      'actions/upload-artifact/merge@v7',
+    ]) {
+      const named = `${ci.slice(0, at)}      - uses: ${uses}\n${ci.slice(at + checkout.length)}`
+      expect(actionPinFindings(withText(CI, named), repoFiles(), readRepoFile('.nvmrc')), uses).toContain(
+        `${CI}: DPW-04 ${PINS_JOB_FINDING}`,
+      )
+    }
     expect(actionPinFindings(workflows, repoFiles(), readRepoFile('.nvmrc'))).toEqual([])
   })
 
@@ -20719,5 +20821,99 @@ describe("Round 13's lenses: a jq whose output is thrown away (DPW-10)", () => {
     ).toContain(`${DEPLOY}: DPW-10 nonprod (Read back what runs): ${HELD}`)
     expect(canonicalTextFindings()).toEqual([])
     expect(credentialedCodeFindings(workflows, manifests, lockfile)).toEqual([])
+  })
+})
+
+// Round 14, iteration 1: the reader's ways past a refusal or a check, each a change to a canonical text or a run made
+// with its pin (both on the owner's-read list, which holds them first), closed where a few lines narrow what the
+// reader admits.
+describe('Round 14, iteration 1: the reader’s ways past a refusal (DPW-10)', () => {
+  const bash = (text: string) => spawnSync('bash', ['--noprofile', '--norc', '-c', text], { encoding: 'utf8' })
+  const swapped = (text: string, from: string, to: string) => {
+    expect(text.split(from).length - 1, from).toBe(1)
+    return text.replace(from, to)
+  }
+  const refusal = 'aws_refuse() {\n  echo "aws-check: $1" | mask\n  exit 1\n}'
+
+  // EXPAND-G1-02: local and export return their own status, so local NAME=$( … ) || return read on past a failed
+  // read.
+  it('refuses a substitution assigned in a local or export word', () => {
+    const planted = swapped(NEWEST_RELEASE, '  local records\n  records=$(', '  local records=$(')
+    expect(canonicalTextFindings({ NEWEST_RELEASE: planted })).toContain(
+      `${GUARD}: DPW-10 NEWEST_RELEASE: is written in the shell shellViews() reads`,
+    )
+    expect(readsAsBash('f() {\n  local x=$(false) || return 1\n}')).toBe(false)
+    expect(readsAsBash('export X="$(false)"')).toBe(false)
+    expect(readsAsBash('f() {\n  local x\n  x=$(false) || return 1\n}')).toBe(true)
+    expect(bash('f() { local x=$(false) || return 1; echo on; }; f').stdout).toBe('on\n')
+    expect(bash('f() { local x; x=$(false) || return 1; echo on; }; f').status).toBe(1)
+  })
+
+  // EXPAND-G1-03: printf reuses its format for each word left over, and splits and globs an unquoted one.
+  it('holds printf’s arguments to its conversions, each one word', () => {
+    const quoted = String.raw`printf '%s\n' "$shown" | mask`
+    const planted = swapped(ONE_OFF, quoted, quoted.replace('"$shown"', '$shown'))
+    expect(canonicalToolLines(ONE_OFF)).toEqual([])
+    expect(canonicalToolLines(planted)).toContain(
+      planted.split('\n').findIndex(line => line.includes(String.raw`printf '%s\n' $shown`)),
+    )
+    for (const [line, found] of [
+      [String.raw`printf 'replaced=%s\n' "$a" "$b" >>"$GITHUB_OUTPUT"`, [0]],
+      [String.raw`printf 'x=%s\n' "$\{digests[@]}"`, [0]],
+      [String.raw`printf '%s\n' "$\{digests[@]}"`, []],
+      [String.raw`printf '%s=%s\n' "$a" "$b"`, []],
+      [String.raw`printf 'go=false\n'`, []],
+    ] as const) {
+      expect(canonicalToolLines(line.replaceAll('$\\{', '${')), line).toEqual(found)
+    }
+    expect(bash(String.raw`shown='api 2 503 x'; printf '%s\n' $shown`).stdout).toBe('api\n2\n503\nx\n')
+  })
+
+  // EXPAND-G1-04: an empty quoted string before the expansion hid it from echo's test of its first word.
+  it('reads echo’s first word with its quotes taken off', () => {
+    for (const line of [`echo ''"$BUILD" "digest=$DIGEST"`, `echo """$BUILD" "digest=$DIGEST"`]) {
+      expect(readShell(line).refused, line).toBeDefined()
+    }
+    expect(readShell(`echo "digest=$DIGEST"`).refused).toBeUndefined()
+    expect(bash(`FLAG=-e; echo ''"$FLAG" 'digest=x\\ncommit=y'`).stdout).toBe('digest=x\ncommit=y\n')
+  })
+
+  // COMMANDS-G1-01: bash takes a status modulo 256, so exit 256 passes and return 256 succeeds.
+  it('exits and returns only with 0 or 1', () => {
+    expect(readShell('exit 256').refused).toBeDefined()
+    expect(readShell('exit 1').refused).toBeUndefined()
+    for (const status of ['256', '2']) {
+      const planted = swapped(AWS_CHECK, refusal, refusal.replace('exit 1', `exit ${status}`))
+      expect(verdictLines(planted), status).toContain(planted.split('\n').indexOf(`  exit ${status}`))
+    }
+    const ecr = '--output json) || return 1'
+    const returned = swapped(AWS_CHECK, ecr, ecr.replace('return 1', 'return 256'))
+    expect(verdictLines(returned)).toContain(returned.split('\n').findIndex(line => line.endsWith('|| return 256')))
+    expect(verdictLines(AWS_CHECK)).toEqual([])
+    expect(bash('exit 256').status).toBe(0)
+  })
+
+  // COMMANDS-G1-02: bash 5.2 runs a continue or break outside every loop of its function as a warning and status 0,
+  // which neither ends the step nor leaves the caller's loop.
+  it('continues or breaks only inside a loop of its own function or text', () => {
+    expect(readShell('continue').refused).toBeDefined()
+    expect(readShell('record() {\n  continue\n}').refused).toBeDefined()
+    expect(readShell('for x in a b; do\n  continue\ndone').refused).toBeUndefined()
+    for (const word of ['continue', 'break']) {
+      const planted = swapped(AWS_CHECK, refusal, refusal.replace('exit 1', word))
+      expect(verdictLines(planted), word).toContain(planted.split('\n').indexOf(`  ${word}`))
+    }
+    for (const [text, lines] of [
+      ['for x in a b; do\n  [ -n "$x" ] || continue\ndone', []],
+      ['f() {\n  break\n}\nfor x in a; do\n  f\ndone', [1]],
+      ['for x in a; do\n  f() {\n    continue\n  }\ndone', [2]],
+      ['for x in a; do\n  echo "$x"\ndone\ncontinue', [3]],
+    ] as const) {
+      expect(verdictLines(text), text).toEqual(lines)
+    }
+    expect(bash('f() { continue; echo past; }; for x in a; do f; echo on; done; echo "$?"').stdout).toBe(
+      'past\non\n0\n',
+    )
+    expect(canonicalTextFindings()).toEqual([])
   })
 })

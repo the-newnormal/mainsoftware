@@ -35,8 +35,9 @@
 // (BLOB_RESET), since a drift check in node can't hold its own file; and since that reset also writes away the
 // drift a deploy job's checkout of main would read, the CLI pin's step first refuses, in its own shell, a checkout
 // whose regular files aren't HEAD's blobs byte for byte (CLI_PIN_DRIFT; round 12's third iteration, its second
-// pass: an ident in infra/.gitattributes passed the job after the reset); no Yarn file stands in the tree
-// (YARN_FILE); and
+// pass: an ident in infra/.gitattributes passed the job after the reset); no package manager's own file stands in
+// the tree (MANAGER_FILE: a Yarn file, or an .npmrc or npm-shrinkwrap.json, through which npm ci installed another
+// aws-cdk than the registry's under the lockfile's sha512, round 14); and
 // every deploy.yml job but the build's checks out below its setup-node too (DPW-11), the gate, prod-gate and the
 // smokes into REPO_FOLDER (round 12's fourth iteration: a .yarnrc decided both checks, the plan, prod-gate's
 // verdict and every smoke).
@@ -493,7 +494,10 @@
 // constants pin it and in every form these rules read. Nothing that needs no such change leans on that read:
 // the checks over what code off the owner's-read list builds or renders and over what AWS, GitHub or an
 // artifact answers (ASSET_CHECK, IMAGE_CHECK, CLI_CHECK, ARTIFACT_NAMES, the read-back's schema, the smokes),
-// and a defect in these files as committed, keep their full claims.
+// and a defect in these files as committed, keep their full claims. One such hold no rule reads apart from the
+// pins (round 14's first iteration): which deploy lines each mode runs is the CLI steps' if: alone (CLI_STEP_IF),
+// so an if: widened in both, prod's forward step run in a rollback as well, would take Platform and Data back to
+// a target's templates beyond the rollback diff its approver read.
 import { createHash } from 'node:crypto'
 import { ACTION_PINS, PIN_SHAPE, PINS_JOB_ACTIONS } from './action-pins.ts'
 import {
@@ -4245,8 +4249,11 @@ function unreadTests(text: string, code: string): number[] {
   const lines = code.split('\n')
   return [...counts].filter(([n, count]) => count > [...(lines[n] ?? '').matchAll(TEST_START)].length).map(([n]) => n)
 }
-// A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own).
-const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=.*)?)$/s
+// A name local or export is given as written: NAME, NAME= or NAME+= (a flag is the rules' own), its value holding
+// no $( … ): local and export return their own status, 0, so a substitution's failure in one reaches neither
+// errexit nor a || after it (round 14's first iteration: local records=$(gh api … | jq …) || return read on past a
+// failed read, with no records); a text declares the name, then assigns it on a line of its own.
+const GIVEN_NAME = /^(?:[-+][A-Za-z]+|[A-Za-z_]\w*(?:\+?=(?!.*\$\().*)?)$/s
 // A command's words in the code view, split at the blanks outside its parentheses.
 function words(text: string): string[] {
   const found: string[] = []
@@ -4946,12 +4953,21 @@ function ghHeld(words: readonly string[]): boolean {
 // the text later evaluates or PATH among them (the seventh review's third attack). The format's one conversion
 // is %s (and %% a percent sign), as every canonical text writes it: bash's printf sets the variable an argument
 // names for each %n, a plain name it reads as no assignment, PATH or a held name among them, and the other
-// conversions read numbers, quote or expand escapes, which no text asks of it (round 11).
+// conversions read numbers, quote or expand escapes, which no text asks of it (round 11). And its arguments are no
+// more words than the format has conversions, each one bash hands as one (round 14's first iteration): printf
+// reuses its format for each word left over, so printf '%s\n' $shown, its quotes dropped, printed a probe's line
+// as a line for each word, a glob among them as the working folder's file names, and printf 'replaced=%s\n' "$a"
+// "$b" wrote two outputs from one line; only "${NAME[@]}" under '%s\n' prints an element a line.
 const PRINTF_FORMAT = /^'(?!-)(?:[^'%]|%[s%])*'$/
 function printfHeld(words: readonly string[]): boolean {
   if (words[0] === '-v' && !PLAIN_NAME.test(words[1] ?? '')) return false
-  const format = words[0] === '-v' ? words[2] : words[0]
-  return format !== undefined && PRINTF_FORMAT.test(format)
+  const at = words[0] === '-v' ? 2 : 0
+  const format = words[at]
+  const args = words.slice(at + 1)
+  if (format === undefined || !PRINTF_FORMAT.test(format)) return false
+  const listed = args.length === 1 && format === "'%s\\n'" && /^"\$\{[A-Za-z_]\w*\[@\]\}"$/.test(args[0] ?? '')
+  if (args.some(word => wordSplits(word) || (expandsToMany(word) && !listed))) return false
+  return args.length <= format.replaceAll('%%', '').split('%s').length - 1
 }
 // Every command CANONICAL_COMMANDS names is held by what it is handed (the seventh review's third attack, where
 // a grep added to AWS_CHECK read the job's environment by /dev/fd/../environ and printed it in pieces no mask
@@ -5812,7 +5828,7 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
     }
     for (const line of canonicalToolLines(text)) {
       found.push(
-        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s and a plain -v name, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
+        `${GUARD}: DPW-10 ${name}, line ${line + 1}: hands jq and gh only their held flags and a program written on the line, printf a single-quoted format whose one conversion is %s, a plain -v name and no more words than its conversions, none split, aws only its calls and options, tee only the summary and every other tool only its line as the guard writes it, and reads a file by a redirection only on such a line`,
       )
     }
     for (const line of jqStatusLines(text)) {
@@ -5873,11 +5889,15 @@ export function canonicalTextFindings(texts?: Readonly<Record<string, string>>):
 // or | inside counts for (round 13's third iteration: ^[(]A|B[)]$ read as a group to both readers, while POSIX
 // reads [(] and [)] as literals and so ^(A or B)$, two half-anchored branches); one holding a (, ), | or [ but a
 // [:class:], or left open, is refused. And no expansion stands in the regex, but in double quotes (patternLines()
-// below). Then bash matches the whole word. No committed text writes another. A glob test ([[ WORD == PATTERN ]],
-// which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and which a run's own lines can't write)
-// matches what its * says, in the open, so it stays the owner's read.
+// below). Then bash matches the whole word. Nor does the regex hold a form that matches a line break (round 14's
+// first iteration): bash compiles =~ without REG_NEWLINE, so ., a bracket opened [^, the classes [:space:],
+// [:cntrl:], [:print:], [:graph:] and [:punct:], and \W, \s and \S each match one, and ^…:.{64}$ passed a value
+// holding a line break and a key= line that its echo then wrote as an output of its own; nor any character but
+// printable ASCII, so no range runs through a line break. No committed text writes another. A glob test
+// ([[ WORD == PATTERN ]], which TASKS_OUTPUTS writes beside an anchored =~ for an ARN's middle, and which a run's
+// own lines can't write) matches what its * says, in the open, so it stays the owner's read.
 const REGEX_TEST_RULE =
-  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it'
+  'tests a value against a regular expression only anchored at both ends, [[ … =~ ^…$ ]] with a | only inside parentheses and a bracket expression holding no (, ), | or [, so bash matches the whole value and never a part of it, and of printable ASCII with no ., [^, \\W, \\s, \\S or [:space:], [:cntrl:], [:print:], [:graph:] or [:punct:], each of which matches a line break'
 export function regexTestLines(text: string): number[] {
   const lines: number[] = []
   for (const [n, line] of shellViews(text).code.split('\n').entries()) {
@@ -5886,27 +5906,33 @@ export function regexTestLines(text: string): number[] {
       let depth = 0
       let alternativeOutside = false
       let bracket = false
+      // A form that matches a line break leaves depth NaN, as an unbalanced one does.
+      if (/[^\x20-\x7e]/.test(regex)) depth = Number.NaN
       for (let at = 0; at < regex.length; at++) {
         const c = regex[at] ?? ''
         if (c === '\\') {
+          if ('WsS'.includes(regex[at + 1] ?? '-')) depth = Number.NaN
           at++
           continue
         }
         if (bracket) {
           // A [:class:] is the bracket's own; any other (, ), | or [ in it is a literal bash reads, never a group.
           const named = /^\[:[a-z]+:\]/.exec(regex.slice(at))?.[0]
-          if (named !== undefined) at += named.length - 1
-          else if (c === ']') bracket = false
+          if (named !== undefined) {
+            if (/^\[:(?:space|cntrl|print|graph|punct):\]$/.test(named)) depth = Number.NaN
+            at += named.length - 1
+          } else if (c === ']') bracket = false
           else if ('()|['.includes(c)) depth = Number.NaN
           continue
         }
         if (c === '[') {
           bracket = true
-          // A ] first in the bracket, or after its ^, is a literal of the bracket.
-          if (regex[at + 1] === '^') at++
+          // A ] first in the bracket is a literal of the bracket; a bracket opened [^ matches a line break.
+          if (regex[at + 1] === '^') depth = Number.NaN
           if (regex[at + 1] === ']') at++
         } else if (c === '(') depth++
         else if (c === ')') depth--
+        else if (c === '.') depth = Number.NaN
         else if (c === '|' && depth <= 0) alternativeOutside = true
       }
       const anchored = /^\^/.test(regex) && /(?<!\\)\$$/.test(regex) && regex.length >= 2
@@ -5968,9 +5994,11 @@ export function patternLines(text: string): number[] {
 // exit or a call of a canonical function that exits, itself or through another (round 12's third iteration, its
 // second pass): there the exit ends the substitution's subshell alone (bash clears errexit in it), so
 // : "$([ … ] || aws_refuse "…")" went on with :'s status, 0, past AWS_CHECK's refusal, and TASKS_OUTPUTS' shape
-// check in : "$( … )" handed aws a cluster of any shape. No committed text writes any of them.
+// check in : "$( … )" handed aws a cluster of any shape. No committed text writes any of them. The literal status is
+// 0 or 1, as every text writes it (round 14's first iteration): bash takes a status modulo 256, so a refusal's exit
+// 256 ended its step with 0 and ecr_has's return 256 counted a digest ECR lacks as there.
 const VERDICT_RULE =
-  'exits or returns only with a literal status (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts and refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )), so no refusal ends its step with status 0 or a subshell alone'
+  'exits or returns only with a literal status, 0 or 1 (a bare return only after ||, which returns the failing command’s), opens no subshell where a command starts, refuses inside no substitution (no exit, and no call of a function that exits, in a $( … ), <( … ) or >( … )) and continues or breaks only in a loop of its own function or text, so no refusal ends its step with status 0 or a subshell alone'
 const SUBSHELL = /(?:^|[;&|!{]|(?<![\w-])(?:then|do|else|elif|if|while|until))[ \t]*\((?!\()/gm
 const EXIT_WORD = /(?<![\w$-])exit(?![\w-])/
 const callsAny = (code: string, names: ReadonlySet<string>) =>
@@ -6056,7 +6084,7 @@ export function verdictLines(text: string, exiting: ReadonlySet<string> = exitin
   const lines = new Set<number>()
   for (const match of code.matchAll(/(?<![\w$-])(exit|return)(?![\w-])/g)) {
     const after = code.slice(match.index + match[0].length)
-    const numbered = /^[ \t]+[0-9]+(?=[ \t]*(?:[;)}&|\n]|$))/.test(after)
+    const numbered = /^[ \t]+[01](?=[ \t]*(?:[;)}&|\n]|$))/.test(after)
     const passed =
       match[1] === 'return' && /\|\|[ \t]*$/.test(code.slice(0, match.index)) && /^[ \t]*(?:[;)}\n]|$)/.test(after)
     if (!numbered && !passed) lines.add(lineOf(match.index))
@@ -6064,6 +6092,18 @@ export function verdictLines(text: string, exiting: ReadonlySet<string> = exitin
   for (const match of code.matchAll(SUBSHELL)) lines.add(lineOf(match.index))
   for (const span of substitutionSpans(code)) {
     if (EXIT_WORD.test(span.inner) || callsAny(span.inner, exiting)) lines.add(lineOf(span.at))
+  }
+  // A continue or break stands in a loop of its own function's body, or of the text outside one (round 14's first
+  // iteration): bash 5.2 runs one outside every loop, a caller's included, as a warning and status 0, which neither
+  // ends the step nor leaves a loop, so a refusal so written went on past itself.
+  const startsAt = (at: number) => ENDS_AT_COMMAND_START.test(code.slice(code.lastIndexOf('\n', at - 1) + 1, at))
+  for (const match of code.matchAll(/(?<![\w$-])(?:continue|break)(?![\w-])/g)) {
+    const from = Math.max(0, ...[...code.slice(0, match.index).matchAll(DEFINITION)].map(each => each.index))
+    let open = 0
+    for (const word of code.slice(from, match.index).matchAll(/(?<![\w$./-])(do|done)(?![\w-])/g)) {
+      if (startsAt(from + word.index)) open += word[1] === 'do' ? 1 : -1
+    }
+    if (open <= 0) lines.add(lineOf(match.index))
   }
   return [...lines].sort((a, b) => a - b)
 }
@@ -6321,16 +6361,19 @@ export const SHELL_TABLE = {
   builtins: {
     // echo prints its words; never a first word that reads as a flag, nor, before other words, one that starts
     // with an expansion, whose value could be one (round 13's third iteration: echo "$FLAG" "$VALUE" with FLAG -e
-    // wrote VALUE's \n as a line break, two lines from one echo). Alone, a flag's value only empties the line, and
-    // a word that expands to several reaches no echo (GLUE_USES hands one to aws alone).
+    // wrote VALUE's \n as a line break, two lines from one echo), read as echo reads it, its quotes taken off (round
+    // 14's first iteration: ''"$FLAG" hid the expansion from a test of the word as written). Alone, a flag's value
+    // only empties the line, and a word that expands to several reaches no echo (GLUE_USES hands one to aws alone).
     echo: (args: readonly ShellWord[]) =>
       args.length > 0 &&
       !(args[0]?.value ?? '').startsWith('-') &&
-      !(args.length > 1 && /^"?\$/.test(args[0]?.raw ?? '')),
-    // exit ends the step with a status: a number, or one expansion's value.
+      !(args.length > 1 && wordAsRead(args[0]?.raw ?? '').startsWith('\0')),
+    // exit ends the step with a status: 0 or 1, or one expansion's value (bash takes a status modulo 256, so exit
+    // 256 ended a refusal's step with 0: round 14's first iteration).
     exit: (args: readonly ShellWord[]) =>
-      args.length === 1 && (/^[0-9]+$/.test(args[0]?.value ?? '') || /^"\$[A-Za-z_]\w*"$/.test(args[0]?.raw ?? '')),
-    // continue starts a loop's next round.
+      args.length === 1 && (/^[01]$/.test(args[0]?.value ?? '') || /^"\$[A-Za-z_]\w*"$/.test(args[0]?.raw ?? '')),
+    // continue starts a loop's next round, only inside a for loop of its own text or function (the reader refuses
+    // one outside).
     continue: (args: readonly ShellWord[]) => args.length === 0,
     // set sets the shell's options: only -euo pipefail.
     set: (args: readonly ShellWord[]) => args.map(arg => arg.raw).join(' ') === '-euo pipefail',
@@ -6506,6 +6549,8 @@ class ShellReader {
   private i = 0
   // How deep the reader is in an if or elif condition, where bash's errexit reads no command's status.
   private condition = 0
+  // How many for loops of the function or text being read are open, which a continue or break needs.
+  private loops = 0
   private readonly breaks: number[] = []
   private readonly s: string
   private readonly offset: number
@@ -6725,7 +6770,9 @@ class ShellReader {
       this.blanks()
       if (!/^do(?=[ \t\n])/.test(this.rest())) this.refuse('a for loop the table does not read')
       this.i += 2
+      this.loops++
       this.list(['done'])
+      this.loops--
       this.i += 4
       this.emit({ ...base, name: 'for', args: words, redirections: [], variable: name }, from)
     } else if (keyword === 'case') {
@@ -6802,7 +6849,10 @@ class ShellReader {
     }
     this.functions.push({ name, line: this.lineAt(this.i) })
     this.i += name.length + 4
+    const loops = this.loops
+    this.loops = 0
     this.list(['}'])
+    this.loops = loops
     this.i++
   }
 
@@ -6891,6 +6941,9 @@ class ShellReader {
         this.refuse("a command's word the table does not read")
     }
     if ((SHELL_TABLE.refused as readonly string[]).includes(name)) this.refuse('a builtin or keyword the table refuses')
+    // bash 5.2 runs a continue outside every loop of its function as a warning and status 0, which neither ends the
+    // step nor leaves the caller's loop (round 14's first iteration).
+    if (name === 'continue' && this.loops === 0) this.refuse('a continue outside a loop')
     const args: ShellWord[] = []
     const redirections: Array<{ op: string; target: ShellWord | undefined }> = []
     for (;;) {
@@ -7914,11 +7967,14 @@ export function actionPinFindings(workflows: Texts, folder?: readonly string[], 
       )
     }
     if (SHADOW_FILE.test(path)) found.add(at(SCRIPTS, 'DPW-04', SHADOW_RULE))
-    if (YARN_FILE.test(path)) found.add(at(path, 'DPW-04', YARN_RULE))
+    if (MANAGER_FILE.test(path)) found.add(at(path, 'DPW-04', MANAGER_RULE))
   }
   if (!pinsJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', PINS_JOB_RULE))
   if (!cliPinJobHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CLI_PIN_JOB_RULE))
   if (!requiredJobsNamed(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', REQUIRED_NAMES_RULE))
+  for (const [path, other] of workflowsWritten(workflows)) {
+    if (path !== CI && !requiredJobsNamed(other, [])) found.add(at(path, 'DPW-04', REQUIRED_NAMES_RULE))
+  }
   if (!ciOnHolds(workflows.get(CI) ?? '')) found.add(at(CI, 'DPW-04', CI_ON_RULE))
   if (nvmrc !== undefined && nvmrc !== NVMRC) found.add(at(NVMRC_FILE, 'DPW-04', NVMRC_RULE))
   return [...found]
@@ -7989,9 +8045,12 @@ const NEEDS_FAILED = expr(
 // it writes to GITHUB_ENV or GITHUB_PATH reaches every step after it, check's first among them: a BASH_ENV, a
 // SHELLOPTS of noexec or a bash of its own turned that step's exit 1 into a pass, so a pull request whose pins proof
 // or CLI pin check failed got a green check. checkout, setup-node and upload-artifact declare main and post alone, so
-// a step of check uses only those, and the owner reads a new action there as running first.
+// a step of check uses only those, and the owner reads a new action there as running first. Each is named exactly,
+// at a version tag (round 14's first iteration): a commit, which GitHub resolves across the repository's fork
+// network, a folder inside the action's repository (actions/upload-artifact/merge) or another letter case named an
+// action whose action.yml, and whose pre:, no rule read, while a tag resolves in the action's own repository alone.
 const CHECK_ACTIONS: readonly string[] = ['actions/checkout', 'actions/setup-node', 'actions/upload-artifact']
-const PINS_JOB_RULE = `runs ${PINS_CHECK} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), uses no action but ${CHECK_ACTIONS.join(', ')} (none of which has a pre:, which GitHub runs before a job's first step), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
+const PINS_JOB_RULE = `runs ${PINS_CHECK} in a job of its own, ${PINS_JOB}, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into ${REPO_FOLDER} and setup-node with Node from ${REPO_FOLDER}/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in ${REPO_FOLDER} after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), uses no action but ${CHECK_ACTIONS.join(', ')}, each by that name at a version tag (none of which has a pre:, which GitHub runs before a job's first step), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed`
 // setup-node's inputs in both jobs: Node from the checkout's folder's .nvmrc, with no cache.
 const PINS_NODE_WITH = { 'node-version-file': `${REPO_FOLDER}/.nvmrc`, 'package-manager-cache': 'false' }
 // A step that runs the action at its commit in PINS_JOB_ACTIONS, its version comment on its line.
@@ -8046,7 +8105,10 @@ function pinsJobHolds(ci: string): boolean {
     first?.if === NEEDS_FAILED &&
     ifWritten(first) &&
     first.run === 'exit 1' &&
-    parsedSteps(check).every(step => step.uses === undefined || CHECK_ACTIONS.includes(actionRepository(step.uses)))
+    parsedSteps(check).every(
+      step =>
+        step.uses === undefined || CHECK_ACTIONS.some(action => new RegExp(`^${action}@v\\d+$`).test(step.uses ?? '')),
+    )
   )
 }
 // The job that holds the CDK CLI's pin to its base branch's (round 12's second iteration): check-cli-pin.ts alone
@@ -8143,15 +8205,18 @@ function ciOnHolds(ci: string): boolean {
 // PULL_CHECKS and prod-gate's MAIN_CI read one, by its name: key, or its id with none. So ci.yml's check and
 // migrations have no name:, and no other job's name: is either of theirs, in any letter case, or an expression
 // GitHub would evaluate to one, so no stand-in that always succeeds reports under a required check's name while
-// the real job fails.
+// the real job fails. And no other workflow's job is either by its id or its name: (round 14's first iteration): the
+// gate and prod-gate read ci.yml's run by its path, but the ruleset reads any check run at the commit by its name, a
+// job of secrets.yml's own push run, which runs at every pull request's head, among them.
 const REQUIRED_JOBS = ['check', 'migrations']
 const REQUIRED_NAMES_RULE =
-  "names check and migrations only by their ids: neither has a name:, and no other job's name: is either's, in any letter case, or an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
-function requiredJobsNamed(ci: string): boolean {
+  "names check and migrations only by their ids, in ci.yml alone: neither has a name:, and no other job's id or name: anywhere is either's, in any letter case, nor a name: an expression, since GitHub reports a job, and the ruleset, the gate and prod-gate read one, by its name"
+function requiredJobsNamed(ci: string, ids: readonly string[] = REQUIRED_JOBS): boolean {
   const jobs = workflowJobs(ci)
   return (
-    REQUIRED_JOBS.every(id => jobs.some(job => job.id === id)) &&
+    ids.every(id => jobs.some(job => job.id === id)) &&
     jobs.every(job => {
+      if (REQUIRED_JOBS.includes(job.id.toLowerCase()) && !ids.includes(job.id)) return false
       if (!job.keys.has('name')) return true
       const name = jobScalar(job, 'name')?.trim()
       return (
@@ -8179,15 +8244,22 @@ export const WORKFLOW_FILE = /^\.github\/workflows\/[^/@]+\.ya?ml$/
 // .ts file, which the test holds, the pins check reads deploy.yml's uses: itself, and scripts/ holds none
 // of these, so no such file stands beside any guard's module either.
 const SCRIPTS = 'scripts'
-// A Yarn file anywhere in the tree (round 12's fourth iteration): setup-node runs yarn --version in its job's
-// workspace, and Yarn 1, which GitHub's image ships, reads .yarnrc (or .yarnrc.yml) from the folder it runs in
-// and every one above it, and runs the program its yarn-path names (a file under .yarn/, as yarn policies
-// set-version writes it) before it reads an argument. The repository uses npm alone, so no Yarn file belongs in
-// it. Every job that runs only owner's-read code checks out into a folder below setup-node's (DPW-04's job
-// holds, DPW-11), which is the control; this is a second layer, since neither file is on the owner's-read list.
-const YARN_FILE = /(?:^|\/)(?:\.yarnrc(?:\.ya?ml)?$|\.yarn\/)/
-const YARN_RULE =
-  'is a Yarn file (.yarnrc, .yarnrc.yml or under .yarn/): the repository uses npm alone, and Yarn 1, which setup-node runs in its job’s workspace, runs the program a .yarnrc’s yarn-path names'
+// A package manager's own file anywhere in the tree. A Yarn file (round 12's fourth iteration): setup-node runs
+// yarn --version in its job's workspace, and Yarn 1, which GitHub's image ships, reads .yarnrc (or .yarnrc.yml)
+// from the folder it runs in and every one above it, and runs the program its yarn-path names (a file under .yarn/,
+// as yarn policies set-version writes it) before it reads an argument. Every job that runs only owner's-read code
+// checks out into a folder below setup-node's (DPW-04's job holds, DPW-11), which is the control there; this is a
+// second layer, since neither file is on the owner's-read list. And an npm one (round 14): CI holds the aws-cdk
+// tarball npm ci installed, which is the registry's at the lockfile's sha512 only while npm ci fetches it from the
+// registry with npm's defaults, while each deploy job's CLI_FETCH fetches the registry's own. A committed .npmrc
+// naming a cache folder the pull request also committed (cache=, or a registry=, offline or prefer-offline beside
+// it) let npm ci install, with no request at all, a tarball whose sha512 a one-line lockfile change named, so CI
+// passed a CLI every deploy job's CLI_FETCH then refused, before its credentials, for as long as that commit was
+// main's head; and npm ci reads an npm-shrinkwrap.json in the lockfile's place, which DPW-10 never reads. The
+// repository uses npm alone, with its defaults and package-lock.json, so no such file belongs in it, at any depth.
+const MANAGER_FILE = /(?:^|\/)(?:\.yarnrc(?:\.ya?ml)?$|\.yarn\/|\.npmrc$|npm-shrinkwrap\.json$)/
+const MANAGER_RULE =
+  'is a package manager’s own file (.npmrc, npm-shrinkwrap.json, .yarnrc, .yarnrc.yml or under .yarn/): the repository uses npm alone, with its defaults and package-lock.json, so npm ci fetches every tarball from the registry and refuses one whose sha512 isn’t the lockfile’s (an .npmrc’s cache or registry gave CI another aws-cdk than the one CLI_FETCH fetches), and Yarn 1, which setup-node runs in its job’s workspace, runs the program a .yarnrc’s yarn-path names'
 const SHADOW_FILE = /^scripts\/(?:[^/]+\/)*(?:[^/.]+|[^/]+\.(?:[cm]?js|jsx|[cm]ts|tsx))$/
 const SHADOW_RULE =
   'holds no JavaScript, no other TypeScript flavour (.js, .mjs, .cjs, .jsx, .mts, .cts, .tsx) and no file without an extension, any of which Vitest would load in place of a guard module named without its .ts'
@@ -11417,7 +11489,7 @@ export const JOB_STEPS: Readonly<Record<JobId, Steps>> = {
   'record-prod': [['Write the record']],
 }
 const ONE_CHECKOUT =
-  "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code"
+  "checks out one commit at most, so no runner that synthesises an assembly, or reads one, runs a second commit's code, and a synth the very commit its synth step labels the assembly with (its checkout's ref COMMIT's expression)"
 const STEPS =
   'runs the steps JOB_STEPS names, in order, each by its name with the action it names (a run step none): no step of its own before, between or after them, and none dropped or moved'
 // No run of any job names a file command that hands a later step of its job something: GITHUB_ENV (a
@@ -11598,6 +11670,15 @@ function shapeOfJobsFindings(text: string, add: (where: string, rule: string) =>
     // (a process left behind, a file written over) never meets another commit's checkout, and an assembly a
     // rollback deploys is made only by its own commit (the seventh review's first attack).
     if (steps.filter(step => /^actions\/checkout@/i.test(step.uses ?? '')).length > 1) add(id, ONE_CHECKOUT)
+    // And a synth checks out the commit it labels its assembly with (round 14's first iteration): -c
+    // release=$COMMIT:… names the release ASSET_CHECK and AWS_CHECK read, never the commit whose code ran, so a
+    // ref of github.sha under the gate's commit deployed main's head as a dispatched rollback's release. Read as
+    // written, never through STEP_WITHS or STEP_ENVS, which move with the workflow.
+    if (/^synth(?:-previous-(?:nonprod|prod))?$/.test(id)) {
+      const ref = steps.find(step => /^actions\/checkout@/i.test(step.uses ?? ''))?.with.get('ref')
+      const commits = steps.flatMap(step => (step.env.has('COMMIT') ? [step.env.get('COMMIT')] : []))
+      if (ref === undefined || commits.length !== 1 || commits[0] !== ref) add(id, ONE_CHECKOUT)
+    }
     steps.forEach((step, index) => {
       const where = `${id} (${label(step, index)})`
       if (FILE_COMMANDS.test(step.run ?? '')) add(where, FILES)
@@ -12008,7 +12089,9 @@ export function credentialedCodeFindings(workflows: Texts, manifests: Texts, loc
     entry = undefined
   }
   // As CLI_FETCH reads it, so a lockfile it would refuse fails here first: the registry's tarball at infra's
-  // pin, by its fixed URL, with a sha512 integrity and no link; and as npm writes the entry of a package
+  // pin, by its fixed URL, with a sha512 integrity and no link (that the sha512 is the registry's own tarball's,
+  // CI's npm ci holds, fetching from the registry with npm's defaults, since DPW-04 refuses an .npmrc or
+  // npm-shrinkwrap.json anywhere in the tree: MANAGER_FILE, round 14); and as npm writes the entry of a package
   // CLI_CHECK accepts, its cdk bin at bin/cdk, holding no key but those npm writes for today's package (round
   // 13's second iteration: npm writes, and npm ci installs, peerDependencies and optionalDependencies as well as
   // dependencies, while a deploy job runs the tarball alone; installedCliFindings() holds the package itself).
