@@ -15,7 +15,17 @@
 // This file and deploy-workflow.ts are on the owner's-read list (C11-D74).
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import ts from 'typescript'
@@ -106,6 +116,7 @@ import {
   gitAttributeFindings,
   IMAGE_CHECK,
   IMAGE_LAYOUT,
+  IMAGE_NODE_MAJOR,
   IMAGE_UNPACK_RUN,
   installedCliFindings,
   JOB_IDS,
@@ -141,6 +152,7 @@ import {
   patternLines,
   permissionFindings as permissionFindingsOf,
   pinnedScriptText,
+  pipelineLines,
   probeRun,
   prodDiffStackFindings,
   prodPathFindings as prodPathFindingsOf,
@@ -540,7 +552,7 @@ const CLI_PIN_JOB_FINDING =
   "runs node scripts/check-cli-pin.ts \"$BASE\" in a job of its own, cli-pin, on GitHub's runner ubuntu-24.04, whose steps are only checkout of the whole history without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after CLI_PIN_DRIFT, which refuses a checkout that isn't HEAD's blobs, and BLOB_RESET, on a pull request alone, with BASE the base branch's remote-tracking name, so nothing of the repository's, no package manager and no action the pins check can't prove runs before it; check needs it"
 // DPW-04's finding for ci.yml's job that proves the pins (FETCH-A3-01, round 5's fourth attack).
 const PINS_JOB_FINDING =
-  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
+  "runs node scripts/check-action-pins.ts in a job of its own, action-pins, on GitHub's runner ubuntu-24.04, whose steps are only checkout without credentials into repo and setup-node with Node from repo/.nvmrc and no cache, each at its commit and version comment in PINS_JOB_ACTIONS, and the check, in repo after BLOB_RESET, in a workflow that holds only name, on, permissions and jobs at its top (no env: or defaults:, which reach every step), so nothing of the repository's and no action the check can't prove runs before it; check needs it, runs under always() on ubuntu-24.04 with no key of its own but needs, if, runs-on, timeout-minutes and steps (no env:, defaults:, container:, services:, strategy: or continue-on-error:, which decide how its steps run or whether its failure counts), uses no action but actions/checkout, actions/setup-node, actions/upload-artifact (none of which has a pre:, which GitHub runs before a job's first step), and first fails, by that step's if: and exit 1 alone, when a job it needs didn't succeed"
 // ci.yml's two checks as their steps write them (round 12's fourth iteration): in the checkout's folder, after
 // the working tree is reset to its blobs.
 const RESET_LINES = `          printf '* -text -eol -ident -filter -working-tree-encoding\\n' >.git/info/attributes
@@ -2122,52 +2134,154 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
     assetCheckFindings: { jobs: true },
   }
   // The rules that read no workflow at all, each by its parameters as written (round 13's third iteration): with
-  // DEPLOY_TEXT_READERS, every exported rule of the guard (a function named …Findings, or one declared to return
-  // Finding[]) is in one table or the other, so no rule stands outside differential() whatever way it takes the map
-  // (an options object's workflows, a parameter typed as what it walks, a generic, or a map of string | undefined,
-  // which mapUses() reads no more than by its spelling), and one listed here changes its parameters only with this
-  // table.
+  // DEPLOY_TEXT_READERS, every exported rule of the guard (a function named …Findings or …Problems, or one that
+  // returns an array of strings, as the checker reads its type: exportedRules()) is in one table or the other, or in
+  // NOT_RULES, so no rule stands outside differential() whatever way it takes the map (an options object's
+  // workflows, a parameter typed as what it walks, a generic, or a map of string | undefined, which mapUses() reads
+  // no more than by its spelling), and one listed here changes its parameters only with this table.
   const NOT_DEPLOY_READERS: Readonly<Record<string, string>> = {
     canonicalTextFindings: '(texts?: Readonly<Record<string, string>>)',
     gitAttributeFindings: '(attributes: ReadonlyMap<string, readonly string[]>)',
     installedCliFindings: '(manifests: Texts, installed: string | undefined, links: readonly string[])',
     prodDiffStackFindings: '(given: Readonly<Record<string, string>> = {})',
   }
-  // Each exported rule of a source text, by name, with its parameters as written: a function, or a const holding
-  // one, named …Findings or declared to return Finding[] (readonly or not).
-  const exportedRules = (source: string): Map<string, string> => {
-    const file = ts.createSourceFile('deploy-workflow.ts', source, ts.ScriptTarget.Latest, true)
-    const rules = new Map<string, string>()
+  // The exported functions of the guard that return an array of strings and are no rule, each by its parameters as
+  // written: they build text (a shared run's comment, a run's lines for bash), never findings.
+  const NOT_RULES: Readonly<Record<string, string>> = {
+    sharedRunComment:
+      "(form: 'anchor' | 'alias', name: string, places: readonly StepPlace[], reads: readonly string[] = RUN_ANCHORS()[name]?.reads ?? [])",
+    codeLinesAsBash: '(lines: readonly string[])',
+    bashAfter32: '(code: readonly string[])',
+  }
+  // Each exported rule that takes a text as a string (round 13's fourth iteration), by file, with what each such
+  // parameter is handed: a rule written as the repository's own text rules are (deployPinProblems(text: string):
+  // string[]) and handed deploy.yml as stored read none of the steps that run a shared run by its alias, and stood in
+  // no table. So a rule's text is typed RunsWrittenOut, the expansion, or is named here with what it holds, which a
+  // reviewer reads; deploy.yml as stored only for what an alias can't change.
+  const TEXT_RULES: Readonly<Record<string, Readonly<Record<string, Readonly<Record<string, string>>>>>> = {
+    'scripts/guards/deploy-workflow.ts': {
+      triggerFindings: { ruleset: '.github/rulesets/protect-main.json' },
+      permissionFindings: { ownRepository: 'the repository’s owner/name, from its git remote' },
+      actionPinFindings: { nvmrc: '.nvmrc' },
+      gateFindings: { protectEnvironments: 'scripts/protect-environments.sh' },
+      credentialedCodeFindings: { lockfile: 'package-lock.json' },
+      installedCliFindings: { installed: 'node_modules/aws-cdk/package.json, as npm ci installed it' },
+    },
+    'scripts/guards/workflow.ts': {
+      literalProblems: { text: 'a workflow as stored, for its block scalars’ headers, which an alias adds none of' },
+      blockScalarProblems: { text: 'a workflow as stored, for its block scalars, which an alias adds none of' },
+      indicatorProblems: {
+        text: 'a workflow as stored, for its block scalars’ indicators, which an alias adds none of',
+      },
+      shapeProblems: { text: 'a workflow as stored, for its shapes and its shared runs themselves' },
+    },
+    'scripts/check-action-pins.ts': {
+      deployPinProblems: { text: 'deploy.yml as stored, for its uses: lines, which no shared run holds' },
+    },
+  }
+  // A checker over a source given as text in place of its file, the other files read from disk once: what the
+  // types of a rule's return and parameters are as TypeScript reads them, so a type an alias or an inference spells
+  // otherwise is read alike.
+  const COMPILER: ts.CompilerOptions = {
+    strict: true,
+    noEmit: true,
+    allowImportingTsExtensions: true,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    target: ts.ScriptTarget.ES2023,
+    skipLibCheck: true,
+  }
+  const compiled = new Map<string, ts.SourceFile | undefined>()
+  const checkerOf = (path: string, source: string): { checker: ts.TypeChecker; file: ts.SourceFile } => {
+    const host = ts.createCompilerHost(COMPILER)
+    const read = host.getSourceFile.bind(host)
+    host.getSourceFile = (name, language, ...rest) => {
+      if (name === path) return ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true)
+      if (!compiled.has(name)) compiled.set(name, read(name, language, ...rest))
+      return compiled.get(name)
+    }
+    const program = ts.createProgram([path], COMPILER, host)
+    const file = program.getSourceFile(path)
+    if (file === undefined) throw new Error(`no source file ${path}`)
+    return { checker: program.getTypeChecker(), file }
+  }
+  // Each exported rule of a source text, by name, with its parameters as written and those it takes as a text: a
+  // function, or a const holding one, named …Findings or …Problems, or returning an array of strings (Finding is a
+  // string), its own or in a promise, as the checker reads its type (round 13's fourth iteration: a rule named and
+  // typed as deployPinProblems is, text in and strings out, stood in no table); and any re-export under such a name.
+  // A text is a parameter whose type is a string, alone or with undefined, but RunsWrittenOut, the expansion.
+  const exportedRules = (
+    source: string,
+    path = join(root, 'scripts/guards/deploy-workflow.ts'),
+  ): Map<string, { parameters: string; texts: string[] }> => {
+    const { checker, file } = checkerOf(path, source)
+    const rules = new Map<string, { parameters: string; texts: string[] }>()
     const exported = (node: ts.Node) =>
       ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.ExportKeyword)
-    const isRule = (name: string, type: ts.TypeNode | undefined) =>
-      /Findings$/.test(name) ||
-      /^(?:readonly\s+)?Finding\[\]$|^(?:Readonly)?Array<Finding>$/.test(type?.getText(file) ?? '')
-    const parameters = (node: ts.SignatureDeclarationBase) =>
-      `(${node.parameters.map(each => each.getText(file)).join(', ')})`
+    const strings = (type: ts.Type): boolean => {
+      if (type.isUnion()) return type.types.every(strings)
+      if (type.getSymbol()?.getName() === 'Promise') {
+        const [inner] = checker.getTypeArguments(type as ts.TypeReference)
+        return inner !== undefined && strings(inner)
+      }
+      if (!checker.isArrayType(type)) return false
+      const [element] = checker.getTypeArguments(type as ts.TypeReference)
+      return element !== undefined && (element.flags & ts.TypeFlags.String) !== 0
+    }
+    const text = (type: ts.Type): boolean =>
+      (type.isUnion() ? type.types : [type]).some(each => (each.flags & ts.TypeFlags.String) !== 0)
+    const add = (name: string, node: ts.SignatureDeclaration) => {
+      const signature = checker.getSignatureFromDeclaration(node)
+      const returned = signature === undefined ? undefined : checker.getReturnTypeOfSignature(signature)
+      if (!/(?:Findings|Problems)$/.test(name) && !(returned !== undefined && strings(returned))) return
+      rules.set(name, {
+        parameters: `(${node.parameters.map(each => each.getText(file)).join(', ')})`,
+        texts: node.parameters
+          .filter(each => text(checker.getTypeAtLocation(each)))
+          .map(each => each.name.getText(file)),
+      })
+    }
     for (const statement of file.statements) {
       if (ts.isFunctionDeclaration(statement) && statement.name !== undefined && exported(statement)) {
-        if (isRule(statement.name.text, statement.type)) rules.set(statement.name.text, parameters(statement))
+        add(statement.name.text, statement)
       } else if (ts.isVariableStatement(statement) && exported(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           const value = declaration.initializer
           if (!ts.isIdentifier(declaration.name) || value === undefined) continue
-          if (
-            (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) &&
-            isRule(declaration.name.text, value.type)
-          )
-            rules.set(declaration.name.text, parameters(value))
+          if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) add(declaration.name.text, value)
         }
       } else if (ts.isExportDeclaration(statement) && statement.exportClause !== undefined) {
         // A re-export under a rule's name is a rule too, of parameters this can't read.
         if (ts.isNamedExports(statement.exportClause)) {
           for (const element of statement.exportClause.elements) {
-            if (/Findings$/.test(element.name.text)) rules.set(element.name.text, '(re-exported)')
+            if (/(?:Findings|Problems)$/.test(element.name.text)) {
+              rules.set(element.name.text, { parameters: '(re-exported)', texts: [] })
+            }
           }
         }
       }
     }
     return rules
+  }
+  // Each rule of a file that takes a text TEXT_RULES doesn't name with what it holds, or names one it takes no more.
+  const unnamedTexts = (relative: string, rules: ReadonlyMap<string, { texts: readonly string[] }>): string[] => {
+    const listed = TEXT_RULES[relative] ?? {}
+    const problems: string[] = []
+    for (const [name, { texts }] of rules) {
+      const named = Object.keys(listed[name] ?? {})
+      for (const each of texts) {
+        if (!named.includes(each)) {
+          problems.push(
+            `${name} takes ${each} as a text, which is neither RunsWrittenOut nor named in TEXT_RULES with what it holds`,
+          )
+        }
+      }
+      for (const each of named)
+        if (!texts.includes(each)) problems.push(`${name} is listed as taking ${each} as a text and takes it no more`)
+    }
+    for (const name of Object.keys(listed))
+      if (!rules.has(name)) problems.push(`${name} is listed in TEXT_RULES and is no rule of ${relative}`)
+    return problems
   }
   // How many bindings of a name a source text declares (a variable, a parameter, a function or a destructured name).
   const bindings = (source: string, name: string): number => {
@@ -2308,14 +2422,21 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
       if (!readers.some(([each]) => each === name)) problems.push(`${name} is listed and reads deploy.yml no more`)
     }
     problems.push(...uses.named)
-    for (const [name, parameters] of exportedRules(source)) {
+    const rules = exportedRules(source)
+    for (const [name, { parameters }] of rules) {
       if (DEPLOY_TEXT_READERS[name] !== undefined || readers.some(([each]) => each === name)) continue
-      const pinned = NOT_DEPLOY_READERS[name]
+      const pinned = NOT_DEPLOY_READERS[name] ?? NOT_RULES[name]
       if (pinned === undefined)
         problems.push(`${name} is an exported rule listed neither as reading deploy.yml nor as reading none`)
       else if (pinned !== parameters)
         problems.push(`${name} reads no workflow by its listed parameters, and takes ${parameters}`)
     }
+    problems.push(
+      ...unnamedTexts(
+        'scripts/guards/deploy-workflow.ts',
+        new Map([...rules].filter(([name]) => NOT_RULES[name] === undefined)),
+      ),
+    )
     // get(CI) reads ci.yml only while CI is the guard's own constant: no other binding of that name.
     if (bindings(source, 'CI') !== 1) problems.push('CI is bound otherwise than as the guard’s constant')
     if (!/^function jobSpans\(text: RunsWrittenOut\)/m.test(source))
@@ -2464,6 +2585,54 @@ describe('DPW-02: every rule reads deploy.yml’s shared runs where they run (ro
       'jobsOf takes more than the expansion',
     ])
   })
+
+  // Round 13's fourth iteration: a rule written as the repository's own text rules are, deployPinProblems(text:
+  // string): string[], named …Problems and handed deploy.yml's text by its caller, was neither a reader nor a rule to
+  // the table, so it stood outside differential(); handed the file as stored it read none of the steps that run a
+  // shared run by its alias, and a wget planted into the asset check's anchor passed it in all five credentialed jobs.
+  it('holds a rule that takes a text, named …Problems or returning strings, to a table, in the guard and beside it', () => {
+    const wget = (head: string) =>
+      `${source}\n${head} {\n  let id = ''\n  return text.split('\\n').flatMap(line => {\n    id = /^ {2}([\\w-]+):$/.exec(line)?.[1] ?? id\n    return /\\bwget\\b/.test(line) && ENVIRONMENT_JOBS[id] !== undefined ? [id] : []\n  })\n}\n`
+    expect(unlisted(wget('export function credentialedWgetProblems(text: string): string[]'))).toEqual([
+      'credentialedWgetProblems is an exported rule listed neither as reading deploy.yml nor as reading none',
+      'credentialedWgetProblems takes text as a text, which is neither RunsWrittenOut nor named in TEXT_RULES with what it holds',
+    ])
+    // Named otherwise, its type inferred: the checker reads it as returning strings.
+    expect(unlisted(wget('export function credentialedWget(text: string)'))).toEqual([
+      'credentialedWget is an exported rule listed neither as reading deploy.yml nor as reading none',
+      'credentialedWget takes text as a text, which is neither RunsWrittenOut nor named in TEXT_RULES with what it holds',
+    ])
+    // Typed as the expansion, it takes no text, and still stands in a table.
+    expect(unlisted(wget('export function credentialedWgetProblems(text: RunsWrittenOut): string[]'))).toEqual([
+      'credentialedWgetProblems is an exported rule listed neither as reading deploy.yml nor as reading none',
+    ])
+    // A rule listed as taking a text that takes it no more, and a helper that builds text changing its parameters.
+    const ruleset = 'export function triggerFindings(workflows: Texts, ruleset: string): Finding[]'
+    expect(source).toContain(ruleset)
+    expect(unlisted(source.replace(ruleset, ruleset.replace('ruleset: string', 'ruleset: RunsWrittenOut')))).toEqual([
+      'triggerFindings is listed as taking ruleset as a text and takes it no more',
+    ])
+    const helper = 'export function codeLinesAsBash(lines: readonly string[]): string[]'
+    expect(source).toContain(helper)
+    expect(
+      unlisted(source.replace(helper, helper.replace('lines:', 'lines: readonly string[], text?: string, _:'))),
+    ).toEqual([
+      'codeLinesAsBash reads no workflow by its listed parameters, and takes (lines: readonly string[], text?: string, _: readonly string[])',
+    ])
+    // Beside the guard: the workflow reader's shape rules and the pins proof's deploy.yml rule, each named, and the
+    // same rule planted in the pins proof stands in no table.
+    for (const relative of ['scripts/guards/workflow.ts', 'scripts/check-action-pins.ts']) {
+      const text = readRepoFile(relative)
+      expect(unnamedTexts(relative, exportedRules(text, join(root, relative))), relative).toEqual([])
+    }
+    const pins = readRepoFile('scripts/check-action-pins.ts')
+    const planted = `${pins}\nexport function credentialedWgetProblems(text: string): string[] {\n  return text.split('\\n').filter(line => /\\bwget\\b/.test(line))\n}\n`
+    expect(
+      unnamedTexts('scripts/check-action-pins.ts', exportedRules(planted, join(root, 'scripts/check-action-pins.ts'))),
+    ).toEqual([
+      'credentialedWgetProblems takes text as a text, which is neither RunsWrittenOut nor named in TEXT_RULES with what it holds',
+    ])
+  }, 120_000)
 })
 
 describe('DPW-03 (C11-D55, C11-D56): only the five environment jobs hold AWS credentials', () => {
@@ -7010,6 +7179,117 @@ describe('DPW-10 (C11-D48, C11-D76): no repository code where the credentials ar
   })
 })
 
+// The PATH a credentialed job's step has (round 13's third iteration): those jobs run no setup-node, so the CLI's
+// #!/usr/bin/env node runs the runner image's own node, while check's setup-node put .nvmrc's Node 24 first, from
+// the runner's tool cache. And the test runs inside npm test, whose run-script puts every folder's node_modules/.bin
+// and npm's node-gyp-bin first (round 13's fourth iteration: a dependency that declares a node bin, as the registry's
+// node package does to run a project's scripts under one Node, put that Node before the image's, and the test passed
+// a CLI that needs a newer Node than the image's, which every credentialed job then failed at its first CLI call).
+// So the tool cache's folders, every node_modules/.bin, npm's node-gyp-bin and every folder in the repository are
+// taken off: check's runner (ubuntu-24.04, the deploy jobs' image too) then starts the CLI under the image's Node,
+// as a deploy step does; elsewhere no tool cache is named and the local node runs.
+function deployPathOf(path: string, toolCache: string | undefined, repository = root): string {
+  return path
+    .split(':')
+    .filter(
+      folder =>
+        folder !== '' &&
+        !(toolCache && (folder === toolCache || folder.startsWith(`${toolCache}/`))) &&
+        !/(?:^|\/)node_modules\/\.bin\/?$/.test(folder) &&
+        !/(?:^|\/)node-gyp-bin\/?$/.test(folder) &&
+        folder !== repository &&
+        !folder.startsWith(`${repository}/`),
+    )
+    .join(':')
+}
+// bash by its own path, so a PATH under test needn't hold it.
+const BASH = execFileSync('bash', ['--noprofile', '--norc', '-c', 'command -v bash'], { encoding: 'utf8' }).trim()
+// The node a PATH finds, and what is wrong with it: none found, one in the repository (a folder or a link into it),
+// or, where a tool cache is named (CI), a major other than IMAGE_NODE_MAJOR, the image's own, so a folder an earlier
+// step of check put first through GITHUB_PATH, or any other shadow, fails the test rather than passing it.
+function deployNode(
+  path: string,
+  toolCache: string | undefined,
+  repository = root,
+): { path: string; version: string; problems: string[] } {
+  const found = spawnSync(BASH, ['--noprofile', '--norc', '-c', 'command -v node && node --version'], {
+    encoding: 'utf8',
+    env: { PATH: path },
+  })
+  const [at = '', version = ''] = found.stdout.trim().split('\n')
+  const problems: string[] = []
+  if (found.status !== 0 || !at.startsWith('/')) problems.push('no node on the deploy jobs’ PATH')
+  else {
+    const real = realpathSync(at)
+    if (real === repository || real.startsWith(`${repository}/`)) problems.push(`${at} is the repository’s`)
+    if (toolCache && Number(/^v(\d+)\./.exec(version)?.[1]) !== IMAGE_NODE_MAJOR) {
+      problems.push(`${at} is ${version}, not the image's Node ${IMAGE_NODE_MAJOR}`)
+    }
+  }
+  return { path: at, version, problems }
+}
+
+describe('DPW-10 (round 13’s fourth iteration): the deploy jobs’ PATH in the CLI’s run test', () => {
+  let scratch = ''
+  beforeAll(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'hearth-dpw10-path-'))
+  })
+  afterAll(() => {
+    if (scratch !== '') rmSync(scratch, { recursive: true, force: true })
+  })
+  // A folder holding a node that says it is the given version.
+  const shadow = (folder: string, version: string) => {
+    execFileSync('mkdir', ['-p', folder])
+    writeFileSync(join(folder, 'node'), `#!/bin/sh\necho ${version}\n`, { mode: 0o755 })
+    return folder
+  }
+  it('takes off npm’s run-script folders, the tool cache and the repository, and holds the node it finds', () => {
+    // npm test's PATH: a dependency's node bin in node_modules/.bin (the registry's node package), an ancestor's,
+    // npm's node-gyp-bin, setup-node's Node 24 in the tool cache, a folder of the repository (a scratch one here),
+    // then the image's.
+    const cache = join(scratch, 'hostedtoolcache')
+    const checkout = join(scratch, 'checkout')
+    const binNode = shadow(join(scratch, 'project', 'node_modules', '.bin'), 'v24.11.1')
+    const ancestor = shadow(join(scratch, 'node_modules', '.bin'), 'v24.11.1')
+    const gyp = shadow(join(scratch, 'npm', 'node_modules', '@npmcli', 'run-script', 'lib', 'node-gyp-bin'), 'v24.11.1')
+    const setup = shadow(join(cache, 'node', '24.22.3', 'x64', 'bin'), 'v24.22.3')
+    const repository = shadow(join(checkout, 'tools'), 'v24.11.1')
+    const image = shadow(join(scratch, 'image', 'bin'), `v${IMAGE_NODE_MAJOR}.23.5`)
+    const path = [binNode, ancestor, gyp, setup, repository, image].join(':')
+    expect(deployPathOf(path, cache, checkout)).toBe(image)
+    expect(deployNode(deployPathOf(path, cache, checkout), cache, checkout)).toEqual({
+      path: join(image, 'node'),
+      version: `v${IMAGE_NODE_MAJOR}.23.5`,
+      problems: [],
+    })
+    // Before round 13's fourth iteration only the tool cache came off, and the dependency's node ran the CLI.
+    const cacheOnly = path
+      .split(':')
+      .filter(folder => !folder.startsWith(`${cache}/`))
+      .join(':')
+    expect(deployNode(cacheOnly, cache, checkout).path).toBe(join(binNode, 'node'))
+    expect(deployNode(cacheOnly, cache, checkout).problems).toEqual([
+      `${join(binNode, 'node')} is v24.11.1, not the image's Node ${IMAGE_NODE_MAJOR}`,
+    ])
+    // A shadow no rule above takes off (a GITHUB_PATH folder) fails where a tool cache is named, and a node in the
+    // repository fails anywhere.
+    const other = shadow(join(scratch, 'github-path'), 'v24.11.1')
+    expect(deployNode(deployPathOf(`${other}:${image}`, cache, checkout), cache, checkout).problems).toEqual([
+      `${join(other, 'node')} is v24.11.1, not the image's Node ${IMAGE_NODE_MAJOR}`,
+    ])
+    expect(deployNode(deployPathOf(`${other}:${image}`, undefined, checkout), undefined, checkout).problems).toEqual([])
+    const linked = join(scratch, 'linked')
+    execFileSync('mkdir', ['-p', linked])
+    symlinkSync(join(repository, 'node'), join(linked, 'node'))
+    expect(deployNode(`${linked}:${image}`, undefined, checkout).problems).toEqual([
+      `${join(linked, 'node')} is the repository’s`,
+    ])
+    expect(deployNode(join(scratch, 'empty'), undefined, checkout).problems).toEqual([
+      'no node on the deploy jobs’ PATH',
+    ])
+  })
+})
+
 // CLI_FETCH and CLI_CHECK (C11-D48, C11-D76; round 4's ACTIONS-01 and SECURITY-01), each run as written with
 // bash, jq, openssl and tar against a stand-in curl that serves a planted tarball, in a scratch checkout with
 // its own infra/package.json and lockfile: the CLI is the tarball whose sha512 is the lockfile's integrity,
@@ -7238,17 +7518,12 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       ].join('\n'),
       { mode: 0o755 },
     )
-    // The PATH a credentialed job's step has (round 13's third iteration): those jobs run no setup-node, so the
-    // CLI's #!/usr/bin/env node runs the runner image's own node, while check's setup-node put .nvmrc's Node 24
-    // first, from the runner's tool cache. With the tool cache's folders taken off, check's runner (ubuntu-24.04,
-    // the deploy jobs' image too) starts the CLI under the image's Node, as a deploy step does; elsewhere no tool
-    // cache is named and the local node runs.
+    // The PATH a credentialed job's step has, and the node it finds (deployPathOf(), deployNode()): the image's own,
+    // which in CI is held to IMAGE_NODE_MAJOR.
     const toolCache = process.env.RUNNER_TOOL_CACHE
-    const deployPath = (process.env.PATH ?? '')
-      .split(':')
-      .filter(folder => !(toolCache && (folder === toolCache || folder.startsWith(`${toolCache}/`))))
-      .join(':')
-    const node = spawnSync('bash', ['-c', 'node --version'], { encoding: 'utf8', env: { PATH: deployPath } })
+    const deployPath = deployPathOf(process.env.PATH ?? '', toolCache)
+    const node = deployNode(deployPath, toolCache)
+    expect(node.problems, `the deploy jobs' node, ${node.path} ${node.version}`).toEqual([])
     const step = (text: string) =>
       spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
         cwd: root,
@@ -7268,7 +7543,7 @@ describe('DPW-10 (C11-D48, C11-D76): CLI_FETCH and CLI_CHECK against a planted t
       errors: '',
     })
     const version = step(`${PREAMBLE}\n${CDK_FOLDER}\nrun "$CDK" --version`)
-    const under = `the CLI under the deploy jobs' node, ${node.stdout.trim() || 'none found'}`
+    const under = `the CLI under the deploy jobs' node, ${node.version || 'none found'}`
     expect(version.status, `${under}: ${version.stderr}`).toBe(0)
     expect(spoken(version.stdout), under).toEqual([
       expect.stringMatching(new RegExp(`^${pin?.replaceAll('.', '\\.')} \\(build [0-9a-f]+\\)$`)),
@@ -12947,10 +13222,26 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
           resource.Properties.Tags = [{ Key: 'hearth-role', Value: 'bastion' }]
           firstContainer(resource).LogConfiguration.Options['awslogs-group'] = '/hearth/nonprod/bastion'
           firstContainer(resource).LogConfiguration.Options['awslogs-stream-prefix'] = 'bastion'
+          // From round 13's fourth iteration a one-off's family keeping Services' retention is refused by the key
+          // rule first (the next case), so this plant drops the pair to reach the family rule.
+          delete resource.DeletionPolicy
+          delete resource.UpdateReplacePolicy
         },
         'WorkerTask',
       ),
       ECS,
+    ],
+    [
+      "a service on a one-off's family keeping Services' retention",
+      changed(
+        'AWS::ECS::TaskDefinition',
+        resource => {
+          expect([resource.DeletionPolicy, resource.UpdateReplacePolicy]).toEqual(['RetainExceptOnCreate', 'Retain'])
+          resource.Properties.Family = 'hearth-nonprod-bastion'
+        },
+        'WorkerTask',
+      ),
+      KEYS,
     ],
     [
       'a service in the Tasks stack, as the Services stack writes one',
@@ -13376,7 +13667,10 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     if (from < 0 || to < 0 || ASSET_CHECK.indexOf(start, from + 1) >= 0) throw new Error(`no one ${start}`)
     return ASSET_CHECK.slice(0, from) + ASSET_CHECK.slice(to + end.length)
   }
-  const ANY_POLICY = withoutConjunct(' and (.Type as $t | [.DeletionPolicy, .UpdateReplacePolicy]', 'else null end))')
+  const ANY_POLICY = withoutConjunct(
+    ' and (.Type as $t | (.Properties | if type == "object" then .Family else null end) as $f | [.DeletionPolicy, .UpdateReplacePolicy]',
+    'else null end))',
+  )
   const ANY_SUBNETS = withoutConjunct(
     '([$r | to_entries[] | select(.value.Type == "AWS::EC2::Subnet")] as $subnets',
     '| .key] | sort)) and\n',
@@ -13447,6 +13741,17 @@ describe('DPW-14 (C11-D76): ASSET_CHECK on planted assemblies', () => {
     [
       "the synth's retention on a route",
       changed('AWS::EC2::Route', resource => {
+        resource.DeletionPolicy = 'RetainExceptOnCreate'
+        resource.UpdateReplacePolicy = 'Retain'
+      }),
+      KEYS,
+    ],
+    [
+      // Round 13's fourth iteration: a one-off's definition kept as an old revision when replaced or removed, which a
+      // run by family (the bastion's, break-glass.md step 2) would start after a later release dropped it.
+      "the Services definitions' retention on a Tasks one",
+      changed('AWS::ECS::TaskDefinition', resource => {
+        expect(resource.Properties.Family).toMatch(/-(?:migrate|probe|bastion)$/)
         resource.DeletionPolicy = 'RetainExceptOnCreate'
         resource.UpdateReplacePolicy = 'Retain'
       }),
@@ -18820,7 +19125,7 @@ esac
   // check read that commit.
   it('records what its smokes judged, read from the workflow’s own env (DPW-13)', () => {
     const JUDGED =
-      "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
+      "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, COMMIT the gate's commit and PREVIOUS_COMMIT the gate's previous commit for the stage, each smoke's PROFILE_AT its record's commit, and SMOKE and RESMOKE that smoke's and resmoke's results"
     const judged = (id: string) => `${DEPLOY}: DPW-13 ${id} (Write the record): ${JUDGED}`
     const found = (planted: ReadonlyMap<string, string>) => releaseFindings(planted)
     for (const [stage, from, to] of [
@@ -19005,7 +19310,7 @@ describe('Round 12, iteration 4, its second pass: the ways past the reader and t
   const APPENDS =
     'writes the job summary and its outputs only by appending (>> or tee -a), expanding either file’s name only as that whole target or operand, so no write erases what the step wrote there before'
   const JUDGED =
-    "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, and SMOKE and RESMOKE that smoke's and resmoke's results"
+    "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, COMMIT the gate's commit and PREVIOUS_COMMIT the gate's previous commit for the stage, each smoke's PROFILE_AT its record's commit, and SMOKE and RESMOKE that smoke's and resmoke's results"
   const bash = (script: string, env: Record<string, string> = {}) =>
     spawnSync('bash', ['--noprofile', '--norc', '-c', script], { encoding: 'utf8', env: { ...process.env, ...env } })
   const replaced = (text: string, ...pairs: ReadonlyArray<readonly [string, string]>) =>
@@ -19781,4 +20086,263 @@ describe('Round 13, iteration 3: the ways past the reader and the rules (DPW-02,
       permissionFindings(withText(CI, ci.replace('name: ci\n', 'name: ci: checks\n')), ownRepository() ?? ''),
     ).toContain(`${CI}: DPW-02 ${SHAPE}`)
   }, 60_000)
+})
+
+describe('Round 13, iteration 4: the ways past the reader and the rules (DPW-02, DPW-04, DPW-10, DPW-13)', () => {
+  // bash with one run of its own, its standard output.
+  const bash = (text: string) => spawnSync('bash', ['--noprofile', '--norc', '-c', text], { encoding: 'utf8' }).stdout
+
+  it('refuses an expansion inside a brace’s body, which bash reads as pattern text whatever quotes stand around it', () => {
+    for (const snippet of [
+      `if [[ "$d" != *":task-definition/$family:"* || ! "\${d##*/$family:}" =~ ^[1-9][0-9]{0,5}$ ]]; then exit 1; fi`,
+      `revision=\${d#*:task-definition/$family:}`,
+      `x="\${d/a/$y}"`,
+      `case "$d" in "\${family%$kind}$kind":[1-9]*) ;; esac`,
+      `x="\${d:-$y}"`,
+    ]) {
+      expect([...shellViews(snippet).odd], snippet).toContain('brace')
+    }
+    // The family refactor, every expansion in double quotes as PATTERN_EXPANSION_RULE asks.
+    const from = `    if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "\${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then\n`
+    expect(TASKS_OUTPUTS).toContain(from)
+    const planted = TASKS_OUTPUTS.replace(
+      from,
+      `    family=$(output "\${kind^}Family")\n    if [[ "$definition" != *":task-definition/$family:"* || ! "\${definition##*/$family:}" =~ ^[1-9][0-9]{0,5}$ ]]; then\n`,
+    )
+    expect(canonicalTextFindings({ TASKS_OUTPUTS: planted })).toContain(
+      `${GUARD}: DPW-10 TASKS_OUTPUTS: is written in the shell shellViews() reads`,
+    )
+    // bash reads the nested $family as a glob: a family of * cuts any definition down to its revision, quoted or not
+    // outside the braces; only quotes inside them, which BRACE_ODD refuses too, make it literal.
+    const d = 'task-definition/*:/hearth-nonprod-api:3'
+    expect(bash(`d='${d}' family='*'; printf '%s' "\${d##*/$family:}"`)).toBe('3')
+    expect(bash(`d='${d}' family='*'; printf '%s' "\${d##*/"$family":}"`)).toBe('/hearth-nonprod-api:3')
+    // And patsub_replacement reads an & in a replacement's value as the matched text.
+    expect(bash(`x=a y='[&]'; printf '%s' "\${x/a/$y}"`)).toBe('[a]')
+  })
+
+  it('reads a [[ … ]] test on a case item’s pattern line as a test, so its pattern expansions are read too', () => {
+    const one = 'case "$d" in\n  *":x/$family:"*) [[ "$d" =~ ^$family:[1-9][0-9]{0,5}$ ]] || exit 1 ;;\nesac'
+    expect(patternLines(one)).toEqual([1])
+    expect(patternLines('case "$d" in\n  *) [[ "$d" == $family:* ]] || exit 1 ;;\nesac')).toEqual([1])
+    expect(patternLines('case "$d" in\n  *) [[ "$d" =~ ^"$family":[1-9]$ ]] || exit 1 ;;\nesac')).toEqual([])
+    // The family refactor in AWS_CHECK's one-line item style, the case pattern's $family quoted.
+    const from = `    if [[ "$definition" != *":task-definition/hearth-$STAGE-$kind:"* || ! "\${definition##*/}" =~ ^hearth-"$STAGE"-"$kind":[1-9][0-9]{0,5}$ ]]; then\n      echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't hearth-$STAGE-$kind's" | mask\n      exit 1\n    fi\n`
+    expect(TASKS_OUTPUTS).toContain(from)
+    const planted = TASKS_OUTPUTS.replace(
+      from,
+      `    family=$(output "\${kind^}Family")\n    case "$definition" in\n      *":task-definition/$family:"*) [[ "\${definition##*/}" =~ ^$family:[1-9][0-9]{0,5}$ ]] || { echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't $family's" | mask; exit 1; } ;;\n      *) echo "tasks: Hearth-$STAGE-Tasks's $kind definition isn't $family's" | mask; exit 1 ;;\n    esac\n`,
+    )
+    expect(
+      canonicalTextFindings({ TASKS_OUTPUTS: planted }).filter(each =>
+        each.includes('expands nothing outside double quotes in a [[ … ]] test or a case pattern'),
+      ),
+    ).toHaveLength(1)
+    // bash matches a family of x|.* against the api's definition there.
+    expect(
+      bash(`family='x|.*' d='hearth-nonprod-api:3'; [[ "$d" =~ ^$family:[1-9][0-9]{0,5}$ ]] && printf matched`),
+    ).toBe('matched')
+  })
+
+  it('pipes into or out of no compound command or canonical function, whose names a pipeline’s subshell loses', () => {
+    const functions = new Set(['mask', 'run', 'get', 'is_ancestor'])
+    for (const snippet of [
+      'jq -r . <<<"$out" | while IFS= read -r commit; do\n  pushed=$commit\ndone',
+      'jq -r . <<<"$out" |\n  while IFS= read -r commit; do pushed=$commit; done',
+      'jq -r . <<<"$out" | { read -r a; b=$a; }',
+      'jq -r . <<<"$out" | if true; then x=1; fi',
+      'jq -r . <<<"$out" | case "$x" in a) y=1 ;; esac',
+      'jq -r . <<<"$out" | until false; do :; done',
+      'for x in a b; do y=$x; done | mask',
+      '{ echo a; echo b; } | mask',
+      'jq -r . <<<"$out" | is_ancestor',
+      'is_ancestor a b | mask',
+      'run is_ancestor a b',
+    ]) {
+      expect(pipelineLines(snippet, functions), snippet).toEqual([0])
+    }
+    for (const snippet of [
+      'echo "x" | mask',
+      'out=$(get aws sts get-caller-identity | jq -r .Account)',
+      'if [[ "$x" =~ ^(a|b)$ ]]; then echo y | mask; fi',
+      'case "$x" in a|b) echo y | mask ;; esac',
+      'run aws s3 ls',
+      'run "$CDK" deploy',
+    ]) {
+      expect(pipelineLines(snippet, functions), snippet).toEqual([])
+    }
+    // AWS_CHECK's later-commit loop fed by a pipe, the commoner idiom, which keeps jq's status under pipefail.
+    const from =
+      '    while IFS= read -r commit; do\n      is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit\n    done < <(jq -r \'[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]\' <<<"$out")\n'
+    expect(AWS_CHECK).toContain(from)
+    const planted = AWS_CHECK.replace(
+      from,
+      '    jq -r \'[.[] | strings | capture("^sha-(?<c>[0-9a-f]{40})-[0-9]+-[0-9]+$").c] | unique[]\' <<<"$out" | while IFS= read -r commit; do\n      is_ancestor "$commit" "$GITHUB_SHA" || pushed=$commit\n    done\n',
+    )
+    expect(
+      canonicalTextFindings({ AWS_CHECK: planted }).filter(each =>
+        each.includes('pipes into or out of no compound command'),
+      ),
+    ).toHaveLength(1)
+    // bash sets pushed in the loop's subshell, and it is empty after the pipeline; fed by < <( … ) it is kept.
+    expect(bash(`pushed=; printf 'a\\nb\\n' | while IFS= read -r c; do pushed=$c; done; printf '%s' "$pushed"`)).toBe(
+      '',
+    )
+    expect(
+      bash(`pushed=; while IFS= read -r c; do pushed=$c; done < <(printf 'a\\nb\\n'); printf '%s' "$pushed"`),
+    ).toBe('b')
+    // A run's own lines: a name set in a pipeline of more than one command is refused, a group of echoes into mask
+    // (the diffs' summaries) is not.
+    const refused = 'a name set in a pipeline of more than one command, whose commands bash runs in subshells'
+    for (const snippet of [
+      'for x in a b; do y="$x"; done | mask',
+      '{ y=1; } | mask',
+      'echo a | { y=1; }',
+      'y=1 | mask',
+    ]) {
+      expect(readShell(snippet).refused?.what, snippet).toBe(refused)
+    }
+    expect(readShell('{ echo a; echo b; } | mask').refused).toBeUndefined()
+  })
+
+  it('holds each smoke’s PROFILE_AT and its record’s commits to the gate’s, as written (DPW-13)', () => {
+    const JUDGED =
+      "records what its smokes judged: COMMIT:DIGEST its smoke's RELEASE and SERVICES the services of the job whose read-back that smoke read, PREVIOUS_COMMIT:PREVIOUS_DIGEST and ROLLBACK_SERVICES its resmoke's the same way, COMMIT the gate's commit and PREVIOUS_COMMIT the gate's previous commit for the stage, each smoke's PROFILE_AT its record's commit, and SMOKE and RESMOKE that smoke's and resmoke's results"
+    const judged = (stage: string) => `${DEPLOY}: DPW-13 record-${stage} (Write the record): ${JUDGED}`
+    const all = (text: string, from: string, to: string) => {
+      expect(text, from).toContain(from)
+      return text.replaceAll(from, to)
+    }
+    // A smoke's PROFILE_AT from github.sha, which the gate's commit equals on a push and a dispatched deploy.
+    const smoke = all(
+      deployText,
+      `          PROFILE_AT: \${{ needs.gate.outputs.commit }}\n`,
+      `          PROFILE_AT: \${{ github.sha }}\n`,
+    )
+    // A resmoke's from the gate's commit, the release a failed deploy left behind.
+    const resmoke = all(
+      all(
+        deployText,
+        `          PROFILE_AT: \${{ needs.gate.outputs.previous_nonprod_commit }}\n`,
+        `          PROFILE_AT: \${{ needs.gate.outputs.commit }}\n`,
+      ),
+      `          PROFILE_AT: \${{ needs.gate.outputs.previous_prod_commit }}\n`,
+      `          PROFILE_AT: \${{ needs.gate.outputs.commit }}\n`,
+    )
+    // The smokes' RELEASE and PROFILE_AT and the records' COMMIT all from github.sha, both sides moving together.
+    let together = all(
+      smoke,
+      `          COMMIT: \${{ needs.gate.outputs.commit }}\n          DIGEST: \${{ needs.nonprod.outputs.digest }}\n`,
+      `          COMMIT: \${{ github.sha }}\n          DIGEST: \${{ needs.nonprod.outputs.digest }}\n`,
+    )
+    together = all(
+      together,
+      `          COMMIT: \${{ needs.gate.outputs.commit }}\n          DIGEST: \${{ needs.prod.outputs.digest }}\n`,
+      `          COMMIT: \${{ github.sha }}\n          DIGEST: \${{ needs.prod.outputs.digest }}\n`,
+    )
+    together = all(
+      together,
+      `          RELEASE: \${{ needs.gate.outputs.commit }}:\${{ needs.nonprod.outputs.digest }}\n`,
+      `          RELEASE: \${{ github.sha }}:\${{ needs.nonprod.outputs.digest }}\n`,
+    )
+    together = all(
+      together,
+      `          RELEASE: \${{ needs.gate.outputs.commit }}:\${{ needs.prod.outputs.digest }}\n`,
+      `          RELEASE: \${{ github.sha }}:\${{ needs.prod.outputs.digest }}\n`,
+    )
+    for (const [what, text] of [
+      ['smoke', smoke],
+      ['resmoke', resmoke],
+      ['together', together],
+    ] as const) {
+      const found = releaseFindings(withText(DEPLOY, text))
+      expect(found, what).toContain(judged('nonprod'))
+      expect(found, what).toContain(judged('prod'))
+    }
+  }, 120_000)
+
+  it('reads the inputs context only in the gate’s steps that hand it to history.ts (DPW-10)', () => {
+    const INPUTS =
+      "reads the inputs context (inputs or github.event.inputs) only in the gate's steps that hand it to history.ts, since a push's inputs are empty while the gate outputs its mode and target, so every later job reads the gate's outputs"
+    const found = (text: string) => credentialedCodeFindings(withText(DEPLOY, text), manifests, lockfile)
+    // The rollback jobs' MODE, a one-token change beside the gate's own MODE.
+    const release = "This run's release and the previous one"
+    const mode = edited(
+      deployText,
+      `          MODE: \${{ needs.gate.outputs.mode }}\n`,
+      `          MODE: \${{ inputs.mode }}\n`,
+      `        - name: ${release}`.replace('        - ', '      - '),
+    )
+    expect(found(mode)).toContain(`${DEPLOY}: DPW-10 rollback-nonprod (${release}): ${INPUTS}`)
+    // rollback-nonprod's if: so written, and a with: reading github.event.inputs.
+    const clause = "(needs.gate.outputs.mode == 'deploy' || needs.gate.outputs.mode == 'drill-smoke')"
+    expect(deployText).toContain(clause)
+    const condition = edited(
+      deployText,
+      clause,
+      "(inputs.mode == 'deploy' || inputs.mode == 'drill-smoke')",
+      job('rollback-nonprod'),
+    )
+    expect(found(condition)).toContain(`${DEPLOY}: DPW-10 rollback-nonprod: ${INPUTS}`)
+    const event = edited(
+      deployText,
+      `          MODE: \${{ needs.gate.outputs.mode }}\n`,
+      `          MODE: \${{ github.event.inputs.mode }}\n`,
+      job('smoke-nonprod'),
+    )
+    expect(found(event).filter(each => each.endsWith(INPUTS))).toHaveLength(1)
+    // The gate's two steps read it, and no other place in the committed file does.
+    expect(found(deployText).filter(each => each.endsWith(INPUTS))).toEqual([])
+  }, 120_000)
+
+  it('holds check’s actions to the three that run no pre:, which GitHub runs before a job’s first step (DPW-04)', () => {
+    const ci = workflows.get(CI) ?? ''
+    const last = '          if-no-files-found: ignore\n'
+    expect(ci).toContain(last)
+    const planted = ci.replace(
+      last,
+      `${last}      - name: Coverage summary\n        uses: example-org/coverage-summary@0123456789abcdef0123456789abcdef01234567 # v2.1.0\n`,
+    )
+    expect(actionPinFindings(withText(CI, planted), repoFiles(), readRepoFile('.nvmrc'))).toContain(
+      `${CI}: DPW-04 ${PINS_JOB_FINDING}`,
+    )
+    expect(actionPinFindings(workflows, repoFiles(), readRepoFile('.nvmrc'))).toEqual([])
+  })
+
+  it('refuses a flow item YAML reads as no plain scalar, and a comment touching what it follows (DPW-02)', () => {
+    const branches = '    branches: [main]\n'
+    expect(deployText).toContain(branches)
+    const line = deployText.slice(0, deployText.indexOf(branches)).split('\n').length - 1
+    for (const item of ['@release', '%release', '`release', '|release', '>release']) {
+      const planted = deployText.replace(branches, `    branches: [main, ${item}]\n`)
+      expect(shapeProblems(planted), item).toEqual([line])
+    }
+    // A comment with no blank before it, after a block scalar's header or a quoted scalar's close: YAML refuses it.
+    const run = deployText.indexOf('        run: |\n')
+    const runLine = deployText.slice(0, run).split('\n').length - 1
+    for (const header of ['|#x', '|# the gate', '|-#x']) {
+      const planted = `${deployText.slice(0, run)}        run: ${header}\n${deployText.slice(run + '        run: |\n'.length)}`
+      expect(shapeProblems(planted), header).toContain(runLine)
+      expect(permissionFindings(withText(DEPLOY, planted), ownRepository() ?? ''), header).toContain(
+        `${DEPLOY}: DPW-02 ${SHAPE}`,
+      )
+    }
+    const kept = `${deployText.slice(0, run)}        run: | #x\n${deployText.slice(run + '        run: |\n'.length)}`
+    expect(shapeProblems(kept)).toEqual([])
+    const from = '        description: up or down for target restore; none otherwise\n'
+    const at = deployText.slice(0, deployText.indexOf(from)).split('\n').length - 1
+    for (const value of [
+      "'up or down for target restore; none otherwise'#x",
+      '"up or down for target restore; none otherwise"#x',
+      "'up or down'# none otherwise",
+    ]) {
+      expect(shapeProblems(deployText.replace(from, `        description: ${value}\n`)), value).toEqual([at])
+    }
+    expect(shapeProblems(deployText.replace(from, "        description: 'up or down' # none otherwise\n"))).toEqual([])
+    const ci = workflows.get(CI) ?? ''
+    const ciRun = ci.indexOf('        run: |\n')
+    expect(ciRun).toBeGreaterThan(0)
+    const plantedCi = `${ci.slice(0, ciRun)}        run: |# x\n${ci.slice(ciRun + '        run: |\n'.length)}`
+    expect(permissionFindings(withText(CI, plantedCi), ownRepository() ?? '')).toContain(`${CI}: DPW-02 ${SHAPE}`)
+  }, 120_000)
 })

@@ -12,8 +12,10 @@
 // scalar at all (starting with , ] } % @, a backquote, or | or > with more than a block scalar's header), a
 // plain value, a key's or a sequence item's, that YAML reads as a mapping (a : and a blank or at its end, as in
 // a merge key's - <<: *s, or a description's `format: 40 hex`), a flow item YAML reads otherwise than split at
-// its commas (one holding a quoted comma, a : and a blank or at its end, or a #), and any other indent;
-// shapeProblems() names each line in none of the shapes it reads.
+// its commas (one holding a quoted comma, a : and a blank or at its end, or a #) or as no plain scalar (starting
+// with % @, a backquote, | or >), a comment touching what it follows (|#x, 'x'#x, [a]#x: YAML needs a blank before
+// a #, and refuses the file), and any other indent; shapeProblems() names each line in none of the shapes it
+// reads.
 // The one anchor and alias it reads is a step's run: shared whole, in exactly two forms on a step's run: key
 // at eight spaces in a job's steps: (runAnchors()): `run: &name |`, a literal block scalar with clip chomping
 // and nothing after it, anchoring the text, and `run: *name`, alone on its line with nothing deeper under it
@@ -157,10 +159,12 @@ const indentOf = (line: string) => line.length - line.replace(/^ +/, '').length
 const TAB_INDENT = /^[ \t]*(?:-[ \t]*)?\t/
 const isBlankOrComment = (line: string) => line.trim() === '' || /^\s*#/.test(line)
 // A block scalar's indicator: literal (|) or folded (>), with a chomping indicator (+ or -) and an
-// indentation indicator (1 to 9) in either order, then an optional comment.
-const BLOCK_SCALAR = /^[|>](?:[+-][1-9]?|[1-9][+-]?)?\s*(?:#.*)?$/
+// indentation indicator (1 to 9) in either order, then an optional comment after a blank, which YAML requires
+// (round 13's fourth iteration: |#x read here as a header and a comment, while yaml 2.7.0 and GitHub's published
+// parser refuse the file).
+const BLOCK_SCALAR = /^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:\s+#.*)?\s*$/
 // The block scalars this reader reads as YAML does: literal, with no indentation indicator.
-const LITERAL_SCALAR = /^\|[+-]?\s*(?:#.*)?$/
+const LITERAL_SCALAR = /^\|[+-]?(?:\s+#.*)?\s*$/
 // A key's value read past its node properties (an anchor &name, a tag !t, each followed by a blank), as YAML
 // reads a block scalar's header after them: so the content of an anchored or tagged block scalar is content
 // to lineKinds(), never YAML or a comment, and literalProblems(), blockScalarProblems() and
@@ -721,14 +725,16 @@ const STRUCTURE = /^[-?:](?:\s|$)/
 const ITEM_MAPPING = /^(?:(?!\s#).)*:(?:\s|$)/
 // A plain value that starts with an indicator YAML reads as no plain scalar, which this reader doesn't model: a
 // flow indicator that closes or separates (, ] }), the directive indicator %, a reserved one (@ and the backquote),
-// or a block scalar's | or > followed by anything but its header and a comment (BLOCK_SCALAR reads those first).
-// YAML refuses each, and so does GitHub, which then starts no run of the file (round 13's third iteration).
+// or a block scalar's | or > followed by anything but its header and a comment after a blank (BLOCK_SCALAR reads
+// those first). YAML refuses each, and so does GitHub, which then starts no run of the file (round 13's third
+// iteration), a flow item's as well (its fourth: [main, @release] passed every rule).
 const UNREAD_INDICATOR = /^[,\]}%@`|>]/
 
 // Whether a flow sequence's items, between its brackets, are read here as YAML reads them: split at each
 // comma outside quotes (a comma inside a quoted item would split it here, so none may hold one), each item
-// a quoted scalar whole or a plain one starting with no node property or indicator and holding no : with a
-// blank or at its end (YAML reads that item as a mapping) and no #.
+// a quoted scalar whole or a plain one starting with no node property or indicator, structure's or one YAML reads
+// as no plain scalar (UNREAD_INDICATOR, round 13's fourth iteration), and holding no : with a blank or at its end
+// (YAML reads that item as a mapping) and no #.
 function flowItemsRead(inner: string): boolean {
   if (inner.trim() === '') return true
   const items: string[] = []
@@ -753,7 +759,13 @@ function flowItemsRead(inner: string): boolean {
     const text = each.trim()
     if (text.startsWith('"')) return /^"[^"\\]*"$/.test(text)
     if (text.startsWith("'")) return /^'(?:[^']|'')*'$/.test(text)
-    return text !== '' && !NODE_PROPERTY.test(text) && !STRUCTURE.test(text) && !/:(?:\s|$)|#/.test(text)
+    return (
+      text !== '' &&
+      !NODE_PROPERTY.test(text) &&
+      !STRUCTURE.test(text) &&
+      !UNREAD_INDICATOR.test(text) &&
+      !/:(?:\s|$)|#/.test(text)
+    )
   })
 }
 
@@ -768,8 +780,9 @@ function flowItemsRead(inner: string): boolean {
 // which YAML reads as a nested mapping and refuses after a key (round 13's third iteration: a dispatch input's
 // description written `(format: 40 hex)`, or a workflow's `name: ci: checks`, passed every rule while GitHub,
 // reading no YAML, started no run of the file), a quoted scalar closed on the line, a flow sequence closed on the
-// line whose items are scalars read as YAML reads them (flowItemsRead), or the empty flow mapping {}. Its
-// indentation, and the blank after its dash, are spaces alone (TAB_INDENT).
+// line whose items are scalars read as YAML reads them (flowItemsRead), or the empty flow mapping {}, each followed
+// by nothing but a comment after a blank (round 13's fourth iteration). Its indentation, and the blank after its
+// dash, are spaces alone (TAB_INDENT).
 export function shapeProblems(text: string): number[] {
   const shared = runAnchors(text)
   const forms = new Set([...shared.anchors, ...shared.aliases].map(each => each.line))
@@ -810,7 +823,7 @@ export function shapeProblems(text: string): number[] {
       open.push({ indent: (item ? indent + 2 : indent) + 2, kind: undefined, keys: new Set() })
       continue
     }
-    const flow = /^\[([^[\]{}]*)\]\s*(?:#.*)?$/.exec(value)
+    const flow = /^\[([^[\]{}]*)\](?:\s+#.*)?\s*$/.exec(value)
     // A step's shared run in either form is a whole value: the anchor opens a literal block scalar, and the
     // alias is a scalar under which runAnchors() refuses anything deeper.
     const whole =
@@ -818,13 +831,13 @@ export function shapeProblems(text: string): number[] {
       (!NODE_PROPERTY.test(value) &&
         (BLOCK_SCALAR.test(value) ||
           (value.startsWith("'")
-            ? /^'(?:[^']|'')*'\s*(?:#.*)?$/.test(value)
+            ? /^'(?:[^']|'')*'(?:\s+#.*)?\s*$/.test(value)
             : value.startsWith('"')
-              ? /^"(?:[^"\\]|\\.)*"\s*(?:#.*)?$/.test(value)
+              ? /^"(?:[^"\\]|\\.)*"(?:\s+#.*)?\s*$/.test(value)
               : value.startsWith('[')
                 ? flow !== null && flowItemsRead(flow[1] ?? '')
                 : value.startsWith('{')
-                  ? /^\{\s*\}\s*(?:#.*)?$/.test(value)
+                  ? /^\{\s*\}(?:\s+#.*)?\s*$/.test(value)
                   : !STRUCTURE.test(value) && !ITEM_MAPPING.test(value) && !UNREAD_INDICATOR.test(value))))
     if (!whole) problems.push(index)
   }

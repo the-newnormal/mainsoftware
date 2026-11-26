@@ -58,9 +58,11 @@ jobs:
   # read of this file (CLAUDE.md's list). DPW-04 is a second layer: it holds this job to these three steps,
   # the workflow's top to name, on, permissions and jobs, and check to needing it with no key of its own but
   # needs, if, runs-on, timeout-minutes and steps, since a job's env:, defaults:, container or runner would
-  # decide how its first step's exit 1 runs; but it runs in check's own npm test, so a pull request that also
-  # stops that test running (a SHELLOPTS at this file's top or on check, say) passes it in its own CI. Each
-  # read is tried three times; a tag that names another commit fails.
+  # decide how its first step's exit 1 runs, and check's steps to checkout, setup-node and upload-artifact,
+  # since GitHub runs every action's pre: (none of those three has one) before a job's first step, whatever
+  # step names the action, so a new action anywhere in check runs first; but it runs in check's own npm
+  # test, so a pull request that also stops that test running (a SHELLOPTS at this file's top or on check,
+  # say) passes it in its own CI. Each read is tried three times; a tag that names another commit fails.
   action-pins:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
